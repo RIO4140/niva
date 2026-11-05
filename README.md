@@ -28,8 +28,7 @@ cargo test   # اختبارات المحرك: 9 وحدة + 11 تكامل
 
 الملف التنفيذي `rio` بيشتغل لوحده.
 
-انظر `engine/DESIGN.md` لقواعد AST وScope وType System
-وError Handling بالعربي، و`engine/README.md` للتشغيل.
+انظر `engine/README.md` للتشغيل والأمثلة.
 
 ## المميزات
 
