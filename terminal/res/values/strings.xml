@@ -4,4 +4,8 @@
     <!-- اختصارات المشغّل (v1.1.6 بند 2). -->
     <string name="shortcut_new_session">جلسة جديدة</string>
     <string name="shortcut_open_settings">فتح الإعدادات</string>
+    <!-- اختصارات المشغّل (v1.1.7 بنود 27–29). -->
+    <string name="shortcut_next_session">الجلسة التالية</string>
+    <string name="shortcut_previous_session">الجلسة السابقة</string>
+    <string name="shortcut_rename_session">تسمية الجلسة</string>
 </resources>

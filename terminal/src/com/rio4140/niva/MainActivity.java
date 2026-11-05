@@ -16,6 +16,7 @@ import android.provider.Settings;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
+import android.graphics.Typeface;
 import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
@@ -43,6 +44,8 @@ import android.view.ScaleGestureDetector;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -54,6 +57,7 @@ import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.PopupMenu;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -201,6 +205,14 @@ public class MainActivity extends Activity {
     private static final int LIGHT_BTN = 0xFFD8D8D8;
     private static final int LIGHT_ACTIVE = 0xFFA8D8B8;
     private static final int LIGHT_PROMPT = 0xFF007A33;
+    /** ألوان الأسود الخالص (v1.1.7 بند 45): أسود نقي
+     * لشاشات AMOLED — الخلفية واللوحة #000000. */
+    private static final int BLACK_BG = 0xFF000000;
+    private static final int BLACK_TEXT = 0xFFE8E8E8;
+    private static final int BLACK_PANEL = 0xFF000000;
+    private static final int BLACK_BTN = 0xFF111111;
+    private static final int BLACK_ACTIVE = 0xFF1A1A1A;
+    private static final int BLACK_PROMPT = 0xFF00E676;
     private static final int ERROR_RED = 0xFFFF5252;
     private static final int SUBTITLE_GRAY_DARK = 0xFF9A9A9A;
     private static final int SUBTITLE_GRAY_LIGHT = 0xFF5A5A5A;
@@ -545,6 +557,26 @@ public class MainActivity extends Activity {
     /** حذف الجلسة المنتهية تلقائيا (v1.1.6 بند 10) —
      * الافتراضي معطّل. */
     private boolean autoDeleteEndedSession = false;
+    /** ملء الشاشة (v1.1.7 بند 30) — الافتراضي معطّل. */
+    private boolean fullscreen = false;
+    /** بديل ملء الشاشة (v1.1.7 بند 51) — الافتراضي
+     * الحل الأساسي (تغيير ارتفاع الجذر). */
+    private boolean fullscreenWorkaroundAlt = false;
+    /** مستمع إعادة قياس الجذر في ملء الشاشة (بند 30)
+     * وآخر ارتفاع مرئي رُئي (لمنع إعادة تخطيط بلا داعٍ). */
+    private ViewTreeObserver.OnGlobalLayoutListener fullscreenLayoutListener = null;
+    private int lastVisibleHeight = -1;
+    /** الخط المخصص (v1.1.7 بند 32): المسار كما كتبه
+     * المستخدم (داخل ~ أو مطلق)؛ فارغ = خط النظام. */
+    private String customFontPath = "";
+    /** الخط المحمّل فعلا؛ null = خط النظام الافتراضي. */
+    private Typeface customTypeface = null;
+    /** تنبيه تبديل الجلسة (v1.1.7 بنود 9 + 50) —
+     * الافتراضي مفعّل. */
+    private boolean sessionChangeToast = true;
+    /** اكتمل إنشاء النشاط واستعادة الجلسات (بند 9):
+     * تنبيه التبديل لا يظهر أثناء الاستعادة. */
+    private boolean startupDone = false;
     /** تكرار الأزرار بالضغط المطوّل (v1.1.6 بند 1):
      * أول تكرار بعد 400ms ثم كل 80ms حتى رفع الإصبع. */
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -1029,6 +1061,19 @@ public class MainActivity extends Activity {
         // إخفاء لوحة المفاتيح عند البدء (v1.1.6 بند 5):
         // الافتراضي يبقى كما هو (تظهر).
         if (!hideKeyboardOnStartup) showKeyboard();
+        // (v1.1.7): ملء الشاشة (بند 30) والخط المخصص
+        // (بند 32) بعد بناء الواجهة. خط تالف يُرجع
+        // للافتراضي مع تنبيه واحد، ولا يُحفظ مساره.
+        applyFullscreen();
+        if (customFontPath != null && !customFontPath.trim().isEmpty()
+                && !applyCustomFont()) {
+            toast("تعذّر تحميل الخط المخصص — عاد الخط الافتراضي");
+            customFontPath = "";
+            saveSettings();
+        }
+        // (v1.1.7 بند 9): من هنا يسمح تنبيه التبديل —
+        // فلا ينبّه أثناء استعادة الجلسات.
+        startupDone = true;
         // اختصارات المشغّل (v1.1.6 بند 2): قصد أتى مع
         // تشغيل التطبيق من الأيقونة.
         handleShortcutIntent(getIntent());
@@ -1076,6 +1121,19 @@ public class MainActivity extends Activity {
             }
         } else if ("com.rio4140.niva.OPEN_SETTINGS".equals(action)) {
             showTopMenu();
+        } else if ("com.rio4140.niva.NEXT_SESSION".equals(action)) {
+            // v1.1.7 بند 27: الجلسة التالية (تدوير).
+            if (!sessions.isEmpty()) {
+                switchTo((activeIdx + 1) % sessions.size());
+            }
+        } else if ("com.rio4140.niva.PREVIOUS_SESSION".equals(action)) {
+            // v1.1.7 بند 28: الجلسة السابقة (تدوير).
+            if (!sessions.isEmpty()) {
+                switchTo((activeIdx - 1 + sessions.size()) % sessions.size());
+            }
+        } else if ("com.rio4140.niva.RENAME_SESSION".equals(action)) {
+            // v1.1.7 بند 29: تسمية الجلسة الحالية.
+            if (!sessions.isEmpty()) showRenameDialog(activeIdx);
         }
     }
 
@@ -1101,6 +1159,14 @@ public class MainActivity extends Activity {
         releaseFetchWakeLockIfIdle();
         saveAllSessions();
         super.onPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // أشرطة النظام قد تعود بعد مغادرة التطبيق؛ أعد
+        // إخفاءها إن كان ملء الشاشة مفعّلا (v1.1.7 بند 30).
+        applyFullscreen();
     }
 
     /** زر الرجوع (شكوى المالك 2026-11-05 ~22:56): ضغطة
@@ -1447,6 +1513,7 @@ public class MainActivity extends Activity {
     private void switchTo(int idx) {
         // مسودة لوحة الكتابة تتبع جلستها (v1.1.6 بند 13):
         // تُحفظ للمغادِرة وتُحمَّل للداخلة.
+        int prevIdx = activeIdx;
         if (!sessions.isEmpty() && composeEdit != null) {
             active().composeDraft = composeEdit.getText().toString();
         }
@@ -1463,7 +1530,23 @@ public class MainActivity extends Activity {
             s.networkPending = false;
             showNetworkDialog(s);
         }
+        // تنبيه تبديل الجلسة (v1.1.7 بند 9): بعد اكتمال
+        // البدء فقط، ولتبديل فعلي (لا لنفس الجلسة)؛
+        // ويُعطَّل بالمفتاح (بند 50).
+        if (startupDone && sessionChangeToast && prevIdx != idx
+                && !sessions.isEmpty()) {
+            toast("تم التبديل إلى " + sessionDisplayName(idx));
+        }
         terminalView.requestFocus();
+    }
+
+    /** اسم الجلسة للعرض (مخصص أو «جلسة N») — يُستخدم
+     * في تنبيه التبديل (v1.1.7 بند 9) كما في الدرج. */
+    private String sessionDisplayName(int idx) {
+        if (idx < 0 || idx >= sessions.size()) return "";
+        Session s = sessions.get(idx);
+        return s.customName != null ? s.customName
+                : "جلسة " + arabicDigits(idx + 1);
     }
 
     private void saveTerminalToSession() {
@@ -3294,6 +3377,16 @@ public class MainActivity extends Activity {
             colorActive = LIGHT_ACTIVE;
             promptColor = LIGHT_PROMPT;
             colorSubtitle = SUBTITLE_GRAY_LIGHT;
+        } else if (themeMode == 3) {
+            // أسود خالص (v1.1.7 بند 45): خلفية ولوحة
+            // #000000؛ النص والموجّه كما في الداكن.
+            colorBg = BLACK_BG;
+            colorText = BLACK_TEXT;
+            colorPanel = BLACK_PANEL;
+            colorBtn = BLACK_BTN;
+            colorActive = BLACK_ACTIVE;
+            promptColor = BLACK_PROMPT;
+            colorSubtitle = SUBTITLE_GRAY_DARK;
         } else {
             colorBg = DARK_BG;
             colorText = DARK_TEXT;
@@ -3374,9 +3467,11 @@ public class MainActivity extends Activity {
                 } else if ("اظهار_صف_المفاتيح".equals(key)) {
                     showKeyRowPref = !"لا".equals(value);
                 } else if ("المظهر".equals(key)) {
-                    // v1.1.6 بند 10: قيمة ثالثة «النظام».
+                    // v1.1.6 بند 10: قيمة ثالثة «النظام»؛
+                    // v1.1.7 بند 45: قيمة رابعة «أسود خالص».
                     if ("فاتح".equals(value)) themeMode = 1;
                     else if ("النظام".equals(value)) themeMode = 2;
+                    else if ("أسود خالص".equals(value)) themeMode = 3;
                     else themeMode = 0;
                 } else if ("إخفاء_لوحة_المفاتيح_عند_البدء".equals(key)) {
                     hideKeyboardOnStartup = "نعم".equals(value);
@@ -3395,6 +3490,19 @@ public class MainActivity extends Activity {
                     }
                 } else if ("حذف_الجلسة_المنتهية_تلقائيا".equals(key)) {
                     autoDeleteEndedSession = "نعم".equals(value);
+                } else if ("ملء_الشاشة".equals(key)) {
+                    // v1.1.7 بند 30.
+                    fullscreen = "نعم".equals(value);
+                } else if ("بديل_ملء_الشاشة".equals(key)) {
+                    // v1.1.7 بند 51.
+                    fullscreenWorkaroundAlt = "نعم".equals(value);
+                } else if ("خط_مخصص".equals(key)) {
+                    // v1.1.7 بند 32: مسار ملف الخط؛ فارغ =
+                    // خط النظام.
+                    customFontPath = value;
+                } else if ("تنبيه_تبديل_الجلسة".equals(key)) {
+                    // v1.1.7 بند 50: الافتراضي مفعّل.
+                    sessionChangeToast = !"لا".equals(value);
                 }
             }
         } catch (IOException ignored) {
@@ -3410,6 +3518,10 @@ public class MainActivity extends Activity {
         boolean hasHideKb = false, hasSoftKb = false;
         boolean hasMarginH = false, hasMarginV = false;
         boolean hasRows = false, hasAutoDel = false;
+        // v1.1.7: ملء الشاشة + بديله + الخط المخصص +
+        // تنبيه تبديل الجلسة.
+        boolean hasFull = false, hasFullAlt = false;
+        boolean hasFont = false, hasSessToast = false;
         if (f.isFile()) {
             try (BufferedReader br = new BufferedReader(
                     new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
@@ -3428,9 +3540,11 @@ public class MainActivity extends Activity {
                         lines.add("اظهار_صف_المفاتيح=" + (showKeyRowPref ? "نعم" : "لا"));
                         hasRow = true;
                     } else if ("المظهر".equals(key)) {
-                        // v1.1.6 بند 10: القيمة الثالثة «النظام».
+                        // v1.1.6 بند 10: القيمة الثالثة «النظام»؛
+                        // v1.1.7 بند 45: القيمة الرابعة «أسود خالص».
                         String mode = themeMode == 1 ? "فاتح"
-                                : themeMode == 2 ? "النظام" : "داكن";
+                                : themeMode == 2 ? "النظام"
+                                : themeMode == 3 ? "أسود خالص" : "داكن";
                         lines.add("المظهر=" + mode);
                         hasTheme = true;
                     } else if ("إخفاء_لوحة_المفاتيح_عند_البدء".equals(key)) {
@@ -3451,6 +3565,22 @@ public class MainActivity extends Activity {
                     } else if ("حذف_الجلسة_المنتهية_تلقائيا".equals(key)) {
                         lines.add("حذف_الجلسة_المنتهية_تلقائيا=" + (autoDeleteEndedSession ? "نعم" : "لا"));
                         hasAutoDel = true;
+                    } else if ("ملء_الشاشة".equals(key)) {
+                        // v1.1.7 بند 30.
+                        lines.add("ملء_الشاشة=" + (fullscreen ? "نعم" : "لا"));
+                        hasFull = true;
+                    } else if ("بديل_ملء_الشاشة".equals(key)) {
+                        // v1.1.7 بند 51.
+                        lines.add("بديل_ملء_الشاشة=" + (fullscreenWorkaroundAlt ? "نعم" : "لا"));
+                        hasFullAlt = true;
+                    } else if ("خط_مخصص".equals(key)) {
+                        // v1.1.7 بند 32.
+                        lines.add("خط_مخصص=" + customFontPath);
+                        hasFont = true;
+                    } else if ("تنبيه_تبديل_الجلسة".equals(key)) {
+                        // v1.1.7 بند 50.
+                        lines.add("تنبيه_تبديل_الجلسة=" + (sessionChangeToast ? "نعم" : "لا"));
+                        hasSessToast = true;
                     } else {
                         lines.add(line);
                     }
@@ -3461,13 +3591,17 @@ public class MainActivity extends Activity {
         if (!hasSize) lines.add("حجم_الخط=" + arabicDigits((int) fontSizeSp));
         if (!hasKeep) lines.add("ابقاء_الشاشة=" + (keepScreenOn ? "نعم" : "لا"));
         if (!hasRow) lines.add("اظهار_صف_المفاتيح=" + (showKeyRowPref ? "نعم" : "لا"));
-        if (!hasTheme) lines.add("المظهر=" + (themeMode == 1 ? "فاتح" : themeMode == 2 ? "النظام" : "داكن"));
+        if (!hasTheme) lines.add("المظهر=" + (themeMode == 1 ? "فاتح" : themeMode == 2 ? "النظام" : themeMode == 3 ? "أسود خالص" : "داكن"));
         if (!hasHideKb) lines.add("إخفاء_لوحة_المفاتيح_عند_البدء=" + (hideKeyboardOnStartup ? "نعم" : "لا"));
         if (!hasSoftKb) lines.add("لوحة_المفاتيح_البرمجية_مفعلة=" + (softKeyboardEnabled ? "نعم" : "لا"));
         if (!hasMarginH) lines.add("هامش_أفقي=" + arabicDigits(marginH));
         if (!hasMarginV) lines.add("هامش_عمودي=" + arabicDigits(marginV));
         if (!hasRows) lines.add("أسطر_السجل=" + arabicDigits(maxTranscriptLines));
         if (!hasAutoDel) lines.add("حذف_الجلسة_المنتهية_تلقائيا=" + (autoDeleteEndedSession ? "نعم" : "لا"));
+        if (!hasFull) lines.add("ملء_الشاشة=" + (fullscreen ? "نعم" : "لا"));
+        if (!hasFullAlt) lines.add("بديل_ملء_الشاشة=" + (fullscreenWorkaroundAlt ? "نعم" : "لا"));
+        if (!hasFont) lines.add("خط_مخصص=" + customFontPath);
+        if (!hasSessToast) lines.add("تنبيه_تبديل_الجلسة=" + (sessionChangeToast ? "نعم" : "لا"));
         StringBuilder sb = new StringBuilder();
         for (String l : lines) sb.append(l).append('\n');
         try {
@@ -3535,8 +3669,8 @@ public class MainActivity extends Activity {
         saveSettings();
     }
 
-    /** ضبط المظهر (v1.1.6 بند 10): 0 داكن، 1 فاتح،
-     * 2 يتبع الجهاز. */
+    /** ضبط المظهر (v1.1.6 بند 10 + v1.1.7 بند 45): 0
+     * داكن، 1 فاتح، 2 يتبع الجهاز، 3 أسود خالص. */
     private void setThemeMode(int mode) {
         themeMode = mode;
         lightTheme = themeMode == 1 || (themeMode == 2 && !isSystemNight());
@@ -3544,16 +3678,293 @@ public class MainActivity extends Activity {
         saveSettings();
     }
 
-    /** تدوير المظهر من القائمة: داكن → فاتح → النظام. */
+    /** تدوير المظهر من القائمة: داكن → فاتح → النظام →
+     * أسود خالص. */
     private void cycleTheme() {
-        int next = (themeMode + 1) % 3;
+        int next = (themeMode + 1) % 4;
         setThemeMode(next);
         toast("المظهر: " + themeModeName());
     }
 
     /** اسم المظهر الحالي لعرضه في القائمة. */
     private String themeModeName() {
-        return themeMode == 0 ? "داكن" : themeMode == 1 ? "فاتح" : "النظام";
+        return themeMode == 0 ? "داكن"
+                : themeMode == 1 ? "فاتح"
+                : themeMode == 2 ? "النظام" : "أسود خالص";
+    }
+
+    // ---------- v1.1.7: ملء الشاشة + الخط المخصص + حول ----------
+
+    /** ملء الشاشة (بند 30): تبديل + حفظ. */
+    private void setFullscreen(boolean on) {
+        fullscreen = on;
+        applyFullscreen();
+        saveSettings();
+    }
+
+    /** تطبيق ملء الشاشة: إخفاء الأشرطة + تركيب حلّ
+     * إعادة القياس، أو إظهارها وإزالته. */
+    private void applyFullscreen() {
+        if (rootLayout == null) return;
+        if (fullscreen) {
+            hideSystemBars();
+            installFullscreenWorkaround();
+        } else {
+            showSystemBars();
+            removeFullscreenWorkaround();
+        }
+    }
+
+    /** إخفاء شريطي الحالة والتنقل (API 30+ بالمتحكم،
+     * وقبله بالأعلام القديمة). */
+    private void hideSystemBars() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                c.hide(WindowInsets.Type.statusBars()
+                        | WindowInsets.Type.navigationBars());
+                c.setSystemBarsBehavior(
+                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_FULLSCREEN
+                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+        }
+    }
+
+    /** إظهار شريطي الحالة والتنقل. */
+    private void showSystemBars() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                c.show(WindowInsets.Type.statusBars()
+                        | WindowInsets.Type.navigationBars());
+            }
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_VISIBLE);
+        }
+    }
+
+    /** حلّ ملء الشاشة (بند 30 + بديله بند 51): في ملء
+     * الشاشة لا يقلّص النظام النافذة عند ظهور الكيبورد،
+     * فيختفي صف المفاتيح خلفها. المستمع يعيد قياس الجذر
+     * على الإطار المرئي كلما تغيّر — الأساسي: ارتفاع
+     * الجذر = ارتفاع الإطار؛ والبديل: إبقاء الارتفاع
+     * كاملا مع حشوة سفلية بقدر ما حجبه الكيبورد.
+     * إعادة تنفيذ من التصميم الموثق في الدراسة، لا
+     * نسخ كود (GPLv3). */
+    private void installFullscreenWorkaround() {
+        if (fullscreenLayoutListener != null || rootLayout == null) return;
+        lastVisibleHeight = -1;
+        fullscreenLayoutListener = new ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override
+            public void onGlobalLayout() {
+                if (!fullscreen || rootLayout == null) return;
+                Rect r = new Rect();
+                rootLayout.getWindowVisibleDisplayFrame(r);
+                int visibleHeight = r.height();
+                if (visibleHeight <= 0 || visibleHeight == lastVisibleHeight) return;
+                lastVisibleHeight = visibleHeight;
+                if (fullscreenWorkaroundAlt) {
+                    int screenH = rootLayout.getRootView().getHeight();
+                    int padBottom = Math.max(0, screenH - r.bottom);
+                    rootLayout.setPadding(marginH, marginV,
+                            marginH, marginV + padBottom);
+                } else {
+                    ViewGroup.LayoutParams lp = rootLayout.getLayoutParams();
+                    if (lp.height != visibleHeight) {
+                        lp.height = visibleHeight;
+                        rootLayout.setLayoutParams(lp);
+                    }
+                }
+            }
+        };
+        rootLayout.getViewTreeObserver()
+                .addOnGlobalLayoutListener(fullscreenLayoutListener);
+    }
+
+    /** إزالة حلّ ملء الشاشة واستعادة الجذر كاملا. */
+    private void removeFullscreenWorkaround() {
+        if (fullscreenLayoutListener != null && rootLayout != null) {
+            rootLayout.getViewTreeObserver()
+                    .removeOnGlobalLayoutListener(fullscreenLayoutListener);
+            fullscreenLayoutListener = null;
+        }
+        lastVisibleHeight = -1;
+        if (rootLayout != null) {
+            ViewGroup.LayoutParams lp = rootLayout.getLayoutParams();
+            if (lp.height != ViewGroup.LayoutParams.MATCH_PARENT) {
+                lp.height = ViewGroup.LayoutParams.MATCH_PARENT;
+                rootLayout.setLayoutParams(lp);
+            }
+            applyMargins();
+        }
+    }
+
+    /** شاشة «حول» (بند 31): حقائق عن التطبيق المثبت
+     * فقط — لا شرح ولا درس. نص Markdown محلي في حوار
+     * قابل للتمرير والنسخ، مع زر حفظ ملفا. */
+    private void showAboutDialog() {
+        String md = aboutMarkdown();
+        TextView tv = new TextView(this);
+        tv.setText(md);
+        tv.setTextDirection(View.TEXT_DIRECTION_RTL);
+        tv.setTextIsSelectable(true);
+        tv.setTextSize(14);
+        tv.setPadding(32, 24, 32, 24);
+        ScrollView sv = new ScrollView(this);
+        sv.addView(tv);
+        new AlertDialog.Builder(this)
+                .setTitle("حول")
+                .setView(sv)
+                .setPositiveButton("حفظ ملفا", (d, w) -> {
+                    try {
+                        writeFile(new File(getFilesDir(), "حول-نيفا.md"), md);
+                        toast("تم الحفظ: حول-نيفا.md");
+                    } catch (IOException e) {
+                        toast("تعذّر الحفظ");
+                    }
+                })
+                .setNegativeButton("إغلاق", null)
+                .show();
+    }
+
+    /** نص «حول» بصيغة Markdown: إصدار التطبيق +
+     * إصدار المحرك + معلومات الجهاز + الروابط. */
+    private String aboutMarkdown() {
+        String appVer = localVersionName();
+        if (appVer == null) appVer = "؟";
+        long vc = localVersionCode();
+        String vcText = vc >= 0 ? arabicDigits((int) vc) : "؟";
+        StringBuilder sb = new StringBuilder();
+        sb.append("# نيفا — وحدة التحكم\n\n");
+        sb.append("## التطبيق\n\n");
+        sb.append("- الإصدار: ").append(appVer)
+                .append(" (").append(vcText).append(")\n");
+        sb.append("- الحزمة: com.rio4140.niva\n\n");
+        sb.append("## المحرك\n\n");
+        sb.append("- محرك نيفا ١٫٠٫٠\n\n");
+        sb.append("## الجهاز\n\n");
+        sb.append("- الطراز: ").append(Build.MANUFACTURER)
+                .append(" ").append(Build.MODEL).append("\n");
+        sb.append("- أندرويد: ").append(Build.VERSION.RELEASE)
+                .append(" (المستوى ")
+                .append(arabicDigits(Build.VERSION.SDK_INT)).append(")\n\n");
+        sb.append("## الروابط\n\n");
+        sb.append("- https://github.com/RIO4140/niva\n");
+        sb.append("- https://rio4140.github.io/niva/\n");
+        return sb.toString();
+    }
+
+    /** رقم نسخة التطبيق المثبتة (versionCode). */
+    private long localVersionCode() {
+        try {
+            PackageInfo info;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                info = getPackageManager().getPackageInfo(getPackageName(),
+                        PackageManager.PackageInfoFlags.of(0));
+            } else {
+                info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            }
+            if (Build.VERSION.SDK_INT >= 28) return info.getLongVersionCode();
+            return info.versionCode;
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    /** خط مخصص من ملف (بند 32): حوار إدخال لاسم ملف
+     * الخط داخل ~ (أو مسار مطلق داخل مجلد التطبيق).
+     * خط تالف أو ناقص التشكيل يرجع للخط الافتراضي مع
+     * تنبيه — فلا يكسر عرض العربية أبدا. */
+    private void showCustomFontDialog() {
+        final EditText input = new EditText(this);
+        input.setText(customFontPath);
+        input.setTextDirection(View.TEXT_DIRECTION_RTL);
+        input.setHint("اسم ملف الخط داخل ~");
+        new AlertDialog.Builder(this)
+                .setTitle("خط مخصص")
+                .setView(input)
+                .setPositiveButton("تطبيق", (d, w) -> {
+                    String path = input.getText().toString().trim();
+                    if (path.isEmpty()) {
+                        customFontPath = "";
+                        applyCustomFont();
+                        saveSettings();
+                        toast("عاد الخط الافتراضي");
+                        return;
+                    }
+                    customFontPath = path;
+                    if (applyCustomFont()) {
+                        saveSettings();
+                        toast("تم تطبيق الخط");
+                    } else {
+                        customFontPath = "";
+                        applyCustomFont();
+                        toast("تعذّر تحميل الخط — عاد الخط الافتراضي");
+                    }
+                })
+                .setNeutralButton("الخط الافتراضي", (d, w) -> {
+                    customFontPath = "";
+                    applyCustomFont();
+                    saveSettings();
+                    toast("عاد الخط الافتراضي");
+                })
+                .setNegativeButton("إلغاء", null)
+                .show();
+    }
+
+    /** تطبيق الخط المخصص على الترمنال؛ يعيد false إن
+     * تعذّر التحميل (فيرجع للخط الافتراضي). */
+    private boolean applyCustomFont() {
+        if (terminalView == null) return false;
+        if (customFontPath == null || customFontPath.trim().isEmpty()) {
+            customTypeface = null;
+            terminalView.setTypeface(Typeface.DEFAULT);
+            return true;
+        }
+        File f = resolveFontFile(customFontPath.trim());
+        if (f == null) {
+            customTypeface = null;
+            terminalView.setTypeface(Typeface.DEFAULT);
+            return false;
+        }
+        try {
+            Typeface tf = Typeface.createFromFile(f);
+            if (tf == null) throw new IOException("خط غير صالح");
+            customTypeface = tf;
+            terminalView.setTypeface(tf);
+            return true;
+        } catch (Exception e) {
+            customTypeface = null;
+            terminalView.setTypeface(Typeface.DEFAULT);
+            return false;
+        }
+    }
+
+    /** حلّ مسار ملف الخط: ~/… أو نسبي داخل ~ أو مطلق
+     * — ويُقبل فقط ملف موجود داخل مجلد التطبيق. */
+    private File resolveFontFile(String path) {
+        File f;
+        if (path.startsWith("~/")) {
+            f = new File(getFilesDir(), path.substring(2));
+        } else if (path.startsWith("/")) {
+            f = new File(path);
+        } else {
+            f = new File(getFilesDir(), path);
+        }
+        try {
+            File base = getFilesDir().getCanonicalFile();
+            File canon = f.getCanonicalFile();
+            if (!canon.getPath().startsWith(base.getPath())) return null;
+            if (!canon.isFile()) return null;
+            return canon;
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     /** إعادة الإعدادات للافتراضي (v1.1.6 بند 7): يحذف
@@ -3574,10 +3985,19 @@ public class MainActivity extends Activity {
         marginV = 8;
         maxTranscriptLines = MAX_LINES;
         autoDeleteEndedSession = false;
+        // v1.1.7: ملء الشاشة + بديله + الخط المخصص +
+        // تنبيه تبديل الجلسة — كلها للافتراضي.
+        fullscreen = false;
+        fullscreenWorkaroundAlt = false;
+        customFontPath = "";
+        customTypeface = null;
+        sessionChangeToast = true;
         if (terminalView != null) terminalView.setTextSize(fontSizeSp);
         applyThemeColors();
         applyKeepScreenFlag();
         applyMargins();
+        applyFullscreen();
+        applyCustomFont();
         if (terminalView != null) {
             terminalView.setShowSoftInputOnFocus(softKeyboardEnabled);
         }
@@ -3615,6 +4035,13 @@ public class MainActivity extends Activity {
         menu.add(Menu.NONE, 9, Menu.NONE, "حفظ نص الجلسة ملفا");
         menu.add(Menu.NONE, 10, Menu.NONE, "امسح كل شيء");
         menu.add(Menu.NONE, 11, Menu.NONE, "أعد الإعدادات للافتراضي");
+        // v1.1.7: ملء الشاشة (بند 30)، حول (بند 31)،
+        // خط مخصص (بند 32).
+        MenuItem full = menu.add(Menu.NONE, 12, Menu.NONE, "ملء الشاشة");
+        full.setCheckable(true);
+        full.setChecked(fullscreen);
+        menu.add(Menu.NONE, 13, Menu.NONE, "حول");
+        menu.add(Menu.NONE, 14, Menu.NONE, "خط مخصص…");
         popup.setOnMenuItemClickListener(item -> {
             int id = item.getItemId();
             if (id == 1) {
@@ -3659,6 +4086,18 @@ public class MainActivity extends Activity {
             }
             if (id == 11) {
                 resetSettingsToDefaults();
+                return true;
+            }
+            if (id == 12) {
+                setFullscreen(!fullscreen);
+                return true;
+            }
+            if (id == 13) {
+                showAboutDialog();
+                return true;
+            }
+            if (id == 14) {
+                showCustomFontDialog();
                 return true;
             }
             return false;

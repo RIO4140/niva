@@ -25,4 +25,39 @@
             android:targetPackage="com.rio4140.niva"
             android:targetClass="com.rio4140.niva.MainActivity" />
     </shortcut>
+    <!-- اختصارات المشغّل (v1.1.7 بنود 27–29): التالية /
+         السابقة / تسمية الجلسة الحالية. -->
+    <shortcut
+        android:shortcutId="next_session"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_next_session"
+        android:shortcutLongLabel="@string/shortcut_next_session">
+        <intent
+            android:action="com.rio4140.niva.NEXT_SESSION"
+            android:targetPackage="com.rio4140.niva"
+            android:targetClass="com.rio4140.niva.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="previous_session"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_previous_session"
+        android:shortcutLongLabel="@string/shortcut_previous_session">
+        <intent
+            android:action="com.rio4140.niva.PREVIOUS_SESSION"
+            android:targetPackage="com.rio4140.niva"
+            android:targetClass="com.rio4140.niva.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="rename_session"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_rename_session"
+        android:shortcutLongLabel="@string/shortcut_rename_session">
+        <intent
+            android:action="com.rio4140.niva.RENAME_SESSION"
+            android:targetPackage="com.rio4140.niva"
+            android:targetClass="com.rio4140.niva.MainActivity" />
+    </shortcut>
 </shortcuts>
