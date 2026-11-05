@@ -544,6 +544,29 @@ impl Parser {
         }
     }
 
+    /// Whether the reversed-assignment prototype applies at the
+    /// current position: the left side is not a valid target,
+    /// and a bare name followed by end-of-statement comes after
+    /// `=`. Compiled out entirely unless the `prototype-rtl`
+    /// feature is enabled.
+    #[cfg(feature = "prototype-rtl")]
+    fn reversed_assignment_applies(&self, expr_is_target: bool) -> bool {
+        !expr_is_target
+            && matches!(self.peek_at(1).kind, TokenKind::Ident(_))
+            && matches!(
+                self.peek_at(2).kind,
+                TokenKind::Newline
+                    | TokenKind::Semicolon
+                    | TokenKind::Dedent
+                    | TokenKind::Eof
+            )
+    }
+
+    #[cfg(not(feature = "prototype-rtl"))]
+    fn reversed_assignment_applies(&self, _expr_is_target: bool) -> bool {
+        false
+    }
+
     fn parse_assign_or_expr(&mut self) -> RioResult<Stmt> {
         let expr = self.parse_expr()?;
         // Phase 1A Step 3: annotated assignment, Var only:
@@ -578,6 +601,38 @@ impl Parser {
             ));
         }
         if matches!(self.peek().kind, TokenKind::Eq) {
+            // The reversed-assignment prototype (syntax RTL)
+            // is gated behind the `prototype-rtl` feature
+            // (off by default): no build includes it unless
+            // explicitly enabled, pending the owner's verdict.
+            // The prototype applies only when the left side is
+            // not a valid target (not a name, index, or dot),
+            // and a bare name followed by end-of-statement comes
+            // after `=` — so «س = ص» stays a normal assignment
+            // (target س, value ص). It builds the same Assign
+            // node, so interpreter, VM, and REPL need no change.
+            let expr_is_target = matches!(
+                &expr.kind,
+                ExprKind::Ident(_) | ExprKind::Index { .. } | ExprKind::Dot { .. }
+            );
+            if self.reversed_assignment_applies(expr_is_target) {
+                self.advance(); // =
+                let name_tok = self.advance();
+                let name = match &name_tok.kind {
+                    TokenKind::Ident(n) => n.clone(),
+                    _ => unreachable!(),
+                };
+                let (line, col) = (expr.line, expr.col);
+                return Ok(Stmt::new(
+                    StmtKind::Assign {
+                        target: AssignTarget::Var(name),
+                        value: expr,
+                        annotation: None,
+                    },
+                    line,
+                    col,
+                ));
+            }
             self.advance();
             let target = match &expr.kind {
                 ExprKind::Ident(name) => AssignTarget::Var(name.clone()),

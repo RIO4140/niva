@@ -2,12 +2,20 @@
 name = "niva-engine"
 version = "1.0.0"
 edition = "2021"
-description = "محرك لغة Niva المستقل: مفسر Rust يمشي الشجرة، بدون Python، وبدون مترجم إلى لغة آلة في v1"
+description = "محرك لغة نيفا المستقل: مفسر Rust يمشي الشجرة، بدون Python، وبدون مترجم إلى لغة آلة في v1"
 license = "MIT"
 
 [[bin]]
 name = "niva"
 path = "src/main.rs"
+
+[features]
+# The reversed-assignment prototype (syntax RTL): gated behind
+# this feature, off by default, so no build includes it unless
+# explicitly enabled. The prototype's fate is pending the
+# owner's verdict. Enable explicitly to test the prototype:
+# cargo test --features prototype-rtl
+prototype-rtl = []
 
 [profile.release]
 opt-level = 2
@@ -16,5 +24,10 @@ opt-level = 2
 # On wasm32 only, js-sys gives the browser clock (Date.now),
 # because std::time::SystemTime traps on wasm32-unknown-unknown
 # (it has no clock). Used only for the random seed and وقت.الآن.
+# Meeting 22: web-sys (wasm32 only) gives the synchronous
+# XMLHttpRequest that شبكة.اجلب uses in the browser — the
+# interpreter is synchronous, so it cannot await a fetch
+# Promise. Native stays dependency-free.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
+web-sys = { version = "0.3", features = ["XmlHttpRequest"] }

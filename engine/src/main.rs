@@ -1,15 +1,17 @@
-//! Niva engine CLI: `niva program.niva`
+//! Niva engine CLI: `نيفا برنامج.نيفا`
 //! Tree-walking interpreter written in Rust. No Python, no transpilation,
 //! no machine-code compiler in v1. The produced binary runs alone:
 //! it needs no Python installation and no runtime other than itself.
 //!
-//! Usage:
-//!   niva                      enter the interactive REPL
-//!   niva --repl               enter the interactive REPL
-//!   niva program.niva          run a .niva program
-//!   niva program.niva --ast    print the AST, then run
-//!   niva --help               usage
-//!   niva --version            version
+//! Usage (all Arabic, no exceptions — the installed command is نيفا;
+//! cargo still builds the binary as `niva` internally, because cargo
+//! bin names are ASCII-only; install.sh copies it to نيفا):
+//!   نيفا                      enter the interactive REPL
+//!   نيفا --تفاعلي            enter the interactive REPL
+//!   نيفا برنامج.نيفا          run a .نيفا program
+//!   نيفا برنامج.نيفا --شجرة   print the AST, then run
+//!   نيفا --مساعدة             usage
+//!   نيفا --نسخة               version
 //!
 //! The engine itself lives in lib.rs; this file is only the CLI
 //! (flags, file reading, the 256 MB stack thread, exit codes).
@@ -30,11 +32,16 @@ use std::process::ExitCode;
 const STACK_SIZE_BYTES: usize = 256 * 1024 * 1024;
 
 fn usage() -> String {
-    "استخدام: niva [program.niva] [--ast] [--vm] [--allow-all]\n\
-     niva            دخول REPL التفاعلي\n\
-     niva --repl     دخول REPL التفاعلي\n\
-     niva --help     عرض هذه المساعدة\n\
-     niva --version  عرض الإصدار\n"
+    "استخدام: نيفا [برنامج.نيفا] [--شجرة] [--افتراضي] [--اسمح-بالكل] [--اسمح-بالشبكة] [--مضيف-محلي مضيف]\n\
+     نيفا                  دخول الوضع التفاعلي\n\
+     نيفا --تفاعلي        دخول الوضع التفاعلي\n\
+     نيفا --مساعدة         عرض هذه المساعدة\n\
+     نيفا --نسخة           عرض الإصدار\n\
+     --شجرة                عرض الشجرة النحوية ثم التشغيل\n\
+     --افتراضي             التشغيل بالآلة الافتراضية التجريبية\n\
+     --اسمح-بالكل         السماح بملفات خارج مجلد البرنامج (للموثوقة فقط)\n\
+     --اسمح-بالشبكة       السماح بالشبكة (شبكة.اجلب) — مغلقة افتراضيا\n\
+     --مضيف-محلي مضيف       السماح بمضيف محلي صراحة (مثل 127.0.0.1) — وحده لا يفتح الشبكة\n"
         .to_string()
 }
 
@@ -46,23 +53,33 @@ fn io_error_arabic(e: &std::io::Error) -> String {
         PermissionDenied => "تم رفض الإذن".to_string(),
         AlreadyExists => "الملف موجود بالفعل".to_string(),
         InvalidInput => "إدخال غير صالح".to_string(),
-        _ => format!("خطأ نظام: {}", e),
+        // Any other OS error: Arabic only — the raw OS message is
+        // English, so it is never shown to the user.
+        _ => "خطأ نظام غير معروف".to_string(),
     }
 }
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
-    if args.iter().any(|a| a == "--help" || a == "-h") {
+    if args.iter().any(|a| a == "--مساعدة") {
         print!("{}", usage());
         return ExitCode::SUCCESS;
     }
-    if args.iter().any(|a| a == "--version") {
-        println!("محرك Niva 1.0.0 (Rust، مفسر يمشي الشجرة، بدون Python)");
+    if args.iter().any(|a| a == "--نسخة") {
+        println!("محرك نيفا ١٫٠٫٠");
         return ExitCode::SUCCESS;
     }
     // خيار غير معروف: خطأ عربي واضح بدلا من تجاهله بصمت.
-    const KNOWN_FLAGS: [&str; 7] = [
-        "--help", "-h", "--version", "--repl", "--vm", "--ast", "--allow-all",
+    // Arabic flags only — a Latin flag is rejected here.
+    const KNOWN_FLAGS: [&str; 8] = [
+        "--مساعدة",
+        "--نسخة",
+        "--تفاعلي",
+        "--افتراضي",
+        "--شجرة",
+        "--اسمح-بالكل",
+        "--اسمح-بالشبكة",
+        "--مضيف-محلي",
     ];
     if let Some(unknown) = args
         .iter()
@@ -73,32 +90,55 @@ fn main() -> ExitCode {
         eprint!("{}", usage());
         return ExitCode::FAILURE;
     }
+    // Meeting 22: network is OFF by default. --اسمح-بالشبكة
+    // opens it; --مضيف-محلي HOST (repeatable) explicitly
+    // authorizes a local host (the only way a loopback/private
+    // address can be fetched — see network.rs). The local-host
+    // flag alone does NOT open the network.
+    let allow_network = args.iter().any(|a| a == "--اسمح-بالشبكة");
+    let mut local_hosts: Vec<String> = Vec::new();
+    let mut arg_iter = args.iter().skip(1).peekable();
+    let mut file_args: Vec<String> = Vec::new();
+    while let Some(a) = arg_iter.next() {
+        if a == "--مضيف-محلي" {
+            match arg_iter.next() {
+                Some(host) => local_hosts.push(host.clone()),
+                None => {
+                    eprintln!("خيار --مضيف-محلي يحتاج مضيفا بعده");
+                    eprint!("{}", usage());
+                    return ExitCode::FAILURE;
+                }
+            }
+        } else if !a.starts_with('-') {
+            file_args.push(a.clone());
+        }
+    }
+    let file_arg = file_args.first().cloned();
     // No file path given (no args, or only flags) -> interactive REPL.
-    // --repl is explicit; --vm is ignored by the REPL, which always
-    // uses the tree-walking interpreter (Meeting 7).
-    let allow_all = args.iter().any(|a| a == "--allow-all");
-    let file_arg = args.iter().skip(1).find(|a| !a.starts_with('-'));
+    // --تفاعلي is explicit; --افتراضي is ignored by the REPL,
+    // which always uses the tree-walking interpreter (Meeting 7).
+    let allow_all = args.iter().any(|a| a == "--اسمح-بالكل");
     if file_arg.is_none() {
         // Same 256 MB stack thread as file mode, so the depth-500
         // recursion limit is a Niva error, not a Rust stack overflow.
         let handle = std::thread::Builder::new()
             .stack_size(STACK_SIZE_BYTES)
-            .spawn(move || repl::run_repl(allow_all));
+            .spawn(move || repl::run_repl(allow_all, allow_network, &local_hosts));
         return match handle {
             Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),
             Err(_) => ExitCode::FAILURE,
         };
     }
     let path = file_arg.unwrap();
-    let show_ast = args.iter().any(|a| a == "--ast");
-    // Phase 1B slice 1: experimental VM, --vm flag only.
+    let show_ast = args.iter().any(|a| a == "--شجرة");
+    // Phase 1B slice 1: experimental VM, --افتراضي flag only.
     // Default remains the tree-walking interpreter.
-    let use_vm = args.iter().any(|a| a == "--vm");
+    let use_vm = args.iter().any(|a| a == "--افتراضي");
     // Meeting 4: trusted file mode, explicit flag only.
     // Default is restricted to the program directory.
     // (allow_all was already read above, before the REPL branch.)
 
-    let source = match fs::read_to_string(path) {
+    let source = match fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("خطأ إدخال/إخراج: تعذر قراءة الملف {}: {}", path, io_error_arabic(&e));
@@ -132,7 +172,7 @@ fn main() -> ExitCode {
     // with the class/interface AST variants, and depth-100 recursion
     // that previously passed in debug began overflowing the default
     // 8 MB main stack. This restores the original guarantee.
-    let program_dir = std::path::Path::new(path)
+    let program_dir = std::path::Path::new(&path)
         .parent()
         .map(|p| {
             if p.as_os_str().is_empty() {
@@ -157,7 +197,7 @@ fn main() -> ExitCode {
                 eprintln!("{}", e);
                 return ExitCode::FAILURE;
             }
-            // Phase 1B VM path, --vm only.
+            // Phase 1B VM path, --افتراضي only.
             if use_vm {
                 let compiled = match vm::Compiler::compile_program(&program) {
                     Ok(c) => c,
@@ -184,6 +224,12 @@ fn main() -> ExitCode {
             let mut interp = Interpreter::with_program_dir(program_dir);
             // Meeting 4: trusted mode is opt-in only.
             interp.set_trusted(allow_all);
+            // Meeting 22: network is opt-in only, independent
+            // of file trust (--اسمح-بالكل does not open it).
+            interp.set_network_allowed(allow_network);
+            for host in &local_hosts {
+                interp.allow_local_network_host(host);
+            }
             match interp.run(&program) {
                 Ok(()) => {
                     print!("{}", interp.output);

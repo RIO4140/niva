@@ -3,10 +3,10 @@
 //! Native (Rust) modules, no external crates. A native module is a
 //! Module value whose exports are NativeFunction values (or plain
 //! constants). `load_module` consults `native_module` BEFORE
-//! reading a `.niva` file, so `استورد رياضيات` works anywhere with
+//! reading a `.نيفا` file, so `استورد رياضيات` works anywhere with
 //! no file needed, and a same-named file in the program directory
 //! never shadows a native module. Interpreter-only in v1: the VM
-//! has no modules at all yet, so stdlib under `--vm` fails with
+//! has no modules at all yet, so stdlib under `--افتراضي` fails with
 //! the VM's existing module error.
 //!
 //! All angles are radians. The random module is a SplitMix64
@@ -24,12 +24,17 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub type NativeFn = fn(&[Value], usize, usize) -> RioResult<Value>;
 
 /// Build the native module with this name, or None if it is not
-/// a native module (then the caller falls back to a `.niva` file).
+/// a native module (then the caller falls back to a `.نيفا` file).
 pub fn native_module(name: &str) -> Option<Value> {
     let entries: Vec<(&str, Value)> = match name {
         "رياضيات" => math_entries(),
         "عشوائي" => random_entries(),
         "وقت" => time_entries(),
+        // Meeting 22 (DESIGN §16): the network module — one
+        // function, اجلب(url), HTTP GET only, returns text.
+        // Network is OFF by default (see network.rs); without
+        // permission اجلب fails with a clear Arabic error.
+        "شبكة" => network_entries(),
         _ => return None,
     };
     let mut exports: HashMap<String, Value> = HashMap::new();
@@ -96,6 +101,21 @@ fn need_integer(display: &str, v: &Value, line: usize, col: usize) -> RioResult<
         ));
     }
     Ok(x as i64)
+}
+
+fn need_string(display: &str, v: &Value, line: usize, col: usize) -> RioResult<String> {
+    match v {
+        Value::Str(s) => Ok(s.clone()),
+        other => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع نصا لكن أعطيت {}",
+                display,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
 }
 
 // --- رياضيات ---
@@ -262,6 +282,18 @@ fn random_choice(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     }
 }
 
+// --- شبكة (Meeting 22, DESIGN §16) ---
+
+fn network_entries() -> Vec<(&'static str, Value)> {
+    vec![("اجلب", native("اجلب", network_fetch))]
+}
+
+fn network_fetch(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.اجلب", args, 1, line, col)?;
+    let url = need_string("شبكة.اجلب", &args[0], line, col)?;
+    crate::network::fetch(&url, line, col)
+}
+
 // --- وقت ---
 
 fn time_entries() -> Vec<(&'static str, Value)> {
@@ -290,6 +322,16 @@ fn time_sleep(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     let secs = need_number("وقت.نوم", &args[0], line, col)?;
     if secs < 0.0 {
         return Err(RioError::runtime("نوم مدة سالبة غير مسموح", line, col));
+    }
+    // Audit م-16: cap the sleep at 60 seconds, and refuse
+    // non-finite values (NaN/inf would panic
+    // Duration::from_secs_f64) — a huge sleep must never hang
+    // a session with no way back.
+    if !secs.is_finite() {
+        return Err(RioError::runtime("نوم مدة غير صالحة", line, col));
+    }
+    if secs > 60.0 {
+        return Err(RioError::runtime("نوم أكثر من 60 ثانية غير مسموح", line, col));
     }
     // Meeting 17 (WASM): thread::sleep blocks (and panics) on
     // single-threaded WASM — a clean error instead.

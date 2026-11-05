@@ -2,7 +2,7 @@
 name = "niva-lsp"
 version = "1.0.0"
 edition = "2021"
-description = "Niva language server (LSP over stdio): diagnostics, hover, symbols, completion"
+description = "خادم لغة نيفا (LSP over stdio): diagnostics, hover, symbols, completion"
 
 [[bin]]
 name = "niva-lsp"

@@ -1,7 +1,7 @@
-# Niva Engine — محرك بلغة Rust
+# نيفا — المحرك
 
 محرك تنفيذ: Lexer + Parser + AST +
-Tree-Walking Interpreter، مكتوب بـ Rust، ولا يحوّل برامج Niva
+Tree-Walking Interpreter، مكتوب بـ Rust، ولا يحوّل برامج نيفا
 إلى لغة آلة في v1.
 
 ## البناء والتشغيل
@@ -11,16 +11,16 @@ Tree-Walking Interpreter، مكتوب بـ Rust، ولا يحوّل برامج N
 
 ```bash
 cargo build --release
-./target/release/niva examples/01-hello.niva
-./target/release/niva examples/08-full-program.niva
-./target/release/niva program.niva --ast   # اطبع شجرة AST ثم شغّل
-./target/release/niva                     # دخول REPL التفاعلي
+./target/release/نيفا examples/01-hello.نيفا
+./target/release/نيفا examples/08-full-program.نيفا
+./target/release/نيفا program.نيفا --شجرة   # اطبع شجرة AST ثم شغّل
+./target/release/نيفا                     # دخول الوضع التفاعلي
 cargo test                                # اختبارات الوحدة والتكامل
 ```
 
-## REPL
+## الوضع التفاعلي
 
-`niva` بلا ملف (أو `niva --repl`) يفتح REPL تفاعليا:
+`نيفا` بلا ملف (أو `نيفا --تفاعلي`) يفتح الوضع التفاعلي:
 المتغيرات والدوال تبقى عبر السطور، والتعبير وحده
 يطبع قيمته، والكتل تكمل بسطور إضافية (سطر فارغ
 يلغي الكتلة). الأوامر: `:مساعدة` و`:اعرض` و`:مسح`
@@ -52,9 +52,9 @@ cargo test                                # اختبارات الوحدة وال
   ومنشئ باسم `أنشئ`، و`نفس` داخل الطرق.
 - الملفات مقيدة بمجلد البرنامج افتراضيا،
   والمسار النسبي نسبة لمجلد البرنامج،
-  و`--allow-all` للبرامج الموثوقة التي تحتاج
+  و`--اسمح-بالكل` للبرامج الموثوقة التي تحتاج
   ملفات خارج مجلد البرنامج.
-- علم تجريبي `--vm` للبرامج الأساسية فقط،
+- علم تجريبي `--افتراضي` للبرامج الأساسية فقط،
   والتشغيل الافتراضي هو المفسر العادي.
 
 ## الأنظمة المستهدفة

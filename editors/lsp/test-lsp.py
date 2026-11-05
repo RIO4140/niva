@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 BIN = "target/release/niva-lsp"
-URI = "file:///tmp/test.niva"
+URI = "file:///tmp/test.نيفا"
 
 proc = subprocess.Popen([BIN], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 _next_id = [1]

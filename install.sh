@@ -1,5 +1,5 @@
 #!/bin/bash
-# مثبّت لغة Niva — كل شيء بالعربي
+# مثبّت لغة نيفا — كل شيء بالعربي
 #
 # الاستخدام من داخل المستودع:
 #   ./install.sh
@@ -9,7 +9,7 @@
 # ما الذي يفعله:
 #   1. يتأكد أن النظام Linux وأن أدوات البناء موجودة (أو يعرض تثبيت Rust)
 #   2. يبني المحرك من المصدر (cargo build --release)
-#   3. يثبّت الأمر niva في ‎~/.local/bin
+#   3. يثبّت الأمر نيفا في ‎~/.local/bin
 #   4. يتأكد أن ‎~/.local/bin في PATH (ويعرض إضافته)
 #   5. يتحقق من التثبيت بتشغيل مثال
 #
@@ -34,7 +34,7 @@ ask_yes() {
 }
 
 echo "=============================="
-echo "  تثبيت لغة البرمجة Niva"
+echo "  تثبيت لغة البرمجة نيفا"
 echo "=============================="
 echo ""
 
@@ -50,19 +50,19 @@ echo "النظام: Linux — حسن."
 SRC=""
 if [ -f "engine/Cargo.toml" ]; then
     SRC="$PWD"
-    echo "وجدت مصدر Niva هنا: $SRC"
+    echo "وجدت مصدر نيفا هنا: $SRC"
 else
     if ! command -v git > /dev/null 2>&1; then
-        echo "خطأ: git غير موجود، وهو مطلوب لتنزيل مصدر Niva."
+        echo "خطأ: git غير موجود، وهو مطلوب لتنزيل مصدر نيفا."
         echo "ثبّت git أولا ثم أعد تشغيل المثبّت."
         exit 1
     fi
-    SRC="$HOME/.local/share/niva"
+    SRC="$HOME/.local/share/نيفا"
     if [ -d "$SRC/engine" ]; then
         echo "وجدت مصدرا سابقا في: $SRC — سأحدثه."
         git -C "$SRC" pull --ff-only || echo "تعذر التحديث، سأكمل بالمصدر الموجود."
     else
-        echo "أنزّل مصدر Niva إلى: $SRC"
+        echo "أنزّل مصدر نيفا إلى: $SRC"
         git clone --depth 1 https://github.com/RIO4140/niva "$SRC"
     fi
 fi
@@ -89,7 +89,7 @@ else
         # shellcheck disable=SC1091
         [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
     else
-        echo "أوقفت التثبيت: Rust مطلوب لبناء Niva من المصدر."
+        echo "أوقفت التثبيت: Rust مطلوب لبناء نيفا من المصدر."
         echo "ثبّت Rust بنفسك من https://rustup.rs ثم أعد تشغيل المثبّت."
         exit 1
     fi
@@ -101,16 +101,18 @@ echo ""
 echo "أبني المحرك (قد يستغرق هذا دقيقة في أول مرة)..."
 cargo build --release --manifest-path "$SRC/engine/Cargo.toml"
 
-# 5. التثبيت في ‎~/.local/bin
+# 5. التثبيت في ‎~/.local/bin — الأمر المثبّت اسمه نيفا.
+# (cargo يبني الملف التنفيذي باسم niva لأن أسماء ثنائيات
+# cargo لاتينية فقط؛ المثبّت ينسخه إلى الاسم العربي.)
 mkdir -p "$HOME/.local/bin"
-cp "$SRC/engine/target/release/niva" "$HOME/.local/bin/niva"
-chmod +x "$HOME/.local/bin/niva"
-echo "ثبّت الأمر niva في: $HOME/.local/bin/niva"
+cp "$SRC/engine/target/release/niva" "$HOME/.local/bin/نيفا"
+chmod +x "$HOME/.local/bin/نيفا"
+echo "ثبّت الأمر نيفا في: $HOME/.local/bin/نيفا"
 
 # 6. PATH
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$HOME/.local/bin"; then
     echo ""
-    echo "المجلد ‎~/.local/bin غير موجود في PATH، فلن يعمل الأمر niva من أي مكان."
+    echo "المجلد ‎~/.local/bin غير موجود في PATH، فلن يعمل الأمر نيفا من أي مكان."
     if ask_yes "هل أضيفه تلقائيا إلى ‎~/.bashrc؟"; then
         echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
         echo "أضفته إلى ‎~/.bashrc — افتح طرفية جديدة أو نفذ: source ~/.bashrc"
@@ -124,15 +126,15 @@ fi
 # 7. التحقق
 echo ""
 echo "أتحقق من التثبيت..."
-"$HOME/.local/bin/niva" --version
+"$HOME/.local/bin/نيفا" --نسخة
 echo "--- مثال سريع ---"
-"$HOME/.local/bin/niva" "$SRC/engine/examples/01-hello.niva"
+"$HOME/.local/bin/نيفا" "$SRC/engine/examples/01-hello.نيفا"
 
 echo ""
 echo "=============================="
 echo "  تم التثبيت بنجاح!"
 echo "=============================="
 echo "جرّب الآن:"
-echo "  niva                       (دخول REPL التفاعلي)"
-echo "  niva program.niva          (تشغيل برنامج)"
-echo "  niva --help                (عرض المساعدة)"
+echo "  نيفا                       (دخول الوضع التفاعلي)"
+echo "  نيفا برنامج.نيفا          (تشغيل برنامج)"
+echo "  نيفا --مساعدة              (عرض المساعدة)"

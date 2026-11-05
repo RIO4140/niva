@@ -150,7 +150,7 @@ fn diagnostic(e: &RioError, source: &str) -> Diagnostic {
         severity: Some(DiagnosticSeverity::ERROR),
         code: None,
         code_description: None,
-        source: Some("niva".to_string()),
+        source: Some("نيفا".to_string()),
         message: format!("خطأ {}: {}", e.kind.arabic(), e.message),
         related_information: None,
         tags: None,

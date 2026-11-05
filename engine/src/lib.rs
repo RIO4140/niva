@@ -14,6 +14,7 @@ pub mod ast;
 pub mod error;
 pub mod interpreter;
 pub mod lexer;
+pub mod network;
 pub mod parser;
 pub mod permissions;
 pub mod repl;
@@ -26,7 +27,12 @@ pub mod vm;
 /// The program directory is empty: in the browser there is no
 /// filesystem, so file modules resolve to nothing and the file
 /// builtins are gated off on wasm32 (see `call_builtin`).
+/// Network is OFF for a one-shot run: there is no flag here,
+/// so the gate is reset explicitly — a previous console
+/// session's permission never leaks into a later run_source
+/// call in the same (WASM) instance.
 pub fn run_source(source: &str) -> (String, Result<(), error::RioError>) {
+    network::set_network_allowed(false);
     let toks = match lexer::tokenize(source) {
         Ok(t) => t,
         Err(e) => return (String::new(), Err(e)),

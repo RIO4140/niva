@@ -1,6 +1,6 @@
 //! Tree-walking interpreter.
 //!
-//! Scope rules (documented in DESIGN.md, tested in tests/integration.rs):
+//! Scope rules (tested in tests/integration.rs):
 //! - The global scope is the bottom scope.
 //! - A function call pushes a NEW scope. Parameters and variables
 //!   defined for the first time inside a function live in that scope
@@ -24,7 +24,7 @@
 //!
 //! Type rules: dynamic typing, runtime checks, no silent coercion
 //! (except the explicit عدد() / نص() conversions). Conditions must be
-//! منطقي (Bool). See DESIGN.md for the full table.
+//! منطقي (Bool).
 
 use crate::ast::{AssignTarget, BinOp, Expr, ExprKind, Stmt, StmtKind, UnOp};
 use crate::error::{ErrorKind, RioError, RioResult};
@@ -98,8 +98,24 @@ pub struct Interpreter {
     // Modules currently being loaded (for cycle detection).
     loading_stack: Vec<String>,
     // Meeting 4: file capability policy. Default restricted to
-    // program_dir; --allow-all (trusted) removes the restriction.
+    // program_dir; --اسمح-بالكل (trusted) removes the restriction.
     file_policy: crate::permissions::FilePolicy,
+    // Arabic terminal shortcuts (owner's order 2026-11-05):
+    // the session's current directory, changed by انتقل.
+    // Absolute and lexically normalized; starts at
+    // program_dir. Relative paths in the file builtins resolve
+    // against it (via resolve_cwd), so cd affects اقرأ_ملف
+    // and the rest exactly like in a real terminal.
+    cwd: PathBuf,
+    // Meeting 22, per-instance network flag (sessions): each
+    // interpreter owns its own permission. The process-wide gate
+    // in network.rs is the fetch-time source of truth, and it is
+    // re-synced from this flag at the start of every top-level
+    // evaluation (run / eval_one) — evaluation is synchronous
+    // and single-threaded, so the gate always reflects the
+    // interpreter that is currently evaluating, and one REPL
+    // console's approval never leaks into another.
+    network_allowed: bool,
 }
 
 impl Interpreter {
@@ -111,21 +127,205 @@ impl Interpreter {
             return_value: None,
             call_depth: 0,
             program_dir: program_dir.clone(),
+            cwd: program_dir.clone(),
             loaded_modules: HashMap::new(),
             loading_stack: Vec::new(),
             file_policy: crate::permissions::FilePolicy::restricted(program_dir),
+            network_allowed: false,
         }
     }
 
     pub fn with_program_dir(program_dir: PathBuf) -> Self {
         let mut interp = Self::new();
         interp.program_dir = program_dir.clone();
+        interp.cwd = program_dir.clone();
         interp.file_policy = crate::permissions::FilePolicy::restricted(program_dir);
         interp
     }
 
+    /// Resolve a user path against this session's current
+    /// directory (انتقل), under the file policy.
+    fn resolve_cwd(&self, path: &str, line: usize, col: usize) -> RioResult<PathBuf> {
+        self.file_policy.resolve_in(&self.cwd, path, line, col)
+    }
+
+    /// Parse a line-count argument: a whole number, or a text
+    /// of (Arabic or Western) digits, like the عدد builtin.
+    fn count_arg(v: &Value, line: usize, col: usize) -> RioResult<usize> {
+        match v {
+            Value::Number(n) if *n >= 0.0 && n.fract() == 0.0 => Ok(*n as usize),
+            Value::Str(s) => {
+                let cleaned: String = s
+                    .trim()
+                    .chars()
+                    .map(|c| match c {
+                        '٠'..='٩' => char::from_digit(c as u32 - '٠' as u32, 10).unwrap(),
+                        other => other,
+                    })
+                    .collect();
+                cleaned.parse::<usize>().map_err(|_| {
+                    RioError::typ(format!("العدد غير صالح: {}", s), line, col)
+                })
+            }
+            other => Err(RioError::typ(
+                format!("العدد يتطلب رقما، وليس {}", other.type_name()),
+                line,
+                col,
+            )),
+        }
+    }
+
+    /// Recursive file-name search (ابحث_عن): substring match
+    /// on the entry name, depth at most 4, at most 100 hits.
+    /// Symlinked directories are not followed (DirEntry
+    /// file_type does not follow links), so no cycles.
+    fn find_files(dir: &std::path::Path, base: &std::path::Path, query: &str, depth: usize, out: &mut Vec<String>) {
+        if out.len() >= 100 || depth > 4 {
+            return;
+        }
+        // Audit م-14: stream the entries (no whole-directory
+        // collect + sort — the caller sorts the final hits).
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for e in entries.flatten() {
+                if out.len() >= 100 {
+                    break;
+                }
+                let name = e.file_name().to_string_lossy().to_string();
+                let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                if name.contains(query) {
+                    let rel = e
+                        .path()
+                        .strip_prefix(base)
+                        .unwrap_or(&e.path())
+                        .to_string_lossy()
+                        .to_string();
+                    out.push(rel);
+                }
+                if is_dir {
+                    Self::find_files(&e.path(), base, query, depth + 1, out);
+                }
+            }
+        }
+    }
+
+    /// Recursive tree listing (اعرض_الشجرة): indented names,
+    /// depth at most 3, at most 200 lines.
+    fn tree_lines(dir: &std::path::Path, prefix: &str, depth: usize, out: &mut Vec<String>) {
+        if out.len() >= 200 || depth > 3 {
+            return;
+        }
+        // Audit م-14: collect at most the remaining room
+        // (never the whole directory) before sorting.
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            let room = 200usize.saturating_sub(out.len());
+            let mut entries: Vec<_> = entries.flatten().take(room).collect();
+            entries.sort_by_key(|e| e.file_name());
+            for e in entries {
+                if out.len() >= 200 {
+                    break;
+                }
+                let name = e.file_name().to_string_lossy().to_string();
+                let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                if is_dir {
+                    out.push(format!("{}{}/", prefix, name));
+                    Self::tree_lines(&e.path(), &format!("{}  ", prefix), depth + 1, out);
+                } else {
+                    out.push(format!("{}{}", prefix, name));
+                }
+            }
+        }
+    }
+
+    /// Recursive size in bytes (حجم_المسار): `budget` caps the
+    /// walked entries at 10000 so a huge tree cannot hang the
+    /// REPL. Symlinks are not followed (symlink_metadata).
+    fn dir_size(path: &std::path::Path, budget: &mut usize) -> u64 {
+        if *budget == 0 {
+            return 0;
+        }
+        *budget -= 1;
+        match std::fs::symlink_metadata(path) {
+            Ok(m) if m.is_dir() => {
+                let mut total = 0u64;
+                if let Ok(entries) = std::fs::read_dir(path) {
+                    for e in entries.flatten() {
+                        total += Self::dir_size(&e.path(), budget);
+                        if *budget == 0 {
+                            break;
+                        }
+                    }
+                }
+                total
+            }
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        }
+    }
+
+    /// Unix seconds -> "YYYY-MM-DD HH:MM:SS" in UTC
+    /// (Howard Hinnant's civil-from-days algorithm).
+    fn format_unix_utc(secs: u64) -> String {
+        let days = (secs / 86400) as i64;
+        let secs_of_day = secs % 86400;
+        let (h, m, s) = (secs_of_day / 3600, (secs_of_day % 3600) / 60, secs_of_day % 60);
+        let z = days + 719468;
+        let era = if z >= 0 { z } else { z - 146096 } / 146097;
+        let doe = (z - era * 146097) as u64;
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        let y = yoe as i64 + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let mo = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = if mo <= 2 { y + 1 } else { y };
+        format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, mo, d, h, m, s)
+    }
+
+    /// Lexical normalization (no filesystem access): resolve
+    /// "." and ".." in a path, for storing a clean cwd after
+    /// انتقل. Same walk as the policy's normalize().
+    fn normalize_lexical(path: &std::path::Path) -> PathBuf {
+        let mut out = PathBuf::new();
+        for c in path.components() {
+            match c {
+                std::path::Component::RootDir => out.push("/"),
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    out.pop();
+                }
+                std::path::Component::Normal(s) => out.push(s),
+                std::path::Component::Prefix(p) => out.push(p.as_os_str()),
+            }
+        }
+        out
+    }
+
     pub fn set_trusted(&mut self, trusted: bool) {
         self.file_policy.trusted = trusted;
+    }
+
+    /// Meeting 22: network capability. Default OFF; the CLI
+    /// --اسمح-بالشبكة flag (or the WASM console's first-use
+    /// approval) turns it on. Independent of file trust: it
+    /// does not change file permissions. Per-instance: the flag
+    /// lives on this interpreter and is synced to the
+    /// process-wide gate at the start of run / eval_one, so one
+    /// console's approval never leaks into another console.
+    pub fn set_network_allowed(&mut self, allowed: bool) {
+        self.network_allowed = allowed;
+        crate::network::set_network_allowed(allowed);
+    }
+
+    /// This interpreter's own network permission.
+    pub fn network_allowed(&self) -> bool {
+        self.network_allowed
+    }
+
+    /// Explicitly authorize a local hostname for fetching (the
+    /// only way a loopback/private address can be reached — see
+    /// network.rs). Used by the CLI --مضيف-محلي flag.
+    pub fn allow_local_network_host(&mut self, host: &str) {
+        crate::network::allow_local_host(host);
     }
 
     fn define_local(&mut self, name: &str, value: Value) {
@@ -157,6 +357,99 @@ impl Interpreter {
         None
     }
 
+    /// REPL support (audit م-12): is this name bound in any
+    /// visible scope (variable, function, or module)?
+    /// (Kept as a public helper; the code-first check now
+    /// trial-analyzes instead, which subsumes this.)
+    #[allow(dead_code)]
+    pub fn is_defined(&self, name: &str) -> bool {
+        self.lookup(name).is_some()
+    }
+
+    /// Terminal prompt (owner's order 2026-11-05 ~23:03):
+    /// the session directory in display form (`~`, `~/...`).
+    pub fn current_dir_display(&self) -> String {
+        self.file_policy.display_path(&self.cwd)
+    }
+
+    /// Audit م-13: read a whole file with a hard size cap
+    /// (5 MB). The size is enforced while reading (take
+    /// cap+1), not only by a metadata check, so a file that
+    /// grows between the check and the read cannot overflow
+    /// the process. Over-size and non-UTF-8 files are clean
+    /// Arabic errors, never a crash.
+    pub const MAX_READ_BYTES: usize = 5 * 1024 * 1024;
+
+    fn read_file_capped(
+        &self,
+        path: &std::path::Path,
+        display: &str,
+        line: usize,
+        col: usize,
+    ) -> RioResult<String> {
+        use std::io::Read;
+        let mut f = std::fs::File::open(path).map_err(|e| {
+            RioError::new(
+                ErrorKind::Io,
+                format!("تعذر قراءة الملف {}: {}", display, e),
+                line,
+                col,
+            )
+        })?;
+        let mut buf = Vec::new();
+        (&mut f)
+            .take((Self::MAX_READ_BYTES + 1) as u64)
+            .read_to_end(&mut buf)
+            .map_err(|e| {
+                RioError::new(
+                    ErrorKind::Io,
+                    format!("تعذر قراءة الملف {}: {}", display, e),
+                    line,
+                    col,
+                )
+            })?;
+        if buf.len() > Self::MAX_READ_BYTES {
+            return Err(RioError::new(
+                ErrorKind::Io,
+                format!(
+                    "الملف {} أكبر من الحد الأقصى (5 ميغابايت)",
+                    display
+                ),
+                line,
+                col,
+            ));
+        }
+        String::from_utf8(buf).map_err(|_| {
+            RioError::new(
+                ErrorKind::Io,
+                format!("الملف {} ليس نصا صالحا (UTF-8)", display),
+                line,
+                col,
+            )
+        })
+    }
+
+    /// Audit م-20 (scoped): disk quota for the program dir
+    /// (100 MB total). A write that would push the dir past
+    /// the quota is refused with a clean Arabic error, so a
+    /// loop cannot fill the device. The walk is budget-capped
+    /// (dir_size), like حجم_المسار.
+    pub const DISK_QUOTA_BYTES: u64 = 100 * 1024 * 1024;
+
+    fn check_disk_quota(&self, extra_bytes: u64, line: usize, col: usize) -> RioResult<()> {
+        let mut budget = 10000usize;
+        let used = Self::dir_size(&self.program_dir, &mut budget);
+        if used.saturating_add(extra_bytes) > Self::DISK_QUOTA_BYTES {
+            return Err(RioError::new(
+                ErrorKind::Io,
+                "تجاوزت حصة التخزين (100 ميغابايت) — احذف ملفات قبل الكتابة",
+                line,
+                col,
+            ));
+        }
+        Ok(())
+    }
+
     fn lookup_scope_index(&self, name: &str) -> Option<usize> {
         for (i, scope) in self.scopes.iter().enumerate().rev() {
             if scope.borrow().contains_key(name) {
@@ -169,10 +462,18 @@ impl Interpreter {
     /// REPL support: evaluate one expression and return its value.
     /// Used for bare-expression lines, which the REPL prints.
     pub fn eval_one(&mut self, expr: &Expr) -> RioResult<Value> {
+        // Per-instance network flag (sessions): sync the
+        // process-wide gate to this interpreter before any
+        // اجلب can run inside this evaluation.
+        crate::network::set_network_allowed(self.network_allowed);
         self.eval_expr(expr)
     }
 
     pub fn run(&mut self, program: &[Stmt]) -> RioResult<()> {
+        // Per-instance network flag (sessions): same sync as
+        // eval_one — the gate always reflects the interpreter
+        // that is currently evaluating.
+        crate::network::set_network_allowed(self.network_allowed);
         for stmt in program {
             match self.exec_stmt(stmt)? {
                 Flow::Normal => {}
@@ -566,9 +867,9 @@ impl Interpreter {
                 col,
             ));
         }
-        let path = self.program_dir.join(format!("{}.niva", module));
-        let source = std::fs::read_to_string(&path).map_err(|_| {
-            RioError::new(
+        let path = self.program_dir.join(format!("{}.نيفا", module));
+        if !path.exists() {
+            return Err(RioError::new(
                 ErrorKind::Io,
                 format!(
                     "وحدة غير موجودة: {} (بحثت في {})",
@@ -577,8 +878,9 @@ impl Interpreter {
                 ),
                 line,
                 col,
-            )
-        })?;
+            ));
+        }
+        let source = self.read_file_capped(&path, module, line, col)?;
         let tokens = lexer::tokenize(&source).map_err(|e| {
             RioError::new(
                 e.kind,
@@ -1775,7 +2077,11 @@ impl Interpreter {
         }
     }
 
-    fn call_builtin(
+    /// Call a builtin by name with pre-built values. Crate-visible
+    /// so the REPL shortcut layer (ات، مك، رح...) can invoke the
+    /// file builtins directly, without re-parsing a call string
+    /// (which would need commas — the shortcuts never use them).
+    pub(crate) fn call_builtin(
         &mut self,
         name: &str,
         args: Vec<Value>,
@@ -1787,7 +2093,34 @@ impl Interpreter {
         // builtins are inert, with a clean Arabic error, instead
         // of touching std::fs / stdin at all.
         #[cfg(target_arch = "wasm32")]
-        if matches!(name, "اقرأ_ملف" | "اكتب_ملف" | "ادخل") {
+        if matches!(
+            name,
+            "اقرأ_ملف"
+                | "اكتب_ملف"
+                | "ادخل"
+                | "اعرض_الملفات"
+                | "المجلد_الحالي"
+                | "انتقل"
+                | "أنشئ_مجلد"
+                | "احذف"
+                | "احذف_مجلد"
+                | "احذف_ملف"
+                | "انسخ"
+                | "انقل"
+                | "أنشئ_ملف"
+                | "اعرض_البداية"
+                | "اعرض_النهاية"
+                | "عد_الأسطر"
+                | "عد_الكلمات"
+                | "ابحث_في_ملف"
+                | "ابحث_عن"
+                | "اعرض_الشجرة"
+                | "حجم_المسار"
+                | "أنشئ_رابط"
+                | "موجود"
+                | "نوع_المسار"
+                | "عد_الملفات"
+        ) {
             return Err(RioError::runtime(
                 "هذه الدالة غير مدعومة في متصفح الويب",
                 line,
@@ -1976,10 +2309,10 @@ impl Interpreter {
                 arity(1)?;
                 match &args[0] {
                     Value::Str(path) => {
-                        let resolved = self.file_policy.resolve(path, line, col)?;
-                        std::fs::read_to_string(&resolved).map(Value::Str).map_err(|e| {
-                            RioError::new(ErrorKind::Io, format!("تعذر قراءة الملف {}: {}", path, e), line, col)
-                        })
+                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let display = self.file_policy.display_str(path);
+                        self.read_file_capped(&resolved, &display, line, col)
+                            .map(Value::Str)
                     }
                     other => Err(RioError::typ(
                         format!("اقرأ_ملف يتطلب مسارا نصيا، وليس {}", other.type_name()),
@@ -1992,11 +2325,19 @@ impl Interpreter {
                 arity(2)?;
                 match (&args[0], &args[1]) {
                     (Value::Str(path), Value::Str(content)) => {
-                        let resolved = self.file_policy.resolve(path, line, col)?;
+                        let resolved = self.resolve_cwd(path, line, col)?;
+                        // Audit م-20: refuse a write that would
+                        // push the program dir past its quota
+                        // (net growth only — rewriting a file
+                        // counts its size difference).
+                        let existing =
+                            std::fs::metadata(&resolved).map(|m| m.len()).unwrap_or(0);
+                        let extra = (content.len() as u64).saturating_sub(existing);
+                        self.check_disk_quota(extra, line, col)?;
                         std::fs::write(&resolved, content).map(|_| Value::Nil).map_err(|e| {
                             RioError::new(
                                 ErrorKind::Io,
-                                format!("تعذر كتابة الملف {}: {}", path, e),
+                                format!("تعذر كتابة الملف {}: {}", self.file_policy.display_str(path), e),
                                 line,
                                 col,
                             )
@@ -2008,6 +2349,520 @@ impl Interpreter {
                         col,
                     )),
                 }
+            }
+            // Arabic terminal shortcuts (owner's order
+            // 2026-11-05): ls / pwd / cd / mkdir / rm / cp / mv
+            // as builtins, so they work in programs and in the
+            // REPL alike. All respect the file policy (the
+            // session cwd, inside program_dir unless trusted).
+            "اعرض_الملفات" => {
+                arity(0)?;
+                let dir = self.resolve_cwd(".", line, col)?;
+                let entries = std::fs::read_dir(&dir).map_err(|e| {
+                    RioError::new(ErrorKind::Io, format!("تعذر عرض المجلد: {}", e), line, col)
+                })?;
+                // Audit م-14: cap the listing at the first 1000
+                // names (sorted) and count the rest instead of
+                // building a list of the whole directory.
+                const LIST_CAP: usize = 1000;
+                let mut names: Vec<String> = Vec::new();
+                let mut total = 0usize;
+                for entry in entries {
+                    let entry = entry.map_err(|e| {
+                        RioError::new(ErrorKind::Io, format!("تعذر عرض المجلد: {}", e), line, col)
+                    })?;
+                    total += 1;
+                    if names.len() < LIST_CAP {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                        if is_dir {
+                            names.push(format!("{}/", name));
+                        } else {
+                            names.push(name);
+                        }
+                    }
+                }
+                names.sort();
+                let mut out: Vec<Value> = names.into_iter().map(Value::Str).collect();
+                if total > LIST_CAP {
+                    // Arabic digits, like every other number the
+                    // terminal shows.
+                    let more = Value::Number((total - LIST_CAP) as f64).fmt_value();
+                    out.push(Value::Str(format!("…و {} أخرى", more)));
+                }
+                Ok(Value::List(out))
+            }
+            "المجلد_الحالي" => {
+                arity(0)?;
+                // Terminal display (owner's order 2026-11-05
+                // ~22:38): home shows as `~`, below it `~/...`
+                // — never the absolute internal path.
+                Ok(Value::Str(self.file_policy.display_path(&self.cwd)))
+            }
+            "انتقل" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(dir) => {
+                        let resolved = self.resolve_cwd(dir, line, col)?;
+                        match std::fs::metadata(&resolved) {
+                            Ok(m) if m.is_dir() => {
+                                self.cwd = Self::normalize_lexical(&resolved);
+                                Ok(Value::Nil)
+                            }
+                            Ok(_) => Err(RioError::new(
+                                ErrorKind::Io,
+                                format!("ليس مجلدا: {}", self.file_policy.display_str(dir)),
+                                line,
+                                col,
+                            )),
+                            Err(_) => Err(RioError::new(
+                                ErrorKind::Io,
+                                format!("المجلد غير موجود: {}", self.file_policy.display_str(dir)),
+                                line,
+                                col,
+                            )),
+                        }
+                    }
+                    other => Err(RioError::typ(
+                        format!("انتقل يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "أنشئ_مجلد" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(dir) => {
+                        let resolved = self.resolve_cwd(dir, line, col)?;
+                        std::fs::create_dir(&resolved).map(|_| Value::Nil).map_err(|e| {
+                            RioError::new(
+                                ErrorKind::Io,
+                                format!("تعذر إنشاء المجلد {}: {}", self.file_policy.display_str(dir), e),
+                                line,
+                                col,
+                            )
+                        })
+                    }
+                    other => Err(RioError::typ(
+                        format!("أنشئ_مجلد يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "احذف" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(path) => {
+                        let resolved = self.resolve_cwd(path, line, col)?;
+                        match std::fs::metadata(&resolved) {
+                            Ok(m) if m.is_dir() => {
+                                std::fs::remove_dir(&resolved).map(|_| Value::Nil).map_err(|e| {
+                                    RioError::new(
+                                        ErrorKind::Io,
+                                        format!("تعذر حذف {}: {}", self.file_policy.display_str(path), e),
+                                        line,
+                                        col,
+                                    )
+                                })
+                            }
+                            Ok(_) => {
+                                std::fs::remove_file(&resolved).map(|_| Value::Nil).map_err(|e| {
+                                    RioError::new(
+                                        ErrorKind::Io,
+                                        format!("تعذر حذف {}: {}", self.file_policy.display_str(path), e),
+                                        line,
+                                        col,
+                                    )
+                                })
+                            }
+                            Err(_) => Err(RioError::new(
+                                ErrorKind::Io,
+                                format!("المسار غير موجود: {}", self.file_policy.display_str(path)),
+                                line,
+                                col,
+                            )),
+                        }
+                    }
+                    other => Err(RioError::typ(
+                        format!("احذف يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "احذف_مجلد" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(path) => {
+                        let resolved = self.resolve_cwd(path, line, col)?;
+                        match std::fs::metadata(&resolved) {
+                            Ok(m) if m.is_dir() => {
+                                std::fs::remove_dir(&resolved).map(|_| Value::Nil).map_err(|e| {
+                                    RioError::new(
+                                        ErrorKind::Io,
+                                        format!("تعذر حذف المجلد {}: {}", self.file_policy.display_str(path), e),
+                                        line,
+                                        col,
+                                    )
+                                })
+                            }
+                            Ok(_) => Err(RioError::new(
+                                ErrorKind::Io,
+                                format!("ليس مجلدا: {}", self.file_policy.display_str(path)),
+                                line,
+                                col,
+                            )),
+                            Err(_) => Err(RioError::new(
+                                ErrorKind::Io,
+                                format!("المسار غير موجود: {}", self.file_policy.display_str(path)),
+                                line,
+                                col,
+                            )),
+                        }
+                    }
+                    other => Err(RioError::typ(
+                        format!("احذف_مجلد يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "احذف_ملف" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(path) => {
+                        let resolved = self.resolve_cwd(path, line, col)?;
+                        match std::fs::metadata(&resolved) {
+                            Ok(m) if !m.is_dir() => {
+                                std::fs::remove_file(&resolved).map(|_| Value::Nil).map_err(|e| {
+                                    RioError::new(
+                                        ErrorKind::Io,
+                                        format!("تعذر حذف الملف {}: {}", self.file_policy.display_str(path), e),
+                                        line,
+                                        col,
+                                    )
+                                })
+                            }
+                            Ok(_) => Err(RioError::new(
+                                ErrorKind::Io,
+                                format!("ليس ملفا: {}", self.file_policy.display_str(path)),
+                                line,
+                                col,
+                            )),
+                            Err(_) => Err(RioError::new(
+                                ErrorKind::Io,
+                                format!("المسار غير موجود: {}", self.file_policy.display_str(path)),
+                                line,
+                                col,
+                            )),
+                        }
+                    }
+                    other => Err(RioError::typ(
+                        format!("احذف_ملف يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "انسخ" => {
+                arity(2)?;
+                match (&args[0], &args[1]) {
+                    (Value::Str(src), Value::Str(dst)) => {
+                        let src_path = self.resolve_cwd(src, line, col)?;
+                        let mut dst_path = self.resolve_cwd(dst, line, col)?;
+                        // cp into a directory keeps the file name.
+                        if dst_path.is_dir() {
+                            if let Some(name) = src_path.file_name() {
+                                dst_path.push(name);
+                            }
+                        }
+                        // Audit م-20: same quota as اكتب_ملف.
+                        let src_len =
+                            std::fs::metadata(&src_path).map(|m| m.len()).unwrap_or(0);
+                        let dst_existing =
+                            std::fs::metadata(&dst_path).map(|m| m.len()).unwrap_or(0);
+                        let extra = src_len.saturating_sub(dst_existing);
+                        self.check_disk_quota(extra, line, col)?;
+                        std::fs::copy(&src_path, &dst_path).map(|_| Value::Nil).map_err(|e| {
+                            RioError::new(
+                                ErrorKind::Io,
+                                format!("تعذر نسخ {}: {}", self.file_policy.display_str(src), e),
+                                line,
+                                col,
+                            )
+                        })
+                    }
+                    _ => Err(RioError::typ("انسخ يتطلب مسارين نصيين", line, col)),
+                }
+            }
+            "انقل" => {
+                arity(2)?;
+                match (&args[0], &args[1]) {
+                    (Value::Str(src), Value::Str(dst)) => {
+                        let src_path = self.resolve_cwd(src, line, col)?;
+                        let mut dst_path = self.resolve_cwd(dst, line, col)?;
+                        // mv into a directory keeps the file name.
+                        if dst_path.is_dir() {
+                            if let Some(name) = src_path.file_name() {
+                                dst_path.push(name);
+                            }
+                        }
+                        std::fs::rename(&src_path, &dst_path).map(|_| Value::Nil).map_err(|e| {
+                            RioError::new(
+                                ErrorKind::Io,
+                                format!("تعذر نقل {}: {}", self.file_policy.display_str(src), e),
+                                line,
+                                col,
+                            )
+                        })
+                    }
+                    _ => Err(RioError::typ("انقل يتطلب مسارين نصيين", line, col)),
+                }
+            }
+            // More file builtins for the 50 terminal shortcuts
+            // (owner's order 2026-11-05 ~22:11): touch / head /
+            // tail / wc / grep / find / tree / du / ln / date /
+            // version / test / file-type / count.
+            "أنشئ_ملف" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(path) => {
+                        let resolved = self.resolve_cwd(path, line, col)?;
+                        if !resolved.exists() {
+                            std::fs::write(&resolved, "").map_err(|e| {
+                                RioError::new(
+                                    ErrorKind::Io,
+                                    format!("تعذر إنشاء الملف {}: {}", self.file_policy.display_str(path), e),
+                                    line,
+                                    col,
+                                )
+                            })?;
+                        }
+                        Ok(Value::Nil)
+                    }
+                    other => Err(RioError::typ(
+                        format!("أنشئ_ملف يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "اعرض_البداية" | "اعرض_النهاية" => {
+                if args.is_empty() || args.len() > 2 {
+                    return Err(RioError::runtime(
+                        format!("{} تتوقع 1 أو 2 معاملات", name),
+                        line,
+                        col,
+                    ));
+                }
+                let path = match &args[0] {
+                    Value::Str(p) => p.clone(),
+                    other => {
+                        return Err(RioError::typ(
+                            format!("{} يتطلب مسارا نصيا، وليس {}", name, other.type_name()),
+                            line,
+                            col,
+                        ));
+                    }
+                };
+                let count = if args.len() == 2 {
+                    Self::count_arg(&args[1], line, col)?
+                } else {
+                    5
+                };
+                let resolved = self.resolve_cwd(&path, line, col)?;
+                let display = self.file_policy.display_str(&path);
+                let content = self.read_file_capped(&resolved, &display, line, col)?;
+                let lines: Vec<&str> = content.lines().collect();
+                let out = if name == "اعرض_البداية" {
+                    lines.iter().take(count).cloned().collect::<Vec<_>>().join("\n")
+                } else {
+                    let skip = lines.len().saturating_sub(count);
+                    lines.iter().skip(skip).cloned().collect::<Vec<_>>().join("\n")
+                };
+                Ok(Value::Str(out))
+            }
+            "عد_الأسطر" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(path) => {
+                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let display = self.file_policy.display_str(path);
+                        let content = self.read_file_capped(&resolved, &display, line, col)?;
+                        Ok(Value::Number(content.lines().count() as f64))
+                    }
+                    other => Err(RioError::typ(
+                        format!("عد_الأسطر يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "عد_الكلمات" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(path) => {
+                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let display = self.file_policy.display_str(path);
+                        let content = self.read_file_capped(&resolved, &display, line, col)?;
+                        Ok(Value::Number(content.split_whitespace().count() as f64))
+                    }
+                    other => Err(RioError::typ(
+                        format!("عد_الكلمات يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "ابحث_في_ملف" => {
+                arity(2)?;
+                match (&args[0], &args[1]) {
+                    (Value::Str(pattern), Value::Str(path)) => {
+                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let display = self.file_policy.display_str(path);
+                        let content = self.read_file_capped(&resolved, &display, line, col)?;
+                        let hits: Vec<Value> = content
+                            .lines()
+                            .filter(|l| l.contains(pattern.as_str()))
+                            .take(100)
+                            .map(|l| Value::Str(l.to_string()))
+                            .collect();
+                        Ok(Value::List(hits))
+                    }
+                    _ => Err(RioError::typ("ابحث_في_ملف يتطلب نصا ومسارا", line, col)),
+                }
+            }
+            "ابحث_عن" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(query) => {
+                        let mut out: Vec<String> = Vec::new();
+                        Self::find_files(&self.cwd, &self.cwd, query, 0, &mut out);
+                        out.sort();
+                        Ok(Value::List(out.into_iter().map(Value::Str).collect()))
+                    }
+                    other => Err(RioError::typ(
+                        format!("ابحث_عن يتطلب نصا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "اعرض_الشجرة" => {
+                if args.len() > 1 {
+                    return Err(RioError::runtime("اعرض_الشجرة تتوقع 0 أو 1 معاملات", line, col));
+                }
+                let dir = if let Some(Value::Str(d)) = args.first() {
+                    self.resolve_cwd(d, line, col)?
+                } else {
+                    self.cwd.clone()
+                };
+                let mut out: Vec<String> = Vec::new();
+                Self::tree_lines(&dir, "", 0, &mut out);
+                Ok(Value::List(out.into_iter().map(Value::Str).collect()))
+            }
+            "حجم_المسار" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(path) => {
+                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let mut budget: usize = 10000;
+                        Ok(Value::Number(Self::dir_size(&resolved, &mut budget) as f64))
+                    }
+                    other => Err(RioError::typ(
+                        format!("حجم_المسار يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "أنشئ_رابط" => {
+                arity(2)?;
+                match (&args[0], &args[1]) {
+                    (Value::Str(target), Value::Str(link)) => {
+                        let target_path = self.resolve_cwd(target, line, col)?;
+                        let link_path = self.resolve_cwd(link, line, col)?;
+                        #[cfg(unix)]
+                        let res = std::os::unix::fs::symlink(&target_path, &link_path);
+                        #[cfg(not(unix))]
+                        let res: std::io::Result<()> = Err(std::io::Error::new(
+                            std::io::ErrorKind::Unsupported,
+                            "إنشاء الروابط غير مدعوم على هذه المنصة",
+                        ));
+                        res.map(|_| Value::Nil).map_err(|e| {
+                            RioError::new(
+                                ErrorKind::Io,
+                                format!("تعذر إنشاء الرابط {}: {}", self.file_policy.display_str(link), e),
+                                line,
+                                col,
+                            )
+                        })
+                    }
+                    _ => Err(RioError::typ("أنشئ_رابط يتطلب مسارين نصيين", line, col)),
+                }
+            }
+            "التاريخ_الآن" => {
+                arity(0)?;
+                let secs = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                Ok(Value::Str(Self::format_unix_utc(secs)))
+            }
+            "النسخة" => {
+                arity(0)?;
+                Ok(Value::Str(crate::repl::banner().to_string()))
+            }
+            "موجود" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(path) => {
+                        let resolved = self.resolve_cwd(path, line, col)?;
+                        Ok(Value::Bool(std::fs::metadata(&resolved).is_ok()))
+                    }
+                    other => Err(RioError::typ(
+                        format!("موجود يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "نوع_المسار" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(path) => {
+                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let kind = match std::fs::metadata(&resolved) {
+                            Ok(m) if m.is_dir() => "مجلد",
+                            Ok(_) => "ملف",
+                            Err(_) => "غير موجود",
+                        };
+                        Ok(Value::Str(kind.to_string()))
+                    }
+                    other => Err(RioError::typ(
+                        format!("نوع_المسار يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "عد_الملفات" => {
+                if args.len() > 1 {
+                    return Err(RioError::runtime("عد_الملفات تتوقع 0 أو 1 معاملات", line, col));
+                }
+                let dir = if let Some(Value::Str(d)) = args.first() {
+                    self.resolve_cwd(d, line, col)?
+                } else {
+                    self.cwd.clone()
+                };
+                let count = std::fs::read_dir(&dir)
+                    .map(|entries| entries.count())
+                    .map_err(|e| {
+                        RioError::new(ErrorKind::Io, format!("تعذر عرض المجلد: {}", e), line, col)
+                    })?;
+                Ok(Value::Number(count as f64))
             }
             "ادخل" => {
                 if args.len() > 1 {
@@ -2061,6 +2916,16 @@ mod tests {
         let mut interp = Interpreter::new();
         let res = interp.run(&prog);
         (interp.output, res)
+    }
+
+    /// Run source in an existing interpreter (keeps its cwd),
+    /// clearing the output first so each call's output is its own.
+    fn run_in(interp: &mut Interpreter, src: &str) -> (String, Result<(), RioError>) {
+        let toks = tokenize(src).unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        interp.output.clear();
+        let res = interp.run(&prog);
+        (interp.output.clone(), res)
     }
 
     #[test]
@@ -2356,5 +3221,298 @@ mod tests {
         let (out, res) = run_src("استورد وقت\nاطبع وقت.الآن() > 1700000000\n");
         assert!(res.is_ok());
         assert_eq!(out, "صحيح\n");
+    }
+
+    // Arabic terminal shortcuts (owner's order 2026-11-05):
+    // ls / pwd / cd / mkdir / rm / cp / mv as builtins.
+    fn shortcuts_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("niva-shortcuts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn shortcuts_list_pwd_cd_mkdir() {
+        let dir = shortcuts_dir();
+        std::fs::write(dir.join("أ.txt"), "نص").unwrap();
+        std::fs::create_dir(dir.join("فرعي")).unwrap();
+        let mut interp = Interpreter::with_program_dir(dir.clone());
+        // المجلد_الحالي() = home, displayed as `~` (owner's
+        // order 2026-11-05 ~22:38 — terminal paths like any
+        // Unix terminal, never the absolute internal path).
+        let (out, res) = run_in(&mut interp, "اطبع المجلد_الحالي()");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out.trim_end(), "~", "got: {}", out);
+        // اعرض_الملفات() lists the file and the dir (with /).
+        let (out, res) = run_in(&mut interp, "اطبع اعرض_الملفات()");
+        assert!(res.is_ok(), "{:?}", res);
+        assert!(out.contains("أ.txt"), "got: {}", out);
+        assert!(out.contains("فرعي/"), "got: {}", out);
+        // أنشئ_مجلد + انتقل + .. back to the base.
+        let (_, res) = run_in(&mut interp, "أنشئ_مجلد(\"جديد\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert!(dir.join("جديد").is_dir());
+        let (_, res) = run_in(&mut interp, "انتقل(\"جديد\")");
+        assert!(res.is_ok(), "{:?}", res);
+        let (out, _) = run_in(&mut interp, "اطبع المجلد_الحالي()");
+        assert_eq!(out.trim_end(), "~/جديد", "got: {}", out);
+        // `~` jumps home, and `~/...` reads a file from home.
+        let (_, res) = run_in(&mut interp, "انتقل(\"~\")");
+        assert!(res.is_ok(), "{:?}", res);
+        let (out, _) = run_in(&mut interp, "اطبع المجلد_الحالي()");
+        assert_eq!(out.trim_end(), "~", "got: {}", out);
+        let (out, res) = run_in(&mut interp, "اطبع اقرأ_ملف(\"~/أ.txt\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out.trim_end(), "نص", "got: {}", out);
+        // A path error never leaks the internal Android path.
+        let (_, res) = run_in(
+            &mut interp,
+            "انتقل(\"/data/data/com.rio4140.niva/files/خارج\")",
+        );
+        assert!(res.is_err());
+        let msg = format!("{:?}", res.unwrap_err());
+        assert!(!msg.contains("com.rio4140.niva"), "got: {}", msg);
+        assert!(!msg.contains("/data/"), "got: {}", msg);
+        let (_, res) = run_in(&mut interp, "انتقل(\"..\")");
+        assert!(res.is_err(), "expected escape to be rejected");
+        let (out, _) = run_in(&mut interp, "اطبع المجلد_الحالي()");
+        assert_eq!(out.trim_end(), "~", "got: {}", out);
+        // Escaping the base is rejected (restricted mode).
+        let (_, res) = run_in(&mut interp, "احذف(\"../خارج.txt\")");
+        assert!(res.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // احذف only: انسخ / انقل are two-argument builtins and
+    // their call syntax is on hold pending the owner's comma
+    // decision (2026-11-05 «مفيش حاجه اسمها فصلة») — their
+    // bodies are implemented, their tests wait for the ruling.
+    #[test]
+    fn shortcuts_delete_file_and_empty_dir() {
+        let dir = shortcuts_dir();
+        std::fs::write(dir.join("أ.txt"), "نص").unwrap();
+        let mut interp = Interpreter::with_program_dir(dir.clone());
+        let (_, res) = run_in(&mut interp, "احذف(\"أ.txt\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert!(!dir.join("أ.txt").exists());
+        // احذف on a missing path errors; on a non-empty dir errors.
+        let (_, res) = run_in(&mut interp, "احذف(\"غيرموجود.txt\")");
+        assert!(res.is_err());
+        std::fs::create_dir(dir.join("ممتلئ")).unwrap();
+        std::fs::write(dir.join("ممتلئ/داخل.txt"), "x").unwrap();
+        let (_, res) = run_in(&mut interp, "احذف(\"ممتلئ\")");
+        assert!(res.is_err());
+        // An empty dir deletes fine.
+        let (_, res) = run_in(&mut interp, "أنشئ_مجلد(\"فارغ\")");
+        assert!(res.is_ok(), "{:?}", res);
+        let (_, res) = run_in(&mut interp, "احذف(\"فارغ\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert!(!dir.join("فارغ").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shortcuts_cd_affects_read() {
+        // After انتقل, اقرأ_ملف resolves against the new
+        // directory — cd is real, not cosmetic. (The اكتب_ملف
+        // half of this check is on hold with the comma ruling:
+        // it is a two-argument call.)
+        let dir = shortcuts_dir();
+        std::fs::create_dir(dir.join("داخل")).unwrap();
+        std::fs::write(dir.join("داخل/ملف.txt"), "من الداخل").unwrap();
+        let mut interp = Interpreter::with_program_dir(dir.clone());
+        let (_, res) = run_in(&mut interp, "انتقل(\"داخل\")");
+        assert!(res.is_ok(), "{:?}", res);
+        let (out, res) = run_in(&mut interp, "اطبع اقرأ_ملف(\"ملف.txt\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert!(out.contains("من الداخل"), "got: {}", out);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shortcuts_rmdir_rmfile_distinction() {
+        let dir = shortcuts_dir();
+        std::fs::write(dir.join("أ.txt"), "نص").unwrap();
+        std::fs::create_dir(dir.join("مجلد")).unwrap();
+        let mut interp = Interpreter::with_program_dir(dir.clone());
+        // احذف_مجلد is dir-only: a file is an error.
+        let (_, res) = run_in(&mut interp, "احذف_مجلد(\"أ.txt\")");
+        assert!(res.is_err());
+        let (_, res) = run_in(&mut interp, "احذف_مجلد(\"مجلد\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert!(!dir.join("مجلد").exists());
+        // احذف_ملف is file-only: a dir is an error.
+        std::fs::create_dir(dir.join("مجلد٢")).unwrap();
+        let (_, res) = run_in(&mut interp, "احذف_ملف(\"مجلد٢\")");
+        assert!(res.is_err());
+        let (_, res) = run_in(&mut interp, "احذف_ملف(\"أ.txt\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert!(!dir.join("أ.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shortcuts_wrong_args_error() {
+        let mut interp = Interpreter::new();
+        let (_, res) = run_in(&mut interp, "اعرض_الملفات(١)");
+        assert!(res.is_err());
+        let (_, res) = run_in(&mut interp, "انتقل(٥)");
+        assert!(res.is_err());
+        let (_, res) = run_in(&mut interp, "انتقل(\"غيرموجود\")");
+        assert!(res.is_err());
+        let (_, res) = run_in(&mut interp, "انسخ(\"أ\")");
+        assert!(res.is_err());
+        let (_, res) = run_in(&mut interp, "احذف(٥)");
+        assert!(res.is_err());
+    }
+
+    // New file builtins for the 50 shortcuts (owner's order
+    // 2026-11-05 ~22:11): touch / head / tail / wc / find /
+    // tree / du / test / file-type / count / date / version.
+    // Only 0- and 1-argument calls are tested here: the
+    // two-argument ones (ابحث_في_ملف، أنشئ_رابط، عب/عن مع
+    // عدد) are covered by the REPL shortcut tests, which call
+    // them space-separated with no comma, per the owner's
+    // no-comma rule.
+    #[test]
+    fn shortcuts_new_file_builtins() {
+        let dir = shortcuts_dir();
+        std::fs::write(dir.join("ملف.txt"), "ألف\nباء\nجيم\nدال\nهاء\nواو").unwrap();
+        std::fs::create_dir(dir.join("فرعي")).unwrap();
+        std::fs::write(dir.join("فرعي/داخلي.txt"), "داخل").unwrap();
+        let mut interp = Interpreter::with_program_dir(dir.clone());
+        // أنشئ_ملف (touch): creates an empty file, and is a
+        // no-op when the file already exists.
+        let (_, res) = run_in(&mut interp, "أنشئ_ملف(\"جديد.txt\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(std::fs::read_to_string(dir.join("جديد.txt")).unwrap(), "");
+        let (_, res) = run_in(&mut interp, "أنشئ_ملف(\"ملف.txt\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(std::fs::read_to_string(dir.join("ملف.txt")).unwrap(), "ألف\nباء\nجيم\nدال\nهاء\nواو");
+        // اعرض_البداية / اعرض_النهاية default to 5 lines.
+        let (out, res) = run_in(&mut interp, "اطبع اعرض_البداية(\"ملف.txt\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out, "ألف\nباء\nجيم\nدال\nهاء\n");
+        let (out, res) = run_in(&mut interp, "اطبع اعرض_النهاية(\"ملف.txt\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out, "باء\nجيم\nدال\nهاء\nواو\n");
+        // عد_الأسطر / عد_الكلمات.
+        let (out, res) = run_in(&mut interp, "اطبع عد_الأسطر(\"ملف.txt\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out, "٦\n");
+        let (out, res) = run_in(&mut interp, "اطبع عد_الكلمات(\"ملف.txt\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out, "٦\n");
+        // ابحث_عن (find by name substring, recursive): the
+        // name "داخلي.txt" does not contain "ملف", so only the
+        // top-level file matches that query.
+        let (out, res) = run_in(&mut interp, "اطبع ابحث_عن(\"ملف\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert!(out.contains("ملف.txt"), "got: {}", out);
+        let (out, res) = run_in(&mut interp, "اطبع ابحث_عن(\"داخلي\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert!(out.contains("فرعي/داخلي.txt"), "got: {}", out);
+        // اعرض_الشجرة (tree, indented).
+        let (out, res) = run_in(&mut interp, "اطبع اعرض_الشجرة()");
+        assert!(res.is_ok(), "{:?}", res);
+        assert!(out.contains("فرعي/"), "got: {}", out);
+        assert!(out.contains("  داخلي.txt"), "got: {}", out);
+        // حجم_المسار (du): bytes, equals the real file size.
+        let (out, res) = run_in(&mut interp, "اطبع حجم_المسار(\"ملف.txt\")");
+        assert!(res.is_ok(), "{:?}", res);
+        let expected = std::fs::metadata(dir.join("ملف.txt")).unwrap().len();
+        assert_eq!(out.trim(), crate::value::Value::Number(expected as f64).fmt_value());
+        // موجود / نوع_المسار.
+        let (out, res) = run_in(&mut interp, "اطبع موجود(\"ملف.txt\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out, "صحيح\n");
+        let (out, res) = run_in(&mut interp, "اطبع موجود(\"غائب.txt\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out, "خطأ\n");
+        let (out, res) = run_in(&mut interp, "اطبع نوع_المسار(\"فرعي\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out, "مجلد\n");
+        let (out, res) = run_in(&mut interp, "اطبع نوع_المسار(\"غائب.txt\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out, "غير موجود\n");
+        // عد_الملفات (count entries): ملف.txt + فرعي + جديد.txt.
+        let (out, res) = run_in(&mut interp, "اطبع عد_الملفات()");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out, "٣\n");
+        // التاريخ_الآن: "YYYY-MM-DD HH:MM:SS" (19 chars).
+        let (out, res) = run_in(&mut interp, "اطبع التاريخ_الآن()");
+        assert!(res.is_ok(), "{:?}", res);
+        let date = out.trim_end().to_string();
+        assert_eq!(date.len(), 19, "got: {}", date);
+        assert_eq!(&date[4..5], "-");
+        assert_eq!(&date[7..8], "-");
+        assert_eq!(&date[10..11], " ");
+        assert_eq!(&date[13..14], ":");
+        assert_eq!(&date[16..17], ":");
+        // النسخة: the banner, name + version only.
+        let (out, res) = run_in(&mut interp, "اطبع النسخة()");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out, "محرك نيفا ١٫٠٫٠\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Audit م-13: reading a file larger than 5 MB is refused
+    // with a clean Arabic error — never an OOM.
+    #[test]
+    fn read_file_capped_refuses_oversize() {
+        let dir = shortcuts_dir();
+        let big = vec![b'x'; Interpreter::MAX_READ_BYTES + 1];
+        std::fs::write(dir.join("ضخم.txt"), &big).unwrap();
+        let mut interp = Interpreter::with_program_dir(dir.clone());
+        let (_, res) = run_in(&mut interp, "اطبع اقرأ_ملف(\"ضخم.txt\")");
+        assert!(res.is_err(), "oversize read must fail");
+        let err = res.unwrap_err();
+        assert!(
+            err.to_string().contains("أكبر من الحد الأقصى"),
+            "got: {}",
+            err
+        );
+        // Just under the cap still reads (one line, no newline).
+        let ok = vec![b'x'; Interpreter::MAX_READ_BYTES];
+        std::fs::write(dir.join("تمام.txt"), &ok).unwrap();
+        let (out, res) = run_in(&mut interp, "اطبع عد_الأسطر(\"تمام.txt\")");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out, "١\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Audit م-14: اعرض_الملفات caps at 1000 names and reports
+    // how many more exist — a huge directory cannot build a
+    // giant list.
+    #[test]
+    fn list_files_caps_at_1000_with_marker() {
+        let dir = shortcuts_dir();
+        for i in 0..1005 {
+            std::fs::write(dir.join(format!("ملف-{:04}.txt", i)), "").unwrap();
+        }
+        let mut interp = Interpreter::with_program_dir(dir.clone());
+        let (out, res) = run_in(&mut interp, "اطبع اعرض_الملفات()");
+        assert!(res.is_ok(), "{:?}", res);
+        assert!(out.contains("…و ٥ أخرى"), "got: {}", out);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Audit م-20 (scoped): the disk quota refuses a write
+    // once the program dir is full. A sparse file stands in
+    // for 100 MB of content (metadata length counts, no real
+    // disk is used).
+    #[test]
+    fn disk_quota_refuses_write_when_full() {
+        let dir = shortcuts_dir();
+        let f = std::fs::File::create(dir.join("كبير.bin")).unwrap();
+        f.set_len(Interpreter::DISK_QUOTA_BYTES + 1).unwrap();
+        drop(f);
+        let mut interp = Interpreter::with_program_dir(dir.clone());
+        let (_, res) = run_in(&mut interp, "اطبع اكتب_ملف(\"جديد.txt\"، \"نص\")");
+        assert!(res.is_err(), "write past the quota must fail");
+        let err = res.unwrap_err();
+        assert!(err.to_string().contains("حصة التخزين"), "got: {}", err);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

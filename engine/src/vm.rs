@@ -1,4 +1,4 @@
-//! Phase 1B VM (experimental, --vm flag only).
+//! Phase 1B VM (experimental, --افتراضي flag only).
 //!
 //! This is NOT yet the default execution path. The tree-walking
 //! interpreter remains default; the VM is a separate, testable
@@ -201,7 +201,7 @@ impl Compiler {
                             ExprKind::Ident(n) => n.clone(),
                             _ => {
                                 return Err(RioError::parse(
-                                    "VM: تعيين الفهرسة المعقدة غير مدعوم بعد في --vm، استخدم المفسر الافتراضي",
+                                    "الآلة الافتراضية: تعيين الفهرسة المعقدة غير مدعوم بعد، استخدم المفسر الافتراضي",
                                     stmt.line,
                                     stmt.col,
                                 ));
@@ -356,7 +356,7 @@ impl Compiler {
                 Ok(())
             }
             _ => Err(RioError::parse(
-                "VM: هذه الجملة غير مدعومة بعد في --vm، استخدم المفسر الافتراضي",
+                "الآلة الافتراضية: هذه الجملة غير مدعومة بعد، استخدم المفسر الافتراضي",
                 stmt.line,
                 stmt.col,
             )),
@@ -472,7 +472,7 @@ impl Compiler {
                     BinOp::GtEq => Op::GtEq,
                     BinOp::In | BinOp::NotIn => {
                         return Err(RioError::parse(
-                            "VM: في غير مدعومة بعد",
+                            "الآلة الافتراضية: في غير مدعومة بعد",
                             expr.line,
                             expr.col,
                         ));
@@ -500,7 +500,7 @@ impl Compiler {
                     ExprKind::Ident(n) => n.clone(),
                     _ => {
                         return Err(RioError::parse(
-                            "VM: الاستدعاء غير المباشر (طريقة أو متغير يحمل دالة) غير مدعوم بعد في --vm، استخدم المفسر الافتراضي",
+                            "الآلة الافتراضية: الاستدعاء غير المباشر (طريقة أو متغير يحمل دالة) غير مدعوم بعد، استخدم المفسر الافتراضي",
                             expr.line,
                             expr.col,
                         ));
@@ -525,12 +525,12 @@ impl Compiler {
                 Ok(())
             }
             ExprKind::Lambda { .. } => Err(RioError::parse(
-                "VM: الدالة المجهولة (lambda) غير مدعومة بعد في --vm، استخدم المفسر الافتراضي",
+                "الآلة الافتراضية: الدالة المجهولة غير مدعومة بعد، استخدم المفسر الافتراضي",
                 expr.line,
                 expr.col,
             )),
             _ => Err(RioError::parse(
-                "VM: هذا التعبير غير مدعوم بعد في --vm، استخدم المفسر الافتراضي",
+                "الآلة الافتراضية: هذا التعبير غير مدعوم بعد، استخدم المفسر الافتراضي",
                 expr.line,
                 expr.col,
             )),
@@ -1222,7 +1222,7 @@ impl Vm {
                         if let Some(v) = self.vars.get(&name) {
                             if matches!(v, Value::Function { .. }) {
                                 return Err(RioError::parse(
-                                    "VM: استدعاء دالة من متغير غير مدعوم بعد في --vm، استخدم المفسر الافتراضي",
+                                    "الآلة الافتراضية: استدعاء دالة من متغير غير مدعوم بعد، استخدم المفسر الافتراضي",
                                     line,
                                     col,
                                 ));

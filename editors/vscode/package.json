@@ -1,1 +1,35 @@
-{"categories":["Programming Languages"],"contributes":{"grammars":[{"language":"niva","path":"./syntaxes/niva.tmLanguage.json","scopeName":"source.niva"}],"languages":[{"aliases":["Niva","niva"],"configuration":"./language-configuration.json","extensions":[".niva"],"id":"niva"}]},"description":"دعم لغة Niva العربية في VS Code: تمييز الصياغة لملفات .niva.","displayName":"Niva","engines":{"vscode":"^1.85.0"},"license":"MIT","name":"niva","publisher":"rio4140","version":"1.0.0"}
+{
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "grammars": [
+      {
+        "language": "niva",
+        "path": "./syntaxes/niva.tmLanguage.json",
+        "scopeName": "source.niva"
+      }
+    ],
+    "languages": [
+      {
+        "aliases": [
+          "نيفا"
+        ],
+        "configuration": "./language-configuration.json",
+        "extensions": [
+          ".نيفا"
+        ],
+        "id": "niva"
+      }
+    ]
+  },
+  "description": "دعم لغة نيفا العربية في VS Code: تمييز الصياغة لملفات .نيفا.",
+  "displayName": "نيفا",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "license": "MIT",
+  "name": "niva",
+  "publisher": "rio4140",
+  "version": "1.0.0"
+}

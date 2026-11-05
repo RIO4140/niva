@@ -6,7 +6,7 @@ import init, { run_niva } from './pkg/niva_playground.js';
 
 const EXAMPLES = {
   hello: `# الدرس الأول: الطباعة
-اطبع "أهلا بك في Niva"
+اطبع "أهلا بك في نيفا"
 اطبع ٢ + ٣
 اطبع "النتيجة:"، ١٠ * ٢`,
   functions: `# الدوال والنطاق

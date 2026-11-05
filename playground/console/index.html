@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>نيفا — وحدة التحكم</title>
+<style>
+  /* Offline console: no webfonts, no CDN. Android ships
+     Noto Naskh Arabic (and Noto Sans Arabic) as system fonts,
+     so Arabic letters join and render RTL correctly here —
+     the thing a plain terminal cannot do. */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: #0c0c0c;
+    color: #e8e8e8;
+    font-family: "Noto Naskh Arabic", "Noto Sans Arabic", "Segoe UI", Tahoma, monospace;
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    overflow: hidden;
+  }
+  .bar {
+    background: #1f1f1f;
+    padding: 10px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: none;
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+  .r { background: #ff5f57; } .y { background: #febc2e; } .g { background: #28c840; }
+  .title { color: #aaa; font-size: 15px; }
+  #sessions-btn {
+    font-family: inherit;
+    font-size: 15px;
+    color: #e8e8e8;
+    background: #2a2a2a;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    padding: 4px 12px;
+    cursor: pointer;
+    flex: none;
+  }
+  #scrollwrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+  }
+  .scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px 16px;
+    direction: rtl;
+    text-align: right;
+    font-size: 20px;
+    line-height: 1.9;
+    white-space: pre-wrap;
+    overflow-wrap: break-word;
+  }
+  .banner { color: #8a8a8a; }
+  .prompt { color: #7ee787; font-weight: 700; }
+  .cont { color: #4c9a5f; font-weight: 700; }
+  .err { color: #ff9d9d; }
+  /* Sessions drawer, Termux-style: slides in from the left
+     edge, numbered sessions, tap to switch, + to add. */
+  #drawer {
+    position: fixed;
+    top: 0; bottom: 0; left: 0;
+    width: min(75vw, 300px);
+    background: #161616;
+    border-right: 1px solid #2a2a2a;
+    display: flex;
+    flex-direction: column;
+    transform: translateX(-105%);
+    transition: transform 0.2s ease;
+    z-index: 20;
+  }
+  #drawer.open { transform: translateX(0); }
+  #drawer .dtitle {
+    padding: 14px 16px;
+    font-size: 18px;
+    color: #aaa;
+    border-bottom: 1px solid #2a2a2a;
+    flex: none;
+  }
+  #session-list { flex: 1; overflow-y: auto; padding: 8px 0; }
+  .session-row {
+    padding: 14px 16px;
+    font-size: 20px;
+    cursor: pointer;
+    border-bottom: 1px solid #222;
+  }
+  .session-row.active { background: #2a2a2a; color: #7ee787; }
+  #drawer .dbottom {
+    flex: none;
+    display: flex;
+    border-top: 1px solid #2a2a2a;
+  }
+  #drawer .dbottom button {
+    flex: 1;
+    font-family: inherit;
+    font-size: 28px;
+    padding: 10px 0;
+    background: transparent;
+    color: #e8e8e8;
+    border: none;
+    cursor: pointer;
+  }
+  #drawer .dbottom button + button { border-right: 1px solid #2a2a2a; }
+  #backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 10;
+  }
+  #netbar {
+    display: none;
+    flex: none;
+    padding: 12px 16px;
+    background: #1a2b1a;
+    color: #b9f5c3;
+    border-top: 1px solid #2a4a2a;
+    font-size: 18px;
+    text-align: center;
+  }
+  #netbar button {
+    font-family: inherit;
+    font-size: 18px;
+    margin: 0 6px;
+    padding: 4px 18px;
+    border-radius: 6px;
+    border: 1px solid #2a4a2a;
+    cursor: pointer;
+  }
+  #net-allow { background: #28c840; color: #06130a; }
+  #net-deny { background: transparent; color: #b9f5c3; }
+  #netstate { color: #777; font-size: 14px; margin-right: auto; }
+  #restart {
+    display: none;
+    flex: none;
+    padding: 12px 16px;
+    background: #1a2b1a;
+    color: #b9f5c3;
+    border-top: 1px solid #2a4a2a;
+    font-size: 18px;
+    text-align: center;
+    cursor: pointer;
+  }
+  #inputline {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px 14px;
+    border-top: 1px solid #222;
+    background: #111;
+    direction: rtl;
+  }
+  #prompt { color: #7ee787; font-weight: 700; font-size: 20px; }
+  #prompt.cont { color: #4c9a5f; }
+  #input {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #e8e8e8;
+    font-family: inherit;
+    font-size: 20px;
+    direction: rtl;
+    text-align: right;
+  }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+    <span class="title">نيفا — وحدة التحكم</span>
+    <span id="netstate">الشبكة: مغلقة</span>
+    <button id="sessions-btn">الجلسات</button>
+  </div>
+  <div id="scrollwrap"></div>
+  <div id="netbar">
+    <span>هذا البرنامج يريد الوصول إلى الشبكة — هل تسمح؟</span>
+    <button id="net-allow">سماح</button>
+    <button id="net-deny">رفض</button>
+  </div>
+  <div id="restart">انتهت الجلسة — اضغط هنا لبدء جلسة جديدة</div>
+  <div id="inputline">
+    <span id="prompt">نيفا: </span>
+    <input id="input" type="text" autocomplete="off" autocapitalize="off"
+      spellcheck="false" aria-label="سطر كود نيفا">
+  </div>
+  <div id="backdrop"></div>
+  <div id="drawer">
+    <div class="dtitle">الجلسات</div>
+    <div id="session-list"></div>
+    <div class="dbottom">
+      <button id="add-session" aria-label="جلسة جديدة">+</button>
+      <button id="keyboard-toggle" aria-label="لوحة المفاتيح">⌨</button>
+    </div>
+  </div>
+  <script type="module" src="./console.js"></script>
+</body>
+</html>

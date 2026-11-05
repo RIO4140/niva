@@ -3,7 +3,7 @@
 ## الشروط
 
 ```niva
-{{#include ../../engine/examples/03-conditions.niva}}
+{{#include ../../engine/examples/03-conditions.نيفا}}
 ```
 
 الخرج:
@@ -20,7 +20,7 @@
 ## الحلقات
 
 ```niva
-{{#include ../../engine/examples/04-loops.niva}}
+{{#include ../../engine/examples/04-loops.نيفا}}
 ```
 
 الخرج:

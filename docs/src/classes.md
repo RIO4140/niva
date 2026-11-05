@@ -3,7 +3,7 @@
 ## الفئة والمنشئ والطرق
 
 ```niva
-{{#include ../../engine/examples/11-classes.niva}}
+{{#include ../../engine/examples/11-classes.نيفا}}
 ```
 
 الخرج:
@@ -25,7 +25,7 @@
 ## الوراثة والواجهات
 
 ```niva
-{{#include ../../engine/examples/12-inheritance-interfaces.niva}}
+{{#include ../../engine/examples/12-inheritance-interfaces.نيفا}}
 ```
 
 الخرج:

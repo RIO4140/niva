@@ -3,7 +3,7 @@
 ## التعريف والاستدعاء
 
 ```niva
-{{#include ../../engine/examples/05-functions.niva}}
+{{#include ../../engine/examples/05-functions.نيفا}}
 ```
 
 الخرج:
@@ -22,7 +22,7 @@
 ## Closures: الدالة ترى بيئتها
 
 ```niva
-{{#include ../../engine/examples/13-closures.niva}}
+{{#include ../../engine/examples/13-closures.نيفا}}
 ```
 
 الخرج:
@@ -42,7 +42,7 @@
 ## الدوال المجهولة (lambdas)
 
 ```niva
-{{#include ../../engine/examples/14-lambdas.niva}}
+{{#include ../../engine/examples/14-lambdas.نيفا}}
 ```
 
 الخرج:

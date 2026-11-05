@@ -3,7 +3,7 @@
 ## القوائم والقواميس والدوال المدمجة
 
 ```niva
-{{#include ../../engine/examples/06-lists-dicts.niva}}
+{{#include ../../engine/examples/06-lists-dicts.نيفا}}
 ```
 
 الخرج:
@@ -32,7 +32,7 @@
 ## دوال النصوص والقوائم
 
 ```niva
-{{#include ../../engine/examples/15-methods.niva}}
+{{#include ../../engine/examples/15-methods.نيفا}}
 ```
 
 الخرج:

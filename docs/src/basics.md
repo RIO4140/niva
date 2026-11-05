@@ -3,7 +3,7 @@
 ## المتغيرات
 
 ```niva
-{{#include ../../engine/examples/02-variables.niva}}
+{{#include ../../engine/examples/02-variables.نيفا}}
 ```
 
 الخرج:
@@ -36,7 +36,7 @@
 وتُقرأ من اليمين بلا انعكاس بصري للعلامات:
 
 ```niva
-{{#include ../../engine/examples/17-word-operators.niva}}
+{{#include ../../engine/examples/17-word-operators.نيفا}}
 ```
 
 والكلمات هي: `يساوي` (==) و`لا يساوي` (!=) و`أكبر

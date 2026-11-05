@@ -1,7 +1,7 @@
 # الأنواع التدريجية
 
 ```niva
-{{#include ../../engine/examples/10-types.niva}}
+{{#include ../../engine/examples/10-types.نيفا}}
 ```
 
 الخرج:
