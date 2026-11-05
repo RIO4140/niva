@@ -85,7 +85,23 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let mut interp = Interpreter::new();
+    // Phase 1A Step 2: modules are resolved relative to the main
+    // program's directory, not the current working directory.
+    let program_dir = std::path::Path::new(path)
+        .parent()
+        .map(|p| {
+            if p.as_os_str().is_empty() {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            } else if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                    .join(p)
+            }
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let mut interp = Interpreter::with_program_dir(program_dir);
     match interp.run(&program) {
         Ok(()) => {
             print!("{}", interp.output);

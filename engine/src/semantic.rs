@@ -1,4 +1,4 @@
-//! Semantic analyzer — Phase 1A Step 1.
+//! Semantic analyzer — Phase 1A Steps 1-3.
 //!
 //! Runs AFTER parsing and BEFORE execution. It catches, with an Arabic
 //! error carrying line + column, the mistakes that used to surface only
@@ -9,11 +9,25 @@
 //!   NOT count for a break inside a nested function, and vice versa)
 //! - calling a known user function or builtin with the wrong number
 //!   of arguments
+//! - (Step 3, gradual types) assigning a known-typed value to a
+//!   variable, parameter, or return declared with a different type.
+//!   Unknown (untyped / أي) never errors statically; it is checked
+//!   at runtime by the interpreter, so gradual code is not falsely
+//!   rejected.
 //!
 //! What it does NOT do yet (later Phase 1A steps, not this one):
-//! - type checking (gradual types are Step 2, with annotation syntax)
-//! - modules / imports (Step 3, with `استورد` / `صدّر`)
-//! - dot access, classes, interfaces (Phase 1A spec in v1.3, not v1)
+//! - classes, interfaces (Phase 1A spec in v1.3, not v1)
+//!
+//! Phase 1A Step 2 adds modules to this analyzer for the MAIN
+//! program only: an Import defines its bound names, an Export is a
+//! no-op, and a Dot access analyzes its target but does NOT check
+//! the member name (member existence and export status are checked
+//! at runtime, when the module file is actually loaded).
+//! Module FILES themselves are not semantically analyzed in Step 2:
+//! they are parsed and executed by the interpreter's loader, with
+//! the module name added to any runtime error. A two-pass module
+//! analysis (so a module function may reference a module global
+//! defined later in the file) is a later step, not this one.
 //!
 //! Scope rules mirror the interpreter exactly, so the analyzer never
 //! rejects a program the interpreter would accept, and never accepts
@@ -33,14 +47,39 @@ use crate::ast::{AssignTarget, Expr, ExprKind, Stmt, StmtKind};
 use crate::error::{RioError, RioResult};
 use std::collections::{HashMap, HashSet};
 
-/// One scope: name -> Some(param_count) if the name is a known user
-/// function in this scope, None if it is an ordinary variable.
-type Scope = HashMap<String, Option<usize>>;
+#[derive(Debug, Clone)]
+struct VarInfo {
+    // Some(n) if a known user function with n params, None otherwise.
+    arity: Option<usize>,
+    // Declared type for a variable (annotation), None = untyped.
+    // For a module binding, Some("وحدة").
+    declared_type: Option<String>,
+    // For a known user function only.
+    param_types: Vec<Option<String>>,
+    return_type: Option<String>,
+}
+
+impl VarInfo {
+    fn var() -> Self {
+        Self { arity: None, declared_type: None, param_types: vec![], return_type: None }
+    }
+    fn var_typed(t: &str) -> Self {
+        Self { arity: None, declared_type: Some(t.to_string()), param_types: vec![], return_type: None }
+    }
+    fn func(arity: usize, param_types: Vec<Option<String>>, return_type: Option<String>) -> Self {
+        Self { arity: Some(arity), declared_type: None, param_types, return_type }
+    }
+}
+
+/// One scope: name -> info about that name in this scope.
+type Scope = HashMap<String, VarInfo>;
 
 pub struct SemanticAnalyzer {
     scopes: Vec<Scope>,
     function_depth: usize,
     loop_depth: usize,
+    // Stack of declared return types for enclosing functions.
+    return_type_stack: Vec<Option<String>>,
 }
 
 fn builtin_arity(name: &str) -> Option<(usize, usize)> {
@@ -55,8 +94,44 @@ fn builtin_arity(name: &str) -> Option<(usize, usize)> {
     }
 }
 
+fn builtin_return_type(name: &str) -> Option<&'static str> {
+    match name {
+        "طول" | "مجموع" | "مطلق" | "عدد" => Some("عدد"),
+        "نص" | "نوع" | "اقرأ_ملف" | "ادخل" => Some("نص"),
+        "مدى" => Some("قائمة"),
+        "اكتب_ملف" => Some("لاشيء"),
+        // أدنى / أقصى depend on input type: unknown in Step 3.
+        _ => None,
+    }
+}
+
 fn is_builtin(name: &str) -> bool {
     builtin_arity(name).is_some()
+}
+
+/// Static type check helper: if both types are known and differ,
+/// and neither is `أي`, return a semantic type-mismatch error.
+/// Unknown on either side passes (gradual typing).
+fn check_type_match(
+    expected: &str,
+    actual: Option<String>,
+    what: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    if expected == "أي" {
+        return Ok(());
+    }
+    if let Some(a) = actual {
+        if a != "أي" && a != expected {
+            return Err(RioError::semantic(
+                format!("نوع غير متطابق: {} معلن {}، لكن القيمة {}", what, expected, a),
+                line,
+                col,
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl SemanticAnalyzer {
@@ -65,6 +140,7 @@ impl SemanticAnalyzer {
             scopes: vec![HashMap::new()],
             function_depth: 0,
             loop_depth: 0,
+            return_type_stack: vec![],
         }
     }
 
@@ -75,16 +151,16 @@ impl SemanticAnalyzer {
         Ok(())
     }
 
-    fn define(&mut self, name: &str, func_arity: Option<usize>) {
+    fn define(&mut self, name: &str, info: VarInfo) {
         if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), func_arity);
+            scope.insert(name.to_string(), info);
         }
     }
 
-    fn lookup(&self, name: &str) -> Option<Option<usize>> {
+    fn lookup(&self, name: &str) -> Option<VarInfo> {
         for scope in self.scopes.iter().rev() {
             if let Some(v) = scope.get(name) {
-                return Some(*v);
+                return Some(v.clone());
             }
         }
         None
@@ -92,6 +168,100 @@ impl SemanticAnalyzer {
 
     fn is_defined(&self, name: &str) -> bool {
         self.lookup(name).is_some() || is_builtin(name)
+    }
+
+    /// Static type of an expression, if known. None = unknown (أي).
+    /// Only declared types, literals, and known function/builtin
+    /// returns are known; everything else (index, dot, binary with
+    /// unknown operands, untyped variables) is unknown and passes.
+    fn infer_type(&self, expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Number(_) => Some("عدد".to_string()),
+            ExprKind::Str(_) => Some("نص".to_string()),
+            ExprKind::Bool(_) => Some("منطقي".to_string()),
+            ExprKind::Nil => Some("لاشيء".to_string()),
+            ExprKind::List(_) => Some("قائمة".to_string()),
+            ExprKind::Dict(_) => Some("قاموس".to_string()),
+            ExprKind::Ident(name) => {
+                if let Some(info) = self.lookup(name) {
+                    if let Some(t) = info.declared_type {
+                        return Some(t);
+                    }
+                    if info.arity.is_some() {
+                        return Some("دالة".to_string());
+                    }
+                    return None;
+                }
+                // Builtin name used as a value (not a call): a function.
+                if is_builtin(name) {
+                    return Some("دالة".to_string());
+                }
+                None
+            }
+            ExprKind::Call { callee, .. } => {
+                if let ExprKind::Ident(name) = &callee.kind {
+                    if let Some(info) = self.lookup(name) {
+                        if let Some(rt) = info.return_type {
+                            return Some(rt);
+                        }
+                        if info.arity.is_some() {
+                            return None;
+                        }
+                    }
+                    if let Some(rt) = builtin_return_type(name) {
+                        return Some(rt.to_string());
+                    }
+                }
+                None
+            }
+            ExprKind::Binary { left, op, right } => {
+                use crate::ast::BinOp;
+                match op {
+                    BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq
+                    | BinOp::And | BinOp::Or | BinOp::In | BinOp::NotIn => {
+                        Some("منطقي".to_string())
+                    }
+                    BinOp::Add => {
+                        let lt = self.infer_type(left)?;
+                        let rt = self.infer_type(right)?;
+                        if lt == rt && (lt == "عدد" || lt == "نص" || lt == "قائمة") {
+                            Some(lt)
+                        } else {
+                            None
+                        }
+                    }
+                    BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                        let lt = self.infer_type(left)?;
+                        let rt = self.infer_type(right)?;
+                        if lt == "عدد" && rt == "عدد" {
+                            Some("عدد".to_string())
+                        } else {
+                            None
+                        }
+                    }
+                }
+            }
+            ExprKind::Unary { op, expr: inner } => {
+                use crate::ast::UnOp;
+                match op {
+                    UnOp::Neg => {
+                        if self.infer_type(inner)? == "عدد" {
+                            Some("عدد".to_string())
+                        } else {
+                            None
+                        }
+                    }
+                    UnOp::Not => {
+                        if self.infer_type(inner)? == "منطقي" {
+                            Some("منطقي".to_string())
+                        } else {
+                            None
+                        }
+                    }
+                }
+            }
+            ExprKind::Index { .. } | ExprKind::Dot { .. } => None,
+        }
     }
 
     fn analyze_block(&mut self, body: &[Stmt]) -> RioResult<()> {
@@ -103,12 +273,48 @@ impl SemanticAnalyzer {
 
     fn analyze_stmt(&mut self, stmt: &Stmt) -> RioResult<()> {
         match &stmt.kind {
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, annotation } => {
                 // Value first, matching runtime evaluation order.
                 self.analyze_expr(value)?;
+                let value_type = self.infer_type(value);
                 match target {
                     AssignTarget::Var(name) => {
-                        self.define(name, None);
+                        // Declared-type checks use the CURRENT scope
+                        // only: an assignment inside a function
+                        // defines a LOCAL variable, shadowing any
+                        // outer variable of the same name, matching
+                        // the interpreter's define_local.
+                        let current_decl = self
+                            .scopes
+                            .last()
+                            .and_then(|s| s.get(name))
+                            .and_then(|info| info.declared_type.clone());
+                        if let Some(decl) = &current_decl {
+                            check_type_match(
+                                decl,
+                                value_type.clone(),
+                                &format!("المتغير {}", name),
+                                stmt.line,
+                                stmt.col,
+                            )?;
+                        }
+                        if let Some(ann) = annotation {
+                            check_type_match(
+                                ann,
+                                value_type,
+                                &format!("المتغير {}", name),
+                                stmt.line,
+                                stmt.col,
+                            )?;
+                            self.define(name, VarInfo::var_typed(ann));
+                        } else if current_decl.is_none()
+                            && self.scopes.last().map(|s| !s.contains_key(name)).unwrap_or(true)
+                        {
+                            self.define(name, VarInfo::var());
+                        }
+                        // If no annotation and the variable already
+                        // exists in this scope, its declared type
+                        // (if any) is kept.
                     }
                     AssignTarget::Index { target: t, index: i } => {
                         // Narrowed v1.3 Target: only Ident[Expr] is
@@ -175,7 +381,7 @@ impl SemanticAnalyzer {
                 self.analyze_expr(iterable)?;
                 // Loop variable stays in the CURRENT scope, not a new
                 // one, and stays visible after the loop.
-                self.define(var, None);
+                self.define(var, VarInfo::var());
                 self.loop_depth += 1;
                 let r = self.analyze_block(body);
                 self.loop_depth -= 1;
@@ -195,7 +401,7 @@ impl SemanticAnalyzer {
                 self.loop_depth -= 1;
                 r
             }
-            StmtKind::FuncDef { name, params, body } => {
+            StmtKind::FuncDef { name, params, param_types, return_type, body } => {
                 // Duplicate parameters are a definition error.
                 let mut seen = HashSet::new();
                 for p in params {
@@ -210,16 +416,24 @@ impl SemanticAnalyzer {
                 // Define the function BEFORE its body, so recursion
                 // passes, and so later calls in the enclosing scope
                 // pass. Calls before this definition fail, as at runtime.
-                self.define(name, Some(params.len()));
+                self.define(
+                    name,
+                    VarInfo::func(params.len(), param_types.clone(), return_type.clone()),
+                );
                 self.scopes.push(HashMap::new());
-                for p in params {
-                    self.define(p, None);
+                for (p, pt) in params.iter().zip(param_types.iter()) {
+                    match pt {
+                        Some(t) => self.define(p, VarInfo::var_typed(t)),
+                        None => self.define(p, VarInfo::var()),
+                    }
                 }
                 self.function_depth += 1;
+                self.return_type_stack.push(return_type.clone());
                 let saved_loop = self.loop_depth;
                 self.loop_depth = 0;
                 let r = self.analyze_block(body);
                 self.loop_depth = saved_loop;
+                self.return_type_stack.pop();
                 self.function_depth -= 1;
                 self.scopes.pop();
                 r
@@ -234,6 +448,27 @@ impl SemanticAnalyzer {
                 }
                 if let Some(v) = value {
                     self.analyze_expr(v)?;
+                    if let Some(Some(rt)) = self.return_type_stack.last() {
+                        let vt = self.infer_type(v);
+                        check_type_match(
+                            rt,
+                            vt,
+                            &format!("قيمة ارجع"),
+                            stmt.line,
+                            stmt.col,
+                        )?;
+                    }
+                } else {
+                    // Return without a value: type لاشيء.
+                    if let Some(Some(rt)) = self.return_type_stack.last() {
+                        check_type_match(
+                            rt,
+                            Some("لاشيء".to_string()),
+                            &format!("قيمة ارجع"),
+                            stmt.line,
+                            stmt.col,
+                        )?;
+                    }
                 }
                 Ok(())
             }
@@ -273,6 +508,26 @@ impl SemanticAnalyzer {
                 Ok(())
             }
             StmtKind::ExprStmt { expr } => self.analyze_expr(expr),
+            StmtKind::Import { module, alias, names } => {
+                match names {
+                    Some(names) => {
+                        // من وحدة استورد اسم1، اسم2 : each name is
+                        // defined, with unknown arity and type (it may
+                        // be a value, not a function; runtime checks).
+                        for n in names {
+                            self.define(n, VarInfo::var());
+                        }
+                    }
+                    None => {
+                        // استورد وحدة [باسم مختصر] : bind module value,
+                        // whose type is وحدة.
+                        let bind = alias.clone().unwrap_or_else(|| module.clone());
+                        self.define(&bind, VarInfo::var_typed("وحدة"));
+                    }
+                }
+                Ok(())
+            }
+            StmtKind::Export { .. } => Ok(()),
         }
     }
 
@@ -313,19 +568,23 @@ impl SemanticAnalyzer {
             ExprKind::Unary { op: _, expr: e } => self.analyze_expr(e),
             ExprKind::Call { callee, args } => {
                 // Arity check for direct calls to known functions.
+                let mut known_param_types: Option<Vec<Option<String>>> = None;
                 if let ExprKind::Ident(name) = &callee.kind {
-                    if let Some(Some(n)) = self.lookup(name) {
-                        if args.len() != n {
-                            return Err(RioError::semantic(
-                                format!(
-                                    "عدد المعاملات غير صحيح: الدالة {} تتوقع {} لكن أعطيت {}",
-                                    name,
-                                    n,
-                                    args.len()
-                                ),
-                                expr.line,
-                                expr.col,
-                            ));
+                    if let Some(info) = self.lookup(name) {
+                        if let Some(n) = info.arity {
+                            if args.len() != n {
+                                return Err(RioError::semantic(
+                                    format!(
+                                        "عدد المعاملات غير صحيح: الدالة {} تتوقع {} لكن أعطيت {}",
+                                        name,
+                                        n,
+                                        args.len()
+                                    ),
+                                    expr.line,
+                                    expr.col,
+                                ));
+                            }
+                            known_param_types = Some(info.param_types.clone());
                         }
                     } else if let Some((min, max)) = builtin_arity(name) {
                         if args.len() < min || args.len() > max {
@@ -354,12 +613,36 @@ impl SemanticAnalyzer {
                 for a in args {
                     self.analyze_expr(a)?;
                 }
+                // Phase 1A Step 3: param type check for known
+                // functions, after args are analyzed. Unknown arg
+                // types pass (gradual); runtime checks them.
+                if let Some(pts) = known_param_types {
+                    if let ExprKind::Ident(name) = &callee.kind {
+                        for (arg, pt) in args.iter().zip(pts.iter()) {
+                            if let Some(pt) = pt {
+                                let at = self.infer_type(arg);
+                                check_type_match(
+                                    pt,
+                                    at,
+                                    &format!("معامل في الدالة {}", name),
+                                    arg.line,
+                                    arg.col,
+                                )?;
+                            }
+                        }
+                    }
+                }
                 Ok(())
             }
             ExprKind::Index { target, index } => {
                 self.analyze_expr(target)?;
                 self.analyze_expr(index)?;
                 Ok(())
+            }
+            ExprKind::Dot { target, name: _ } => {
+                // Member existence / export status are runtime
+                // checks (module file is loaded at runtime).
+                self.analyze_expr(target)
             }
         }
     }

@@ -18,9 +18,12 @@
 
 use crate::ast::{AssignTarget, BinOp, Expr, ExprKind, Stmt, StmtKind, UnOp};
 use crate::error::{ErrorKind, RioError, RioResult};
+use crate::lexer;
+use crate::parser::Parser;
 use crate::value::Value;
 use std::collections::HashMap;
 use std::io::Write;
+use std::path::PathBuf;
 
 const MAX_LOOP_ITERATIONS: usize = 1_000_000;
 // P0 fix (2026-11-05, v1.2 final review): a hard call-depth limit for
@@ -51,16 +54,35 @@ pub struct Interpreter {
     pub output: String,
     return_value: Option<Value>,
     call_depth: usize,
+    // Phase 1A Step 2: modules.
+    // program_dir: directory of the main program file, used to resolve
+    // module names (module name = file stem, identifier only, so no
+    // path traversal is possible through a module name).
+    program_dir: PathBuf,
+    // module name -> Module value, loaded once per run.
+    loaded_modules: HashMap<String, Value>,
+    // Modules currently being loaded (for cycle detection).
+    loading_stack: Vec<String>,
 }
 
 impl Interpreter {
     pub fn new() -> Self {
+        let program_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             scopes: vec![HashMap::new()],
             output: String::new(),
             return_value: None,
             call_depth: 0,
+            program_dir,
+            loaded_modules: HashMap::new(),
+            loading_stack: Vec::new(),
         }
+    }
+
+    pub fn with_program_dir(program_dir: PathBuf) -> Self {
+        let mut interp = Self::new();
+        interp.program_dir = program_dir;
+        interp
     }
 
     fn define_local(&mut self, name: &str, value: Value) {
@@ -117,8 +139,32 @@ impl Interpreter {
 
     fn exec_stmt(&mut self, stmt: &Stmt) -> RioResult<Flow> {
         match &stmt.kind {
-            StmtKind::Assign { target, value } => {
+            StmtKind::Assign { target, value, annotation } => {
                 let v = self.eval_expr(value)?;
+                // Phase 1A Step 3 (runtime part): an annotated
+                // assignment is checked at runtime too, so gradual
+                // cases (value from an untyped variable) and module
+                // files (not semantically analyzed) are still caught.
+                // `أي` means no check. Static checking for the main
+                // program happens earlier, in the analyzer.
+                if let Some(ann) = annotation {
+                    if ann != "أي" && v.type_name() != ann {
+                        let var_name = match target {
+                            AssignTarget::Var(n) => n.clone(),
+                            _ => String::new(),
+                        };
+                        return Err(RioError::typ(
+                            format!(
+                                "نوع غير متطابق: المتغير {} معلن {}، لكن القيمة {}",
+                                var_name,
+                                ann,
+                                v.type_name()
+                            ),
+                            stmt.line,
+                            stmt.col,
+                        ));
+                    }
+                }
                 match target {
                     AssignTarget::Var(name) => {
                         self.define_local(name, v);
@@ -239,13 +285,56 @@ impl Interpreter {
                 }
                 Ok(Flow::Normal)
             }
-            StmtKind::FuncDef { name, params, body } => {
+            StmtKind::FuncDef { name, params, param_types, return_type, body } => {
                 let func = Value::Function {
                     name: name.clone(),
                     params: params.clone(),
                     body: body.clone(),
+                    module: None,
+                    param_types: param_types.clone(),
+                    return_type: return_type.clone(),
                 };
                 self.define_local(name, func);
+                Ok(Flow::Normal)
+            }
+            StmtKind::Import { module, alias, names } => {
+                let mod_value = self.load_module(module, stmt.line, stmt.col)?;
+                match names {
+                    Some(names) => {
+                        // من وحدة استورد اسم1، اسم2 : bind each name.
+                        let exports = match &mod_value {
+                            Value::Module { exports, .. } => exports.clone(),
+                            _ => HashMap::new(),
+                        };
+                        for name in names {
+                            match exports.get(name) {
+                                Some(v) => self.define_local(name, v.clone()),
+                                None => {
+                                    return Err(RioError::runtime(
+                                        format!(
+                                            "الاسم {} غير مصدر من وحدة {}. أضف صدّر {} في وحدة {}",
+                                            name, module, name, module
+                                        ),
+                                        stmt.line,
+                                        stmt.col,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    None => {
+                        // استورد وحدة [باسم مختصر] : bind module value.
+                        let bind = alias.clone().unwrap_or_else(|| module.clone());
+                        self.define_local(&bind, mod_value);
+                    }
+                }
+                Ok(Flow::Normal)
+            }
+            StmtKind::Export { .. } => {
+                // Export is collected at module load time (see
+                // load_module) from top-level statements, before
+                // execution. At runtime it is a no-op, including in
+                // the main program (the main program is not a module).
                 Ok(Flow::Normal)
             }
             StmtKind::Return { value } => {
@@ -267,6 +356,116 @@ impl Interpreter {
                 Ok(Flow::Normal)
             }
         }
+    }
+
+    /// Load a module by name (file stem), once per run.
+    /// Returns a Module value. On cycle, missing file, or lex/parse
+    /// failure, returns an Arabic Rio error naming the module.
+    fn load_module(&mut self, module: &str, line: usize, col: usize) -> RioResult<Value> {
+        if let Some(v) = self.loaded_modules.get(module) {
+            return Ok(v.clone());
+        }
+        if self.loading_stack.contains(&module.to_string()) {
+            let mut cycle = self.loading_stack.clone();
+            cycle.push(module.to_string());
+            return Err(RioError::runtime(
+                format!("استيراد دائري: {}", cycle.join(" ← ")),
+                line,
+                col,
+            ));
+        }
+        let path = self.program_dir.join(format!("{}.rio", module));
+        let source = std::fs::read_to_string(&path).map_err(|_| {
+            RioError::new(
+                ErrorKind::Io,
+                format!(
+                    "وحدة غير موجودة: {} (بحثت في {})",
+                    module,
+                    path.display()
+                ),
+                line,
+                col,
+            )
+        })?;
+        let tokens = lexer::tokenize(&source).map_err(|e| {
+            RioError::new(
+                e.kind,
+                format!("في وحدة {}: {}", module, e.message),
+                e.line,
+                e.col,
+            )
+        })?;
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse_program().map_err(|e| {
+            RioError::new(
+                e.kind,
+                format!("في وحدة {}: {}", module, e.message),
+                e.line,
+                e.col,
+            )
+        })?;
+        // Collect export names from top-level Export statements only.
+        // Strict rule: only exported names are accessible from outside.
+        // A module with no Export statement exports nothing.
+        let mut export_names: Vec<String> = Vec::new();
+        for stmt in &program {
+            if let StmtKind::Export { names } = &stmt.kind {
+                for n in names {
+                    if !export_names.contains(n) {
+                        export_names.push(n.clone());
+                    }
+                }
+            }
+        }
+        // Execute the module in a fresh global scope, isolated from
+        // the caller's scopes. loaded_modules / loading_stack are
+        // shared, so nested imports and cycle detection work.
+        self.loading_stack.push(module.to_string());
+        let saved_scopes = std::mem::replace(&mut self.scopes, vec![HashMap::new()]);
+        let saved_return = self.return_value.take();
+        let exec_result = self.run(&program);
+        let module_scope = if self.scopes.is_empty() {
+            HashMap::new()
+        } else {
+            self.scopes[0].clone()
+        };
+        self.scopes = saved_scopes;
+        self.return_value = saved_return;
+        self.loading_stack.pop();
+        exec_result.map_err(|e| {
+            RioError::new(
+                e.kind,
+                format!("في وحدة {}: {}", module, e.message),
+                e.line,
+                e.col,
+            )
+        })?;
+        // Mark top-level functions in the module scope with their
+        // module name, so calls to them push this module's scope.
+        // Functions defined inside module functions keep module=None
+        // and rely on the outer call's module scope (Step 2 limit).
+        let mut full_scope = module_scope.clone();
+        for v in full_scope.values_mut() {
+            if let Value::Function { module: m, .. } = v {
+                *m = Some(module.to_string());
+            }
+        }
+        let mut exports: HashMap<String, Value> = HashMap::new();
+        for name in &export_names {
+            if let Some(v) = full_scope.get(name) {
+                exports.insert(name.clone(), v.clone());
+            }
+            // An exported name that was never defined is simply not
+            // present in exports; importing it then fails with the
+            // helpful "غير مصدر" message, naming the module.
+        }
+        let mod_value = Value::Module {
+            name: module.to_string(),
+            exports,
+            scope: full_scope,
+        };
+        self.loaded_modules.insert(module.to_string(), mod_value.clone());
+        Ok(mod_value)
     }
 
     fn exec_while(&mut self, cond: &Expr, body: &[Stmt]) -> RioResult<Flow> {
@@ -577,6 +776,31 @@ impl Interpreter {
                     )),
                 }
             }
+            ExprKind::Dot { target, name } => {
+                let t = self.eval_expr(target)?;
+                match &t {
+                    Value::Module { name: mod_name, exports, .. } => {
+                        exports.get(name).cloned().ok_or_else(|| {
+                            RioError::runtime(
+                                format!(
+                                    "الاسم {} غير مصدر من وحدة {}. أضف صدّر {} في وحدة {}",
+                                    name, mod_name, name, mod_name
+                                ),
+                                expr.line,
+                                expr.col,
+                            )
+                        })
+                    }
+                    other => Err(RioError::typ(
+                        format!(
+                            "الوصول بالنقطة مدعوم على الوحدات فقط في هذه المرحلة، وليس على نوع {}",
+                            other.type_name()
+                        ),
+                        expr.line,
+                        expr.col,
+                    )),
+                }
+            }
         }
     }
 
@@ -751,8 +975,10 @@ impl Interpreter {
         line: usize,
         col: usize,
     ) -> RioResult<Value> {
-        let (name, params, body) = match func {
-            Value::Function { name, params, body } => (name, params, body),
+        let (name, params, body, module, param_types, return_type) = match func {
+            Value::Function { name, params, body, module, param_types, return_type } => {
+                (name, params, body, module, param_types, return_type)
+            }
             _ => unreachable!(),
         };
         if args.len() != params.len() {
@@ -766,6 +992,24 @@ impl Interpreter {
                 line,
                 col,
             ));
+        }
+        // Phase 1A Step 3 (runtime part): param types, `أي` = no check.
+        for (i, arg) in args.iter().enumerate() {
+            if let Some(Some(pt)) = param_types.get(i) {
+                if pt != "أي" && arg.type_name() != pt {
+                    return Err(RioError::typ(
+                        format!(
+                            "نوع غير متطابق: معامل {} في الدالة {} معلن {}، لكن القيمة {}",
+                            params[i],
+                            name,
+                            pt,
+                            arg.type_name()
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+            }
         }
         // P0: refuse a new call at the limit, before pushing a scope
         // or a Rust frame for it, so the error is a Rio error, not a
@@ -781,6 +1025,21 @@ impl Interpreter {
                 col,
             ));
         }
+        // Phase 1A Step 2: a top-level module function, when called
+        // from outside its module, pushes its module's full scope
+        // below its call scope, so its body can read module globals
+        // and call private module helpers. The module scope is the
+        // snapshot captured after module execution (live top-level
+        // values, but index mutations to module globals from inside
+        // a function do not persist across calls in Step 2).
+        let mut pushed_module_scope = false;
+        if let Some(mod_name) = &module {
+            if let Some(Value::Module { scope, .. }) = self.loaded_modules.get(mod_name) {
+                let scope = scope.clone();
+                self.scopes.push(scope);
+                pushed_module_scope = true;
+            }
+        }
         let mut scope = HashMap::new();
         for (p, v) in params.iter().zip(args.into_iter()) {
             scope.insert(p.clone(), v);
@@ -789,10 +1048,48 @@ impl Interpreter {
         self.call_depth += 1;
         let result = self.exec_block(&body);
         self.scopes.pop();
+        if pushed_module_scope {
+            self.scopes.pop();
+        }
         self.call_depth -= 1;
         match result? {
-            Flow::Return => Ok(self.return_value.take().unwrap_or(Value::Nil)),
-            Flow::Normal => Ok(Value::Nil),
+            Flow::Return => {
+                let v = self.return_value.take().unwrap_or(Value::Nil);
+                // Phase 1A Step 3 (runtime part): return type.
+                if let Some(rt) = &return_type {
+                    if rt != "أي" && v.type_name() != rt {
+                        return Err(RioError::typ(
+                            format!(
+                                "نوع غير متطابق: الدالة {} معلنة أن ترجع {}، لكن رجعت {}",
+                                name,
+                                rt,
+                                v.type_name()
+                            ),
+                            line,
+                            col,
+                        ));
+                    }
+                }
+                Ok(v)
+            }
+            Flow::Normal => {
+                // No explicit return: value is لاشيء. If a return
+                // type is declared and is not لاشيء / أي, that is
+                // a mismatch, caught here (not silently Nil).
+                if let Some(rt) = &return_type {
+                    if rt != "أي" && rt != "لاشيء" {
+                        return Err(RioError::typ(
+                            format!(
+                                "نوع غير متطابق: الدالة {} معلنة أن ترجع {}، لكن لم ترجع شيئا",
+                                name, rt
+                            ),
+                            line,
+                            col,
+                        ));
+                    }
+                }
+                Ok(Value::Nil)
+            }
             Flow::Break => Err(RioError::runtime("اكسر خارج حلقة", line, col)),
             Flow::Continue => Err(RioError::runtime("تابع خارج حلقة", line, col)),
         }

@@ -29,7 +29,8 @@ pub enum Keyword {
     Except,   // ماعدا
     Finally,  // أخيرا
     Class,    // فئة (parsed, then rejected with a clear v1 message)
-    Import,   // استورد (same)
+    Import,   // استورد
+    Export,   // صدّر (Phase 1A Step 2: modules)
     As,       // باسم
     From,     // من
     Repeat,   // كرر
@@ -64,6 +65,7 @@ pub enum TokenKind {
     Colon,
     Comma,
     Semicolon,
+    Dot, // .  (Phase 1A Step 2: module.member; numbers consume '.' internally)
     Newline,
     Indent,
     Dedent,
@@ -118,6 +120,7 @@ fn keyword_for(normalized: &str) -> Option<Keyword> {
         "اخيرا" => Keyword::Finally,
         "فئه" => Keyword::Class,
         "استورد" => Keyword::Import,
+        "صدر" => Keyword::Export,
         "باسم" => Keyword::As,
         "من" => Keyword::From,
         "كرر" => Keyword::Repeat,
@@ -307,6 +310,7 @@ pub fn tokenize(source: &str) -> RioResult<Vec<Token>> {
                     '{' => (TokenKind::LBrace, 1),
                     '}' => (TokenKind::RBrace, 1),
                     ':' => (TokenKind::Colon, 1),
+                    '.' => (TokenKind::Dot, 1),
                     ',' | '،' => (TokenKind::Comma, 1),
                     ';' | '؛' => (TokenKind::Semicolon, 1),
                     '!' => {

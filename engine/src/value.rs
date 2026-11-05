@@ -6,6 +6,7 @@
 //! قاموس (Dict), لاشيء (Nil), دالة (Function).
 
 use crate::ast::Stmt;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -15,7 +16,28 @@ pub enum Value {
     List(Vec<Value>),
     Dict(Vec<(String, Value)>),
     Nil,
-    Function { name: String, params: Vec<String>, body: Vec<Stmt> },
+    // module: Some(module_name) for a function defined at the top
+    // level of a module, so calls to it can push that module's scope.
+    // None for functions defined in the main program (and, in Step 2,
+    // for nested functions defined inside a module function, which
+    // rely on the outer call's module scope already on the stack).
+    Function {
+        name: String,
+        params: Vec<String>,
+        body: Vec<Stmt>,
+        module: Option<String>,
+        // Phase 1A Step 3: gradual types, None = untyped (أي).
+        param_types: Vec<Option<String>>,
+        return_type: Option<String>,
+    },
+    // Module: exports are the only names accessible from outside;
+    // scope is the full top-level scope after module execution,
+    // including private names, used for module function calls.
+    Module {
+        name: String,
+        exports: HashMap<String, Value>,
+        scope: HashMap<String, Value>,
+    },
 }
 
 impl Value {
@@ -28,6 +50,7 @@ impl Value {
             Value::Dict(_) => "قاموس",
             Value::Nil => "لاشيء",
             Value::Function { .. } => "دالة",
+            Value::Module { .. } => "وحدة",
         }
     }
 
@@ -65,6 +88,7 @@ impl Value {
             }
             Value::Nil => "لاشيء".to_string(),
             Value::Function { name, .. } => format!("<دالة {}>", name),
+            Value::Module { name, .. } => format!("<وحدة {}>", name),
         }
     }
 

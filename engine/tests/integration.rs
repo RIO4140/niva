@@ -219,10 +219,233 @@ fn semantic_forward_call_fails_like_runtime() {
     assert_eq!(out, "0\n");
 }
 
+fn run_with_modules(files: &[(&str, &str)], main: &str) -> (String, String, i32) {
+    // Multi-file test: write module files + main file in one unique
+    // temp dir, run the main file (modules resolve relative to it).
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!(
+        "rio4140-engine-module-test-{}-{}",
+        std::process::id(),
+        n
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    for (name, src) in files {
+        fs::write(dir.join(name), src).unwrap();
+    }
+    let result = Command::new(bin())
+        .arg(dir.join(main))
+        .current_dir(&dir)
+        .output()
+        .expect("run rio");
+    let _ = fs::remove_dir_all(&dir);
+    (
+        String::from_utf8_lossy(&result.stdout).to_string(),
+        String::from_utf8_lossy(&result.stderr).to_string(),
+        result.status.code().unwrap_or(-1),
+    )
+}
+
+const CALC_MODULE: &str = "صدّر اجمع، الثابت، احصل\nالثابت = ١٠\nدالة مساعد(س):\n    ارجع س * ٢\nدالة اجمع(أ، ب):\n    ارجع مساعد(أ) + ب + الثابت\nدالة احصل():\n    ارجع الثابت\nسر = ٩٩٩\n";
+
+#[test]
+fn module_import_dot_from_and_alias() {
+    // Exported function uses a private helper (مساعد) and a module
+    // global (الثابت); both must be visible inside the module call.
+    let (out, err, code) = run_with_modules(
+        &[
+            ("حساب.rio", CALC_MODULE),
+            (
+                "برنامج.rio",
+                "استورد حساب\nاطبع حساب.اجمع(٣، ٤)\nاطبع حساب.احصل()\nمن حساب استورد اجمع\nاطبع اجمع(١، ٢)\nاستورد حساب باسم ح\nاطبع ح.احصل()\nاطبع حساب\n",
+            ),
+        ],
+        "برنامج.rio",
+    );
+    assert_eq!(code, 0, "stderr: {}", err);
+    assert_eq!(out, "20\n10\n14\n10\n<وحدة حساب>\n");
+}
+
+#[test]
+fn module_private_name_rejected() {
+    let (_, err, code) = run_with_modules(
+        &[
+            ("حساب.rio", CALC_MODULE),
+            ("برنامج.rio", "استورد حساب\nاطبع حساب.سر\n"),
+        ],
+        "برنامج.rio",
+    );
+    assert_ne!(code, 0);
+    assert!(err.contains("غير مصدر"), "stderr: {}", err);
+    assert!(err.contains("حساب"), "stderr: {}", err);
+
+    let (_, err, code) = run_with_modules(
+        &[
+            ("حساب.rio", CALC_MODULE),
+            ("برنامج.rio", "من حساب استورد سر\n"),
+        ],
+        "برنامج.rio",
+    );
+    assert_ne!(code, 0);
+    assert!(err.contains("غير مصدر"), "stderr: {}", err);
+}
+
+#[test]
+fn module_missing_and_cycle_errors() {
+    let (_, err, code) = run_with_modules(
+        &[("برنامج.rio", "استورد لاوجود\n")],
+        "برنامج.rio",
+    );
+    assert_ne!(code, 0);
+    assert!(err.contains("وحدة غير موجودة"), "stderr: {}", err);
+    assert!(err.contains("لاوجود"), "stderr: {}", err);
+
+    let (_, err, code) = run_with_modules(
+        &[
+            ("أ.rio", "صدّر من_أ\nاستورد ب\nدالة من_أ():\n    ارجع ١\n"),
+            ("ب.rio", "صدّر من_ب\nاستورد أ\nدالة من_ب():\n    ارجع ٢\n"),
+            ("برنامج.rio", "استورد أ\n"),
+        ],
+        "برنامج.rio",
+    );
+    assert_ne!(code, 0);
+    assert!(err.contains("استيراد دائري"), "stderr: {}", err);
+}
+
+#[test]
+fn module_load_once() {
+    let (out, err, code) = run_with_modules(
+        &[
+            ("مرة.rio", "صدّر قيمة\nاطبع \"تحميل مرة\"\nقيمة = ٧\n"),
+            (
+                "برنامج.rio",
+                "استورد مرة\nاستورد مرة\nمن مرة استورد قيمة\nاطبع قيمة\n",
+            ),
+        ],
+        "برنامج.rio",
+    );
+    assert_eq!(code, 0, "stderr: {}", err);
+    assert_eq!(out, "تحميل مرة\n7\n");
+}
+
+#[test]
+fn module_semantic_analysis_still_applies_to_main() {
+    // Main program: import defines حساب, but غيرمعرف is still a
+    // semantic error before any output.
+    let (out, err, code) = run_with_modules(
+        &[
+            ("حساب.rio", CALC_MODULE),
+            (
+                "برنامج.rio",
+                "استورد حساب\nاطبع حساب.اجمع(١، ٢)\nاطبع غيرمعرف\n",
+            ),
+        ],
+        "برنامج.rio",
+    );
+    assert_ne!(code, 0);
+    assert_eq!(out, "");
+    assert!(err.contains("متغير غير معرف"), "stderr: {}", err);
+    assert!(err.contains("دلالي"), "stderr: {}", err);
+}
+
+#[test]
+fn dot_on_non_module_is_type_error() {
+    let (_, err, code) = run_src("س = ٥\nاطبع س.شيء\n");
+    assert_ne!(code, 0);
+    assert!(err.contains("الوصول بالنقطة"), "stderr: {}", err);
+}
+
 #[test]
 fn not_binds_looser_than_comparison() {
     // ليس س == ٩٩  means  ليس (س == ٩٩), not (ليس س) == ٩٩.
     let (out, _, code) = run_src("س = ١٠\nإذا ليس س == ٩٩:\n    اطبع \"صح\"\n");
     assert_eq!(code, 0);
     assert_eq!(out, "صح\n");
+}
+
+#[test]
+fn type_annotated_assignment_and_function_ok() {
+    let (out, _, code) = run_src(
+        "س: عدد = ٥\nاطبع س\nدالة جمع(أ: عدد، ب: عدد): عدد:\n    ارجع أ + ب\nاطبع جمع(٣، ٤)\nص: نص = \"مرحبا\"\nاطبع ص\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(out, "5\n7\nمرحبا\n");
+}
+
+#[test]
+fn type_static_mismatch_is_semantic_no_output() {
+    // Literal mismatch: analyzer catches it before any output.
+    let (out, err, code) = run_src("اطبع \"قبل\"\nس: عدد = \"نص\"\n");
+    assert_ne!(code, 0);
+    assert_eq!(out, "");
+    assert!(err.contains("نوع غير متطابق"), "stderr: {}", err);
+    assert!(err.contains("دلالي"), "stderr: {}", err);
+
+    let (_, err, code) = run_src(
+        "دالة جمع(أ: عدد، ب: عدد): عدد:\n    ارجع أ + ب\nاطبع جمع(١، \"نص\")\n",
+    );
+    assert_ne!(code, 0);
+    assert!(err.contains("نوع غير متطابق"), "stderr: {}", err);
+    assert!(err.contains("دلالي"), "stderr: {}", err);
+
+    let (_, err, code) = run_src(
+        "دالة احصل(): عدد:\n    ارجع \"نص\"\nاطبع احصل()\n",
+    );
+    assert_ne!(code, 0);
+    assert!(err.contains("نوع غير متطابق"), "stderr: {}", err);
+
+    let (_, err, code) = run_src("س: عدد = ٥\nس = \"نص\"\n");
+    assert_ne!(code, 0);
+    assert!(err.contains("نوع غير متطابق"), "stderr: {}", err);
+}
+
+#[test]
+fn type_gradual_runtime_mismatch() {
+    // Value from an untyped variable: static type unknown, so the
+    // analyzer passes, but the runtime annotated-assignment check
+    // catches it, after earlier output (runtime, not semantic).
+    let (out, err, code) = run_src("اطبع \"قبل\"\nس = \"نص\"\nص: عدد = س\n");
+    assert_ne!(code, 0);
+    assert_eq!(out, "قبل\n");
+    assert!(err.contains("نوع غير متطابق"), "stderr: {}", err);
+    assert!(!err.contains("دلالي"), "must be runtime, not semantic, stderr: {}", err);
+}
+
+#[test]
+fn type_any_passes() {
+    let (out, _, code) = run_src(
+        "س: أي = ٥\nس = \"نص\"\nاطبع س\nدالة نقل(ق: أي): أي:\n    ارجع ق\nاطبع نقل(٧)\nاطبع نقل(\"أ\")\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(out, "نص\n7\nأ\n");
+}
+
+#[test]
+fn type_unknown_name_is_parse_error() {
+    let (_, err, code) = run_src("س: غيرمعروف = ٥\n");
+    assert_ne!(code, 0);
+    assert!(err.contains("نوع غير معروف"), "stderr: {}", err);
+}
+
+#[test]
+fn type_module_function_runtime_check() {
+    // Module member calls are not statically type-checked (member
+    // type unknown to the main analyzer), but the runtime param
+    // check in call_user catches a wrong argument type.
+    let (_, err, code) = run_with_modules(
+        &[
+            (
+                "حساب.rio",
+                "صدّر جمع\nدالة جمع(أ: عدد، ب: عدد): عدد:\n    ارجع أ + ب\n",
+            ),
+            (
+                "برنامج.rio",
+                "استورد حساب\nاطبع حساب.جمع(١، \"نص\")\n",
+            ),
+        ],
+        "برنامج.rio",
+    );
+    assert_ne!(code, 0);
+    assert!(err.contains("نوع غير متطابق"), "stderr: {}", err);
 }

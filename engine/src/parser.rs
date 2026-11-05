@@ -186,13 +186,71 @@ impl Parser {
                 tok.line,
                 tok.col,
             )),
-            TokenKind::Keyword(Keyword::Import) => Err(RioError::parse(
-                "الاستيراد غير مدعوم في المحرك v1، استخدم الدوال المدمجة",
-                tok.line,
-                tok.col,
-            )),
+            TokenKind::Keyword(Keyword::Import) => self.parse_import(),
+            TokenKind::Keyword(Keyword::From) => self.parse_from_import(),
+            TokenKind::Keyword(Keyword::Export) => self.parse_export(),
             _ => self.parse_assign_or_expr(),
         }
+    }
+
+    fn parse_import(&mut self) -> RioResult<Stmt> {
+        let tok = self.advance(); // استورد
+        let (module, _, _) = self.expect_ident("اسم وحدة")?;
+        let alias = if matches!(self.peek().kind, TokenKind::Keyword(Keyword::As)) {
+            self.advance();
+            let (a, _, _) = self.expect_ident("اسم مختصر بعد باسم")?;
+            Some(a)
+        } else {
+            None
+        };
+        Ok(Stmt::new(
+            StmtKind::Import { module, alias, names: None },
+            tok.line,
+            tok.col,
+        ))
+    }
+
+    fn parse_from_import(&mut self) -> RioResult<Stmt> {
+        let tok = self.advance(); // من
+        let (module, _, _) = self.expect_ident("اسم وحدة بعد من")?;
+        self.expect_keyword(Keyword::Import, "استورد")?;
+        let mut names = Vec::new();
+        loop {
+            let (n, _, _) = self.expect_ident("اسم مستورد")?;
+            names.push(n);
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+        if names.is_empty() {
+            return Err(RioError::parse(
+                "من وحدة استورد تتطلب اسما واحدا على الأقل",
+                tok.line,
+                tok.col,
+            ));
+        }
+        Ok(Stmt::new(
+            StmtKind::Import { module, alias: None, names: Some(names) },
+            tok.line,
+            tok.col,
+        ))
+    }
+
+    fn parse_export(&mut self) -> RioResult<Stmt> {
+        let tok = self.advance(); // صدّر
+        let mut names = Vec::new();
+        loop {
+            let (n, _, _) = self.expect_ident("اسم مصدر")?;
+            names.push(n);
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                self.advance();
+                continue;
+            }
+            break;
+        }
+        Ok(Stmt::new(StmtKind::Export { names }, tok.line, tok.col))
     }
 
     fn parse_print(&mut self) -> RioResult<Stmt> {
@@ -296,10 +354,17 @@ impl Parser {
         let (name, _, _) = self.expect_ident("اسم الدالة")?;
         self.expect(&TokenKind::LParen, "قوس فتح (")?;
         let mut params = Vec::new();
+        let mut param_types: Vec<Option<String>> = Vec::new();
         if !matches!(self.peek().kind, TokenKind::RParen) {
             loop {
                 let (p, _, _) = self.expect_ident("اسم معامل")?;
                 params.push(p);
+                if matches!(self.peek().kind, TokenKind::Colon) {
+                    self.advance();
+                    param_types.push(Some(self.parse_type_name()?));
+                } else {
+                    param_types.push(None);
+                }
                 if matches!(self.peek().kind, TokenKind::Comma) {
                     self.advance();
                     continue;
@@ -308,9 +373,26 @@ impl Parser {
             }
         }
         self.expect(&TokenKind::RParen, "قوس إغلاق )")?;
+        // Optional return type: ): عدد:
+        // After ')', a Colon followed by a type name and another
+        // Colon is a return type; a Colon followed by a block
+        // (Newline/Indent) is just the block colon.
+        let mut return_type: Option<String> = None;
+        if matches!(self.peek().kind, TokenKind::Colon) {
+            if matches!(self.peek_at(1).kind, TokenKind::Ident(_))
+                && matches!(self.peek_at(2).kind, TokenKind::Colon)
+            {
+                self.advance(); // :
+                return_type = Some(self.parse_type_name()?);
+            }
+        }
         self.expect_colon()?;
         let body = self.parse_block()?;
-        Ok(Stmt::new(StmtKind::FuncDef { name, params, body }, tok.line, tok.col))
+        Ok(Stmt::new(
+            StmtKind::FuncDef { name, params, param_types, return_type, body },
+            tok.line,
+            tok.col,
+        ))
     }
 
     fn parse_try(&mut self) -> RioResult<Stmt> {
@@ -343,8 +425,48 @@ impl Parser {
         ))
     }
 
+    fn parse_type_name(&mut self) -> RioResult<String> {
+        let (name, line, col) = self.expect_ident("اسم نوع")?;
+        if crate::ast::is_known_type(&name) {
+            Ok(name)
+        } else {
+            Err(RioError::parse(format!("نوع غير معروف: {}", name), line, col))
+        }
+    }
+
     fn parse_assign_or_expr(&mut self) -> RioResult<Stmt> {
         let expr = self.parse_expr()?;
+        // Phase 1A Step 3: annotated assignment, Var only:
+        // س: عدد = ٥
+        if matches!(&expr.kind, ExprKind::Ident(_))
+            && matches!(self.peek().kind, TokenKind::Colon)
+        {
+            self.advance(); // :
+            let annotation = self.parse_type_name()?;
+            if !matches!(self.peek().kind, TokenKind::Eq) {
+                let t = self.peek().clone();
+                return Err(RioError::parse(
+                    "التعليق النوعي يتطلب تعيينا، مثل س: عدد = ٥",
+                    t.line,
+                    t.col,
+                ));
+            }
+            self.advance(); // =
+            let name = match &expr.kind {
+                ExprKind::Ident(n) => n.clone(),
+                _ => unreachable!(),
+            };
+            let value = self.parse_expr()?;
+            return Ok(Stmt::new(
+                StmtKind::Assign {
+                    target: AssignTarget::Var(name),
+                    value,
+                    annotation: Some(annotation),
+                },
+                expr.line,
+                expr.col,
+            ));
+        }
         if matches!(self.peek().kind, TokenKind::Eq) {
             self.advance();
             let target = match &expr.kind {
@@ -363,7 +485,7 @@ impl Parser {
             };
             let value = self.parse_expr()?;
             return Ok(Stmt::new(
-                StmtKind::Assign { target, value },
+                StmtKind::Assign { target, value, annotation: None },
                 expr.line,
                 expr.col,
             ));
@@ -556,6 +678,16 @@ impl Parser {
                 self.expect(&TokenKind::RBracket, "قوس إغلاق ]")?;
                 expr = Expr::new(
                     ExprKind::Index { target: Box::new(expr), index: Box::new(index) },
+                    tok.line,
+                    tok.col,
+                );
+                continue;
+            }
+            if matches!(self.peek().kind, TokenKind::Dot) {
+                let tok = self.advance();
+                let (name, _, _) = self.expect_ident("اسم بعد النقطة")?;
+                expr = Expr::new(
+                    ExprKind::Dot { target: Box::new(expr), name },
                     tok.line,
                     tok.col,
                 );

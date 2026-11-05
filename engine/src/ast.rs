@@ -46,6 +46,10 @@ pub enum ExprKind {
     Unary { op: UnOp, expr: Box<Expr> },
     Call { callee: Box<Expr>, args: Vec<Expr> },
     Index { target: Box<Expr>, index: Box<Expr> },
+    // Phase 1A Step 2: module.member (and later object.member).
+    // In Step 2, Dot is only valid on a Module value; on any other
+    // value it is a runtime type error.
+    Dot { target: Box<Expr>, name: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -61,9 +65,25 @@ impl Expr {
     }
 }
 
+/// Known type names for gradual typing (Phase 1A Step 3).
+/// `أي` means Any / unknown: no static or runtime check.
+pub const TYPE_NAMES: &[&str] = &[
+    "عدد", "نص", "منطقي", "قائمة", "قاموس", "لاشيء", "دالة", "وحدة", "أي",
+];
+
+pub fn is_known_type(name: &str) -> bool {
+    TYPE_NAMES.contains(&name)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum StmtKind {
-    Assign { target: AssignTarget, value: Expr },
+    // annotation: Some(type) only for a Var target, e.g. س: عدد = ٥.
+    // None = untyped (gradual: أي).
+    Assign {
+        target: AssignTarget,
+        value: Expr,
+        annotation: Option<String>,
+    },
     Print { args: Vec<Expr> },
     If {
         cond: Expr,
@@ -75,7 +95,15 @@ pub enum StmtKind {
     For { var: String, iterable: Expr, body: Vec<Stmt> },
     RepeatCount { count: Expr, body: Vec<Stmt> },
     RepeatWhile { cond: Expr, body: Vec<Stmt> },
-    FuncDef { name: String, params: Vec<String>, body: Vec<Stmt> },
+    // param_types[i]: Some(type) for params[i], None = untyped.
+    // return_type: Some(type), None = untyped (أي).
+    FuncDef {
+        name: String,
+        params: Vec<String>,
+        param_types: Vec<Option<String>>,
+        return_type: Option<String>,
+        body: Vec<Stmt>,
+    },
     Return { value: Option<Expr> },
     Break,
     Continue,
@@ -86,6 +114,19 @@ pub enum StmtKind {
         finally_body: Option<Vec<Stmt>>,
     },
     ExprStmt { expr: Expr },
+    // Phase 1A Step 2: modules.
+    // Import forms:
+    //   استورد وحدة                  -> module, alias=None, names=None
+    //   استورد وحدة باسم مختصر      -> module, alias=Some, names=None
+    //   من وحدة استورد اسم1، اسم2  -> module, alias=None, names=Some
+    Import {
+        module: String,
+        alias: Option<String>,
+        names: Option<Vec<String>>,
+    },
+    // صدّر اسم1، اسم2 : declares names public for this module file.
+    // Only exported names are accessible via import (strict rule).
+    Export { names: Vec<String> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
