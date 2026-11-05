@@ -1,0 +1,13 @@
+[package]
+name = "rio4140-engine"
+version = "1.0.0"
+edition = "2021"
+description = "Rio4140 independent language engine: Rust tree-walking interpreter, no Python, no machine-code compiler in v1"
+license = "MIT"
+
+[[bin]]
+name = "rio"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 2
