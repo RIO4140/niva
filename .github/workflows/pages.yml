@@ -1,0 +1,59 @@
+# GitHub Pages: build the mdBook docs site and the WASM
+# playground, and deploy both (docs at the root, playground
+# at /playground/). Runs on every push to main.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: "0.5.4"
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: v0.15.1
+      - name: Build docs site
+        run: mdbook build docs
+      - name: Build WASM playground
+        working-directory: playground/wasm
+        env:
+          RUSTFLAGS: "-C link-arg=-z -C link-arg=stack-size=16777216"
+        run: wasm-pack build --target web --out-dir ../pkg --release
+      - name: Assemble site
+        run: |
+          mkdir -p _site/playground
+          cp -r docs/book/* _site/
+          cp playground/index.html playground/app.js _site/playground/
+          cp -r playground/pkg _site/playground/pkg
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
