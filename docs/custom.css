@@ -1,0 +1,16 @@
+@import url('https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@400;700&display=swap');
+
+/* كتل الكود RTL (اجتماع 20): الكود عربي ويُقرأ من اليمين،
+   والسمة الافتراضية تفرض direction: ltr على code، فهذا
+   التجاوز ضروري. والخط العربي مضاف كبديل لكل حرف عربي
+   (فيبقى الكود اللاتيني أحادي المسافة كما هو). */
+pre,
+pre code {
+    direction: rtl !important;
+    text-align: right !important;
+}
+
+code {
+    direction: rtl !important;
+    font-family: var(--mono-font), "Noto Naskh Arabic", "Segoe UI", Tahoma, "Noto Sans Arabic", monospace !important;
+}

@@ -6,3 +6,4 @@ text-direction = "rtl"
 src = "src"
 
 [output.html]
+additional-css = ["custom.css"]

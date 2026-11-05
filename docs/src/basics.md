@@ -36,7 +36,7 @@
 وتُقرأ من اليمين بلا انعكاس بصري للعلامات:
 
 ```niva
-{{#include ../../../engine/examples/17-word-operators.niva}}
+{{#include ../../engine/examples/17-word-operators.niva}}
 ```
 
 والكلمات هي: `يساوي` (==) و`لا يساوي` (!=) و`أكبر
