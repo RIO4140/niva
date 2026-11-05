@@ -1,12 +1,12 @@
 [package]
-name = "rio-engine"
+name = "niva-engine"
 version = "1.0.0"
 edition = "2021"
-description = "Rio independent language engine: Rust tree-walking interpreter, no Python, no machine-code compiler in v1"
+description = "محرك لغة Niva المستقل: مفسر Rust يمشي الشجرة، بدون Python، وبدون مترجم إلى لغة آلة في v1"
 license = "MIT"
 
 [[bin]]
-name = "rio"
+name = "niva"
 path = "src/main.rs"
 
 [profile.release]

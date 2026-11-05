@@ -1,13 +1,15 @@
-//! Rio engine CLI: `rio program.rio`
+//! Niva engine CLI: `niva program.niva`
 //! Tree-walking interpreter written in Rust. No Python, no transpilation,
 //! no machine-code compiler in v1. The produced binary runs alone:
 //! it needs no Python installation and no runtime other than itself.
 //!
 //! Usage:
-//!   rio program.rio          run a .rio program
-//!   rio program.rio --ast    print the AST, then run
-//!   rio --help               usage
-//!   rio --version            version
+//!   niva                      enter the interactive REPL
+//!   niva --repl               enter the interactive REPL
+//!   niva program.niva          run a .niva program
+//!   niva program.niva --ast    print the AST, then run
+//!   niva --help               usage
+//!   niva --version            version
 
 mod ast;
 mod error;
@@ -15,6 +17,7 @@ mod interpreter;
 mod lexer;
 mod parser;
 mod permissions;
+mod repl;
 mod semantic;
 mod value;
 mod vm;
@@ -28,10 +31,24 @@ use std::fs;
 use std::process::ExitCode;
 
 fn usage() -> String {
-    "استخدام: rio program.rio [--ast]\n\
-     rio --help     عرض هذه المساعدة\n\
-     rio --version  عرض الإصدار\n"
+    "استخدام: niva [program.niva] [--ast] [--vm] [--allow-all]\n\
+     niva            دخول REPL التفاعلي\n\
+     niva --repl     دخول REPL التفاعلي\n\
+     niva --help     عرض هذه المساعدة\n\
+     niva --version  عرض الإصدار\n"
         .to_string()
+}
+
+/// رسالة خطأ إدخال/إخراج بالعربي، بدلا من رسالة نظام التشغيل الإنجليزية.
+fn io_error_arabic(e: &std::io::Error) -> String {
+    use std::io::ErrorKind::*;
+    match e.kind() {
+        NotFound => "الملف أو المجلد غير موجود".to_string(),
+        PermissionDenied => "تم رفض الإذن".to_string(),
+        AlreadyExists => "الملف موجود بالفعل".to_string(),
+        InvalidInput => "إدخال غير صالح".to_string(),
+        _ => format!("خطأ نظام: {}", e),
+    }
 }
 
 fn main() -> ExitCode {
@@ -41,26 +58,51 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "--version") {
-        println!("Rio engine 1.0.0 (Rust, Tree-Walking Interpreter, no Python)");
+        println!("محرك Niva 1.0.0 (Rust، مفسر يمشي الشجرة، بدون Python)");
         return ExitCode::SUCCESS;
     }
-    if args.len() < 2 {
+    // خيار غير معروف: خطأ عربي واضح بدلا من تجاهله بصمت.
+    const KNOWN_FLAGS: [&str; 7] = [
+        "--help", "-h", "--version", "--repl", "--vm", "--ast", "--allow-all",
+    ];
+    if let Some(unknown) = args
+        .iter()
+        .skip(1)
+        .find(|a| a.starts_with('-') && !KNOWN_FLAGS.contains(&a.as_str()))
+    {
+        eprintln!("خيار غير معروف: {}", unknown);
         eprint!("{}", usage());
-        return ExitCode::from(2);
+        return ExitCode::FAILURE;
     }
-    let path = &args[1];
+    // No file path given (no args, or only flags) -> interactive REPL.
+    // --repl is explicit; --vm is ignored by the REPL, which always
+    // uses the tree-walking interpreter (Meeting 7).
+    let allow_all = args.iter().any(|a| a == "--allow-all");
+    let file_arg = args.iter().skip(1).find(|a| !a.starts_with('-'));
+    if file_arg.is_none() {
+        // Same 64 MB stack thread as file mode, so the depth-200
+        // recursion limit is a Niva error, not a Rust stack overflow.
+        let handle = std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || repl::run_repl(allow_all));
+        return match handle {
+            Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),
+            Err(_) => ExitCode::FAILURE,
+        };
+    }
+    let path = file_arg.unwrap();
     let show_ast = args.iter().any(|a| a == "--ast");
     // Phase 1B slice 1: experimental VM, --vm flag only.
     // Default remains the tree-walking interpreter.
     let use_vm = args.iter().any(|a| a == "--vm");
     // Meeting 4: trusted file mode, explicit flag only.
     // Default is restricted to the program directory.
-    let allow_all = args.iter().any(|a| a == "--allow-all");
+    // (allow_all was already read above, before the REPL branch.)
 
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("خطأ إدخال/إخراج: تعذر قراءة الملف {}: {}", path, e);
+            eprintln!("خطأ إدخال/إخراج: تعذر قراءة الملف {}: {}", path, io_error_arabic(&e));
             return ExitCode::FAILURE;
         }
     };
@@ -85,8 +127,8 @@ fn main() -> ExitCode {
     }
 
     // Phase 1A Step 5 fix: run the interpreter in a thread with a
-    // large stack (64 MB), so Rio's own call-depth limit (200) is
-    // enforced by a Rio error, not by a Rust stack overflow, in
+    // large stack (64 MB), so Niva's own call-depth limit (200) is
+    // enforced by a Niva error, not by a Rust stack overflow, in
     // BOTH debug and release builds. Debug frames grew with the
     // class/interface AST variants, and depth-100 recursion that
     // previously passed in debug began overflowing the default
@@ -116,16 +158,16 @@ fn main() -> ExitCode {
                 eprintln!("{}", e);
                 return ExitCode::FAILURE;
             }
-            // Phase 1B slice 1: experimental VM path, --vm only.
+            // Phase 1B VM path, --vm only.
             if use_vm {
-                let code = match vm::Compiler::compile_program(&program) {
+                let compiled = match vm::Compiler::compile_program(&program) {
                     Ok(c) => c,
                     Err(e) => {
                         eprintln!("{}", e);
                         return ExitCode::FAILURE;
                     }
                 };
-                let mut vm_inst = vm::Vm::new(code);
+                let mut vm_inst = vm::Vm::new(compiled.code, compiled.functions);
                 return match vm_inst.run() {
                     Ok(()) => {
                         print!("{}", vm_inst.output);

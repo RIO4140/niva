@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "rio-engine"
+name = "niva-engine"
 version = "1.0.0"

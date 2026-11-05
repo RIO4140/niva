@@ -1,4 +1,4 @@
-//! Error handling: every Rio error carries a kind, an Arabic message,
+//! Error handling: every Niva error carries a kind, an Arabic message,
 //! and a line + column (character columns, not bytes, so Arabic text counts
 //! as the user sees it). The CLI prints exactly this format to stderr.
 

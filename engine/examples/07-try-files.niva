@@ -5,5 +5,5 @@
     اطبع "خطأ في القسمة"
 أخيرا:
     اطبع "انتهى"
-اكتب_ملف("rio-engine-test.txt"، "مرحبا من محرك Rio")
-اطبع اقرأ_ملف("rio-engine-test.txt")
+اكتب_ملف("niva-engine-test.txt"، "مرحبا من محرك Niva")
+اطبع اقرأ_ملف("niva-engine-test.txt")

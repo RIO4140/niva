@@ -15,6 +15,7 @@ pub enum Keyword {
     For,      // لكل
     In,       // في
     Func,     // دالة
+    Lambda,   // دالة_مجهولة (Step 1, Meeting 13)
     Return,   // ارجع
     And,      // و
     Or,       // أو
@@ -108,6 +109,8 @@ fn keyword_for(normalized: &str) -> Option<Keyword> {
         "لكل" => Keyword::For,
         "في" => Keyword::In,
         "داله" => Keyword::Func,
+        // دالة_مجهولة normalizes to داله_مجهوله (ة -> ه).
+        "داله_مجهوله" => Keyword::Lambda,
         "ارجع" => Keyword::Return,
         "و" => Keyword::And,
         "او" => Keyword::Or,

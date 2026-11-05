@@ -346,16 +346,7 @@ impl Parser {
         Ok(Stmt::new(StmtKind::RepeatCount { count, body }, tok.line, tok.col))
     }
 
-    fn parse_funcdef(&mut self) -> RioResult<Stmt> {
-        let tok = self.advance(); // دالة
-        // Constructor method name أنشئ is a keyword, not an Ident,
-        // so accept it explicitly as a method name here.
-        let (name, _, _) = if matches!(self.peek().kind, TokenKind::Keyword(Keyword::Create)) {
-            self.advance();
-            ("أنشئ".to_string(), tok.line, tok.col)
-        } else {
-            self.expect_ident("اسم الدالة")?
-        };
+    fn parse_param_list(&mut self) -> RioResult<(Vec<String>, Vec<Option<String>>)> {
         self.expect(&TokenKind::LParen, "قوس فتح (")?;
         let mut params = Vec::new();
         let mut param_types: Vec<Option<String>> = Vec::new();
@@ -377,6 +368,20 @@ impl Parser {
             }
         }
         self.expect(&TokenKind::RParen, "قوس إغلاق )")?;
+        Ok((params, param_types))
+    }
+
+    fn parse_funcdef(&mut self) -> RioResult<Stmt> {
+        let tok = self.advance(); // دالة
+        // Constructor method name أنشئ is a keyword, not an Ident,
+        // so accept it explicitly as a method name here.
+        let (name, _, _) = if matches!(self.peek().kind, TokenKind::Keyword(Keyword::Create)) {
+            self.advance();
+            ("أنشئ".to_string(), tok.line, tok.col)
+        } else {
+            self.expect_ident("اسم الدالة")?
+        };
+        let (params, param_types) = self.parse_param_list()?;
         // Optional return type: ): عدد:
         // After ')', a Colon followed by a type name and another
         // Colon is a return type; a Colon followed by a block
@@ -832,6 +837,21 @@ impl Parser {
                 self.advance();
                 Ok(Expr::new(ExprKind::Nil, tok.line, tok.col))
             }
+            TokenKind::Keyword(Keyword::Lambda) => {
+                // Meeting 13: دالة_مجهولة(س): س + 1 — single
+                // expression, implicit return. The body is a full
+                // expression, so it stops naturally at `,` `)` `]`
+                // or newline; nesting works (currying).
+                self.advance(); // دالة_مجهولة
+                let (params, param_types) = self.parse_param_list()?;
+                self.expect_colon()?;
+                let body = self.parse_expr()?;
+                Ok(Expr::new(
+                    ExprKind::Lambda { params, param_types, body: Box::new(body) },
+                    tok.line,
+                    tok.col,
+                ))
+            }
             TokenKind::Keyword(Keyword::Create) => {
                 self.advance(); // أنشئ
                 let (class, _, _) = self.expect_ident("اسم فئة بعد أنشئ")?;
@@ -947,5 +967,22 @@ mod tests {
     fn repeat_count() {
         let prog = parse("كرر ٣ مرات:\n    اطبع ١\n");
         assert!(matches!(prog[0].kind, StmtKind::RepeatCount { .. }));
+    }
+
+    #[test]
+    fn lambda_expression() {
+        let prog = parse("مضاعف = دالة_مجهولة(س): س * 2\n");
+        assert_eq!(prog.len(), 1);
+        match &prog[0].kind {
+            StmtKind::Assign { value, .. } => match &value.kind {
+                ExprKind::Lambda { params, param_types, body } => {
+                    assert_eq!(params, &["س".to_string()]);
+                    assert_eq!(param_types, &[None]);
+                    assert!(matches!(body.kind, ExprKind::Binary { .. }));
+                }
+                other => panic!("expected Lambda, got {:?}", other),
+            },
+            other => panic!("expected Assign, got {:?}", other),
+        }
     }
 }

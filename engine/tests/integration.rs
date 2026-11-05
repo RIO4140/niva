@@ -1,6 +1,6 @@
-//! Integration tests for the Rio Rust engine.
+//! Integration tests for the Niva Rust engine.
 //! Run with: cargo test
-//! Each example in examples/ is run with the real `rio` binary and its
+//! Each example in examples/ is run with the real `niva` binary and its
 //! stdout is compared exactly. Error tests run small programs from a
 //! temporary directory and check the Arabic error, line and column.
 
@@ -9,11 +9,11 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn bin() -> String {
-    env!("CARGO_BIN_EXE_rio").to_string()
+    env!("CARGO_BIN_EXE_niva").to_string()
 }
 
 fn run_file(path: &str) -> (String, String, i32) {
-    let out = Command::new(bin()).arg(path).output().expect("run rio");
+    let out = Command::new(bin()).arg(path).output().expect("run niva");
     (
         String::from_utf8_lossy(&out.stdout).to_string(),
         String::from_utf8_lossy(&out.stderr).to_string(),
@@ -33,13 +33,13 @@ fn run_src(src: &str) -> (String, String, i32) {
         n
     ));
     fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("prog.rio");
+    let path = dir.join("prog.niva");
     fs::write(&path, src).unwrap();
     let result = Command::new(bin())
         .arg(&path)
         .current_dir(&dir)
         .output()
-        .expect("run rio");
+        .expect("run niva");
     let _ = fs::remove_dir_all(&dir);
     (
         String::from_utf8_lossy(&result.stdout).to_string(),
@@ -58,52 +58,60 @@ fn example_path(name: &str) -> PathBuf {
 fn examples_pass() {
     let cases: &[(&str, &str)] = &[
         (
-            "01-hello.rio",
-            "أهلا بك في Rio\n5\nالنتيجة: 20\n",
+            "01-hello.niva",
+            "أهلا بك في Niva\n5\nالنتيجة: 20\n",
         ),
         (
-            "02-variables.rio",
+            "02-variables.niva",
             "8\n15\nمحمود\nصحيح\nعدد\nنص\n50\n123\n",
         ),
         (
-            "03-conditions.rio",
+            "03-conditions.niva",
             "ناجح\nفي المدى\nليس ٩٩\n",
         ),
         (
-            "04-loops.rio",
+            "04-loops.niva",
             "0\n1\n2\nبعد الحلقة:\n2\n0\n1\n2\nتكرار\nتكرار\n3\n4\n",
         ),
         (
-            "05-functions.rio",
+            "05-functions.niva",
             "7\nأهلا محمود\n100\n100\n",
         ),
         (
-            "06-lists-dicts.rio",
+            "06-lists-dicts.niva",
             "1\n3\n6\n3\n[1, 99, 3]\nمحمود\n23\n3\nاسم\nعمر\nمدينة\nصحيح\nصحيح\n",
         ),
         (
-            "07-try-files.rio",
-            "خطأ في القسمة\nانتهى\nمرحبا من محرك Rio\n",
+            "07-try-files.niva",
+            "خطأ في القسمة\nانتهى\nمرحبا من محرك Niva\n",
         ),
         (
-            "08-full-program.rio",
+            "08-full-program.niva",
             "محمود: ناجح\nسارة: ممتاز\nعلي: راسب\nالمتوسط:\n72.33333333333333\nأعلى درجة:\n92\nمجموع من الحلقة:\n217\n",
         ),
         (
-            "09-modules.rio",
+            "09-modules.niva",
             "7\n42\n3\n",
         ),
         (
-            "10-types.rio",
+            "10-types.niva",
             "5\n7\nمحمود\n",
         ),
         (
-            "11-classes.rio",
+            "11-classes.niva",
             "3\n4\n7\n13\n13\n",
         ),
         (
-            "12-inheritance-interfaces.rio",
+            "12-inheritance-interfaces.niva",
             "طالب: محمود\nيدرس\nمحمود\n",
+        ),
+        (
+            "13-closures.niva",
+            "1\n2\n3\n1\nأهلا محمود\n",
+        ),
+        (
+            "14-lambdas.niva",
+            "10\n12\n12\n10\n11\n7\n",
         ),
     ];
     for (name, expected) in cases {
@@ -114,10 +122,10 @@ fn examples_pass() {
     }
     // The file example writes next to its program file (Meeting 4:
     // relative paths resolve against program_dir, not cwd); clean it up.
-    let _ = fs::remove_file("rio-engine-test.txt");
+    let _ = fs::remove_file("niva-engine-test.txt");
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let _ = fs::remove_file(manifest.join("rio-engine-test.txt"));
-    let _ = fs::remove_file(manifest.join("examples").join("rio-engine-test.txt"));
+    let _ = fs::remove_file(manifest.join("niva-engine-test.txt"));
+    let _ = fs::remove_file(manifest.join("examples").join("niva-engine-test.txt"));
 }
 
 #[test]
@@ -157,7 +165,7 @@ fn division_by_zero_error() {
 #[test]
 fn recursion_depth_limit_returns_arabic_error_not_crash() {
     // P0 (v1.2 final review): unbounded recursion must NOT overflow
-    // the Rust stack. It must return a Rio error with kind, line, col.
+    // the Rust stack. It must return a Niva error with kind, line, col.
     let (_, err, code) = run_src(
         "دالة عميقة(ن):\n    ارجع عميقة(ن + ١)\nاطبع عميقة(٠)\n",
     );
@@ -256,7 +264,7 @@ fn run_with_modules(files: &[(&str, &str)], main: &str) -> (String, String, i32)
         .arg(dir.join(main))
         .current_dir(&dir)
         .output()
-        .expect("run rio");
+        .expect("run niva");
     let _ = fs::remove_dir_all(&dir);
     (
         String::from_utf8_lossy(&result.stdout).to_string(),
@@ -273,13 +281,13 @@ fn module_import_dot_from_and_alias() {
     // global (الثابت); both must be visible inside the module call.
     let (out, err, code) = run_with_modules(
         &[
-            ("حساب.rio", CALC_MODULE),
+            ("حساب.niva", CALC_MODULE),
             (
-                "برنامج.rio",
+                "برنامج.niva",
                 "استورد حساب\nاطبع حساب.اجمع(٣، ٤)\nاطبع حساب.احصل()\nمن حساب استورد اجمع\nاطبع اجمع(١، ٢)\nاستورد حساب باسم ح\nاطبع ح.احصل()\nاطبع حساب\n",
             ),
         ],
-        "برنامج.rio",
+        "برنامج.niva",
     );
     assert_eq!(code, 0, "stderr: {}", err);
     assert_eq!(out, "20\n10\n14\n10\n<وحدة حساب>\n");
@@ -289,10 +297,10 @@ fn module_import_dot_from_and_alias() {
 fn module_private_name_rejected() {
     let (_, err, code) = run_with_modules(
         &[
-            ("حساب.rio", CALC_MODULE),
-            ("برنامج.rio", "استورد حساب\nاطبع حساب.سر\n"),
+            ("حساب.niva", CALC_MODULE),
+            ("برنامج.niva", "استورد حساب\nاطبع حساب.سر\n"),
         ],
-        "برنامج.rio",
+        "برنامج.niva",
     );
     assert_ne!(code, 0);
     assert!(err.contains("غير مصدر"), "stderr: {}", err);
@@ -300,10 +308,10 @@ fn module_private_name_rejected() {
 
     let (_, err, code) = run_with_modules(
         &[
-            ("حساب.rio", CALC_MODULE),
-            ("برنامج.rio", "من حساب استورد سر\n"),
+            ("حساب.niva", CALC_MODULE),
+            ("برنامج.niva", "من حساب استورد سر\n"),
         ],
-        "برنامج.rio",
+        "برنامج.niva",
     );
     assert_ne!(code, 0);
     assert!(err.contains("غير مصدر"), "stderr: {}", err);
@@ -312,8 +320,8 @@ fn module_private_name_rejected() {
 #[test]
 fn module_missing_and_cycle_errors() {
     let (_, err, code) = run_with_modules(
-        &[("برنامج.rio", "استورد لاوجود\n")],
-        "برنامج.rio",
+        &[("برنامج.niva", "استورد لاوجود\n")],
+        "برنامج.niva",
     );
     assert_ne!(code, 0);
     assert!(err.contains("وحدة غير موجودة"), "stderr: {}", err);
@@ -321,11 +329,11 @@ fn module_missing_and_cycle_errors() {
 
     let (_, err, code) = run_with_modules(
         &[
-            ("أ.rio", "صدّر من_أ\nاستورد ب\nدالة من_أ():\n    ارجع ١\n"),
-            ("ب.rio", "صدّر من_ب\nاستورد أ\nدالة من_ب():\n    ارجع ٢\n"),
-            ("برنامج.rio", "استورد أ\n"),
+            ("أ.niva", "صدّر من_أ\nاستورد ب\nدالة من_أ():\n    ارجع ١\n"),
+            ("ب.niva", "صدّر من_ب\nاستورد أ\nدالة من_ب():\n    ارجع ٢\n"),
+            ("برنامج.niva", "استورد أ\n"),
         ],
-        "برنامج.rio",
+        "برنامج.niva",
     );
     assert_ne!(code, 0);
     assert!(err.contains("استيراد دائري"), "stderr: {}", err);
@@ -335,13 +343,13 @@ fn module_missing_and_cycle_errors() {
 fn module_load_once() {
     let (out, err, code) = run_with_modules(
         &[
-            ("مرة.rio", "صدّر قيمة\nاطبع \"تحميل مرة\"\nقيمة = ٧\n"),
+            ("مرة.niva", "صدّر قيمة\nاطبع \"تحميل مرة\"\nقيمة = ٧\n"),
             (
-                "برنامج.rio",
+                "برنامج.niva",
                 "استورد مرة\nاستورد مرة\nمن مرة استورد قيمة\nاطبع قيمة\n",
             ),
         ],
-        "برنامج.rio",
+        "برنامج.niva",
     );
     assert_eq!(code, 0, "stderr: {}", err);
     assert_eq!(out, "تحميل مرة\n7\n");
@@ -353,13 +361,13 @@ fn module_semantic_analysis_still_applies_to_main() {
     // semantic error before any output.
     let (out, err, code) = run_with_modules(
         &[
-            ("حساب.rio", CALC_MODULE),
+            ("حساب.niva", CALC_MODULE),
             (
-                "برنامج.rio",
+                "برنامج.niva",
                 "استورد حساب\nاطبع حساب.اجمع(١، ٢)\nاطبع غيرمعرف\n",
             ),
         ],
-        "برنامج.rio",
+        "برنامج.niva",
     );
     assert_ne!(code, 0);
     assert_eq!(out, "");
@@ -454,15 +462,15 @@ fn type_module_function_runtime_check() {
     let (_, err, code) = run_with_modules(
         &[
             (
-                "حساب.rio",
+                "حساب.niva",
                 "صدّر جمع\nدالة جمع(أ: عدد، ب: عدد): عدد:\n    ارجع أ + ب\n",
             ),
             (
-                "برنامج.rio",
+                "برنامج.niva",
                 "استورد حساب\nاطبع حساب.جمع(١، \"نص\")\n",
             ),
         ],
-        "برنامج.rio",
+        "برنامج.niva",
     );
     assert_ne!(code, 0);
     assert!(err.contains("نوع غير متطابق"), "stderr: {}", err);
@@ -518,35 +526,50 @@ fn class_interface_compliance_errors() {
 #[test]
 fn vm_slice1_matches_interpreter_for_core_program() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join(format!("rio-vm-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("niva-vm-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("prog.rio");
+    let path = dir.join("prog.niva");
     std::fs::write(&path, "س = ٠\nبينما س < ٥:\n    س = س + ١\nاطبع س\nإذا س == ٥ و س > ٢:\n    اطبع \"نعم\"\n").unwrap();
-    let out = Command::new(bin()).arg(&path).arg("--vm").output().expect("run rio --vm");
+    let out = Command::new(bin()).arg(&path).arg("--vm").output().expect("run niva --vm");
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(out.status.code().unwrap_or(-1), 0);
     assert_eq!(String::from_utf8_lossy(&out.stdout).to_string(), "5\nنعم\n");
 }
 
 #[test]
+fn vm_rejects_lambda_with_clear_arabic_error() {
+    // Meeting 13: lambdas are interpreter-only until step 4,
+    // like returned closures — a clean error, no crash.
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("niva-vm-lambda-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("prog.niva");
+    std::fs::write(&path, "مضاعف = دالة_مجهولة(س): س * 2\nاطبع مضاعف(5)\n").unwrap();
+    let out = Command::new(bin()).arg(&path).arg("--vm").output().expect("run niva --vm");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_ne!(out.status.code().unwrap_or(0), 0);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("الدالة المجهولة"));
+}
+
+#[test]
 fn file_policy_restricted_blocks_escape_and_allow_all_permits_it() {
     use std::process::Command;
-    let dir = std::env::temp_dir().join(format!("rio-perm-int-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("niva-perm-int-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("prog.rio");
-    fs::write(&path, "اكتب_ملف(\"../rio-perm-escape.txt\"، \"x\")\n").unwrap();
+    let path = dir.join("prog.niva");
+    fs::write(&path, "اكتب_ملف(\"../niva-perm-escape.txt\"، \"x\")\n").unwrap();
     // Default (restricted): must fail, and must NOT create the file outside.
     // current_dir = program dir, so the relative ../ path means
-    // exactly dir.parent()/rio-perm-escape.txt in both modes.
-    let out = Command::new(bin()).arg(&path).current_dir(&dir).output().expect("run rio");
+    // exactly dir.parent()/niva-perm-escape.txt in both modes.
+    let out = Command::new(bin()).arg(&path).current_dir(&dir).output().expect("run niva");
     assert_ne!(out.status.code().unwrap_or(0), 0);
     assert!(String::from_utf8_lossy(&out.stderr).contains("خارج مجلد البرنامج"));
-    assert!(!dir.parent().unwrap().join("rio-perm-escape.txt").exists());
+    assert!(!dir.parent().unwrap().join("niva-perm-escape.txt").exists());
     // Trusted (--allow-all): must succeed and create the file outside.
-    let out2 = Command::new(bin()).arg(&path).arg("--allow-all").current_dir(&dir).output().expect("run rio --allow-all");
+    let out2 = Command::new(bin()).arg(&path).arg("--allow-all").current_dir(&dir).output().expect("run niva --allow-all");
     assert_eq!(out2.status.code().unwrap_or(-1), 0, "stderr: {}", String::from_utf8_lossy(&out2.stderr));
-    let escaped = dir.parent().unwrap().join("rio-perm-escape.txt");
+    let escaped = dir.parent().unwrap().join("niva-perm-escape.txt");
     assert!(escaped.exists());
     let _ = fs::remove_file(&escaped);
     let _ = fs::remove_dir_all(&dir);
@@ -557,4 +580,113 @@ fn file_policy_relative_inside_program_dir_works() {
     let (out, _, code) = run_src("اكتب_ملف(\"out.txt\"، \"أهلا\")\nاطبع اقرأ_ملف(\"out.txt\")\n");
     assert_eq!(code, 0);
     assert_eq!(out, "أهلا\n");
+}
+
+#[test]
+fn vm_slice2_functions_match_interpreter() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("niva-vm-fn-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("prog.niva");
+    fs::write(&path, "دالة جمع(أ، ب):\n    ارجع أ + ب\nدالة عاملي(ن):\n    إذا ن <= ١:\n        ارجع ١\n    ارجع ن * عاملي(ن - ١)\nاطبع جمع(٢، ٣)\nاطبع عاملي(٥)\n").unwrap();
+    let out = Command::new(bin()).arg(&path).arg("--vm").output().expect("run niva --vm");
+    let out2 = Command::new(bin()).arg(&path).output().expect("run niva");
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(out.status.code().unwrap_or(-1), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).to_string(), "5\n120\n");
+    assert_eq!(String::from_utf8_lossy(&out2.stdout).to_string(), "5\n120\n");
+}
+
+#[test]
+fn vm_slice3_lists_match_interpreter() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("niva-vm-list-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("prog.niva");
+    fs::write(&path, "قائمة = [١، ٢، ٣]\nقائمة[١] = ٩٩\nاطبع قائمة\nقاموس = {\"اسم\": \"محمود\"}\nقاموس[\"مدينة\"] = \"القاهرة\"\nاطبع قاموس[\"مدينة\"]\n").unwrap();
+    let out = Command::new(bin()).arg(&path).arg("--vm").output().expect("run niva --vm");
+    let out2 = Command::new(bin()).arg(&path).output().expect("run niva");
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(out.status.code().unwrap_or(-1), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).to_string(), "[1, 99, 3]\nالقاهرة\n");
+    assert_eq!(String::from_utf8_lossy(&out2.stdout).to_string(), "[1, 99, 3]\nالقاهرة\n");
+}
+
+#[test]
+fn repl_session_via_stdin() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(bin())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn niva repl");
+    let input = "س = ٥\nس * ٢\nدالة جمع(أ، ب):\n    ارجع أ + ب\nجمع(٢، ٣)\n:خروج\n";
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("wait repl");
+    assert_eq!(out.status.code().unwrap_or(-1), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(stdout.contains("مرحبا في REPL نيفا"), "stdout: {}", stdout);
+    assert!(stdout.contains("10\n"), "stdout: {}", stdout);
+    // Step 1: the call completes the pending function block, so
+    // its result follows the continuation prompt (....), not a
+    // fresh نيفا> prompt — the block only ends on a line at indent 0.
+    assert!(stdout.contains("5\n"), "stdout: {}", stdout);
+}
+
+#[test]
+fn repl_eof_exits_cleanly() {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(bin())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn niva repl");
+    // Close stdin immediately (EOF with no input).
+    drop(child.stdin.take());
+    let out = child.wait_with_output().expect("wait repl");
+    assert_eq!(out.status.code().unwrap_or(-1), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn vm_slice4_builtins_match_interpreter() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("rio-vm-builtin-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("prog.niva");
+    fs::write(&path, "قائمة = [٣، ١، ٢]\nاطبع طول(قائمة)\nاطبع مجموع(قائمة)\nاطبع أقصى(قائمة)\nاطبع أدنى(قائمة)\nاطبع مطلق(-٥)\nاطبع عدد(\"٤٢\")\nاطبع نص(٥)\nاطبع نوع(قائمة)\nاطبع مدى(٣)\n").unwrap();
+    let out = Command::new(bin()).arg(&path).arg("--vm").output().expect("run niva --vm");
+    let out2 = Command::new(bin()).arg(&path).output().expect("run niva");
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(out.status.code().unwrap_or(-1), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).to_string(), "3\n6\n3\n1\n5\n42\n5\nقائمة\n[0, 1, 2]\n");
+    assert_eq!(String::from_utf8_lossy(&out2.stdout).to_string(), "3\n6\n3\n1\n5\n42\n5\nقائمة\n[0, 1, 2]\n");
+}
+
+#[test]
+fn vm_slice5_classes_match_interpreter() {
+    use std::process::Command;
+    let cases = [
+        ("11-classes.niva", "3\n4\n7\n13\n13\n"),
+        ("12-inheritance-interfaces.niva", "طالب: محمود\nيدرس\nمحمود\n"),
+    ];
+    for (name, expected) in cases {
+        let path = example_path(name);
+        let out = Command::new(bin())
+            .arg(&path)
+            .arg("--vm")
+            .output()
+            .expect("run niva --vm");
+        let out2 = Command::new(bin()).arg(&path).output().expect("run niva");
+        assert_eq!(out.status.code().unwrap_or(-1), 0, "{} vm stderr: {}", name, String::from_utf8_lossy(&out.stderr));
+        assert_eq!(String::from_utf8_lossy(&out.stdout).to_string(), expected, "vm {}", name);
+        assert_eq!(String::from_utf8_lossy(&out2.stdout).to_string(), expected, "interp {}", name);
+    }
 }

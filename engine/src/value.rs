@@ -1,5 +1,5 @@
 //! Values and the type system.
-//! Rio is dynamically typed: a variable may hold any type and may be
+//! Niva is dynamically typed: a variable may hold any type and may be
 //! reassigned to another type, but every operation checks types at runtime
 //! and fails with an Arabic type error instead of silently coercing.
 //! Types: عدد (Number), نص (String), منطقي (Bool), قائمة (List),
@@ -79,6 +79,13 @@ pub enum Value {
         // Phase 1A Step 3: gradual types, None = untyped (أي).
         param_types: Vec<Option<String>>,
         return_type: Option<String>,
+        // Step 1 (Meeting 10/11): lexical closures. The shared
+        // scope chain at definition time, as Rc pointers, so a
+        // returned function still sees (and mutates) its defining
+        // environment. None for module functions (module: Some),
+        // which keep the Step 2 module-scope push instead, and
+        // for synthetic VM function carriers.
+        captured: Option<Vec<Rc<RefCell<HashMap<String, Value>>>>>,
     },
     // Module: exports are the only names accessible from outside;
     // scope is the full top-level scope after module execution,
@@ -99,6 +106,24 @@ pub enum Value {
     BoundMethod { func: Box<Value>, instance: Rc<InstanceData> },
 }
 
+// Captured environments compare by scope identity (same Rc
+// pointers in the same order), not by deep value comparison:
+// two closures from the same factory call share their scopes,
+// two from different calls do not.
+fn captured_eq(
+    a: &Option<Vec<Rc<RefCell<HashMap<String, Value>>>>>,
+    b: &Option<Vec<Rc<RefCell<HashMap<String, Value>>>>>,
+) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => {
+            x.len() == y.len()
+                && x.iter().zip(y.iter()).all(|(p, q)| Rc::ptr_eq(p, q))
+        }
+        _ => false,
+    }
+}
+
 // Manual PartialEq: Rc values compare by identity, not by deep
 // field comparison, so == on classes/instances means same object.
 impl PartialEq for Value {
@@ -111,9 +136,10 @@ impl PartialEq for Value {
             (Value::Dict(a), Value::Dict(b)) => a == b,
             (Value::Nil, Value::Nil) => true,
             (
-                Value::Function { name: n1, params: p1, body: b1, module: m1, param_types: pt1, return_type: r1 },
-                Value::Function { name: n2, params: p2, body: b2, module: m2, param_types: pt2, return_type: r2 },
-            ) => n1 == n2 && p1 == p2 && b1 == b2 && m1 == m2 && pt1 == pt2 && r1 == r2,
+                Value::Function { name: n1, params: p1, body: b1, module: m1, param_types: pt1, return_type: r1, captured: c1 },
+                Value::Function { name: n2, params: p2, body: b2, module: m2, param_types: pt2, return_type: r2, captured: c2 },
+            ) => n1 == n2 && p1 == p2 && b1 == b2 && m1 == m2 && pt1 == pt2 && r1 == r2
+                && captured_eq(c1, c2),
             (
                 Value::Module { name: n1, exports: e1, scope: s1 },
                 Value::Module { name: n2, exports: e2, scope: s2 },

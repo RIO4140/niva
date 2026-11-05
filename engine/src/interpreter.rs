@@ -2,15 +2,25 @@
 //!
 //! Scope rules (documented in DESIGN.md, tested in tests/integration.rs):
 //! - The global scope is the bottom scope.
-//! - A function call pushes a NEW scope. Parameters and assignments inside
-//!   a function live in that scope only and disappear when it returns.
+//! - A function call pushes a NEW scope. Parameters and variables
+//!   defined for the first time inside a function live in that scope
+//!   only and disappear when it returns.
 //! - Reading a variable searches from the innermost scope outward to global.
-//! - Assignment inside a function creates/updates a LOCAL variable, never
-//!   a global scalar of the same name. (Index assignment to an existing
+//! - Step 1 (Meeting 11, 2026-11-05): LEXICAL ASSIGNMENT. Assigning to a
+//!   name that already exists in an outer scope updates that binding
+//!   (walking outward); only a name that exists nowhere is defined
+//!   locally. This is what makes closures stateful (the counter
+//!   pattern). A variable defined for the first time inside a function
+//!   still never escapes it. (Index assignment to an existing
 //!   list/dict mutates that object itself, wherever it lives.)
+//! - A function value captures its defining scope chain (shared Rc
+//!   scopes), so a returned function still sees and mutates its
+//!   defining environment: lexical closures.
 //! - `إذا` / `بينما` / `لكل` / `كرر` do NOT create a scope: variables
 //!   assigned inside them stay visible after the block in the same scope.
 //!   In particular a loop variable is still visible after the loop.
+//!   Loop variables are always defined in the current scope
+//!   (define_local), never assigned outward to a same-named global.
 //!
 //! Type rules: dynamic typing, runtime checks, no silent coercion
 //! (except the explicit عدد() / نص() conversions). Conditions must be
@@ -27,17 +37,17 @@ use std::rc::Rc;
 use std::io::Write;
 use std::path::PathBuf;
 
-const MAX_LOOP_ITERATIONS: usize = 1_000_000;
+pub(crate) const MAX_LOOP_ITERATIONS: usize = 1_000_000;
 // P0 fix (2026-11-05, v1.2 final review): a hard call-depth limit for
 // the tree-walking interpreter, so unbounded recursion returns an
-// Arabic Rio error instead of overflowing the Rust stack and aborting
+// Arabic Niva error instead of overflowing the Rust stack and aborting
 // the process. 200 is chosen empirically, not arbitrarily: measured
 // 2026-11-05, the DEBUG build overflows at ~220-250 nested calls
 // (unoptimised frames, 8 MB main stack), while the RELEASE build
 // survives 1000+. A 1000 limit would therefore still crash under
 // `cargo test` (debug). 200 is safe in BOTH builds, with margin.
 // The VM phase (Phase 1B) will use its own explicit call stack,
-// not the Rust stack, and may raise this limit with a Rio error,
+// not the Rust stack, and may raise this limit with a Niva error,
 // never with a crash.
 const MAX_CALL_DEPTH: usize = 200;
 
@@ -52,7 +62,10 @@ pub enum Flow {
 // We carry a return value alongside Flow::Return via a separate field on
 // the interpreter instead of stuffing it into Flow, to keep Flow Copy.
 pub struct Interpreter {
-    scopes: Vec<HashMap<String, Value>>,
+    // Shared scopes: each scope is an Rc so a function value can
+    // capture its defining chain (lexical closures, Step 1) and
+    // later calls still share it with the defining environment.
+    scopes: Vec<Rc<RefCell<HashMap<String, Value>>>>,
     pub output: String,
     return_value: Option<Value>,
     call_depth: usize,
@@ -74,7 +87,7 @@ impl Interpreter {
     pub fn new() -> Self {
         let program_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
-            scopes: vec![HashMap::new()],
+            scopes: vec![Rc::new(RefCell::new(HashMap::new()))],
             output: String::new(),
             return_value: None,
             call_depth: 0,
@@ -97,14 +110,28 @@ impl Interpreter {
     }
 
     fn define_local(&mut self, name: &str, value: Value) {
-        if let Some(scope) = self.scopes.last_mut() {
-            scope.insert(name.to_string(), value);
+        if let Some(scope) = self.scopes.last() {
+            scope.borrow_mut().insert(name.to_string(), value);
+        }
+    }
+
+    // Step 1 (Meeting 11): lexical assignment. Assign to the
+    // nearest scope that already binds the name (walking outward,
+    // so closures mutate their captured variables and functions
+    // can update outer variables); define locally only when the
+    // name exists nowhere. Used for plain `س = قيمة` only:
+    // loop variables and definitions stay define_local.
+    fn assign_local(&mut self, name: &str, value: Value) {
+        if let Some(i) = self.lookup_scope_index(name) {
+            self.scopes[i].borrow_mut().insert(name.to_string(), value);
+        } else {
+            self.define_local(name, value);
         }
     }
 
     fn lookup(&self, name: &str) -> Option<Value> {
         for scope in self.scopes.iter().rev() {
-            if let Some(v) = scope.get(name) {
+            if let Some(v) = scope.borrow().get(name) {
                 return Some(v.clone());
             }
         }
@@ -113,11 +140,17 @@ impl Interpreter {
 
     fn lookup_scope_index(&self, name: &str) -> Option<usize> {
         for (i, scope) in self.scopes.iter().enumerate().rev() {
-            if scope.contains_key(name) {
+            if scope.borrow().contains_key(name) {
                 return Some(i);
             }
         }
         None
+    }
+
+    /// REPL support: evaluate one expression and return its value.
+    /// Used for bare-expression lines, which the REPL prints.
+    pub fn eval_one(&mut self, expr: &Expr) -> RioResult<Value> {
+        self.eval_expr(expr)
     }
 
     pub fn run(&mut self, program: &[Stmt]) -> RioResult<()> {
@@ -178,7 +211,8 @@ impl Interpreter {
                 }
                 match target {
                     AssignTarget::Var(name) => {
-                        self.define_local(name, v);
+                        // Step 1 (Meeting 11): lexical assignment.
+                        self.assign_local(name, v);
                     }
                     AssignTarget::Index { target: t, index: i } => {
                         self.assign_index(t, i, v, stmt.line, stmt.col)?;
@@ -300,6 +334,11 @@ impl Interpreter {
                 Ok(Flow::Normal)
             }
             StmtKind::FuncDef { name, params, param_types, return_type, body } => {
+                // Step 1: lexical closure — capture the defining
+                // scope chain (shared Rc scopes). Module top-level
+                // functions are marked with their module name after
+                // module execution and then use the Step 2 module
+                // scope push instead of this captured chain.
                 let func = Value::Function {
                     name: name.clone(),
                     params: params.clone(),
@@ -307,6 +346,7 @@ impl Interpreter {
                     module: None,
                     param_types: param_types.clone(),
                     return_type: return_type.clone(),
+                    captured: Some(self.scopes.clone()),
                 };
                 self.define_local(name, func);
                 Ok(Flow::Normal)
@@ -337,6 +377,11 @@ impl Interpreter {
                 // name, so their bodies can read module globals,
                 // like top-level module functions in Step 2.
                 let mod_name = self.loading_stack.last().cloned();
+                // Step 1: methods capture the defining scope chain
+                // too (a method defined inside a function can close
+                // over its locals); module methods use the Step 2
+                // module push at call time instead.
+                let captured = self.scopes.clone();
                 let mut map: HashMap<String, Value> = HashMap::new();
                 for m in methods {
                     if let StmtKind::FuncDef { name: mn, params, param_types, return_type, body } = &m.kind {
@@ -347,6 +392,7 @@ impl Interpreter {
                             module: mod_name.clone(),
                             param_types: param_types.clone(),
                             return_type: return_type.clone(),
+                            captured: Some(captured.clone()),
                         });
                     }
                 }
@@ -479,7 +525,7 @@ impl Interpreter {
 
     /// Load a module by name (file stem), once per run.
     /// Returns a Module value. On cycle, missing file, or lex/parse
-    /// failure, returns an Arabic Rio error naming the module.
+    /// failure, returns an Arabic Niva error naming the module.
     fn load_module(&mut self, module: &str, line: usize, col: usize) -> RioResult<Value> {
         if let Some(v) = self.loaded_modules.get(module) {
             return Ok(v.clone());
@@ -493,7 +539,7 @@ impl Interpreter {
                 col,
             ));
         }
-        let path = self.program_dir.join(format!("{}.rio", module));
+        let path = self.program_dir.join(format!("{}.niva", module));
         let source = std::fs::read_to_string(&path).map_err(|_| {
             RioError::new(
                 ErrorKind::Io,
@@ -540,13 +586,13 @@ impl Interpreter {
         // the caller's scopes. loaded_modules / loading_stack are
         // shared, so nested imports and cycle detection work.
         self.loading_stack.push(module.to_string());
-        let saved_scopes = std::mem::replace(&mut self.scopes, vec![HashMap::new()]);
+        let saved_scopes = std::mem::replace(&mut self.scopes, vec![Rc::new(RefCell::new(HashMap::new()))]);
         let saved_return = self.return_value.take();
         let exec_result = self.run(&program);
         let module_scope = if self.scopes.is_empty() {
             HashMap::new()
         } else {
-            self.scopes[0].clone()
+            self.scopes[0].borrow().clone()
         };
         self.scopes = saved_scopes;
         self.return_value = saved_return;
@@ -563,10 +609,20 @@ impl Interpreter {
         // module name, so calls to them push this module's scope.
         // Functions defined inside module functions keep module=None
         // and rely on the outer call's module scope (Step 2 limit).
+        // Step 1: a closure stored at module top level (its
+        // captured chain is longer than the module scope alone)
+        // is NOT marked — its captured environment, not the module
+        // scope, must be restored at call time.
         let mut full_scope = module_scope.clone();
         for v in full_scope.values_mut() {
-            if let Value::Function { module: m, .. } = v {
-                *m = Some(module.to_string());
+            if let Value::Function { module: m, captured, .. } = v {
+                let top_level = match captured {
+                    Some(chain) => chain.len() == 1,
+                    None => true,
+                };
+                if top_level {
+                    *m = Some(module.to_string());
+                }
             }
         }
         let mut exports: HashMap<String, Value> = HashMap::new();
@@ -722,7 +778,8 @@ impl Interpreter {
                 ));
             }
         };
-        let slot = self.scopes[scope_idx].get_mut(&name).unwrap();
+        let mut scope = self.scopes[scope_idx].borrow_mut();
+        let slot = scope.get_mut(&name).unwrap();
         match slot {
             Value::List(items) => {
                 let i = match idx {
@@ -980,6 +1037,27 @@ impl Interpreter {
                     )),
                 }
             }
+            ExprKind::Lambda { params, param_types, body } => {
+                // Meeting 13: single-expression lambda, implicit
+                // return. Stored as a Function whose body is one
+                // Return statement, so call_user handles it exactly
+                // like a named closure: lexical capture, param
+                // types, depth limit, return value.
+                let func = Value::Function {
+                    name: "مجهولة".to_string(),
+                    params: params.clone(),
+                    body: vec![Stmt::new(
+                        StmtKind::Return { value: Some((**body).clone()) },
+                        expr.line,
+                        expr.col,
+                    )],
+                    module: None,
+                    param_types: param_types.clone(),
+                    return_type: None,
+                    captured: Some(self.scopes.clone()),
+                };
+                Ok(func)
+            }
             ExprKind::Create { class, args } => {
                 let mut arg_values = Vec::new();
                 for a in args {
@@ -1201,9 +1279,9 @@ impl Interpreter {
         line: usize,
         col: usize,
     ) -> RioResult<Value> {
-        let (name, params, body, module, param_types, return_type) = match func {
-            Value::Function { name, params, body, module, param_types, return_type } => {
-                (name, params, body, module, param_types, return_type)
+        let (name, params, body, module, param_types, return_type, captured) = match func {
+            Value::Function { name, params, body, module, param_types, return_type, captured } => {
+                (name, params, body, module, param_types, return_type, captured)
             }
             _ => unreachable!(),
         };
@@ -1238,7 +1316,7 @@ impl Interpreter {
             }
         }
         // P0: refuse a new call at the limit, before pushing a scope
-        // or a Rust frame for it, so the error is a Rio error, not a
+        // or a Rust frame for it, so the error is a Niva error, not a
         // stack overflow. Depth is decremented on every exit path,
         // including errors, so a caught error does not leak depth.
         if self.call_depth >= MAX_CALL_DEPTH {
@@ -1251,31 +1329,35 @@ impl Interpreter {
                 col,
             ));
         }
-        // Phase 1A Step 2: a top-level module function, when called
-        // from outside its module, pushes its module's full scope
-        // below its call scope, so its body can read module globals
-        // and call private module helpers. The module scope is the
-        // snapshot captured after module execution (live top-level
-        // values, but index mutations to module globals from inside
-        // a function do not persist across calls in Step 2).
+        // Step 1: a closure call runs in its captured environment:
+        // save the caller's stack, replace it with the captured
+        // chain, push the parameter scope, restore after the call.
+        // Module functions (module: Some) keep the Step 2
+        // module-scope push on the caller's stack instead.
         let mut pushed_module_scope = false;
+        let mut saved_scopes: Option<Vec<Rc<RefCell<HashMap<String, Value>>>>> = None;
         if let Some(mod_name) = &module {
             if let Some(Value::Module { scope, .. }) = self.loaded_modules.get(mod_name) {
                 let scope = scope.clone();
-                self.scopes.push(scope);
+                self.scopes.push(Rc::new(RefCell::new(scope)));
                 pushed_module_scope = true;
             }
+        } else if let Some(captured) = &captured {
+            saved_scopes = Some(std::mem::replace(&mut self.scopes, captured.clone()));
         }
         let mut scope = HashMap::new();
         for (p, v) in params.iter().zip(args.into_iter()) {
             scope.insert(p.clone(), v);
         }
-        self.scopes.push(scope);
+        self.scopes.push(Rc::new(RefCell::new(scope)));
         self.call_depth += 1;
         let result = self.exec_block(&body);
         self.scopes.pop();
         if pushed_module_scope {
             self.scopes.pop();
+        }
+        if let Some(saved) = saved_scopes {
+            self.scopes = saved;
         }
         self.call_depth -= 1;
         match result? {
@@ -1334,9 +1416,9 @@ impl Interpreter {
         line: usize,
         col: usize,
     ) -> RioResult<Value> {
-        let (name, params, body, module, param_types, return_type) = match func {
-            Value::Function { name, params, body, module, param_types, return_type } => {
-                (name, params, body, module, param_types, return_type)
+        let (name, params, body, module, param_types, return_type, captured) = match func {
+            Value::Function { name, params, body, module, param_types, return_type, captured } => {
+                (name, params, body, module, param_types, return_type, captured)
             }
             _ => unreachable!(),
         };
@@ -1379,25 +1461,34 @@ impl Interpreter {
                 col,
             ));
         }
+        // Step 1: like call_user — module methods keep the Step 2
+        // module-scope push; other methods run in their captured
+        // environment (the scope chain at class definition time).
         let mut pushed_module_scope = false;
+        let mut saved_scopes: Option<Vec<Rc<RefCell<HashMap<String, Value>>>>> = None;
         if let Some(mod_name) = &module {
             if let Some(Value::Module { scope, .. }) = self.loaded_modules.get(mod_name) {
                 let scope = scope.clone();
-                self.scopes.push(scope);
+                self.scopes.push(Rc::new(RefCell::new(scope)));
                 pushed_module_scope = true;
             }
+        } else if let Some(captured) = &captured {
+            saved_scopes = Some(std::mem::replace(&mut self.scopes, captured.clone()));
         }
         let mut scope = HashMap::new();
         for (p, v) in params.iter().zip(args.into_iter()) {
             scope.insert(p.clone(), v);
         }
         scope.insert("نفس".to_string(), Value::Instance(Rc::clone(&instance)));
-        self.scopes.push(scope);
+        self.scopes.push(Rc::new(RefCell::new(scope)));
         self.call_depth += 1;
         let result = self.exec_block(&body);
         self.scopes.pop();
         if pushed_module_scope {
             self.scopes.pop();
+        }
+        if let Some(saved) = saved_scopes {
+            self.scopes = saved;
         }
         self.call_depth -= 1;
         match result? {
@@ -1748,5 +1839,133 @@ mod tests {
     fn if_condition_must_be_bool() {
         let (_, res) = run_src("إذا ١:\n    اطبع ١\n");
         assert!(res.is_err());
+    }
+
+    // Step 1 (Meeting 10/11): lexical closures + lexical assignment.
+    #[test]
+    fn closure_returned_sees_outer_variable() {
+        let (out, res) = run_src(
+            "دالة اصنع():\n    س = ١٠\n    دالة احصل():\n        ارجع س\n    ارجع احصل\nد = اصنع()\nاطبع د()\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "10\n");
+    }
+
+    #[test]
+    fn closure_counter_shares_state() {
+        let (out, res) = run_src(
+            "دالة اصنع_عداد():\n    ع = ٠\n    دالة زد():\n        ع = ع + ١\n        ارجع ع\n    ارجع زد\nأ = اصنع_عداد()\nاطبع أ()\nاطبع أ()\nاطبع أ()\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "1\n2\n3\n");
+    }
+
+    #[test]
+    fn closure_two_counters_are_independent() {
+        let (out, res) = run_src(
+            "دالة اصنع_عداد():\n    ع = ٠\n    دالة زد():\n        ع = ع + ١\n        ارجع ع\n    ارجع زد\nأ = اصنع_عداد()\nب = اصنع_عداد()\nاطبع أ()\nاطبع أ()\nاطبع ب()\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "1\n2\n1\n");
+    }
+
+    #[test]
+    fn closure_sees_later_mutation_of_outer() {
+        let (out, res) = run_src(
+            "س = ١\nدالة احصل():\n    ارجع س\nس = ٢\nاطبع احصل()\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "2\n");
+    }
+
+    #[test]
+    fn closure_param_shadows_captured() {
+        let (out, res) = run_src(
+            "س = ١٠\nدالة احصل(س):\n    ارجع س\nاطبع احصل(٥)\nاطبع س\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "5\n10\n");
+    }
+
+    #[test]
+    fn lexical_assignment_mutates_outer() {
+        let (out, res) = run_src(
+            "س = ١٠\nدالة غير():\n    س = ٢٠\nغير()\nاطبع س\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "20\n");
+    }
+
+    #[test]
+    fn closure_recursion_still_works() {
+        let (out, res) = run_src(
+            "دالة فيب(ن):\n    إذا ن <= ١:\n        ارجع ن\n    ارجع فيب(ن - ١) + فيب(ن - ٢)\nاطبع فيب(١٠)\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "55\n");
+    }
+
+    // Step 1 (Meeting 13): lambdas — دالة_مجهولة(س): س + 1.
+    #[test]
+    fn lambda_basic_value_and_call() {
+        let (out, res) = run_src(
+            "مضاعف = دالة_مجهولة(س): س * 2\nاطبع مضاعف(5)\nاطبع مضاعف\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "10\n<دالة مجهولة>\n");
+    }
+
+    #[test]
+    fn lambda_passed_as_argument() {
+        let (out, res) = run_src(
+            "دالة طبق(د، س):\n    ارجع د(س)\nاطبع طبق(دالة_مجهولة(س): س * 3، 4)\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "12\n");
+    }
+
+    #[test]
+    fn lambda_factory_captures_param() {
+        let (out, res) = run_src(
+            "دالة اصنع_مضاعف(ن):\n    ارجع دالة_مجهولة(س): س * ن\nمضاعف3 = اصنع_مضاعف(3)\nاطبع مضاعف3(4)\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "12\n");
+    }
+
+    #[test]
+    fn lambda_captures_outer_variable() {
+        let (out, res) = run_src(
+            "س = 10\nاحصل = دالة_مجهولة(): س\nاطبع احصل()\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "10\n");
+    }
+
+    #[test]
+    fn lambda_typed_param_checked_at_runtime() {
+        let (_, res) = run_src(
+            "دالة طبق(د، س):\n    ارجع د(س)\nاطبع طبق(دالة_مجهولة(س: عدد): س + 1، \"نص\")\n",
+        );
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("نوع غير متطابق"));
+    }
+
+    #[test]
+    fn lambda_immediate_call_via_parens() {
+        let (out, res) = run_src(
+            "د = (دالة_مجهولة(س): س + 1)(10)\nاطبع د\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "11\n");
+    }
+
+    #[test]
+    fn lambda_currying_nested_lambda() {
+        let (out, res) = run_src(
+            "مركب = دالة_مجهولة(س): دالة_مجهولة(ص): س + ص\nاطبع مركب(3)(4)\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "7\n");
     }
 }

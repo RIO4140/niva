@@ -262,6 +262,7 @@ impl SemanticAnalyzer {
             }
             ExprKind::Index { .. } | ExprKind::Dot { .. } => None,
             ExprKind::Create { .. } => Some("كائن".to_string()),
+            ExprKind::Lambda { .. } => Some("دالة".to_string()),
         }
     }
 
@@ -280,17 +281,17 @@ impl SemanticAnalyzer {
                 let value_type = self.infer_type(value);
                 match target {
                     AssignTarget::Var(name) => {
-                        // Declared-type checks use the CURRENT scope
-                        // only: an assignment inside a function
-                        // defines a LOCAL variable, shadowing any
-                        // outer variable of the same name, matching
-                        // the interpreter's define_local.
-                        let current_decl = self
-                            .scopes
-                            .last()
-                            .and_then(|s| s.get(name))
+                        // Step 1 (Meeting 11): lexical assignment,
+                        // matching the interpreter's assign_local.
+                        // An assignment targets the nearest existing
+                        // binding (any enclosing scope), not a fresh
+                        // local; only a name that exists nowhere is
+                        // defined in the current scope. Declared-type
+                        // checks use the found binding's type.
+                        let existing_decl = self
+                            .lookup(name)
                             .and_then(|info| info.declared_type.clone());
-                        if let Some(decl) = &current_decl {
+                        if let Some(decl) = &existing_decl {
                             check_type_match(
                                 decl,
                                 value_type.clone(),
@@ -307,15 +308,28 @@ impl SemanticAnalyzer {
                                 stmt.line,
                                 stmt.col,
                             )?;
-                            self.define(name, VarInfo::var_typed(ann));
-                        } else if current_decl.is_none()
-                            && self.scopes.last().map(|s| !s.contains_key(name)).unwrap_or(true)
-                        {
+                            // An annotation on an existing binding
+                            // must agree with its declared type.
+                            if let Some(decl) = &existing_decl {
+                                if decl != ann {
+                                    return Err(RioError::semantic(
+                                        format!(
+                                            "المتغير {} معلن {} في نطاق خارجي، ولا يمكن إعادة إعلانه {}",
+                                            name, decl, ann
+                                        ),
+                                        stmt.line,
+                                        stmt.col,
+                                    ));
+                                }
+                            }
+                            // No existing binding: the annotation
+                            // declares a new local.
+                            if self.lookup(name).is_none() {
+                                self.define(name, VarInfo::var_typed(ann));
+                            }
+                        } else if self.lookup(name).is_none() {
                             self.define(name, VarInfo::var());
                         }
-                        // If no annotation and the variable already
-                        // exists in this scope, its declared type
-                        // (if any) is kept.
                     }
                     AssignTarget::Dot { target: t, name: _ } => {
                         // Field assignment: target must be analyzable
@@ -734,6 +748,39 @@ impl SemanticAnalyzer {
                 // Member existence / export status are runtime
                 // checks (module file is loaded at runtime).
                 self.analyze_expr(target)
+            }
+            ExprKind::Lambda { params, param_types, body } => {
+                // Meeting 13: like a FuncDef body, but no name
+                // and no declared return type. Duplicate params
+                // are a definition error; the body sees the
+                // enclosing scopes (lexical capture).
+                let mut seen = HashSet::new();
+                for p in params {
+                    if !seen.insert(p) {
+                        return Err(RioError::semantic(
+                            format!("معامل مكرر في الدالة المجهولة: {}", p),
+                            expr.line,
+                            expr.col,
+                        ));
+                    }
+                }
+                self.scopes.push(HashMap::new());
+                for (p, pt) in params.iter().zip(param_types.iter()) {
+                    match pt {
+                        Some(t) => self.define(p, VarInfo::var_typed(t)),
+                        None => self.define(p, VarInfo::var()),
+                    }
+                }
+                self.function_depth += 1;
+                self.return_type_stack.push(None);
+                let saved_loop = self.loop_depth;
+                self.loop_depth = 0;
+                let r = self.analyze_expr(body);
+                self.loop_depth = saved_loop;
+                self.return_type_stack.pop();
+                self.function_depth -= 1;
+                self.scopes.pop();
+                r
             }
         }
     }

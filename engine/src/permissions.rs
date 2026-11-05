@@ -1,6 +1,6 @@
 //! File capability policy (Meeting 4, Phase 1A permissions slice).
 //!
-//! Default: RESTRICTED. A Rio program may read/write files only
+//! Default: RESTRICTED. A Niva program may read/write files only
 //! inside its own program directory (program_dir), including
 //! subdirectories. Relative paths resolve against program_dir,
 //! NOT against the terminal working directory (this matches
@@ -23,7 +23,7 @@
 //!    canonical base. A symlink inside the folder pointing
 //!    outside is rejected, even if the lexical path looks inside.
 //!
-//! Network: Rio has no network builtin at all, so there is no
+//! Network: Niva has no network builtin at all, so there is no
 //! network capability to grant. This module documents that
 //! fact; no network code is added here.
 
@@ -138,15 +138,15 @@ mod tests {
 
     #[test]
     fn relative_inside_base_ok() {
-        let base = PathBuf::from("/tmp/rio-perm-test");
+        let base = PathBuf::from("/tmp/niva-perm-test");
         let p = FilePolicy::restricted(base.clone());
         let out = p.resolve("out.txt", 1, 1).unwrap();
-        assert_eq!(out, PathBuf::from("/tmp/rio-perm-test/out.txt"));
+        assert_eq!(out, PathBuf::from("/tmp/niva-perm-test/out.txt"));
     }
 
     #[test]
     fn dotdot_escape_rejected() {
-        let base = PathBuf::from("/tmp/rio-perm-test");
+        let base = PathBuf::from("/tmp/niva-perm-test");
         let p = FilePolicy::restricted(base);
         assert!(p.resolve("../escape.txt", 1, 1).is_err());
         assert!(p.resolve("sub/../../escape.txt", 1, 1).is_err());
@@ -154,15 +154,15 @@ mod tests {
 
     #[test]
     fn absolute_outside_rejected_absolute_inside_ok() {
-        let base = PathBuf::from("/tmp/rio-perm-test");
+        let base = PathBuf::from("/tmp/niva-perm-test");
         let p = FilePolicy::restricted(base);
         assert!(p.resolve("/etc/passwd", 1, 1).is_err());
-        assert!(p.resolve("/tmp/rio-perm-test/inner.txt", 1, 1).is_ok());
+        assert!(p.resolve("/tmp/niva-perm-test/inner.txt", 1, 1).is_ok());
     }
 
     #[test]
     fn trusted_allows_outside() {
-        let base = PathBuf::from("/tmp/rio-perm-test");
+        let base = PathBuf::from("/tmp/niva-perm-test");
         let p = FilePolicy::trusted(base);
         assert!(p.resolve("/etc/passwd", 1, 1).is_ok());
         assert!(p.resolve("../escape.txt", 1, 1).is_ok());
@@ -170,10 +170,10 @@ mod tests {
 
     #[test]
     fn symlink_escape_rejected() {
-        let dir = std::env::temp_dir().join(format!("rio-perm-sym-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("niva-perm-sym-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let outside = std::env::temp_dir().join(format!("rio-perm-out-{}", std::process::id()));
+        let outside = std::env::temp_dir().join(format!("niva-perm-out-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&outside);
         std::fs::create_dir_all(&outside).unwrap();
         #[cfg(unix)]

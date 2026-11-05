@@ -53,6 +53,11 @@ pub enum ExprKind {
     Dot { target: Box<Expr>, name: String },
     // Phase 1A Step 4: classes. أنشئ فئة(معاملات)
     Create { class: String, args: Vec<Expr> },
+    // Step 1 (Meeting 13): lambda, single expression,
+    // implicit return. دالة_مجهولة(س): س + 1 — a first-class
+    // Function value that captures lexically like a closure.
+    // param_types[i]: Some(type) for params[i], None = untyped.
+    Lambda { params: Vec<String>, param_types: Vec<Option<String>>, body: Box<Expr> },
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1,7 +1,7 @@
-# Rio Engine — محرك بلغة Rust
+# Niva Engine — محرك بلغة Rust
 
 محرك تنفيذ: Lexer + Parser + AST +
-Tree-Walking Interpreter، مكتوب بـ Rust، ولا يحوّل برامج Rio
+Tree-Walking Interpreter، مكتوب بـ Rust، ولا يحوّل برامج Niva
 إلى لغة آلة في v1.
 
 ## البناء والتشغيل
@@ -11,11 +11,21 @@ Tree-Walking Interpreter، مكتوب بـ Rust، ولا يحوّل برامج R
 
 ```bash
 cargo build --release
-./target/release/rio examples/01-hello.rio
-./target/release/rio examples/08-full-program.rio
-./target/release/rio program.rio --ast   # اطبع شجرة AST ثم شغّل
+./target/release/niva examples/01-hello.niva
+./target/release/niva examples/08-full-program.niva
+./target/release/niva program.niva --ast   # اطبع شجرة AST ثم شغّل
+./target/release/niva                     # دخول REPL التفاعلي
 cargo test                                # اختبارات الوحدة والتكامل
 ```
+
+## REPL
+
+`niva` بلا ملف (أو `niva --repl`) يفتح REPL تفاعليا:
+المتغيرات والدوال تبقى عبر السطور، والتعبير وحده
+يطبع قيمته، والكتل تكمل بسطور إضافية (سطر فارغ
+يلغي الكتلة). الأوامر: `:مساعدة` و`:اعرض` و`:مسح`
+و`:خروج`. يعمل على المفسر الافتراضي، وتشكيل الحروف
+العربية يعتمد على الترمنال نفسه.
 
 ## أمثلة
 
