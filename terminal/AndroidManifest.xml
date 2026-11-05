@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.rio4140.niva"
+    android:versionCode="6"
+    android:versionName="1.1.3">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- قفل الاستيقاظ أثناء الجلب (بند 11): إذن عادي، بلا حوار. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- فحص الاتصال قبل الجلب (بند 12): إذن عادي، بلا حوار. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- الخدمة الأمامية (بند 13). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+    <uses-sdk
+        android:minSdkVersion="24"
+        android:targetSdkVersion="34" />
+
+    <application
+        android:label="نيفا"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:allowBackup="false"
+        android:extractNativeLibs="true"
+        android:theme="@android:style/Theme.Black.NoTitleBar">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- الخدمة الأمامية (بند 13): إشعار الجلسات؛ لا
+             تُصدَّر، ولا تستعيد الجلسات بعد موت العملية. -->
+        <service
+            android:name=".NivaService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse" />
+    </application>
+</manifest>

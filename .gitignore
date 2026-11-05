@@ -7,3 +7,11 @@ engine/target/
 docs/book/
 playground/pkg/
 playground/wasm/target/
+# Niva Android terminal (terminal/): build outputs, never committed
+terminal/build/
+terminal/*.apk
+terminal/*.idsig
+terminal/classes.dex
+terminal/compiled.zip
+terminal/lib/
+terminal/app-*.apk
