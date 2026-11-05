@@ -9,6 +9,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.provider.Settings;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
@@ -49,6 +52,7 @@ import android.widget.PopupMenu;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.BufferedInputStream;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
@@ -57,6 +61,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -134,6 +140,22 @@ public class MainActivity extends Activity {
             "سجل قديم للقراءة فقط — المتغيرات لا تعود بعد إعادة التشغيل.";
     /** رسالة انقطاع الشبكة (بند 12). */
     private static final String OFFLINE_MESSAGE = "لا يوجد اتصال بالإنترنت";
+
+    /** التحديث الذاتي من جيت هاب (v1.1.4، أمر المالك
+     * 2026-11-06 ~00:05): عند الطلب فقط — كتابة العبارة
+     * «تحديث نيفا» أو الاختصار «تن» هي الموافقة على
+     * فحص واحد؛ بلا فحص تلقائي عند البدء وبلا استطلاع
+     * في الخلفية. الفحص HTTPS من التطبيق نفسه (لا
+     * المحرك — اجلب HTTP عاديا فقط ولا يصل جيت هاب).
+     * الوسم المتوقع v<النسخة> (مثلا v1.1.4)؛ وملف
+     * التثبيت أول أصل .apk في الإصدار. */
+    private static final String UPDATE_PHRASE = "تحديث نيفا";
+    private static final String UPDATE_CODE = "تن";
+    private static final String RELEASES_URL =
+            "https://api.github.com/repos/RIO4140/niva/releases/latest";
+    private static final String UPDATE_APK_NAME = "niva-update.apk";
+    /** سقف حجم التحديث: رفض ما زاد عنه (APK نحو 1.2MB). */
+    private static final long MAX_UPDATE_BYTES = 50L * 1024 * 1024;
     /** علامات خطأ جلب من المحرك (بند 12، النصف الثاني):
      * إن ظهرت أثناء جلب وكان الجهاز دون اتصال، تُعرض
      * رسالة الانقطاع بدلا من انتظار مهلة DNS. */
@@ -167,21 +189,23 @@ public class MainActivity extends Activity {
 
     /** أكواد الاختصارات التي يعالجها التطبيق نفسه (لا المحرك):
      * جلسات / جلسة جديدة / مسح الشاشة / حالة الشبكة /
-     * السماح بالشبكة / مدة الجلسة / إعادة تشغيل الجلسة. */
+     * السماح بالشبكة / مدة الجلسة / إعادة تشغيل الجلسة /
+     * تحديث نيفا (v1.1.4). */
     private static final String[] APP_CODES = {
-            "جل", "جد", "مش", "شب", "سش", "مد", "اع"
+            "جل", "جد", "مش", "شب", "سش", "مد", "اع", "تن"
     };
 
     /** صف المفاتيح (أمر المالك 2026-11-05 ~23:02): الأكواد
-     * الخمسون بالترتيب — 43 للمحرك + 7 للتطبيق. ضغطة زر
-     * تُدرج الكود متبوعا بمسافة، ولا تنفذ تلقائيا. */
+     * بالترتيب — 43 للمحرك + 8 للتطبيق. «تن» (تحديث نيفا،
+     * v1.1.4) كود تطبيق إضافي خارج الخمسين المشهورة؛
+     * ضغطة زر تُدرج الكود متبوعا بمسافة، ولا تنفذ تلقائيا. */
     private static final String[] KEY_CODES = {
             "ات", "مح", "نم", "شم", "حم", "حف", "سم", "قم", "اف", "شف",
             "عب", "عن", "عس", "عك", "بم", "بع", "عش", "حج", "شر", "اك",
             "وج", "ام", "عم", "اس", "عر", "مس", "خج", "اص", "طن", "مع",
             "اد", "اق", "طع", "حع", "مى", "رع", "جذ", "قو", "تا", "وق",
             "نو", "اج", "اط",
-            "جل", "جد", "مش", "شب", "سش", "مد", "اع"
+            "جل", "جد", "مش", "شب", "سش", "مد", "اع", "تن"
     };
 
     /** رموز صف المفاتيح الصعبة على لوحة مفاتيح الهاتف. */
@@ -905,7 +929,7 @@ public class MainActivity extends Activity {
             row.addView(keyButton(sym, v -> insertAtCursor(sym)));
         }
 
-        // الاختصارات العربية الخمسون: تُدرج الكود متبوعا
+        // الاختصارات العربية: تُدرج الكود متبوعا
         // بمسافة، ليكتب المستخدم المعاملات ثم إنتر — ولا
         // تنفذ تلقائيا.
         for (String code : KEY_CODES) {
@@ -1953,6 +1977,12 @@ public class MainActivity extends Activity {
             handleAppShortcut(s, first, trimmed);
             return;
         }
+        // عبارة التحديث الذاتي (v1.1.4): لا تصل إلى
+        // المحرك أبدا — فحص إصدارات جيت هاب من التطبيق.
+        if (UPDATE_PHRASE.equals(trimmed)) {
+            runSelfUpdate(s);
+            return;
+        }
         // المحرك متوقف: علّق السطر وأعد التشغيل، ويُرسَل
         // السطر حين يصل الموجّه الجديد (م-5).
         if (s.ended || s.process == null) {
@@ -2126,6 +2156,12 @@ public class MainActivity extends Activity {
             case "اع":
                 restartProcess(s);
                 break;
+            case "تن":
+                // التحديث الذاتي (v1.1.4): فحص إصدارات
+                // جيت هاب عند الطلب — الكتابة نفسها هي
+                // الموافقة على الفحص.
+                runSelfUpdate(s);
+                break;
             default:
                 break;
         }
@@ -2173,6 +2209,307 @@ public class MainActivity extends Activity {
                 })
                 .setCancelable(false)
                 .show();
+    }
+
+    // ---------- التحديث الذاتي من جيت هاب (v1.1.4) ----------
+
+    /** بدء فحص التحديث: دون اتصال رسالة فورية؛ وإلا
+     * سطر تقدّم ثم الفحص على خيط عامل (لا شبكة على
+     * خيط الواجهة أبدا). الكتابة نفسها هي الموافقة
+     * على فحص واحد — بلا فحص تلقائي عند البدء. */
+    private void runSelfUpdate(Session s) {
+        if (!isOnline()) {
+            appLine(s, OFFLINE_MESSAGE);
+            return;
+        }
+        updateLine(s, "جارٍ التحقق من التحديث…");
+        new Thread(() -> checkRelease(s)).start();
+    }
+
+    /** سطر تقدّم بلا موجّه (يُستدعى من خيط الواجهة
+     * فقط): يُلحق بسجل الجلسة، وبالعرض إن كانت ما
+     * زالت نشطة — ولا يمكّن الإدخال؛ الموجّه يعود
+     * مع سطر النتيجة الأخير. */
+    private void updateLine(Session s, String info) {
+        String out = info + "\n";
+        appendSessionText(s, out);
+        if (s == active()) {
+            appendToTerminal(out);
+            scrollToBottomIfAuto();
+        }
+    }
+
+    /** سطر تقدّم من خيط عامل (يُرسَل إلى الواجهة). */
+    private void postUpdateLine(Session s, String info) {
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) return;
+            updateLine(s, info);
+        });
+    }
+
+    /** سطر النتيجة الأخير + موجّه جديد (من خيط
+     * الواجهة): كـappLine لكنه آمن إن بدّل المستخدم
+     * الجلسة أثناء الفحص — يُلحق بالمخزن دائما،
+     * وبالعرض فقط إن كانت الجلسة ما زالت نشطة. */
+    private void updateResultLine(Session s, String msg) {
+        String out = msg.isEmpty() ? s.lastPrompt : msg + "\n" + s.lastPrompt;
+        appendSessionText(s, out);
+        s.inputStart = s.text.length();
+        if (s == active()) {
+            appendToTerminal(out);
+            terminalView.inputStart = s.inputStart;
+            paintPrompt();
+            scrollToBottomIfAuto();
+        }
+    }
+
+    /** سطر النتيجة الأخير (من خيط عامل). */
+    private void finishUpdate(Session s, String msg) {
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) return;
+            updateResultLine(s, msg);
+        });
+    }
+
+    /** فحص إصدارات جيت هاب (خيط عامل): أحدث إصدار،
+     * ووسمه، وأول أصل .apk فيه. 404 = لا إصدار منشور
+     * بعد — ولا إصدار للتطبيق حتى الآن، فالنشر معلّق
+     * حتى اعتماد المالك الكامل. */
+    private void checkRelease(Session s) {
+        HttpURLConnection conn = null;
+        try {
+            conn = (HttpURLConnection) new URL(RELEASES_URL).openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("Accept", "application/vnd.github+json");
+            conn.setRequestProperty("User-Agent", "NivaTerminal");
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(30000);
+            int code = conn.getResponseCode();
+            if (code == 404) {
+                finishUpdate(s, "لا يوجد إصدار منشور بعد");
+                return;
+            }
+            if (code != 200) {
+                finishUpdate(s, "تعذّر التحقق من التحديث (خطأ " + code + ")");
+                return;
+            }
+            String body = readAllCapped(conn.getInputStream(), 1024 * 1024);
+            String tag = jsonString(body, "tag_name");
+            int[] remote = tag == null ? null : parseVersion(tag);
+            if (remote == null) {
+                finishUpdate(s, "تعذّر قراءة إصدار التحديث");
+                return;
+            }
+            int[] local = parseVersion(localVersionName());
+            if (local == null) {
+                finishUpdate(s, "تعذّر قراءة إصدار التحديث");
+                return;
+            }
+            if (compareVersion(remote, local) <= 0) {
+                finishUpdate(s, "لا يوجد تحديث جديد");
+                return;
+            }
+            String assetUrl = findApkAsset(body);
+            if (assetUrl == null) {
+                finishUpdate(s, "لا يوجد ملف تثبيت في الإصدار");
+                return;
+            }
+            // الإذن قبل التنزيل: بلا سماح لا تنزيل ولا
+            // تثبيت — رسالة واضحة + فتح شاشة الإعدادات.
+            if (!canInstallPackages()) {
+                runOnUiThread(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    updateLine(s, "التحديث " + tag + " متاح — لكن التثبيت غير مسموح.");
+                    updateLine(s, "اسمح بتثبيت تطبيقات غير معروفة لتطبيق نيفا من الإعدادات، ثم اكتب تحديث نيفا من جديد.");
+                    openUnknownSourcesSettings();
+                    updateResultLine(s, "");
+                });
+                return;
+            }
+            downloadUpdate(s, assetUrl, tag);
+        } catch (Exception e) {
+            finishUpdate(s, "تعذّر التحقق من التحديث");
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    /** تنزيل ملف التثبيت إلى الذاكرة المؤقتة الخاصة
+     * (خيط عامل): تقدّم كل 25٪، ثم فتح المثبّت.
+     * التثبيت نفسه يؤكده المستخدم على شاشة النظام —
+     * لا تثبيت صامت أبدا. */
+    private void downloadUpdate(Session s, String url, String tag) {
+        postUpdateLine(s, "جارٍ تنزيل التحديث " + tag + "…");
+        HttpURLConnection conn = null;
+        File out = new File(getCacheDir(), UPDATE_APK_NAME);
+        try {
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setRequestProperty("User-Agent", "NivaTerminal");
+            conn.setRequestProperty("Accept", "application/octet-stream");
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(60000);
+            int code = conn.getResponseCode();
+            if (code != 200) {
+                finishUpdate(s, "تعذّر تنزيل التحديث (خطأ " + code + ")");
+                return;
+            }
+            long total = conn.getContentLengthLong();
+            if (total > MAX_UPDATE_BYTES) {
+                finishUpdate(s, "حجم التحديث أكبر من المتوقع");
+                return;
+            }
+            int nextMilestone = 25;
+            try (InputStream in = new BufferedInputStream(conn.getInputStream());
+                 OutputStream os = new FileOutputStream(out)) {
+                byte[] buf = new byte[8192];
+                long done = 0;
+                int n;
+                while ((n = in.read(buf)) >= 0) {
+                    os.write(buf, 0, n);
+                    done += n;
+                    if (done > MAX_UPDATE_BYTES) {
+                        throw new IOException("حجم زائد");
+                    }
+                    if (total > 0) {
+                        int pct = (int) (done * 100 / total);
+                        if (pct >= nextMilestone) {
+                            int shown = (pct / 25) * 25;
+                            postUpdateLine(s, "التنزيل: " + shown + "٪");
+                            nextMilestone = shown + 25;
+                        }
+                    }
+                }
+            }
+            if (out.length() == 0 || (total > 0 && out.length() != total)) {
+                out.delete();
+                finishUpdate(s, "تعذّر تنزيل التحديث");
+                return;
+            }
+            launchInstaller(s, out);
+        } catch (Exception e) {
+            out.delete();
+            finishUpdate(s, "تعذّر تنزيل التحديث");
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    /** فتح مثبّت النظام على الملف المنزَّل (خيط
+     * الواجهة): التأكيد على شاشة النظام، والتطبيق
+     * نفسه لا يثبّت شيئا بصمت أبدا. */
+    private void launchInstaller(Session s, File apk) {
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) return;
+            try {
+                Uri uri = Uri.parse("content://" + ApkProvider.AUTHORITY
+                        + "/" + UPDATE_APK_NAME);
+                Intent intent = new Intent(Intent.ACTION_VIEW);
+                intent.setDataAndType(uri,
+                        "application/vnd.android.package-archive");
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                        | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(intent);
+                updateResultLine(s, "جارٍ فتح المثبّت — أكّد التثبيت على شاشة النظام");
+            } catch (Exception e) {
+                apk.delete();
+                updateResultLine(s, "تعذّر فتح المثبّت");
+            }
+        });
+    }
+
+    /** هل سُمح للتطبيق بتثبيت تطبيقات غير معروفة؟ */
+    private boolean canInstallPackages() {
+        try {
+            return getPackageManager().canRequestPackageInstalls();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** فتح شاشة «تثبيت تطبيقات غير معروفة» الخاصة
+     * بنيفا في إعدادات النظام. */
+    private void openUnknownSourcesSettings() {
+        try {
+            Intent intent = new Intent(
+                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:" + getPackageName()));
+            startActivity(intent);
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** اسم نسخة التطبيق المثبتة (مثلا 1.1.4). */
+    private String localVersionName() {
+        try {
+            PackageInfo info;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                info = getPackageManager().getPackageInfo(getPackageName(),
+                        PackageManager.PackageInfoFlags.of(0));
+            } else {
+                info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            }
+            return info.versionName;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** قراءة دفق كاملا بسقف (حتى لا يبتلع ردا ضخما). */
+    private static String readAllCapped(InputStream in, int cap) throws IOException {
+        BufferedReader reader = new BufferedReader(
+                new InputStreamReader(in, StandardCharsets.UTF_8));
+        StringBuilder out = new StringBuilder();
+        char[] buf = new char[4096];
+        int n;
+        while ((n = reader.read(buf)) > 0) {
+            out.append(buf, 0, n);
+            if (out.length() > cap) throw new IOException("رد زائد");
+        }
+        return out.toString();
+    }
+
+    /** قيمة نصية لحقل JSON بسيط ("key": "value") —
+     * بلا مكتبة JSON خارجية. */
+    private static String jsonString(String json, String key) {
+        Matcher m = Pattern.compile("\"" + Pattern.quote(key)
+                + "\"\\s*:\\s*\"([^\"]*)\"").matcher(json);
+        return m.find() ? m.group(1) : null;
+    }
+
+    /** رابط تنزيل أول أصل .apk في الإصدار (اسم الأصل
+     * يسبق رابط تنزيله في الكائن نفسه). */
+    private static String findApkAsset(String json) {
+        Matcher name = Pattern.compile("\"name\"\\s*:\\s*\"([^\"]*\\.[Aa][Pp][Kk])\"")
+                .matcher(json);
+        while (name.find()) {
+            Matcher url = Pattern.compile("\"browser_download_url\"\\s*:\\s*\"([^\"]*)\"")
+                    .matcher(json);
+            if (url.find(name.end())) return url.group(1);
+        }
+        return null;
+    }
+
+    /** ثلاثية نسخة من وسم (v1.1.4 أو 1.1.4)؛ null
+     * إن لم يُقرأ. */
+    private static int[] parseVersion(String tag) {
+        if (tag == null) return null;
+        Matcher m = Pattern.compile("^v?(\\d+)\\.(\\d+)\\.(\\d+)")
+                .matcher(tag.trim());
+        if (!m.find()) return null;
+        try {
+            return new int[]{Integer.parseInt(m.group(1)),
+                    Integer.parseInt(m.group(2)), Integer.parseInt(m.group(3))};
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** مقارنة ثلاثيات: موجب = الأول أحدث. */
+    private static int compareVersion(int[] a, int[] b) {
+        for (int i = 0; i < 3; i++) {
+            if (a[i] != b[i]) return a[i] - b[i];
+        }
+        return 0;
     }
 
     @Override
