@@ -112,10 +112,12 @@ fn examples_pass() {
         assert_eq!(code, 0, "{} failed: stderr={}", name, err);
         assert_eq!(out, *expected, "output mismatch for {}", name);
     }
-    // The file example writes into the current directory; clean it up.
+    // The file example writes next to its program file (Meeting 4:
+    // relative paths resolve against program_dir, not cwd); clean it up.
     let _ = fs::remove_file("rio-engine-test.txt");
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let _ = fs::remove_file(manifest.join("rio-engine-test.txt"));
+    let _ = fs::remove_file(manifest.join("examples").join("rio-engine-test.txt"));
 }
 
 #[test]
@@ -511,4 +513,48 @@ fn class_interface_compliance_errors() {
     );
     assert_ne!(code, 0);
     assert!(err.contains("عدد معاملات غير صحيح"), "stderr: {}", err);
+}
+
+#[test]
+fn vm_slice1_matches_interpreter_for_core_program() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("rio-vm-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("prog.rio");
+    std::fs::write(&path, "س = ٠\nبينما س < ٥:\n    س = س + ١\nاطبع س\nإذا س == ٥ و س > ٢:\n    اطبع \"نعم\"\n").unwrap();
+    let out = Command::new(bin()).arg(&path).arg("--vm").output().expect("run rio --vm");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(out.status.code().unwrap_or(-1), 0);
+    assert_eq!(String::from_utf8_lossy(&out.stdout).to_string(), "5\nنعم\n");
+}
+
+#[test]
+fn file_policy_restricted_blocks_escape_and_allow_all_permits_it() {
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("rio-perm-int-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("prog.rio");
+    fs::write(&path, "اكتب_ملف(\"../rio-perm-escape.txt\"، \"x\")\n").unwrap();
+    // Default (restricted): must fail, and must NOT create the file outside.
+    // current_dir = program dir, so the relative ../ path means
+    // exactly dir.parent()/rio-perm-escape.txt in both modes.
+    let out = Command::new(bin()).arg(&path).current_dir(&dir).output().expect("run rio");
+    assert_ne!(out.status.code().unwrap_or(0), 0);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("خارج مجلد البرنامج"));
+    assert!(!dir.parent().unwrap().join("rio-perm-escape.txt").exists());
+    // Trusted (--allow-all): must succeed and create the file outside.
+    let out2 = Command::new(bin()).arg(&path).arg("--allow-all").current_dir(&dir).output().expect("run rio --allow-all");
+    assert_eq!(out2.status.code().unwrap_or(-1), 0, "stderr: {}", String::from_utf8_lossy(&out2.stderr));
+    let escaped = dir.parent().unwrap().join("rio-perm-escape.txt");
+    assert!(escaped.exists());
+    let _ = fs::remove_file(&escaped);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn file_policy_relative_inside_program_dir_works() {
+    let (out, _, code) = run_src("اكتب_ملف(\"out.txt\"، \"أهلا\")\nاطبع اقرأ_ملف(\"out.txt\")\n");
+    assert_eq!(code, 0);
+    assert_eq!(out, "أهلا\n");
 }

@@ -65,6 +65,9 @@ pub struct Interpreter {
     loaded_modules: HashMap<String, Value>,
     // Modules currently being loaded (for cycle detection).
     loading_stack: Vec<String>,
+    // Meeting 4: file capability policy. Default restricted to
+    // program_dir; --allow-all (trusted) removes the restriction.
+    file_policy: crate::permissions::FilePolicy,
 }
 
 impl Interpreter {
@@ -75,16 +78,22 @@ impl Interpreter {
             output: String::new(),
             return_value: None,
             call_depth: 0,
-            program_dir,
+            program_dir: program_dir.clone(),
             loaded_modules: HashMap::new(),
             loading_stack: Vec::new(),
+            file_policy: crate::permissions::FilePolicy::restricted(program_dir),
         }
     }
 
     pub fn with_program_dir(program_dir: PathBuf) -> Self {
         let mut interp = Self::new();
-        interp.program_dir = program_dir;
+        interp.program_dir = program_dir.clone();
+        interp.file_policy = crate::permissions::FilePolicy::restricted(program_dir);
         interp
+    }
+
+    pub fn set_trusted(&mut self, trusted: bool) {
+        self.file_policy.trusted = trusted;
     }
 
     fn define_local(&mut self, name: &str, value: Value) {
@@ -1618,9 +1627,12 @@ impl Interpreter {
             "اقرأ_ملف" => {
                 arity(1)?;
                 match &args[0] {
-                    Value::Str(path) => std::fs::read_to_string(path).map(Value::Str).map_err(|e| {
-                        RioError::new(ErrorKind::Io, format!("تعذر قراءة الملف {}: {}", path, e), line, col)
-                    }),
+                    Value::Str(path) => {
+                        let resolved = self.file_policy.resolve(path, line, col)?;
+                        std::fs::read_to_string(&resolved).map(Value::Str).map_err(|e| {
+                            RioError::new(ErrorKind::Io, format!("تعذر قراءة الملف {}: {}", path, e), line, col)
+                        })
+                    }
                     other => Err(RioError::typ(
                         format!("اقرأ_ملف يتطلب مسارا نصيا، وليس {}", other.type_name()),
                         line,
@@ -1632,7 +1644,8 @@ impl Interpreter {
                 arity(2)?;
                 match (&args[0], &args[1]) {
                     (Value::Str(path), Value::Str(content)) => {
-                        std::fs::write(path, content).map(|_| Value::Nil).map_err(|e| {
+                        let resolved = self.file_policy.resolve(path, line, col)?;
+                        std::fs::write(&resolved, content).map(|_| Value::Nil).map_err(|e| {
                             RioError::new(
                                 ErrorKind::Io,
                                 format!("تعذر كتابة الملف {}: {}", path, e),
