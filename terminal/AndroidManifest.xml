@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.rio4140.niva"
-    android:versionCode="8"
-    android:versionName="1.1.5">
+    android:versionCode="9"
+    android:versionName="1.1.6">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- قفل الاستيقاظ أثناء الجلب (بند 11): إذن عادي، بلا حوار. -->
@@ -16,6 +16,8 @@
          معروفة — يُمنح من الإعدادات، لا من حوار؛ وبلا
          سماح لا تنزيل ولا تثبيت. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- الاهتزاز (v1.1.6 بند 26): إذن عادي، بلا حوار. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <uses-sdk
         android:minSdkVersion="24"
@@ -32,12 +34,19 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize"
-            android:configChanges="orientation|screenSize|keyboardHidden">
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- اختصارات المشغّل (v1.1.6 بند 2): «جلسة
+                 جديدة» و«فتح الإعدادات» من الضغطة الطويلة
+                 على الأيقونة؛ singleTask يمنع نسخة ثانية. -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
         <!-- الخدمة الأمامية (بند 13): إشعار الجلسات؛ لا
              تُصدَّر، ولا تستعيد الجلسات بعد موت العملية. -->

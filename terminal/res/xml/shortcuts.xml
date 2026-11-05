@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- اختصارات المشغّل (v1.1.6 بند 2): تظهران من الضغطة
+     الطويلة على أيقونة نيفا. singleTask يمنع نسخة
+     ثانية؛ onNewIntent يوجّه القصد إلى النسخة الحية. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="new_session"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_new_session"
+        android:shortcutLongLabel="@string/shortcut_new_session">
+        <intent
+            android:action="com.rio4140.niva.NEW_SESSION"
+            android:targetPackage="com.rio4140.niva"
+            android:targetClass="com.rio4140.niva.MainActivity" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="open_settings"
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutShortLabel="@string/shortcut_open_settings"
+        android:shortcutLongLabel="@string/shortcut_open_settings">
+        <intent
+            android:action="com.rio4140.niva.OPEN_SETTINGS"
+            android:targetPackage="com.rio4140.niva"
+            android:targetClass="com.rio4140.niva.MainActivity" />
+    </shortcut>
+</shortcuts>

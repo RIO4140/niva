@@ -11,6 +11,7 @@ import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.provider.Settings;
 import android.graphics.Color;
 import android.graphics.Paint;
@@ -21,7 +22,11 @@ import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.text.Editable;
 import android.text.InputFilter;
 import android.text.InputType;
@@ -64,9 +69,15 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -98,9 +109,16 @@ public class MainActivity extends Activity {
     private static final String CONT_PROMPT_TEXT = "> ";
     private static final String ENDED_MESSAGE = "انتهت الجلسة.";
 
-    /** سقف السجل (تدقيق م-1): آخر 2000 سطر / 256KB. */
+    /** سقف السجل (تدقيق م-1): آخر 2000 سطر / 256KB —
+     * والسقف السطري قابل للضبط من niva.properties
+     * (v1.1.6 بند 12) بحد أدنى 100 وأقصى 50000. */
     private static final int MAX_LINES = 2000;
+    private static final int MIN_TRANSCRIPT_LINES = 100;
+    private static final int MAX_TRANSCRIPT_LINES = 50000;
     private static final int MAX_CHARS = 256 * 1024;
+    /** عمر ملف السجل الذي يُحذف تلقائيا عند البدء
+     * (v1.1.6 بند 11): 14 يوما بلا جلسة حية. */
+    private static final long OLD_LOG_MILLIS = 14L * 24 * 60 * 60 * 1000;
     /** سقف سطر الإدخال (تدقيق م-10). */
     private static final int MAX_LINE_CHARS = 64 * 1024;
     /** سقف الجلسات (تدقيق م-8). */
@@ -267,6 +285,10 @@ public class MainActivity extends Activity {
         boolean fetchWakeHeld = false;
         /** خطأ جلب ظهر في المخرجات منذ آخر إرسال (بند 12). */
         boolean lastFetchError = false;
+        /** مسودة لوحة كتابة البرنامج لهذه الجلسة
+         * (v1.1.6 بند 13): تُحفظ في ملف الجلسة عند
+         * onPause وتُستعاد إن ماتت العملية. */
+        String composeDraft = "";
         /** جيل العملية (بند 15): مخرجات عملية ميتة لا
          * تُلحق بجلسة أعيد تشغيلها. */
         int procGen = 0;
@@ -505,6 +527,37 @@ public class MainActivity extends Activity {
     private boolean keepScreenOn = false;
     private boolean lightTheme = false;
     private boolean showKeyRowPref = true;
+    /** المظهر (v1.1.6 بند 10): 0 داكن دائما، 1 فاتح
+     * دائما، 2 يتبع وضع الجهاز؛ lightTheme هو القيمة
+     * المحلولة بعد تطبيق الوضع. */
+    private int themeMode = 0;
+    /** إخفاء لوحة المفاتيح عند البدء (v1.1.6 بند 5) —
+     * الافتراضي لا (يبقى السلوك الحالي). */
+    private boolean hideKeyboardOnStartup = false;
+    /** لوحة المفاتيح البرمجية مفعلة (v1.1.6 بند 6) —
+     * الافتراضي نعم. */
+    private boolean softKeyboardEnabled = true;
+    /** هوامش الترمنال بالبكسل (v1.1.6 بند 11). */
+    private int marginH = 16;
+    private int marginV = 8;
+    /** سقف أسطر السجل القابل للضبط (v1.1.6 بند 12). */
+    private int maxTranscriptLines = MAX_LINES;
+    /** حذف الجلسة المنتهية تلقائيا (v1.1.6 بند 10) —
+     * الافتراضي معطّل. */
+    private boolean autoDeleteEndedSession = false;
+    /** تكرار الأزرار بالضغط المطوّل (v1.1.6 بند 1):
+     * أول تكرار بعد 400ms ثم كل 80ms حتى رفع الإصبع. */
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private Runnable repeatAction = null;
+    private final Runnable repeatRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (repeatAction != null) {
+                repeatAction.run();
+                mainHandler.postDelayed(this, 80);
+            }
+        }
+    };
     /** ألوان المظهر الحالي (تُضبط قبل بناء الواجهة). */
     private int colorBg = DARK_BG;
     private int colorText = DARK_TEXT;
@@ -534,6 +587,32 @@ public class MainActivity extends Activity {
     /** لوحة كتابة البرنامج (بند 10). */
     private View composePanel;
     private EditText composeEdit;
+
+    /** تنبيه عابر قصير (v1.1.6 بند 25): تأكيدات خفيفة
+     * بلا حوار («تم النسخ»، «تم الحفظ»…). */
+    private void toast(String msg) {
+        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
+    }
+
+    /** اهتزاز تأكيد (v1.1.6 بند 26): VIBRATE إذن عادي
+     * بلا حوار؛ 1000ms هي المدة الافتراضية. */
+    private void vibrate(long ms) {
+        try {
+            Vibrator vib = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            if (vib == null || !vib.hasVibrator()) return;
+            if (Build.VERSION.SDK_INT >= 26) {
+                vib.vibrate(VibrationEffect.createOneShot(
+                        ms, VibrationEffect.DEFAULT_AMPLITUDE));
+            } else {
+                vib.vibrate(ms);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void vibrateDefault() {
+        vibrate(1000);
+    }
 
     private void openDrawer() {
         // الدرج مقفل أثناء التحديد (بند 1، كما في Termux:
@@ -612,7 +691,9 @@ public class MainActivity extends Activity {
         // يُدرج سطرا جديدا أبدا.
         terminalView.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         terminalView.setImeOptions(EditorInfo.IME_ACTION_SEND);
-        terminalView.setPadding(16, 8, 16, 16);
+        // الهوامش من niva.properties (v1.1.6 بند 11).
+        terminalView.setShowSoftInputOnFocus(softKeyboardEnabled);
+        applyMargins();
         terminalView.setHorizontallyScrolling(false);
         terminalView.onEnterSubmit = this::submitLine;
         terminalView.onExitSelection = () -> {
@@ -654,6 +735,33 @@ public class MainActivity extends Activity {
             }
             return false;
         });
+        // سلوكيات الفأرة (v1.1.6 بند 14 — أولوية منخفضة،
+        // أجهزة لوحية وDeX وChromebook): يمين يفتح قائمة
+        // العنوان، عجلة تمرّر 3 أسطر لكل نقرة، وسط يلصق.
+        // هذا سلوك نظام تشغيل للفأرة، لا بروتوكول فأرة VT
+        // (ما زال مرفوضا).
+        terminalView.setOnGenericMotionListener((v, event) -> {
+            if (event.getAction() == MotionEvent.ACTION_BUTTON_PRESS) {
+                int btn = event.getActionButton();
+                if (btn == MotionEvent.BUTTON_SECONDARY) {
+                    showTopMenu();
+                    return true;
+                }
+                if (btn == MotionEvent.BUTTON_TERTIARY) {
+                    pasteFromClipboard();
+                    return true;
+                }
+            }
+            if (event.getAction() == MotionEvent.ACTION_SCROLL) {
+                float vscroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL);
+                if (vscroll != 0) {
+                    int lineH = Math.max(1, terminalView.getLineHeight());
+                    terminalView.scrollBy(0, (int) (-vscroll * lineH * 3));
+                    return true;
+                }
+            }
+            return false;
+        });
         // شريط إجراءات التحديد العربي (بند 1): الضغطة
         // الطويلة تدخل وضع التحديد بمقابض أندرويد الأصلية؛
         // القائمة عربية كاملة (نسخ، لصق، مشاركة، تحديد
@@ -678,6 +786,9 @@ public class MainActivity extends Activity {
                         }
                         menu.add(Menu.NONE, 3, Menu.NONE, "مشاركة");
                         menu.add(Menu.NONE, 4, Menu.NONE, "تحديد الكل");
+                        // v1.1.6 بند 12: حذف المحدد من العرض
+                        // ومن السجل المحفوظ.
+                        menu.add(Menu.NONE, 5, Menu.NONE, "احذف المحدد");
                         return true;
                     }
 
@@ -706,6 +817,11 @@ public class MainActivity extends Activity {
                         }
                         if (id == 4) {
                             terminalView.selectAll();
+                            return true;
+                        }
+                        if (id == 5) {
+                            deleteSelectedText();
+                            mode.finish();
                             return true;
                         }
                         return false;
@@ -824,12 +940,30 @@ public class MainActivity extends Activity {
                 Toast.makeText(this, "وصلت إلى الحد الأقصى (٨ جلسات)", Toast.LENGTH_SHORT).show();
             }
         });
+        // الضغطة الطويلة على «+» تفتح حوار إنشاء جلسة
+        // مسمّاة (v1.1.6 بند 3): اكتب الاسم ثم «إنشاء»
+        // فتولد الجلسة بالاسم.
+        addBtn.setOnLongClickListener(v -> {
+            showCreateNamedSessionDialog();
+            return true;
+        });
         drawerButtons.addView(addBtn);
         Button kbdBtn = new Button(this);
         kbdBtn.setText("⌨");
         kbdBtn.setTextColor(colorText);
         kbdBtn.setBackgroundColor(colorBtn);
         kbdBtn.setOnClickListener(v -> toggleKeyboard());
+        // الضغطة الطويلة على زر الكيبورد تبدّل شريط
+        // الأدوات (v1.1.6 بند 4): إظهار/إخفاء صف
+        // المفاتيح (ولوحة الكتابة إن كانت ظاهرة)، مع
+        // تنبيه قصير؛ والحالة محفوظة.
+        kbdBtn.setOnLongClickListener(v -> {
+            boolean show = !showKeyRowPref;
+            setShowKeyRow(show);
+            if (!show) hideCompose();
+            toast(show ? "تم إظهار شريط الأدوات" : "تم إخفاء شريط الأدوات");
+            return true;
+        });
         drawerButtons.addView(kbdBtn);
         sessionList.addView(drawerButtons);
 
@@ -883,11 +1017,21 @@ public class MainActivity extends Activity {
         // اللصق نفسه). مخفية حتى تُطلب من قائمة العنوان.
         buildComposePanel(frame);
 
+        // مسح ملفات السجلات القديمة بلا جلسة حية (v1.1.6
+        // بند 11) قبل الاستعادة، ثم استعادة الجلسات
+        // وضغط ملفاتها (v1.1.6 بند 2: ملفات يتيمة تُحذف).
+        sweepOldSessionFiles();
         if (!restoreSessions()) {
             createSession();
         }
+        saveAllSessions();
         terminalView.requestFocus();
-        showKeyboard();
+        // إخفاء لوحة المفاتيح عند البدء (v1.1.6 بند 5):
+        // الافتراضي يبقى كما هو (تظهر).
+        if (!hideKeyboardOnStartup) showKeyboard();
+        // اختصارات المشغّل (v1.1.6 بند 2): قصد أتى مع
+        // تشغيل التطبيق من الأيقونة.
+        handleShortcutIntent(getIntent());
 
         // الخدمة الأمامية (بند 13): إشعار عربي بعدد
         // الجلسات، يبقى ما دام التطبيق حيا.
@@ -913,8 +1057,44 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** اختصارات المشغّل مع وضع singleTask (v1.1.6
+     * بند 2 + 9): قصد جديد يصل إلى النسخة الحية نفسها
+     * بدلا من بناء نسخة ثانية فوقها. */
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        handleShortcutIntent(intent);
+    }
+
+    private void handleShortcutIntent(Intent intent) {
+        if (intent == null || intent.getAction() == null) return;
+        String action = intent.getAction();
+        if ("com.rio4140.niva.NEW_SESSION".equals(action)) {
+            if (!createSession()) {
+                toast("وصلت إلى الحد الأقصى (٨ جلسات)");
+            }
+        } else if ("com.rio4140.niva.OPEN_SETTINGS".equals(action)) {
+            showTopMenu();
+        }
+    }
+
+    /** تغيير وضع النظام الليلي (v1.1.6 بند 10): مع
+     * uiMode في configChanges لا يُعاد إنشاء النشاط؛
+     * نعيد حلّ المظهر إن كان «النظام». */
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        if (themeMode == 2) {
+            lightTheme = !isSystemNight();
+            applyThemeColors();
+        }
+    }
+
     @Override
     protected void onPause() {
+        // إيقاف تكرار الأزرار (v1.1.6 بند 1) قبل كل شيء.
+        stopRepeat();
         // القفل مقصور على الجلب نفسه (بند 11): يُحرَّر
         // فقط إن لم يعد أي جلب جاريا — جلب بدأ قبل
         // المغادرة يكمل بقفله حتى وصول الموجّه.
@@ -959,6 +1139,9 @@ public class MainActivity extends Activity {
     }
 
     private void showKeyboard() {
+        // تعطيل لوحة المفاتيح البرمجية كليا (v1.1.6 بند 6):
+        // لا تُستدعى أبدا حين يكون المفتاح «لا».
+        if (!softKeyboardEnabled) return;
         terminalView.requestFocus();
         InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
         if (imm == null) return;
@@ -1007,10 +1190,12 @@ public class MainActivity extends Activity {
         row.addView(keyButton("لصق", v -> pasteFromClipboard()));
         altButton = keyButton("بديل", v -> toggleAlt());
         row.addView(altButton);
-        row.addView(keyButton("↑", v -> arrowUp()));
-        row.addView(keyButton("↓", v -> arrowDown()));
-        row.addView(keyButton("←", v -> arrowLeft()));
-        row.addView(keyButton("→", v -> arrowRight()));
+        // الأسهم بأزرار متكررة (v1.1.6 بند 1): إمساك السهم
+        // يكرر فعله كل 80ms حتى رفع الإصبع.
+        row.addView(repeatButton("↑", this::arrowUp));
+        row.addView(repeatButton("↓", this::arrowDown));
+        row.addView(repeatButton("←", this::arrowLeft));
+        row.addView(repeatButton("→", this::arrowRight));
         row.addView(keyButton("بداية", v -> moveCursorToLineStart()));
         row.addView(keyButton("نهاية", v -> moveCursorToLineEnd()));
         row.addView(keyButton("صفحة↑", v -> pageScroll(-1)));
@@ -1050,10 +1235,53 @@ public class MainActivity extends Activity {
         b.setFocusable(false);
         b.setFocusableInTouchMode(false);
         b.setOnClickListener(v -> {
+            // نبضة لمسية قصيرة لكل زر (v1.1.6 بند 7) —
+            // تحترم حالة الصامت الكلي للجهاز.
+            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
             terminalView.requestFocus();
             action.onClick(v);
         });
         return b;
+    }
+
+    /** زر متكرر بالضغط المطوّل (v1.1.6 بند 1): نقرة
+     * واحدة تنفذ الفعل مرة، والإمساك يكرره كل 80ms بعد
+     * تأخير أولي 400ms؛ والتكرار يتوقف فور رفع الإصبع
+     * أو إلغاء اللمس — فلا يأكل نصا. */
+    private Button repeatButton(String label, Runnable action) {
+        Button b = new Button(this);
+        b.setText(label);
+        b.setTextColor(colorText);
+        b.setBackgroundColor(colorBtn);
+        b.setPadding(20, 8, 20, 8);
+        b.setFocusable(false);
+        b.setFocusableInTouchMode(false);
+        b.setOnTouchListener((v, event) -> {
+            int act = event.getAction();
+            if (act == MotionEvent.ACTION_DOWN) {
+                v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP);
+                terminalView.requestFocus();
+                repeatAction = action;
+                action.run();
+                mainHandler.postDelayed(repeatRunnable, 400);
+                return true;
+            }
+            if (act == MotionEvent.ACTION_UP
+                    || act == MotionEvent.ACTION_CANCEL
+                    || act == MotionEvent.ACTION_OUTSIDE) {
+                repeatAction = null;
+                mainHandler.removeCallbacks(repeatRunnable);
+                return true;
+            }
+            return true;
+        });
+        return b;
+    }
+
+    /** إيقاف التكرار احتياطا عند مغادرة النشاط. */
+    private void stopRepeat() {
+        repeatAction = null;
+        mainHandler.removeCallbacks(repeatRunnable);
     }
 
     private void insertAtCursor(String text) {
@@ -1195,10 +1423,19 @@ public class MainActivity extends Activity {
     // ---------- الجلسات ----------
 
     private boolean createSession() {
+        return createSession(null);
+    }
+
+    /** إنشاء جلسة باسم اختياري (v1.1.6 بند 3: من حوار
+     * الضغطة الطويلة على زر «جلسة جديدة»). */
+    private boolean createSession(String name) {
         if (sessions.size() >= MAX_SESSIONS) {
             return false;
         }
         Session s = new Session();
+        if (name != null && !name.trim().isEmpty()) {
+            s.customName = name.trim();
+        }
         sessions.add(s);
         startProcess(s);
         rebuildSessionList();
@@ -1208,9 +1445,17 @@ public class MainActivity extends Activity {
     }
 
     private void switchTo(int idx) {
+        // مسودة لوحة الكتابة تتبع جلستها (v1.1.6 بند 13):
+        // تُحفظ للمغادِرة وتُحمَّل للداخلة.
+        if (!sessions.isEmpty() && composeEdit != null) {
+            active().composeDraft = composeEdit.getText().toString();
+        }
         saveTerminalToSession();
         activeIdx = idx;
         syncTerminalFromSession();
+        if (composeEdit != null) {
+            composeEdit.setText(active().composeDraft);
+        }
         updateNetState();
         rebuildSessionList();
         Session s = active();
@@ -1296,16 +1541,119 @@ public class MainActivity extends Activity {
         return line.length() > 40 ? line.substring(0, 40) + "…" : line;
     }
 
-    /** قائمة صف الجلسة (بند 6): تسمية / إنهاء الجلسة. */
+    /** قائمة صف الجلسة (بند 6): تسمية / إنهاء الجلسة —
+     * والمنتهية وحدها تحصل على «احذف الجلسة»
+     * (v1.1.6 بند 1): الحية لا تُحذف من الدرج أبدا،
+     * تُنهى أولا ثم تُحذف. */
     private void showSessionRowMenu(final int idx) {
         if (idx < 0 || idx >= sessions.size()) return;
+        final Session s = sessions.get(idx);
+        if (s.ended) {
+            new AlertDialog.Builder(this)
+                    .setItems(new CharSequence[]{"تسمية", "إنهاء الجلسة", "احذف الجلسة"},
+                            (d, which) -> {
+                                if (which == 0) showRenameDialog(idx);
+                                else if (which == 1) showCloseSessionDialog(idx);
+                                else showDeleteSessionDialog(idx);
+                            })
+                    .show();
+        } else {
+            new AlertDialog.Builder(this)
+                    .setItems(new CharSequence[]{"تسمية", "إنهاء الجلسة"},
+                            (d, which) -> {
+                                if (which == 0) showRenameDialog(idx);
+                                else showCloseSessionDialog(idx);
+                            })
+                    .show();
+        }
+    }
+
+    /** حوار إنشاء جلسة مسمّاة (v1.1.6 بند 3). */
+    private void showCreateNamedSessionDialog() {
+        final EditText input = new EditText(this);
+        input.setTextDirection(View.TEXT_DIRECTION_RTL);
+        input.setHint("اسم الجلسة");
         new AlertDialog.Builder(this)
-                .setItems(new CharSequence[]{"تسمية", "إنهاء الجلسة"},
-                        (d, which) -> {
-                            if (which == 0) showRenameDialog(idx);
-                            else showCloseSessionDialog(idx);
-                        })
+                .setTitle("جلسة جديدة")
+                .setView(input)
+                .setPositiveButton("إنشاء", (d, w) -> {
+                    String name = input.getText().toString().trim();
+                    if (createSession(name.isEmpty() ? null : name)) {
+                        closeDrawer();
+                    } else {
+                        toast("وصلت إلى الحد الأقصى (٨ جلسات)");
+                    }
+                })
+                .setNegativeButton("إلغاء", null)
                 .show();
+    }
+
+    /** حوار تأكيد حذف جلسة منتهية (v1.1.6 بند 1):
+     * يسمّي الجلسة، ويحذف سجلها المحفوظ معها. */
+    private void showDeleteSessionDialog(final int idx) {
+        if (idx < 0 || idx >= sessions.size()) return;
+        Session s = sessions.get(idx);
+        String name = s.customName != null ? s.customName
+                : "جلسة " + arabicDigits(idx + 1);
+        new AlertDialog.Builder(this)
+                .setMessage("احذف الجلسة «" + name + "»؟\nسيُحذف سجلها المحفوظ أيضا.")
+                .setPositiveButton("حذف", (d, w) -> deleteSession(idx, false))
+                .setNegativeButton("إلغاء", null)
+                .show();
+    }
+
+    /** حذف جلسة منتهية (v1.1.6 بند 1): تُزال من
+     * القائمة وتُحذف ملفات سجلها؛ الحية لا تصل هنا
+     * أبدا (القائمة لا تعرض الحذف إلا للمنتهية).
+     * silent = بلا تنبيه (للحذف التلقائي بند 10). */
+    private void deleteSession(int idx, boolean silent) {
+        if (idx < 0 || idx >= sessions.size()) return;
+        Session s = sessions.get(idx);
+        if (!s.ended) {
+            toast("الجلسة ما زالت تعمل — أنهِها أولا");
+            return;
+        }
+        if (s.process != null) {
+            try {
+                s.process.destroy();
+            } catch (Exception ignored) {
+            }
+        }
+        if (s.writer != null) s.writer.interrupt();
+        if (s.waiter != null) s.waiter.interrupt();
+        s.fetchWakeHeld = false;
+        releaseFetchWakeLockIfIdle();
+        boolean wasActive = idx == activeIdx;
+        sessions.remove(idx);
+        deleteSessionFiles(idx);
+        if (sessions.isEmpty()) {
+            activeIdx = 0;
+            createSession();
+        } else {
+            if (wasActive) {
+                activeIdx = Math.max(0, Math.min(idx, sessions.size() - 1));
+                syncTerminalFromSession();
+                if (composeEdit != null) {
+                    composeEdit.setText(active().composeDraft);
+                }
+                updateNetState();
+            } else if (idx < activeIdx) {
+                activeIdx--;
+            }
+            rebuildSessionList();
+        }
+        saveAllSessions();
+        refreshServiceNotification();
+        if (!silent) toast("تم حذف الجلسة");
+    }
+
+    /** حذف ملفات جلسة بعينها (سجل + محفوظات + مسودة
+     * الكتابة) من مجلد الجلسات. */
+    private void deleteSessionFiles(int idx) {
+        File dir = sessionsDir();
+        new File(dir, "session-" + idx + ".txt").delete();
+        new File(dir, "session-" + idx + ".meta").delete();
+        new File(dir, "session-" + idx + ".compose").delete();
     }
 
     private void showRenameDialog(final int idx) {
@@ -1392,6 +1740,10 @@ public class MainActivity extends Activity {
 
     private void saveAllSessions() {
         if (sessions.isEmpty()) return;
+        // مسودة لوحة الكتابة للجلسة النشطة (v1.1.6 بند 13).
+        if (composeEdit != null) {
+            active().composeDraft = composeEdit.getText().toString();
+        }
         saveTerminalToSession();
         for (int i = 0; i < sessions.size(); i++) {
             saveSessionToDisk(sessions.get(i), i);
@@ -1405,6 +1757,74 @@ public class MainActivity extends Activity {
         // تُستعاد عند العودة إن كانت ما زالت حية.
         if (prefs != null) {
             prefs.edit().putInt(PREF_ACTIVE_SESSION, activeIdx).apply();
+        }
+        // ضغط ملفات الجلسات (v1.1.6 بند 2): أي ملف
+        // يتيم بلا جلسة يُحذف عند كل حفظ.
+        pruneSessionFiles();
+    }
+
+    /** حذف ملفات جلسات يتيمة: أي session-N بلا جلسة
+     * حية بنفس الرقم (بعد حذف أو عطل) — يُحذف سجلها
+     * ومحفوظاتها ومسودتها. */
+    private void pruneSessionFiles() {
+        File dir = sessionsDir();
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            Integer idx = sessionFileIndex(f.getName());
+            if (idx == null) continue;
+            if (idx >= sessions.size()) {
+                f.delete();
+            }
+        }
+    }
+
+    /** رقم ملف جلسة من اسمه (session-3.txt → 3)، أو
+     * null إن لم يكن ملف جلسة. */
+    private static Integer sessionFileIndex(String name) {
+        if (!name.startsWith("session-")) return null;
+        String rest = name.substring(8);
+        int dot = rest.indexOf('.');
+        if (dot < 0) return null;
+        try {
+            return Integer.parseInt(rest.substring(0, dot));
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** مسح ملفات سجلات قديمة عند البدء (v1.1.6 بند 11):
+     * ملف سجل أقدم من 14 يوما بلا جلسة حية — أي لا
+     * يُستعاد (خارج أول 8 ملفات صالحة) — يُحذف مع
+     * ملفاته المرافقة. ملاحظة صادقة: في بنيتنا كل ملف
+     * صالح يُستعاد جلسة حية عند البدء، فـ«بلا جلسة
+     * حية» تعني عمليا الملفات اليتيمة؛ والضغط في
+     * saveAllSessions يزيل أي يتيم متبقٍّ مهما كان
+     * عمره (بند 2). */
+    private void sweepOldSessionFiles() {
+        File dir = sessionsDir();
+        if (!dir.isDirectory()) return;
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        List<Integer> valid = new ArrayList<>();
+        for (File f : files) {
+            Integer idx = sessionFileIndex(f.getName());
+            if (idx != null && f.getName().endsWith(".txt")) {
+                valid.add(idx);
+            }
+        }
+        Collections.sort(valid);
+        Set<Integer> live = new HashSet<>();
+        for (int i = 0; i < Math.min(MAX_SESSIONS, valid.size()); i++) {
+            live.add(valid.get(i));
+        }
+        long cutoff = System.currentTimeMillis() - OLD_LOG_MILLIS;
+        for (File f : files) {
+            Integer idx = sessionFileIndex(f.getName());
+            if (idx == null || live.contains(idx)) continue;
+            if (f.lastModified() < cutoff) {
+                f.delete();
+            }
         }
     }
 
@@ -1424,6 +1844,14 @@ public class MainActivity extends Activity {
                 meta.append(h.replace("\n", " ")).append('\u0000');
             }
             writeFile(new File(dir, "session-" + idx + ".meta"), meta.toString());
+            // مسودة لوحة الكتابة (v1.1.6 بند 13): ملف
+            // مستقل؛ الفارغة تحذف ملفها.
+            File composeFile = new File(dir, "session-" + idx + ".compose");
+            if (s.composeDraft != null && !s.composeDraft.isEmpty()) {
+                writeFile(composeFile, s.composeDraft);
+            } else {
+                composeFile.delete();
+            }
         } catch (IOException ignored) {
         }
     }
@@ -1481,6 +1909,12 @@ public class MainActivity extends Activity {
                 }
             } catch (IOException ignored) {
             }
+            // مسودة لوحة الكتابة (v1.1.6 بند 13).
+            try {
+                s.composeDraft = readFile(new File(dir, "session-" + idx + ".compose"));
+            } catch (IOException ignored) {
+                s.composeDraft = "";
+            }
             sessions.add(s);
             startProcess(s);
         }
@@ -1498,6 +1932,9 @@ public class MainActivity extends Activity {
         }
         activeIdx = Math.max(0, Math.min(want, sessions.size() - 1));
         syncTerminalFromSession();
+        if (composeEdit != null) {
+            composeEdit.setText(active().composeDraft);
+        }
         updateNetState();
         rebuildSessionList();
         return true;
@@ -1820,6 +2257,19 @@ public class MainActivity extends Activity {
         }
         rebuildSessionList();
         refreshServiceNotification();
+        // اهتزاز عند انتهاء برنامج (v1.1.6 بند 26):
+        // المدة الافتراضية 1000ms.
+        vibrateDefault();
+        // حذف تلقائي للجلسة المنتهية برمز 0 (v1.1.6
+        // بند 10): خيار في niva.properties، افتراضيا
+        // معطّل؛ وبرمز غير صفر تبقى مشطوبة للقراءة.
+        if (autoDeleteEndedSession && code == 0) {
+            int idx = sessions.indexOf(s);
+            if (idx >= 0) {
+                deleteSession(idx, true);
+                toast("حُذفت الجلسة المنتهية تلقائيا");
+            }
+        }
     }
 
     // ---------- الإخراج ----------
@@ -1852,7 +2302,7 @@ public class MainActivity extends Activity {
      * معروضا (فلا يُفقد نص مكتوب)، ومن الرأس إلى حدود سطر. */
     private void trimTranscript(Session s) {
         if (s.inputStart >= 0) return;
-        while ((s.lineCount > MAX_LINES || s.text.length() > MAX_CHARS) && s.lineCount > 100) {
+        while ((s.lineCount > maxTranscriptLines || s.text.length() > MAX_CHARS) && s.lineCount > 100) {
             int idx = s.text.indexOf("\n");
             if (idx < 0) break;
             int removed = idx + 1;
@@ -2051,6 +2501,8 @@ public class MainActivity extends Activity {
             appLine(s, "السطر أطول من الحد الأقصى (64 كيلوبايت)");
             return;
         }
+        // نبضة تنفيذ خفيفة (v1.1.6 بند 26).
+        vibrate(60);
         dispatchLine(s, line, true);
     }
 
@@ -2135,6 +2587,33 @@ public class MainActivity extends Activity {
             runSelfUpdate(s);
             return;
         }
+        // مسح محفوظات الأوامر دون مساس بالمتغيرات
+        // (v1.1.6 بند 4): يمسح محفوظات الأسهم في
+        // التطبيق. أما سطور :اعرض في المحرك فلا يملك
+        // التطبيق أمرا لمسحها وحدها (:مسح يعيد ضبط
+        // المفسر كله) — فمسحها يحتاج أمر محرك مستقبلا
+        // (موثق في التقرير كمتابعة).
+        if (":امسح-المحفوظات".equals(norm)) {
+            s.history.clear();
+            s.histIdx = -1;
+            s.draft = "";
+            appLine(s, "تم مسح محفوظات الأسهم");
+            toast("تم مسح محفوظات الأسهم");
+            return;
+        }
+        // تأكيد قبل حذف ملف/مجلد (v1.1.6 بند 5): حف
+        // وحم بلا تأكيد اليوم.
+        if ("حف".equals(normFirst) || "حم".equals(normFirst)) {
+            confirmDeleteFromTerminal(s, line, trimmed);
+            return;
+        }
+        proceedLineToEngine(s, line);
+    }
+
+    /** إرسال السطر إلى المحرك مع معالجة توقفه
+     * (مستخرجة من dispatchLine ليُعاد استخدامها بعد
+     * حوار تأكيد الحذف — بند 5). */
+    private void proceedLineToEngine(Session s, String line) {
         // المحرك متوقف: علّق السطر وأعد التشغيل، ويُرسَل
         // السطر حين يصل الموجّه الجديد (م-5).
         if (s.ended || s.process == null) {
@@ -2149,6 +2628,47 @@ public class MainActivity extends Activity {
         sendLineToEngine(s, line);
     }
 
+    /** حوار تأكيد قبل حذف ملف/مجلد من الترمنال
+     * (v1.1.6 بند 5): يسمّي الهدف؛ والمجلد غير الفارغ
+     * يُعلن أنه سيُحذف كل ما فيه. الهدف غير الموجود
+     * يُرسَل للمحرك مباشرة ليبلّغ هو بالخطأ. */
+    private void confirmDeleteFromTerminal(Session s, String line, String trimmed) {
+        String[] parts = trimmed.split("\\s+");
+        if (parts.length < 2) {
+            proceedLineToEngine(s, line);
+            return;
+        }
+        String target = parts[1];
+        File f = resolveEnginePath(target);
+        if (f == null || !f.exists()) {
+            proceedLineToEngine(s, line);
+            return;
+        }
+        String msg = "احذف «" + target + "»؟";
+        if (f.isDirectory()) {
+            String[] kids = f.list();
+            if (kids != null && kids.length > 0) {
+                msg += "\nالمجلد غير فارغ — سيُحذف كل ما فيه.";
+            }
+        }
+        new AlertDialog.Builder(this)
+                .setMessage(msg)
+                .setPositiveButton("حذف", (d, w) -> proceedLineToEngine(s, line))
+                .setNegativeButton("إلغاء", (d, w) -> appLine(s, "أُلغي الحذف"))
+                .show();
+    }
+
+    /** حلّ مسار من سطر اختصار (~/… أو نسبي) داخل
+     * مجلد ملفات المحرك (مجلد برنامج المحرك نفسه). */
+    private File resolveEnginePath(String target) {
+        if (target == null || target.isEmpty()) return null;
+        String t = target;
+        if (t.equals("~")) return getFilesDir();
+        if (t.startsWith("~/")) t = t.substring(2);
+        else if (t.startsWith("/")) return new File(t);
+        return new File(getFilesDir(), t);
+    }
+
     /** إرسال سطر إلى المحرك عبر الطابور المحدود (بند 15)،
      * مع فحص الشبكة وقفل الاستيقاظ للجلب (بند 11 + 12). */
     private void sendLineToEngine(Session s, String line) {
@@ -2156,6 +2676,7 @@ public class MainActivity extends Activity {
             if (!isOnline()) {
                 // دون اتصال: لا إرسال ولا انتظار مهلة DNS —
                 // رسالة واضحة وموجّه جديد فورا.
+                vibrate(200);
                 String out = OFFLINE_MESSAGE + "\n" + s.lastPrompt;
                 appendSessionText(s, out);
                 appendToTerminal(out);
@@ -2260,26 +2781,7 @@ public class MainActivity extends Activity {
                 // السجل يختفي من العرض، لكن محفوظات المحرك
                 // (:اعرض) والمتغيرات تبقى كما هي — فـ`مش`
                 // ليست `مس`. موثّق في SHORTCUTS-50.md (م-11).
-                // إصلاح عطل مسح v1.1.2 (بند 0): لا setText
-                // هنا أبدا — استبدال النص كله تحت لوحة
-                // مفاتيح نشطة يتركها تطلب تحديدا بموضع قديم
-                // فيقتل التطبيق؛ clear() على النص نفسه مع
-                // مؤشر مصفَّر صراحة هو الآمن.
-                s.text.setLength(0);
-                s.lineCount = 0;
-                s.tail = "";
-                terminalView.programmatic = true;
-                terminalView.getText().clear();
-                terminalView.setSelection(0, 0);
-                terminalView.programmatic = false;
-                currentPromptSpan = null;
-                currentPromptStart = -1;
-                appendSessionText(s, s.lastPrompt);
-                appendToTerminal(s.lastPrompt);
-                s.inputStart = s.text.length();
-                terminalView.inputStart = s.inputStart;
-                paintPrompt();
-                scrollToBottomIfAuto();
+                clearDisplayOnly(s);
                 break;
             case "شب":
                 appLine(s, "الشبكة: " + (s.networkAllowed ? "مفتوحة" : "مغلقة"));
@@ -2316,6 +2818,72 @@ public class MainActivity extends Activity {
                 break;
             default:
                 break;
+        }
+    }
+
+    /** مسح العرض فقط (مش) — مستخرجة من handleAppShortcut
+     * ليُعاد استخدامها في «امسح كل شيء» (v1.1.6 بند 3).
+     * إصلاح عطل مسح v1.1.2 (بند 0): لا setText هنا أبدا
+     * — استبدال النص كله تحت لوحة مفاتيح نشطة يتركها
+     * تطلب تحديدا بموضع قديم فيقتل التطبيق؛ clear() على
+     * النص نفسه مع مؤشر مصفَّر صراحة هو الآمن. */
+    private void clearDisplayOnly(Session s) {
+        s.text.setLength(0);
+        s.lineCount = 0;
+        s.tail = "";
+        terminalView.programmatic = true;
+        terminalView.getText().clear();
+        terminalView.setSelection(0, 0);
+        terminalView.programmatic = false;
+        currentPromptSpan = null;
+        currentPromptStart = -1;
+        appendSessionText(s, s.lastPrompt);
+        appendToTerminal(s.lastPrompt);
+        s.inputStart = s.text.length();
+        terminalView.inputStart = s.inputStart;
+        paintPrompt();
+        scrollToBottomIfAuto();
+    }
+
+    /** حوار تأكيد «امسح كل شيء» (v1.1.6 بند 3): يسمّي
+     * الجلسة، ويعلن أن العرض وملف السجل المحفوظ
+     * سيُمسحان معا — مقابل «مش» الذي يمسح العرض فقط.
+     * المتغيرات لا تُمسّ (لا إعادة ضبط للمفسر). */
+    private void showClearAllDialog() {
+        Session s = active();
+        String name = s.customName != null ? s.customName
+                : "جلسة " + arabicDigits(activeIdx + 1);
+        new AlertDialog.Builder(this)
+                .setMessage("امسح كل شيء في «" + name + "»؟\nسيُمسح العرض وملف السجل المحفوظ معا.")
+                .setPositiveButton("امسح كل شيء", (d, w) -> clearAllSession(s))
+                .setNegativeButton("إلغاء", null)
+                .show();
+    }
+
+    /** «امسح كل شيء» (v1.1.6 بند 3): مسح العرض
+     * كـ«مش» ثم حذف ملف السجل المحفوظ؛ والحفظ التالي
+     * يعيد كتابته فارغا من النص الجديد (الموجّه فقط). */
+    private void clearAllSession(Session s) {
+        int idx = sessions.indexOf(s);
+        if (idx < 0) return;
+        clearDisplayOnly(s);
+        new File(sessionsDir(), "session-" + idx + ".txt").delete();
+        saveAllSessions();
+        toast("تم مسح كل شيء");
+    }
+
+    /** حفظ نص الجلسة ملفا داخل ~ (v1.1.6 بند 8): ملف
+     * نصي في مجلد ملفات التطبيق نفسه (لا إذن تخزين)؛
+     * الاسم يُقترح من تاريخ بدء الجلسة. */
+    private void saveSessionTextToFile() {
+        Session s = active();
+        SimpleDateFormat fmt = new SimpleDateFormat("yyyy-MM-dd_HH-mm", Locale.US);
+        String name = "جلسة-" + fmt.format(new Date(s.startTime)) + ".txt";
+        try {
+            writeFile(new File(getFilesDir(), name), s.text.toString());
+            toast("تم الحفظ: " + name);
+        } catch (IOException e) {
+            toast("تعذّر الحفظ");
         }
     }
 
@@ -2702,8 +3270,17 @@ public class MainActivity extends Activity {
             keepScreenOn = prefs.getBoolean(PREF_KEEP_SCREEN, false);
         }
         loadNivaProperties();
+        // المظهر (v1.1.6 بند 10): داكن/فاتح/النظام.
+        lightTheme = themeMode == 1 || (themeMode == 2 && !isSystemNight());
         applyThemeFields();
         applyKeepScreenFlag();
+    }
+
+    /** هل وضع الجهاز الليلي مفعّل؟ (v1.1.6 بند 10). */
+    private boolean isSystemNight() {
+        int night = getResources().getConfiguration().uiMode
+                & Configuration.UI_MODE_NIGHT_MASK;
+        return night == Configuration.UI_MODE_NIGHT_YES;
     }
 
     /** ألوان المظهر من lightTheme (تُضبط قبل بناء الواجهة،
@@ -2725,6 +3302,13 @@ public class MainActivity extends Activity {
             colorActive = DARK_ACTIVE;
             promptColor = DARK_PROMPT;
             colorSubtitle = SUBTITLE_GRAY_DARK;
+        }
+    }
+
+    /** هوامش الترمنال (v1.1.6 بند 11): من niva.properties. */
+    private void applyMargins() {
+        if (terminalView != null) {
+            terminalView.setPadding(marginH, marginV, marginH, marginV);
         }
     }
 
@@ -2790,7 +3374,27 @@ public class MainActivity extends Activity {
                 } else if ("اظهار_صف_المفاتيح".equals(key)) {
                     showKeyRowPref = !"لا".equals(value);
                 } else if ("المظهر".equals(key)) {
-                    lightTheme = "فاتح".equals(value);
+                    // v1.1.6 بند 10: قيمة ثالثة «النظام».
+                    if ("فاتح".equals(value)) themeMode = 1;
+                    else if ("النظام".equals(value)) themeMode = 2;
+                    else themeMode = 0;
+                } else if ("إخفاء_لوحة_المفاتيح_عند_البدء".equals(key)) {
+                    hideKeyboardOnStartup = "نعم".equals(value);
+                } else if ("لوحة_المفاتيح_البرمجية_مفعلة".equals(key)) {
+                    softKeyboardEnabled = !"لا".equals(value);
+                } else if ("هامش_أفقي".equals(key)) {
+                    int v = arabicToInt(value);
+                    if (v >= 0 && v <= 100) marginH = v;
+                } else if ("هامش_عمودي".equals(key)) {
+                    int v = arabicToInt(value);
+                    if (v >= 0 && v <= 100) marginV = v;
+                } else if ("أسطر_السجل".equals(key)) {
+                    int v = arabicToInt(value);
+                    if (v >= MIN_TRANSCRIPT_LINES && v <= MAX_TRANSCRIPT_LINES) {
+                        maxTranscriptLines = v;
+                    }
+                } else if ("حذف_الجلسة_المنتهية_تلقائيا".equals(key)) {
+                    autoDeleteEndedSession = "نعم".equals(value);
                 }
             }
         } catch (IOException ignored) {
@@ -2803,6 +3407,9 @@ public class MainActivity extends Activity {
         File f = new File(getFilesDir(), NIVA_PROPS_FILE);
         List<String> lines = new ArrayList<>();
         boolean hasSize = false, hasKeep = false, hasRow = false, hasTheme = false;
+        boolean hasHideKb = false, hasSoftKb = false;
+        boolean hasMarginH = false, hasMarginV = false;
+        boolean hasRows = false, hasAutoDel = false;
         if (f.isFile()) {
             try (BufferedReader br = new BufferedReader(
                     new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
@@ -2821,8 +3428,29 @@ public class MainActivity extends Activity {
                         lines.add("اظهار_صف_المفاتيح=" + (showKeyRowPref ? "نعم" : "لا"));
                         hasRow = true;
                     } else if ("المظهر".equals(key)) {
-                        lines.add("المظهر=" + (lightTheme ? "فاتح" : "داكن"));
+                        // v1.1.6 بند 10: القيمة الثالثة «النظام».
+                        String mode = themeMode == 1 ? "فاتح"
+                                : themeMode == 2 ? "النظام" : "داكن";
+                        lines.add("المظهر=" + mode);
                         hasTheme = true;
+                    } else if ("إخفاء_لوحة_المفاتيح_عند_البدء".equals(key)) {
+                        lines.add("إخفاء_لوحة_المفاتيح_عند_البدء=" + (hideKeyboardOnStartup ? "نعم" : "لا"));
+                        hasHideKb = true;
+                    } else if ("لوحة_المفاتيح_البرمجية_مفعلة".equals(key)) {
+                        lines.add("لوحة_المفاتيح_البرمجية_مفعلة=" + (softKeyboardEnabled ? "نعم" : "لا"));
+                        hasSoftKb = true;
+                    } else if ("هامش_أفقي".equals(key)) {
+                        lines.add("هامش_أفقي=" + arabicDigits(marginH));
+                        hasMarginH = true;
+                    } else if ("هامش_عمودي".equals(key)) {
+                        lines.add("هامش_عمودي=" + arabicDigits(marginV));
+                        hasMarginV = true;
+                    } else if ("أسطر_السجل".equals(key)) {
+                        lines.add("أسطر_السجل=" + arabicDigits(maxTranscriptLines));
+                        hasRows = true;
+                    } else if ("حذف_الجلسة_المنتهية_تلقائيا".equals(key)) {
+                        lines.add("حذف_الجلسة_المنتهية_تلقائيا=" + (autoDeleteEndedSession ? "نعم" : "لا"));
+                        hasAutoDel = true;
                     } else {
                         lines.add(line);
                     }
@@ -2833,7 +3461,13 @@ public class MainActivity extends Activity {
         if (!hasSize) lines.add("حجم_الخط=" + arabicDigits((int) fontSizeSp));
         if (!hasKeep) lines.add("ابقاء_الشاشة=" + (keepScreenOn ? "نعم" : "لا"));
         if (!hasRow) lines.add("اظهار_صف_المفاتيح=" + (showKeyRowPref ? "نعم" : "لا"));
-        if (!hasTheme) lines.add("المظهر=" + (lightTheme ? "فاتح" : "داكن"));
+        if (!hasTheme) lines.add("المظهر=" + (themeMode == 1 ? "فاتح" : themeMode == 2 ? "النظام" : "داكن"));
+        if (!hasHideKb) lines.add("إخفاء_لوحة_المفاتيح_عند_البدء=" + (hideKeyboardOnStartup ? "نعم" : "لا"));
+        if (!hasSoftKb) lines.add("لوحة_المفاتيح_البرمجية_مفعلة=" + (softKeyboardEnabled ? "نعم" : "لا"));
+        if (!hasMarginH) lines.add("هامش_أفقي=" + arabicDigits(marginH));
+        if (!hasMarginV) lines.add("هامش_عمودي=" + arabicDigits(marginV));
+        if (!hasRows) lines.add("أسطر_السجل=" + arabicDigits(maxTranscriptLines));
+        if (!hasAutoDel) lines.add("حذف_الجلسة_المنتهية_تلقائيا=" + (autoDeleteEndedSession ? "نعم" : "لا"));
         StringBuilder sb = new StringBuilder();
         for (String l : lines) sb.append(l).append('\n');
         try {
@@ -2901,17 +3535,65 @@ public class MainActivity extends Activity {
         saveSettings();
     }
 
-    /** تبديل المظهر الفاتح/الداكن (بند 9). */
-    private void setLightTheme(boolean light) {
-        lightTheme = light;
+    /** ضبط المظهر (v1.1.6 بند 10): 0 داكن، 1 فاتح،
+     * 2 يتبع الجهاز. */
+    private void setThemeMode(int mode) {
+        themeMode = mode;
+        lightTheme = themeMode == 1 || (themeMode == 2 && !isSystemNight());
         applyThemeColors();
         saveSettings();
+    }
+
+    /** تدوير المظهر من القائمة: داكن → فاتح → النظام. */
+    private void cycleTheme() {
+        int next = (themeMode + 1) % 3;
+        setThemeMode(next);
+        toast("المظهر: " + themeModeName());
+    }
+
+    /** اسم المظهر الحالي لعرضه في القائمة. */
+    private String themeModeName() {
+        return themeMode == 0 ? "داكن" : themeMode == 1 ? "فاتح" : "النظام";
+    }
+
+    /** إعادة الإعدادات للافتراضي (v1.1.6 بند 7): يحذف
+     * ملف niva.properties ويمسح الإعدادات المحفوظة
+     * ويعيد تحميل القيم الافتراضية فورا — بلا إعادة
+     * كتابة الملف (الملف المفقود = الافتراضي). */
+    private void resetSettingsToDefaults() {
+        new File(getFilesDir(), NIVA_PROPS_FILE).delete();
+        if (prefs != null) prefs.edit().clear().apply();
+        fontSizeSp = DEFAULT_FONT_SP;
+        keepScreenOn = false;
+        showKeyRowPref = true;
+        themeMode = 0;
+        lightTheme = false;
+        hideKeyboardOnStartup = false;
+        softKeyboardEnabled = true;
+        marginH = 16;
+        marginV = 8;
+        maxTranscriptLines = MAX_LINES;
+        autoDeleteEndedSession = false;
+        if (terminalView != null) terminalView.setTextSize(fontSizeSp);
+        applyThemeColors();
+        applyKeepScreenFlag();
+        applyMargins();
+        if (terminalView != null) {
+            terminalView.setShowSoftInputOnFocus(softKeyboardEnabled);
+        }
+        if (keyRow != null) {
+            keyRow.setVisibility((showKeyRowPref && isKeyboardVisible())
+                    ? View.VISIBLE : View.GONE);
+        }
+        toast("تمت إعادة الإعدادات للافتراضي");
     }
 
     // ---------- قائمة العنوان (الضغطة الطويلة) ----------
 
     /** قائمة الإعدادات والإجراءات من الضغطة الطويلة على
-     * عنوان الشريط العلوي (بند 4 + 5 + 7 + 9 + 10). */
+     * عنوان الشريط العلوي (بند 4 + 5 + 7 + 9 + 10،
+     * وحفظ الجلسة ملفا و«امسح كل شيء» وإعادة الإعدادات
+     * — v1.1.6 بنود 3 و7 و8). */
     private void showTopMenu() {
         if (titleView == null) return;
         PopupMenu popup = new PopupMenu(this, titleView);
@@ -2919,9 +3601,7 @@ public class MainActivity extends Activity {
         MenuItem keep = menu.add(Menu.NONE, 1, Menu.NONE, "إبقاء الشاشة مضاءة");
         keep.setCheckable(true);
         keep.setChecked(keepScreenOn);
-        MenuItem theme = menu.add(Menu.NONE, 2, Menu.NONE, "المظهر الفاتح");
-        theme.setCheckable(true);
-        theme.setChecked(lightTheme);
+        menu.add(Menu.NONE, 2, Menu.NONE, "المظهر: " + themeModeName());
         MenuItem row = menu.add(Menu.NONE, 3, Menu.NONE, "إظهار صف المفاتيح");
         row.setCheckable(true);
         row.setChecked(showKeyRowPref);
@@ -2930,6 +3610,11 @@ public class MainActivity extends Activity {
         menu.add(Menu.NONE, 6, Menu.NONE, "مشاركة نص الجلسة");
         menu.add(Menu.NONE, 7, Menu.NONE, "اختر رابطا");
         menu.add(Menu.NONE, 8, Menu.NONE, "كتابة برنامج");
+        // v1.1.6: حفظ نص الجلسة ملفا (بند 8)، «امسح كل
+        // شيء» (بند 3)، إعادة الإعدادات (بند 7).
+        menu.add(Menu.NONE, 9, Menu.NONE, "حفظ نص الجلسة ملفا");
+        menu.add(Menu.NONE, 10, Menu.NONE, "امسح كل شيء");
+        menu.add(Menu.NONE, 11, Menu.NONE, "أعد الإعدادات للافتراضي");
         popup.setOnMenuItemClickListener(item -> {
             int id = item.getItemId();
             if (id == 1) {
@@ -2937,7 +3622,7 @@ public class MainActivity extends Activity {
                 return true;
             }
             if (id == 2) {
-                setLightTheme(!lightTheme);
+                cycleTheme();
                 return true;
             }
             if (id == 3) {
@@ -2962,6 +3647,18 @@ public class MainActivity extends Activity {
             }
             if (id == 8) {
                 showCompose();
+                return true;
+            }
+            if (id == 9) {
+                saveSessionTextToFile();
+                return true;
+            }
+            if (id == 10) {
+                showClearAllDialog();
+                return true;
+            }
+            if (id == 11) {
+                resetSettingsToDefaults();
                 return true;
             }
             return false;
@@ -2993,6 +3690,38 @@ public class MainActivity extends Activity {
         if (cm == null) return;
         cm.setPrimaryClip(ClipData.newPlainText("نيفا", sel));
         Toast.makeText(this, "تم النسخ", Toast.LENGTH_SHORT).show();
+    }
+
+    /** حذف النص المحدد من العرض ومن السجل المحفوظ
+     * (v1.1.6 بند 12): يزيل المحدد من النص المعروض،
+     * ثم يزامن نص الجلسة (مصدر ملف السجل) ويحفظ فورا
+     * — فيُحذف المحدد من الملف أيضا. سطر الإدخال
+     * الحالي لا يُحذف أبدا؛ المحدد الذي يطاله يُرفَض
+     * بهدوء مع تنبيه. */
+    private void deleteSelectedText() {
+        Editable text = terminalView.getText();
+        if (text == null) return;
+        int start = terminalView.getSelectionStart();
+        int end = terminalView.getSelectionEnd();
+        if (start < 0 || end < 0 || start == end) return;
+        int lo = Math.max(0, Math.min(start, end));
+        int hi = Math.min(text.length(), Math.max(start, end));
+        if (lo >= hi) return;
+        if (terminalView.inputStart >= 0 && hi > terminalView.inputStart) {
+            toast("لا يمكن حذف سطر الإدخال");
+            return;
+        }
+        int removed = hi - lo;
+        terminalView.programmatic = true;
+        text.delete(lo, hi);
+        if (terminalView.inputStart >= 0) {
+            terminalView.inputStart = Math.max(0, terminalView.inputStart - removed);
+        }
+        terminalView.programmatic = false;
+        saveTerminalToSession();
+        terminalView.setSelection(terminalView.inputStart, terminalView.inputStart);
+        saveAllSessions();
+        toast("تم حذف المحدد");
     }
 
     /** مشاركة النص المحدد فقط (بند 1 — تأتي مع النسخ). */

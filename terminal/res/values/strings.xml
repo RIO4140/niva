@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">نيفا</string>
+    <!-- اختصارات المشغّل (v1.1.6 بند 2). -->
+    <string name="shortcut_new_session">جلسة جديدة</string>
+    <string name="shortcut_open_settings">فتح الإعدادات</string>
 </resources>
