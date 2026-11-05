@@ -1,0 +1,15 @@
+# الملخص
+
+- [مقدمة](./introduction.md)
+- [التثبيت والتشغيل](./install.md)
+- [أول برنامج](./quickstart.md)
+- [الأساسيات](./basics.md)
+- [الشروط والحلقات](./control.md)
+- [الدوال](./functions.md)
+- [القوائم والقواميس](./collections.md)
+- [الفئات](./classes.md)
+- [الوحدات والمكتبة القياسية](./modules.md)
+- [الأنواع التدريجية](./types.md)
+- [الأخطاء والملفات](./errors.md)
+- [المرجع](./reference.md)
+- [الأمثلة](./examples.md)

@@ -104,6 +104,14 @@ pub enum Value {
     // A method bound to an instance, produced by ك.طريقة evaluation.
     // Calling it binds نفس to the instance automatically.
     BoundMethod { func: Box<Value>, instance: Rc<InstanceData> },
+    // A stdlib function implemented in Rust (Meeting 16). Its code
+    // lives in the stdlib module; the value only carries the name
+    // and the function pointer. type_name is "دالة", like a user
+    // function, and the Call arm invokes the pointer directly.
+    NativeFunction {
+        name: String,
+        func: crate::stdlib::NativeFn,
+    },
 }
 
 // Captured environments compare by scope identity (same Rc
@@ -151,6 +159,10 @@ impl PartialEq for Value {
                 Value::BoundMethod { func: f1, instance: i1 },
                 Value::BoundMethod { func: f2, instance: i2 },
             ) => f1 == f2 && Rc::ptr_eq(i1, i2),
+            (
+                Value::NativeFunction { name: n1, func: f1 },
+                Value::NativeFunction { name: n2, func: f2 },
+            ) => n1 == n2 && f1 == f2,
             _ => false,
         }
     }
@@ -171,6 +183,7 @@ impl Value {
             Value::Interface(_) => "واجهة",
             Value::Instance(_) => "كائن",
             Value::BoundMethod { .. } => "دالة",
+            Value::NativeFunction { .. } => "دالة",
         }
     }
 
@@ -216,6 +229,7 @@ impl Value {
                 Value::Function { name, .. } => format!("<دالة {}>", name),
                 _ => "<دالة>".to_string(),
             },
+            Value::NativeFunction { name, .. } => format!("<دالة {}>", name),
         }
     }
 

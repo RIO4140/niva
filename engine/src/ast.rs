@@ -79,6 +79,11 @@ pub const TYPE_NAMES: &[&str] = &[
     "عدد", "نص", "منطقي", "قائمة", "قاموس", "لاشيء", "دالة", "وحدة", "فئة", "كائن", "واجهة", "أي",
 ];
 
+/// String/list method names (Meeting 14). Shared by the
+/// interpreter (dispatch) and the semantic analyzer (static check).
+pub const STR_METHODS: &[&str] = &["طول", "كبير", "صغير", "قص", "استبدل", "قسم", "يحتوي"];
+pub const LIST_METHODS: &[&str] = &["طول", "أضف", "أزل", "يحتوي"];
+
 pub fn is_known_type(name: &str) -> bool {
     TYPE_NAMES.contains(&name)
 }

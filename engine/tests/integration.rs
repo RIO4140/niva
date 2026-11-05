@@ -113,6 +113,14 @@ fn examples_pass() {
             "14-lambdas.niva",
             "10\n12\n12\n10\n11\n7\n",
         ),
+        (
+            "15-methods.niva",
+            "5\nHELLO\nhello\nمحمود\nأهلا سارة\n[\"أ\", \"ب\", \"ج\"]\nصحيح\n3\n[1, 2, 3, 4]\n4\n[1, 2, 3]\n",
+        ),
+        (
+            "16-stdlib.niva",
+            "4\n1024\n3\n4\n3.141592653589793\n2.718281828459045\n5\nصحيح\nصحيح\nصحيح\nصحيح\n",
+        ),
     ];
     for (name, expected) in cases {
         let path = example_path(name);
@@ -185,7 +193,7 @@ fn recursion_depth_limit_returns_arabic_error_not_crash() {
 
 #[test]
 fn shallow_recursion_still_works_and_depth_is_released() {
-    // Depth 100 (well under the 200 limit) must work, and depth
+    // Depth 100 (well under the 500 limit) must work, and depth
     // must return to zero after a call, so a second call is not
     // falsely rejected.
     let (out, _, code) = run_src(
@@ -193,6 +201,53 @@ fn shallow_recursion_still_works_and_depth_is_released() {
     );
     assert_eq!(code, 0);
     assert_eq!(out, "100\n10\n");
+}
+
+#[test]
+fn recursion_depth_500_completes_extreme_shape() {
+    // Meeting 15: the worst measured shape (10 locals + wide
+    // expression) must complete at exactly the 500 cap, in the
+    // debug binary (the worst profile). Max depth here is 500.
+    let extreme = "دالة عد(ن):\n    أ1 = ن * 2\n    أ2 = أ1 + ن\n    أ3 = أ2 * 3\n    أ4 = أ3 + ن\n    أ5 = أ4 * 2\n    أ6 = أ5 + ن\n    أ7 = أ6 * 3\n    أ8 = أ7 + ن\n    أ9 = أ8 * 2\n    أ10 = أ9 + ن\n    إذا ن <= 0:\n        ارجع 0\n    ارجع عد(ن - 1) + أ1 + أ2 + أ3 + أ4 + أ5 + أ6 + أ7 + أ8 + أ9 + أ10\nاطبع عد(499)\n";
+    let (out, err, code) = run_src(extreme);
+    assert_eq!(code, 0, "depth 500 must complete, stderr: {}", err);
+    assert_eq!(out, "56012750\n");
+}
+
+#[test]
+fn recursion_beyond_500_is_clean_error() {
+    // Meeting 15: depth 501 must be a clean Niva error naming
+    // the 500 cap — never a stack overflow abort.
+    let extreme = "دالة عد(ن):\n    أ1 = ن * 2\n    أ2 = أ1 + ن\n    أ3 = أ2 * 3\n    أ4 = أ3 + ن\n    أ5 = أ4 * 2\n    أ6 = أ5 + ن\n    أ7 = أ6 * 3\n    أ8 = أ7 + ن\n    أ9 = أ8 * 2\n    أ10 = أ9 + ن\n    إذا ن <= 0:\n        ارجع 0\n    ارجع عد(ن - 1) + أ1 + أ2 + أ3 + أ4 + أ5 + أ6 + أ7 + أ8 + أ9 + أ10\nاطبع عد(500)\n";
+    let (_, err, code) = run_src(extreme);
+    assert_ne!(code, 0, "depth 501 must fail");
+    assert!(err.contains("تجاوز حد عمق الاستدعاء (500)"), "stderr: {}", err);
+    assert!(!err.contains("stack overflow"), "must not crash, stderr: {}", err);
+}
+
+#[test]
+fn vm_recursion_depth_500_matches_interpreter() {
+    // Meeting 15: the cap is shared — the VM completes at 500
+    // and errors cleanly at 501, like the interpreter.
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("niva-vm-depth-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("prog.niva");
+    let prog = "دالة عد(ن):\n    إذا ن <= 0:\n        ارجع 0\n    ارجع عد(ن - 1) + 1\nاطبع عد(499)\n";
+    std::fs::write(&path, prog).unwrap();
+    let out = Command::new(bin()).arg(&path).arg("--vm").output().expect("run niva --vm");
+    assert_eq!(out.status.code().unwrap_or(-1), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "499\n");
+    let prog2 = prog.replace("عد(499)", "عد(500)");
+    std::fs::write(&path, prog2).unwrap();
+    let out2 = Command::new(bin()).arg(&path).arg("--vm").output().expect("run niva --vm");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_ne!(out2.status.code().unwrap_or(0), 0);
+    assert!(
+        String::from_utf8_lossy(&out2.stderr).contains("تجاوز حد عمق الاستدعاء (500) في VM"),
+        "stderr: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
 }
 
 #[test]
@@ -549,6 +604,70 @@ fn vm_rejects_lambda_with_clear_arabic_error() {
     let _ = std::fs::remove_dir_all(&dir);
     assert_ne!(out.status.code().unwrap_or(0), 0);
     assert!(String::from_utf8_lossy(&out.stderr).contains("الدالة المجهولة"));
+}
+
+#[test]
+fn methods_vm_error_is_clear() {
+    // Meeting 14: methods are interpreter-only; the VM's existing
+    // dot-access error already names the problem.
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("niva-vm-methods-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("prog.niva");
+    std::fs::write(&path, "اطبع \"مرحبا\".طول()\n").unwrap();
+    let out = Command::new(bin()).arg(&path).arg("--vm").output().expect("run niva --vm");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_ne!(out.status.code().unwrap_or(0), 0);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("الوصول بالنقطة"));
+}
+
+#[test]
+fn methods_unknown_name_is_semantic_error() {
+    // Meeting 14: an unknown method on a known-type target is
+    // caught by the semantic analyzer, before any execution.
+    let (_, err, code) = run_src("اطبع \"نص\".غير_موجود()\n");
+    assert_ne!(code, 0);
+    assert!(err.contains("طريقة غير معروفة لنوع نص: غير_موجود"));
+}
+
+#[test]
+fn stdlib_unknown_module_is_io_error() {
+    // Meeting 16: a name that is neither native nor a file is
+    // the same "module not found" error as a missing file module.
+    let (_, err, code) = run_src("استورد وحدة_وهمية\n");
+    assert_ne!(code, 0);
+    assert!(err.contains("وحدة غير موجودة: وحدة_وهمية"));
+}
+
+#[test]
+fn stdlib_native_module_not_shadowed_by_file() {
+    // Meeting 16: a same-named .niva file in the program
+    // directory must never shadow a native module.
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("niva-stdlib-shadow-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("رياضيات.niva"), "صدّر س\nس = 999\n").unwrap();
+    let path = dir.join("prog.niva");
+    std::fs::write(&path, "استورد رياضيات\nاطبع رياضيات.جذر(16)\n").unwrap();
+    let out = Command::new(bin()).arg(&path).output().expect("run niva");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(out.status.code().unwrap_or(-1), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "4\n");
+}
+
+#[test]
+fn stdlib_vm_error_is_clear() {
+    // Meeting 16: stdlib is interpreter-only in v1; the VM's
+    // existing Import error already says so clearly.
+    use std::process::Command;
+    let dir = std::env::temp_dir().join(format!("niva-vm-stdlib-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("prog.niva");
+    std::fs::write(&path, "استورد رياضيات\nاطبع رياضيات.جذر(16)\n").unwrap();
+    let out = Command::new(bin()).arg(&path).arg("--vm").output().expect("run niva --vm");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_ne!(out.status.code().unwrap_or(0), 0);
+    assert!(String::from_utf8_lossy(&out.stderr).contains("غير مدعومة"));
 }
 
 #[test]

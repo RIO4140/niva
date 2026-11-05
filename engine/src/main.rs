@@ -19,6 +19,7 @@ mod parser;
 mod permissions;
 mod repl;
 mod semantic;
+mod stdlib;
 mod value;
 mod vm;
 
@@ -29,6 +30,12 @@ use parser::Parser;
 use std::env;
 use std::fs;
 use std::process::ExitCode;
+
+// Meeting 15: the interpreter/VM thread stack. Measured ceilings
+// on a 64 MB stack (cap lifted): debug-extreme ~176, release
+// ~1000+. At 256 MB the ceilings scale ~4x, so the 500 depth
+// cap below holds a ~30% margin on the worst measured shape.
+const STACK_SIZE_BYTES: usize = 256 * 1024 * 1024;
 
 fn usage() -> String {
     "استخدام: niva [program.niva] [--ast] [--vm] [--allow-all]\n\
@@ -80,10 +87,10 @@ fn main() -> ExitCode {
     let allow_all = args.iter().any(|a| a == "--allow-all");
     let file_arg = args.iter().skip(1).find(|a| !a.starts_with('-'));
     if file_arg.is_none() {
-        // Same 64 MB stack thread as file mode, so the depth-200
+        // Same 256 MB stack thread as file mode, so the depth-500
         // recursion limit is a Niva error, not a Rust stack overflow.
         let handle = std::thread::Builder::new()
-            .stack_size(64 * 1024 * 1024)
+            .stack_size(STACK_SIZE_BYTES)
             .spawn(move || repl::run_repl(allow_all));
         return match handle {
             Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),
@@ -127,11 +134,11 @@ fn main() -> ExitCode {
     }
 
     // Phase 1A Step 5 fix: run the interpreter in a thread with a
-    // large stack (64 MB), so Niva's own call-depth limit (200) is
-    // enforced by a Niva error, not by a Rust stack overflow, in
-    // BOTH debug and release builds. Debug frames grew with the
-    // class/interface AST variants, and depth-100 recursion that
-    // previously passed in debug began overflowing the default
+    // large stack (256 MB, Meeting 15), so Niva's own call-depth
+    // limit (500) is enforced by a Niva error, not by a Rust stack
+    // overflow, in BOTH debug and release builds. Debug frames grew
+    // with the class/interface AST variants, and depth-100 recursion
+    // that previously passed in debug began overflowing the default
     // 8 MB main stack. This restores the original guarantee.
     let program_dir = std::path::Path::new(path)
         .parent()
@@ -148,7 +155,7 @@ fn main() -> ExitCode {
         })
         .unwrap_or_else(|| std::path::PathBuf::from("."));
     let handle = std::thread::Builder::new()
-        .stack_size(64 * 1024 * 1024)
+        .stack_size(STACK_SIZE_BYTES)
         .spawn(move || {
             // Phase 1A Step 1: semantic analysis BEFORE execution. If it
             // fails, the program never runs, so no side effect (print, file

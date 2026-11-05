@@ -410,6 +410,27 @@ mod tests {
     }
 
     #[test]
+    fn repl_list_methods_mutate_and_print() {
+        // Meeting 14: method calls are expressions, so the REPL
+        // handles them like any other line.
+        let mut r = Repl::new();
+        assert_eq!(done_out(r.eval("ق = [١، ٢]")), "");
+        assert_eq!(done_out(r.eval("ق.أضف(٣)")), "لاشيء\n");
+        assert_eq!(done_out(r.eval("ق")), "[1, 2, 3]\n");
+        assert_eq!(done_out(r.eval("\"مرحبا\".طول()")), "5\n");
+    }
+
+    #[test]
+    fn repl_stdlib_import_and_call() {
+        // Meeting 16: native modules load in the REPL like any
+        // other import — the REPL keeps the same interpreter.
+        let mut r = Repl::new();
+        assert_eq!(done_out(r.eval("استورد رياضيات")), "");
+        assert_eq!(done_out(r.eval("رياضيات.جذر(١٦)")), "4\n");
+        assert_eq!(done_out(r.eval("رياضيات.باي")), "3.141592653589793\n");
+    }
+
+    #[test]
     fn repl_variables_and_functions_persist() {
         let mut r = Repl::new();
         assert_eq!(done_out(r.eval("س = ٥")), "");

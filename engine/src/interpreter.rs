@@ -49,7 +49,12 @@ pub(crate) const MAX_LOOP_ITERATIONS: usize = 1_000_000;
 // The VM phase (Phase 1B) will use its own explicit call stack,
 // not the Rust stack, and may raise this limit with a Niva error,
 // never with a crash.
-const MAX_CALL_DEPTH: usize = 200;
+// Meeting 15: measured depth cap, shared by the interpreter and
+// the VM. On a 256 MB thread the worst measured shape
+// (debug, 10 locals + wide expression) is safe past 700, so 500
+// holds ~30% margin; release ceilings are far higher. The cap is
+// enforced as a clean Niva error, never a stack overflow.
+pub(crate) const MAX_CALL_DEPTH: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
@@ -530,6 +535,14 @@ impl Interpreter {
         if let Some(v) = self.loaded_modules.get(module) {
             return Ok(v.clone());
         }
+        // Step 2 (Meeting 16): native stdlib modules come first,
+        // so `استورد رياضيات` works anywhere with no file, and a
+        // same-named file in the program directory never shadows
+        // a native module. Cached like a file module below.
+        if let Some(v) = crate::stdlib::native_module(module) {
+            self.loaded_modules.insert(module.to_string(), v.clone());
+            return Ok(v);
+        }
         if self.loading_stack.contains(&module.to_string()) {
             let mut cycle = self.loading_stack.clone();
             cycle.push(module.to_string());
@@ -895,6 +908,11 @@ impl Interpreter {
                             Value::Function { .. } => {
                                 self.call_user(v, arg_values, expr.line, expr.col)
                             }
+                            // Step 2 (Meeting 16): a stdlib function
+                            // imported by name (من رياضيات استورد جذر).
+                            Value::NativeFunction { func, .. } => {
+                                func(&arg_values, expr.line, expr.col)
+                            }
                             Value::Class(data) => Err(RioError::typ(
                                 format!(
                                     "استخدم أنشئ لإنشاء كائن من فئة {}، مثل أنشئ {}()",
@@ -912,10 +930,32 @@ impl Interpreter {
                     }
                     return self.call_builtin(name, arg_values, expr.line, expr.col);
                 }
+                // Meeting 14: string/list methods. A Dot callee on
+                // a Str/List target dispatches to a builtin method;
+                // the target expression is kept so mutating list
+                // methods can write back to a plain variable.
+                // Other targets fall through to the generic Dot
+                // evaluation below (modules, objects).
+                if let ExprKind::Dot { target, name } = &callee.kind {
+                    let target_value = self.eval_expr(target)?;
+                    if matches!(target_value, Value::Str(_) | Value::List(_)) {
+                        return self.call_builtin_method(
+                            target,
+                            target_value,
+                            name,
+                            arg_values,
+                            expr.line,
+                            expr.col,
+                        );
+                    }
+                }
                 let callee_value = self.eval_expr(callee)?;
                 match callee_value {
                     Value::Function { .. } => {
                         self.call_user(callee_value, arg_values, expr.line, expr.col)
+                    }
+                    Value::NativeFunction { func, .. } => {
+                        func(&arg_values, expr.line, expr.col)
                     }
                     Value::BoundMethod { func, instance } => {
                         self.call_method(*func, instance, arg_values, expr.line, expr.col)
@@ -1530,6 +1570,197 @@ impl Interpreter {
         }
     }
 
+    // Meeting 14: string/list methods. String methods are pure
+    // (they return new strings). List methods أضف/أزل mutate and
+    // write back to a plain variable only (Meeting 11 lexical
+    // assignment); a non-variable target is a clear runtime error.
+    fn call_builtin_method(
+        &mut self,
+        target: &Expr,
+        target_value: Value,
+        name: &str,
+        args: Vec<Value>,
+        line: usize,
+        col: usize,
+    ) -> RioResult<Value> {
+        let arity = |expected: usize| -> RioResult<()> {
+            if args.len() != expected {
+                Err(RioError::runtime(
+                    format!(
+                        "الطريقة {} تتوقع {} معاملات لكن أعطيت {}",
+                        name, expected, args.len()
+                    ),
+                    line, col,
+                ))
+            } else {
+                Ok(())
+            }
+        };
+        match &target_value {
+            Value::Str(s) => {
+                let s = s.clone();
+                match name {
+                    // طول counts characters, like the طول builtin,
+                    // never bytes (Arabic text must count letters).
+                    "طول" => {
+                        arity(0)?;
+                        Ok(Value::Number(s.chars().count() as f64))
+                    }
+                    "كبير" => {
+                        arity(0)?;
+                        Ok(Value::Str(s.to_uppercase()))
+                    }
+                    "صغير" => {
+                        arity(0)?;
+                        Ok(Value::Str(s.to_lowercase()))
+                    }
+                    "قص" => {
+                        arity(0)?;
+                        Ok(Value::Str(s.trim().to_string()))
+                    }
+                    "استبدل" => {
+                        arity(2)?;
+                        let (old, new) = match (&args[0], &args[1]) {
+                            (Value::Str(a), Value::Str(b)) => (a.clone(), b.clone()),
+                            _ => {
+                                return Err(RioError::typ(
+                                    "طريقة استبدل تتوقع نصين: القديم والجديد",
+                                    line, col,
+                                ))
+                            }
+                        };
+                        Ok(Value::Str(s.replace(old.as_str(), new.as_str())))
+                    }
+                    "قسم" => {
+                        arity(1)?;
+                        let sep = match &args[0] {
+                            Value::Str(sep) => sep.clone(),
+                            _ => {
+                                return Err(RioError::typ(
+                                    "طريقة قسم تتوقع نصا كفاصل",
+                                    line, col,
+                                ))
+                            }
+                        };
+                        Ok(Value::List(
+                            s.split(sep.as_str())
+                                .map(|p| Value::Str(p.to_string()))
+                                .collect(),
+                        ))
+                    }
+                    "يحتوي" => {
+                        arity(1)?;
+                        match &args[0] {
+                            Value::Str(sub) => Ok(Value::Bool(s.contains(sub.as_str()))),
+                            _ => Err(RioError::typ(
+                                "طريقة يحتوي على نص تتوقع نصا",
+                                line, col,
+                            )),
+                        }
+                    }
+                    _ => Err(RioError::typ(
+                        format!("طريقة غير معروفة لنوع نص: {}", name),
+                        line, col,
+                    )),
+                }
+            }
+            Value::List(items) => {
+                let mut items = items.clone();
+                match name {
+                    "طول" => {
+                        arity(0)?;
+                        Ok(Value::Number(items.len() as f64))
+                    }
+                    "يحتوي" => {
+                        arity(1)?;
+                        Ok(Value::Bool(items.iter().any(|x| *x == args[0])))
+                    }
+                    "أضف" => {
+                        arity(1)?;
+                        self.require_plain_var_target(target, line, col)?;
+                        items.push(args[0].clone());
+                        self.write_back_list(target, items);
+                        Ok(Value::Nil)
+                    }
+                    "أزل" => {
+                        if args.len() > 1 {
+                            return Err(RioError::runtime(
+                                format!(
+                                    "الطريقة أزل تتوقع 0 أو 1 معاملات لكن أعطيت {}",
+                                    args.len()
+                                ),
+                                line, col,
+                            ));
+                        }
+                        self.require_plain_var_target(target, line, col)?;
+                        let removed = if args.is_empty() {
+                            items.pop().ok_or_else(|| {
+                                RioError::runtime("لا يمكن الإزالة من قائمة فارغة", line, col)
+                            })?
+                        } else {
+                            let idx = match &args[0] {
+                                Value::Number(x) if x.fract() == 0.0 && *x >= 0.0 => *x as usize,
+                                _ => {
+                                    return Err(RioError::typ(
+                                        "طريقة أزل تتوقع فهرسا عددا صحيحا",
+                                        line, col,
+                                    ))
+                                }
+                            };
+                            if idx >= items.len() {
+                                return Err(RioError::runtime(
+                                    format!(
+                                        "فهرس خارج النطاق: {} والقائمة طولها {}",
+                                        idx,
+                                        items.len()
+                                    ),
+                                    line, col,
+                                ));
+                            }
+                            items.remove(idx)
+                        };
+                        self.write_back_list(target, items);
+                        Ok(removed)
+                    }
+                    _ => Err(RioError::typ(
+                        format!("طريقة غير معروفة لنوع قائمة: {}", name),
+                        line, col,
+                    )),
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    /// Mutating list methods (أضف/أزل) write back only to a plain
+    /// variable target. Anything else (a call result, an index, a
+    /// field) has nowhere to write back to, so it is an error
+    /// before any mutation happens.
+    fn require_plain_var_target(
+        &self,
+        target: &Expr,
+        line: usize,
+        col: usize,
+    ) -> RioResult<()> {
+        match &target.kind {
+            ExprKind::Ident(_) => Ok(()),
+            _ => Err(RioError::runtime(
+                "طريقة معدلة للقائمة (أضف/أزل) تحتاج متغيرا عاديا، لا نتيجة تعبير",
+                line, col,
+            )),
+        }
+    }
+
+    /// Write a mutated list back through lexical assignment
+    /// (Meeting 11): the nearest existing binding is updated, so
+    /// a list captured by a closure is updated in place too.
+    /// Caller already checked the target is a plain variable.
+    fn write_back_list(&mut self, target: &Expr, items: Vec<Value>) {
+        if let ExprKind::Ident(name) = &target.kind {
+            self.assign_local(name, Value::List(items));
+        }
+    }
+
     fn call_builtin(
         &mut self,
         name: &str,
@@ -1967,5 +2198,137 @@ mod tests {
         );
         assert!(res.is_ok());
         assert_eq!(out, "7\n");
+    }
+
+    // Step 1 (Meeting 14): string/list methods.
+    #[test]
+    fn str_methods_basic() {
+        let (out, res) = run_src(
+            "اطبع \"مرحبا\".طول()\nاطبع \"Hello\".كبير()\nاطبع \"Hello\".صغير()\nاطبع \"  محمود  \".قص()\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "5\nHELLO\nhello\nمحمود\n");
+    }
+
+    #[test]
+    fn str_replace_split_contains() {
+        let (out, res) = run_src(
+            "اطبع \"أهلا محمود\".استبدل(\"محمود\"، \"سارة\")\nاطبع \"أ، ب\".قسم(\"، \")\nاطبع \"مرحبا\".يحتوي(\"رحب\")\nاطبع \"مرحبا\".يحتوي(\"وداعا\")\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "أهلا سارة\n[\"أ\", \"ب\"]\nصحيح\nخطأ\n");
+    }
+
+    #[test]
+    fn list_append_writes_back() {
+        let (out, res) = run_src(
+            "ق = [1، 2]\nق.أضف(3)\nاطبع ق\nاطبع ق.طول()\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "[1, 2, 3]\n3\n");
+    }
+
+    #[test]
+    fn list_pop_last_and_index() {
+        let (out, res) = run_src(
+            "ق = [1، 2، 3]\nاطبع ق.أزل()\nاطبع ق.أزل(0)\nاطبع ق\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "3\n1\n[2]\n");
+    }
+
+    #[test]
+    fn list_method_unknown_is_runtime_error() {
+        // Untyped variable: the analyzer cannot know the type,
+        // so the unknown method fails at runtime, not analysis.
+        let (_, res) = run_src("ق = [1]\nاطبع ق.غير_موجود()\n");
+        assert!(res.is_err());
+        assert!(res
+            .unwrap_err()
+            .to_string()
+            .contains("طريقة غير معروفة لنوع قائمة"));
+    }
+
+    #[test]
+    fn list_append_on_call_result_is_error() {
+        let (_, res) = run_src(
+            "دالة اصنع():\n    ارجع [1، 2]\nاصنع().أضف(3)\n",
+        );
+        assert!(res.is_err());
+        assert!(res
+            .unwrap_err()
+            .to_string()
+            .contains("تحتاج متغيرا عاديا"));
+    }
+
+    #[test]
+    fn list_pop_from_empty_is_error() {
+        let (_, res) = run_src("ق = []\nاطبع ق.أزل()\n");
+        assert!(res.is_err());
+        assert!(res
+            .unwrap_err()
+            .to_string()
+            .contains("قائمة فارغة"));
+    }
+
+    // Step 2 (Meeting 16): initial stdlib — native modules.
+    #[test]
+    fn stdlib_math_basic() {
+        let (out, res) = run_src(
+            "استورد رياضيات\nاطبع رياضيات.جذر(16)\nاطبع رياضيات.قوة(2، 10)\nاطبع رياضيات.جيب(0)\nاطبع رياضيات.أرضية(3.7)\nاطبع رياضيات.سقف(3.2)\nاطبع رياضيات.باي\nاطبع رياضيات.هـ\nاطبع رياضيات.لوغاريتم(رياضيات.هـ)\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(
+            out,
+            "4\n1024\n0\n3\n4\n3.141592653589793\n2.718281828459045\n1\n"
+        );
+    }
+
+    #[test]
+    fn stdlib_math_errors() {
+        let (_, res) = run_src("استورد رياضيات\nاطبع رياضيات.جذر(-1)\n");
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("جذر عدد سالب"));
+        let (_, res) = run_src("استورد رياضيات\nاطبع رياضيات.جذر(1، 2)\n");
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("تتوقع 1 معاملات"));
+    }
+
+    #[test]
+    fn stdlib_from_import_binds_native_function() {
+        let (out, res) = run_src("من رياضيات استورد جذر\nاطبع جذر(25)\nاطبع نوع(جذر)\n");
+        assert!(res.is_ok());
+        assert_eq!(out, "5\nدالة\n");
+    }
+
+    #[test]
+    fn stdlib_random_ranges() {
+        // Random values are never asserted exactly — only ranges
+        // and types, so the test is deterministic.
+        let (out, res) = run_src(
+            "استورد عشوائي\nاطبع عشوائي.عدد_عشوائي() >= 0\nاطبع عشوائي.عدد_عشوائي() < 1\nاطبع عشوائي.صحيح_عشوائي(1، 6) >= 1\nاطبع عشوائي.صحيح_عشوائي(1، 6) <= 6\nاطبع عشوائي.اختيار([10، 20]) في [10، 20]\n",
+        );
+        assert!(res.is_ok());
+        assert_eq!(out, "صحيح\nصحيح\nصحيح\nصحيح\nصحيح\n");
+    }
+
+    #[test]
+    fn stdlib_random_errors() {
+        let (_, res) = run_src("استورد عشوائي\nاطبع عشوائي.اختيار([])\n");
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("قائمة فارغة"));
+        let (_, res) = run_src("استورد عشوائي\nاطبع عشوائي.صحيح_عشوائي(6، 1)\n");
+        assert!(res.is_err());
+        assert!(res
+            .unwrap_err()
+            .to_string()
+            .contains("الحد الأدنى أكبر"));
+    }
+
+    #[test]
+    fn stdlib_time_now_is_number() {
+        let (out, res) = run_src("استورد وقت\nاطبع وقت.الآن() > 1700000000\n");
+        assert!(res.is_ok());
+        assert_eq!(out, "صحيح\n");
     }
 }

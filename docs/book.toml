@@ -1,0 +1,8 @@
+[book]
+title = "Niva — لغة برمجة بالعربي"
+authors = ["محمود عبد النبي"]
+language = "ar"
+text-direction = "rtl"
+src = "src"
+
+[output.html]

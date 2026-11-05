@@ -744,10 +744,30 @@ impl SemanticAnalyzer {
                 }
                 Ok(())
             }
-            ExprKind::Dot { target, name: _ } => {
+            ExprKind::Dot { target, name } => {
                 // Member existence / export status are runtime
                 // checks (module file is loaded at runtime).
-                self.analyze_expr(target)
+                self.analyze_expr(target)?;
+                // Meeting 14: static check for string/list methods
+                // when the target type is known (gradual: unknown
+                // types pass, and are checked at runtime instead).
+                if let Some(t) = self.infer_type(target) {
+                    if t == "نص" && !crate::ast::STR_METHODS.contains(&name.as_str()) {
+                        return Err(RioError::semantic(
+                            format!("طريقة غير معروفة لنوع نص: {}", name),
+                            expr.line,
+                            expr.col,
+                        ));
+                    }
+                    if t == "قائمة" && !crate::ast::LIST_METHODS.contains(&name.as_str()) {
+                        return Err(RioError::semantic(
+                            format!("طريقة غير معروفة لنوع قائمة: {}", name),
+                            expr.line,
+                            expr.col,
+                        ));
+                    }
+                }
+                Ok(())
             }
             ExprKind::Lambda { params, param_types, body } => {
                 // Meeting 13: like a FuncDef body, but no name

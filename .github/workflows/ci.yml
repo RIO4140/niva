@@ -1,0 +1,62 @@
+# Step 2 (Meeting 16): test on every push/PR (Linux + Windows +
+# macOS), and publish a binary for each platform on version tags.
+# The release job only runs on tags, only from the tagged commit,
+# and only after the test job passes on all three platforms.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        working-directory: engine
+        run: cargo test
+
+  release:
+    name: release (${{ matrix.os }})
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release binary
+        working-directory: engine
+        run: cargo build --release
+      - name: Package binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp engine/target/release/niva.exe dist/niva-windows-x86_64.exe
+          elif [ "$RUNNER_OS" = "macOS" ]; then
+            cp engine/target/release/niva dist/niva-macos-x86_64
+          else
+            cp engine/target/release/niva dist/niva-linux-x86_64
+          fi
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

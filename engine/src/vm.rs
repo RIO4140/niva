@@ -15,7 +15,7 @@
 //!   بينما, جملة تعبير (with Pop), and (slice 2) functions:
 //!   top-level and nested دالة definitions (global table, no
 //!   closures), direct calls by name, ارجع, recursion with
-//!   the same 200 depth limit as the interpreter.
+//!   the same depth limit as the interpreter (Meeting 15).
 //!   Slice 3 adds: list/dict literals, index read (list,
 //!   dict, string char), and index assignment on a plain
 //!   variable (قائمة[١] = ٩٩, قاموس["مفتاح"] = قيمة).
@@ -644,9 +644,12 @@ impl Vm {
                 col,
             ));
         }
-        if self.call_depth >= 200 {
+        if self.call_depth >= crate::interpreter::MAX_CALL_DEPTH {
             return Err(RioError::runtime(
-                "تجاوز حد عمق الاستدعاء (200) في VM",
+                format!(
+                    "تجاوز حد عمق الاستدعاء ({}) في VM",
+                    crate::interpreter::MAX_CALL_DEPTH
+                ),
                 line,
                 col,
             ));
@@ -1253,10 +1256,13 @@ impl Vm {
                             col,
                         ));
                     }
-                    // Same depth limit as the interpreter (200).
-                    if self.call_depth >= 200 {
+                    // Same depth limit as the interpreter (Meeting 15).
+                    if self.call_depth >= crate::interpreter::MAX_CALL_DEPTH {
                         return Err(RioError::runtime(
-                            "تجاوز حد عمق الاستدعاء (200) في VM",
+                            format!(
+                                "تجاوز حد عمق الاستدعاء ({}) في VM",
+                                crate::interpreter::MAX_CALL_DEPTH
+                            ),
                             line,
                             col,
                         ));
