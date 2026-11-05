@@ -2069,7 +2069,7 @@ mod tests {
             "دالة جمع(أ، ب):\n    نتيجة = أ + ب\n    ارجع نتيجة\nاطبع جمع(٢، ٣)\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "5\n");
+        assert_eq!(out, "٥\n");
         // Local variable must NOT be visible outside the function.
         let (_, res2) = run_src(
             "دالة جمع(أ، ب):\n    نتيجة = أ + ب\n    ارجع نتيجة\nاطبع جمع(٢، ٣)\nاطبع نتيجة\n",
@@ -2082,7 +2082,7 @@ mod tests {
     fn loop_variable_visible_after_loop() {
         let (out, res) = run_src("لكل رقم في مدى(٣):\n    اطبع رقم\nاطبع رقم\n");
         assert!(res.is_ok());
-        assert_eq!(out, "0\n1\n2\n2\n");
+        assert_eq!(out, "٠\n١\n٢\n٢\n");
     }
 
     #[test]
@@ -2105,7 +2105,7 @@ mod tests {
             "دالة اصنع():\n    س = ١٠\n    دالة احصل():\n        ارجع س\n    ارجع احصل\nد = اصنع()\nاطبع د()\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "10\n");
+        assert_eq!(out, "١٠\n");
     }
 
     #[test]
@@ -2114,7 +2114,7 @@ mod tests {
             "دالة اصنع_عداد():\n    ع = ٠\n    دالة زد():\n        ع = ع + ١\n        ارجع ع\n    ارجع زد\nأ = اصنع_عداد()\nاطبع أ()\nاطبع أ()\nاطبع أ()\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "1\n2\n3\n");
+        assert_eq!(out, "١\n٢\n٣\n");
     }
 
     #[test]
@@ -2123,7 +2123,7 @@ mod tests {
             "دالة اصنع_عداد():\n    ع = ٠\n    دالة زد():\n        ع = ع + ١\n        ارجع ع\n    ارجع زد\nأ = اصنع_عداد()\nب = اصنع_عداد()\nاطبع أ()\nاطبع أ()\nاطبع ب()\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "1\n2\n1\n");
+        assert_eq!(out, "١\n٢\n١\n");
     }
 
     #[test]
@@ -2132,7 +2132,7 @@ mod tests {
             "س = ١\nدالة احصل():\n    ارجع س\nس = ٢\nاطبع احصل()\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "2\n");
+        assert_eq!(out, "٢\n");
     }
 
     #[test]
@@ -2141,7 +2141,7 @@ mod tests {
             "س = ١٠\nدالة احصل(س):\n    ارجع س\nاطبع احصل(٥)\nاطبع س\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "5\n10\n");
+        assert_eq!(out, "٥\n١٠\n");
     }
 
     #[test]
@@ -2150,7 +2150,7 @@ mod tests {
             "س = ١٠\nدالة غير():\n    س = ٢٠\nغير()\nاطبع س\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "20\n");
+        assert_eq!(out, "٢٠\n");
     }
 
     #[test]
@@ -2159,7 +2159,7 @@ mod tests {
             "دالة فيب(ن):\n    إذا ن <= ١:\n        ارجع ن\n    ارجع فيب(ن - ١) + فيب(ن - ٢)\nاطبع فيب(١٠)\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "55\n");
+        assert_eq!(out, "٥٥\n");
     }
 
     // Step 1 (Meeting 13): lambdas — دالة_مجهولة(س): س + 1.
@@ -2169,7 +2169,7 @@ mod tests {
             "مضاعف = دالة_مجهولة(س): س * 2\nاطبع مضاعف(5)\nاطبع مضاعف\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "10\n<دالة مجهولة>\n");
+        assert_eq!(out, "١٠\n<دالة مجهولة>\n");
     }
 
     #[test]
@@ -2178,7 +2178,7 @@ mod tests {
             "دالة طبق(د، س):\n    ارجع د(س)\nاطبع طبق(دالة_مجهولة(س): س * 3، 4)\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "12\n");
+        assert_eq!(out, "١٢\n");
     }
 
     #[test]
@@ -2187,7 +2187,7 @@ mod tests {
             "دالة اصنع_مضاعف(ن):\n    ارجع دالة_مجهولة(س): س * ن\nمضاعف3 = اصنع_مضاعف(3)\nاطبع مضاعف3(4)\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "12\n");
+        assert_eq!(out, "١٢\n");
     }
 
     #[test]
@@ -2196,7 +2196,7 @@ mod tests {
             "س = 10\nاحصل = دالة_مجهولة(): س\nاطبع احصل()\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "10\n");
+        assert_eq!(out, "١٠\n");
     }
 
     #[test]
@@ -2214,7 +2214,7 @@ mod tests {
             "د = (دالة_مجهولة(س): س + 1)(10)\nاطبع د\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "11\n");
+        assert_eq!(out, "١١\n");
     }
 
     #[test]
@@ -2223,7 +2223,7 @@ mod tests {
             "مركب = دالة_مجهولة(س): دالة_مجهولة(ص): س + ص\nاطبع مركب(3)(4)\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "7\n");
+        assert_eq!(out, "٧\n");
     }
 
     // Step 1 (Meeting 14): string/list methods.
@@ -2233,7 +2233,7 @@ mod tests {
             "اطبع \"مرحبا\".طول()\nاطبع \"Hello\".كبير()\nاطبع \"Hello\".صغير()\nاطبع \"  محمود  \".قص()\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "5\nHELLO\nhello\nمحمود\n");
+        assert_eq!(out, "٥\nHELLO\nhello\nمحمود\n");
     }
 
     #[test]
@@ -2251,7 +2251,7 @@ mod tests {
             "ق = [1، 2]\nق.أضف(3)\nاطبع ق\nاطبع ق.طول()\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "[1, 2, 3]\n3\n");
+        assert_eq!(out, "[١, ٢, ٣]\n٣\n");
     }
 
     #[test]
@@ -2260,7 +2260,7 @@ mod tests {
             "ق = [1، 2، 3]\nاطبع ق.أزل()\nاطبع ق.أزل(0)\nاطبع ق\n",
         );
         assert!(res.is_ok());
-        assert_eq!(out, "3\n1\n[2]\n");
+        assert_eq!(out, "٣\n١\n[٢]\n");
     }
 
     #[test]
@@ -2306,7 +2306,7 @@ mod tests {
         assert!(res.is_ok());
         assert_eq!(
             out,
-            "4\n1024\n0\n3\n4\n3.141592653589793\n2.718281828459045\n1\n"
+            "٤\n١٠٢٤\n٠\n٣\n٤\n٣٫١٤١٥٩٢٦٥٣٥٨٩٧٩٣\n٢٫٧١٨٢٨١٨٢٨٤٥٩٠٤٥\n١\n"
         );
     }
 
@@ -2324,7 +2324,7 @@ mod tests {
     fn stdlib_from_import_binds_native_function() {
         let (out, res) = run_src("من رياضيات استورد جذر\nاطبع جذر(25)\nاطبع نوع(جذر)\n");
         assert!(res.is_ok());
-        assert_eq!(out, "5\nدالة\n");
+        assert_eq!(out, "٥\nدالة\n");
     }
 
     #[test]

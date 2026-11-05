@@ -1579,7 +1579,7 @@ mod tests {
     fn vm_arithmetic_and_variables() {
         let (out, _, ok) = run_vm_src("س = ٣ + ٤ * ٢\nاطبع س\nاطبع س * ٢\n");
         assert!(ok);
-        assert_eq!(out, "11\n22\n");
+        assert_eq!(out, "١١\n٢٢\n");
     }
 
     #[test]
@@ -1588,7 +1588,7 @@ mod tests {
             "دالة جمع(أ، ب):\n    ارجع أ + ب\nدالة عاملي(ن):\n    إذا ن <= ١:\n        ارجع ١\n    ارجع ن * عاملي(ن - ١)\nاطبع جمع(٢، ٣)\nاطبع عاملي(٥)\n",
         );
         assert!(ok);
-        assert_eq!(out, "5\n120\n");
+        assert_eq!(out, "٥\n١٢٠\n");
     }
 
     #[test]
@@ -1597,7 +1597,7 @@ mod tests {
             "قائمة = [١، ٢، ٣]\nاطبع قائمة[٠]\nقائمة[١] = ٩٩\nاطبع قائمة\nقاموس = {\"اسم\": \"محمود\"، \"عمر\": ٢٣}\nاطبع قاموس[\"اسم\"]\nقاموس[\"مدينة\"] = \"القاهرة\"\nاطبع قاموس[\"مدينة\"]\nاطبع \"محمود\"[٠]\n",
         );
         assert!(ok);
-        assert_eq!(out, "1\n[1, 99, 3]\nمحمود\nالقاهرة\nم\n");
+        assert_eq!(out, "١\n[١, ٩٩, ٣]\nمحمود\nالقاهرة\nم\n");
     }
 
     #[test]
@@ -1608,7 +1608,7 @@ mod tests {
             "قائمة = [١، ٢]\nب = قائمة\nب[٠] = ٩٩\nاطبع قائمة\nاطبع ب\n",
         );
         assert!(ok);
-        assert_eq!(out, "[1, 2]\n[99, 2]\n");
+        assert_eq!(out, "[١, ٢]\n[٩٩, ٢]\n");
     }
 
     #[test]
@@ -1627,7 +1627,7 @@ mod tests {
         assert!(ok);
         assert_eq!(
             out,
-            "3\n6\n3\n1\n5\n42\n5\nقائمة\n[0, 1, 2]\n[1, 3]\n[5, 3, 1]\n5\n"
+            "٣\n٦\n٣\n١\n٥\n٤٢\n٥\nقائمة\n[٠, ١, ٢]\n[١, ٣]\n[٥, ٣, ١]\n٥\n"
         );
     }
 
@@ -1649,7 +1649,7 @@ mod tests {
             "دالة طول(س):\n    ارجع ٩٩\nاطبع طول([١، ٢])\n",
         );
         assert!(ok);
-        assert_eq!(out, "99\n");
+        assert_eq!(out, "٩٩\n");
     }
 
     #[test]
@@ -1667,7 +1667,7 @@ mod tests {
             "فئة نقطة:\n    دالة أنشئ(س، ص):\n        نفس.س = س\n        نفس.ص = ص\n    دالة مجموع():\n        ارجع نفس.س + نفس.ص\n    دالة زد(مقدار):\n        نفس.س = نفس.س + مقدار\n        ارجع نفس.س\nك = أنشئ نقطة(٣، ٤)\nاطبع ك.س\nاطبع ك.مجموع()\nاطبع ك.زد(١٠)\nاطبع ك.س\n",
         );
         assert!(ok);
-        assert_eq!(out, "3\n7\n13\n13\n");
+        assert_eq!(out, "٣\n٧\n١٣\n١٣\n");
     }
 
     #[test]
@@ -1686,12 +1686,12 @@ mod tests {
         );
         assert!(ok);
         // Field shadows the method: ص.قيمة is data, not a method.
-        assert_eq!(out, "99\n");
+        assert_eq!(out, "٩٩\n");
         let (out2, _, ok2) = run_vm_src(
             "فئة صندوق:\n    دالة قيمة():\n        ارجع ٧\nص = أنشئ صندوق()\nم = ص.قيمة\nاطبع م()\n",
         );
         assert!(ok2);
-        assert_eq!(out2, "7\n");
+        assert_eq!(out2, "٧\n");
     }
 
     #[test]
@@ -1720,6 +1720,6 @@ mod tests {
             "س = ٠\nبينما س < ٣:\n    س = س + ١\nاطبع س\nإذا س == ٣:\n    اطبع \"نعم\"\nوإلا:\n    اطبع \"لا\"\n",
         );
         assert!(ok);
-        assert_eq!(out, "3\nنعم\n");
+        assert_eq!(out, "٣\nنعم\n");
     }
 }

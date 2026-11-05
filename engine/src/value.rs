@@ -188,11 +188,23 @@ impl Value {
     }
 
     fn fmt_number(n: f64) -> String {
-        if n.fract() == 0.0 && n.abs() < 9.0e15 {
+        let s = if n.fract() == 0.0 && n.abs() < 9.0e15 {
             format!("{}", n as i64)
         } else {
             format!("{}", n)
-        }
+        };
+        // أرقام المخرجات عربية (اجتماع 21): الأرقام الغربية
+        // إلى المشرقية، والنقطة العشرية إلى ٫ (U+066B).
+        // والنصوص لا تمس؛ والتدوين العلمي يبقي e اللاتينية.
+        const ARABIC_DIGITS: [char; 10] =
+            ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+        s.chars()
+            .map(|c| match c {
+                '0'..='9' => ARABIC_DIGITS[c as usize - '0' as usize],
+                '.' => '٫',
+                other => other,
+            })
+            .collect()
     }
 
     /// Display for `اطبع`: strings print raw, everything else prints

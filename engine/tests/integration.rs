@@ -59,11 +59,11 @@ fn examples_pass() {
     let cases: &[(&str, &str)] = &[
         (
             "01-hello.niva",
-            "أهلا بك في Niva\n5\nالنتيجة: 20\n",
+            "أهلا بك في Niva\n٥\nالنتيجة: ٢٠\n",
         ),
         (
             "02-variables.niva",
-            "8\n15\nمحمود\nصحيح\nعدد\nنص\n50\n123\n",
+            "٨\n١٥\nمحمود\nصحيح\nعدد\nنص\n٥٠\n١٢٣\n",
         ),
         (
             "03-conditions.niva",
@@ -71,15 +71,15 @@ fn examples_pass() {
         ),
         (
             "04-loops.niva",
-            "0\n1\n2\nبعد الحلقة:\n2\n0\n1\n2\nتكرار\nتكرار\n3\n4\n",
+            "٠\n١\n٢\nبعد الحلقة:\n٢\n٠\n١\n٢\nتكرار\nتكرار\n٣\n٤\n",
         ),
         (
             "05-functions.niva",
-            "7\nأهلا محمود\n100\n100\n",
+            "٧\nأهلا محمود\n١٠٠\n١٠٠\n",
         ),
         (
             "06-lists-dicts.niva",
-            "1\n3\n6\n3\n[1, 99, 3]\nمحمود\n23\n3\nاسم\nعمر\nمدينة\nصحيح\nصحيح\n",
+            "١\n٣\n٦\n٣\n[١, ٩٩, ٣]\nمحمود\n٢٣\n٣\nاسم\nعمر\nمدينة\nصحيح\nصحيح\n",
         ),
         (
             "07-try-files.niva",
@@ -87,19 +87,19 @@ fn examples_pass() {
         ),
         (
             "08-full-program.niva",
-            "محمود: ناجح\nسارة: ممتاز\nعلي: راسب\nالمتوسط:\n72.33333333333333\nأعلى درجة:\n92\nمجموع من الحلقة:\n217\n",
+            "محمود: ناجح\nسارة: ممتاز\nعلي: راسب\nالمتوسط:\n٧٢٫٣٣٣٣٣٣٣٣٣٣٣٣٣٣\nأعلى درجة:\n٩٢\nمجموع من الحلقة:\n٢١٧\n",
         ),
         (
             "09-modules.niva",
-            "7\n42\n3\n",
+            "٧\n٤٢\n٣\n",
         ),
         (
             "10-types.niva",
-            "5\n7\nمحمود\n",
+            "٥\n٧\nمحمود\n",
         ),
         (
             "11-classes.niva",
-            "3\n4\n7\n13\n13\n",
+            "٣\n٤\n٧\n١٣\n١٣\n",
         ),
         (
             "12-inheritance-interfaces.niva",
@@ -107,19 +107,19 @@ fn examples_pass() {
         ),
         (
             "13-closures.niva",
-            "1\n2\n3\n1\nأهلا محمود\n",
+            "١\n٢\n٣\n١\nأهلا محمود\n",
         ),
         (
             "14-lambdas.niva",
-            "10\n12\n12\n10\n11\n7\n",
+            "١٠\n١٢\n١٢\n١٠\n١١\n٧\n",
         ),
         (
             "15-methods.niva",
-            "5\nHELLO\nhello\nمحمود\nأهلا سارة\n[\"أ\", \"ب\", \"ج\"]\nصحيح\n3\n[1, 2, 3, 4]\n4\n[1, 2, 3]\n",
+            "٥\nHELLO\nhello\nمحمود\nأهلا سارة\n[\"أ\", \"ب\", \"ج\"]\nصحيح\n٣\n[١, ٢, ٣, ٤]\n٤\n[١, ٢, ٣]\n",
         ),
         (
             "16-stdlib.niva",
-            "4\n1024\n3\n4\n3.141592653589793\n2.718281828459045\n5\nصحيح\nصحيح\nصحيح\nصحيح\n",
+            "٤\n١٠٢٤\n٣\n٤\n٣٫١٤١٥٩٢٦٥٣٥٨٩٧٩٣\n٢٫٧١٨٢٨١٨٢٨٤٥٩٠٤٥\n٥\nصحيح\nصحيح\nصحيح\nصحيح\n",
         ),
         (
             "17-word-operators.niva",
@@ -156,7 +156,7 @@ fn loop_variable_visible_after_loop() {
     let (out, _, code) =
         run_src("لكل رقم في مدى(٣):\n    اطبع رقم\nاطبع رقم\n");
     assert_eq!(code, 0);
-    assert_eq!(out, "0\n1\n2\n2\n");
+    assert_eq!(out, "٠\n١\n٢\n٢\n");
 }
 
 #[test]
@@ -204,7 +204,7 @@ fn shallow_recursion_still_works_and_depth_is_released() {
         "دالة عد(ن):\n    إذا ن == ٠:\n        ارجع ٠\n    وإلا:\n        ارجع عد(ن - ١) + ١\nاطبع عد(١٠٠)\nاطبع عد(١٠)\n",
     );
     assert_eq!(code, 0);
-    assert_eq!(out, "100\n10\n");
+    assert_eq!(out, "١٠٠\n١٠\n");
 }
 
 #[test]
@@ -215,7 +215,7 @@ fn recursion_depth_500_completes_extreme_shape() {
     let extreme = "دالة عد(ن):\n    أ1 = ن * 2\n    أ2 = أ1 + ن\n    أ3 = أ2 * 3\n    أ4 = أ3 + ن\n    أ5 = أ4 * 2\n    أ6 = أ5 + ن\n    أ7 = أ6 * 3\n    أ8 = أ7 + ن\n    أ9 = أ8 * 2\n    أ10 = أ9 + ن\n    إذا ن <= 0:\n        ارجع 0\n    ارجع عد(ن - 1) + أ1 + أ2 + أ3 + أ4 + أ5 + أ6 + أ7 + أ8 + أ9 + أ10\nاطبع عد(499)\n";
     let (out, err, code) = run_src(extreme);
     assert_eq!(code, 0, "depth 500 must complete, stderr: {}", err);
-    assert_eq!(out, "56012750\n");
+    assert_eq!(out, "٥٦٠١٢٧٥٠\n");
 }
 
 #[test]
@@ -241,7 +241,7 @@ fn vm_recursion_depth_500_matches_interpreter() {
     std::fs::write(&path, prog).unwrap();
     let out = Command::new(bin()).arg(&path).arg("--vm").output().expect("run niva --vm");
     assert_eq!(out.status.code().unwrap_or(-1), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "499\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "٤٩٩\n");
     let prog2 = prog.replace("عد(499)", "عد(500)");
     std::fs::write(&path, prog2).unwrap();
     let out2 = Command::new(bin()).arg(&path).arg("--vm").output().expect("run niva --vm");
@@ -301,7 +301,7 @@ fn semantic_forward_call_fails_like_runtime() {
         "دالة عد(ن):\n    إذا ن == ٠:\n        ارجع ٠\n    وإلا:\n        ارجع عد(ن - ١)\nاطبع عد(٣)\n",
     );
     assert_eq!(code, 0);
-    assert_eq!(out, "0\n");
+    assert_eq!(out, "٠\n");
 }
 
 fn run_with_modules(files: &[(&str, &str)], main: &str) -> (String, String, i32) {
@@ -349,7 +349,7 @@ fn module_import_dot_from_and_alias() {
         "برنامج.niva",
     );
     assert_eq!(code, 0, "stderr: {}", err);
-    assert_eq!(out, "20\n10\n14\n10\n<وحدة حساب>\n");
+    assert_eq!(out, "٢٠\n١٠\n١٤\n١٠\n<وحدة حساب>\n");
 }
 
 #[test]
@@ -411,7 +411,7 @@ fn module_load_once() {
         "برنامج.niva",
     );
     assert_eq!(code, 0, "stderr: {}", err);
-    assert_eq!(out, "تحميل مرة\n7\n");
+    assert_eq!(out, "تحميل مرة\n٧\n");
 }
 
 #[test]
@@ -455,7 +455,7 @@ fn type_annotated_assignment_and_function_ok() {
         "س: عدد = ٥\nاطبع س\nدالة جمع(أ: عدد، ب: عدد): عدد:\n    ارجع أ + ب\nاطبع جمع(٣، ٤)\nص: نص = \"مرحبا\"\nاطبع ص\n",
     );
     assert_eq!(code, 0);
-    assert_eq!(out, "5\n7\nمرحبا\n");
+    assert_eq!(out, "٥\n٧\nمرحبا\n");
 }
 
 #[test]
@@ -503,7 +503,7 @@ fn type_any_passes() {
         "س: أي = ٥\nس = \"نص\"\nاطبع س\nدالة نقل(ق: أي): أي:\n    ارجع ق\nاطبع نقل(٧)\nاطبع نقل(\"أ\")\n",
     );
     assert_eq!(code, 0);
-    assert_eq!(out, "نص\n7\nأ\n");
+    assert_eq!(out, "نص\n٧\nأ\n");
 }
 
 #[test]
@@ -541,7 +541,7 @@ fn class_simple_constructor_methods_and_field_persistence() {
         "فئة نقطة:\n    دالة أنشئ(س، ص):\n        نفس.س = س\n        نفس.ص = ص\n    دالة مجموع():\n        ارجع نفس.س + نفس.ص\n    دالة زد(مقدار):\n        نفس.س = نفس.س + مقدار\n        ارجع نفس.س\nك = أنشئ نقطة(٣، ٤)\nاطبع ك.س\nاطبع ك.مجموع()\nاطبع ك.زد(١٠)\nاطبع ك.س\n",
     );
     assert_eq!(code, 0, "stderr: {}", err);
-    assert_eq!(out, "3\n7\n13\n13\n");
+    assert_eq!(out, "٣\n٧\n١٣\n١٣\n");
 }
 
 #[test]
@@ -592,7 +592,7 @@ fn vm_slice1_matches_interpreter_for_core_program() {
     let out = Command::new(bin()).arg(&path).arg("--vm").output().expect("run niva --vm");
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(out.status.code().unwrap_or(-1), 0);
-    assert_eq!(String::from_utf8_lossy(&out.stdout).to_string(), "5\nنعم\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).to_string(), "٥\nنعم\n");
 }
 
 #[test]
@@ -656,7 +656,7 @@ fn stdlib_native_module_not_shadowed_by_file() {
     let out = Command::new(bin()).arg(&path).output().expect("run niva");
     let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(out.status.code().unwrap_or(-1), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "4\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "٤\n");
 }
 
 #[test]
@@ -716,8 +716,8 @@ fn vm_slice2_functions_match_interpreter() {
     let out2 = Command::new(bin()).arg(&path).output().expect("run niva");
     let _ = fs::remove_dir_all(&dir);
     assert_eq!(out.status.code().unwrap_or(-1), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(String::from_utf8_lossy(&out.stdout).to_string(), "5\n120\n");
-    assert_eq!(String::from_utf8_lossy(&out2.stdout).to_string(), "5\n120\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).to_string(), "٥\n١٢٠\n");
+    assert_eq!(String::from_utf8_lossy(&out2.stdout).to_string(), "٥\n١٢٠\n");
 }
 
 #[test]
@@ -731,8 +731,8 @@ fn vm_slice3_lists_match_interpreter() {
     let out2 = Command::new(bin()).arg(&path).output().expect("run niva");
     let _ = fs::remove_dir_all(&dir);
     assert_eq!(out.status.code().unwrap_or(-1), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(String::from_utf8_lossy(&out.stdout).to_string(), "[1, 99, 3]\nالقاهرة\n");
-    assert_eq!(String::from_utf8_lossy(&out2.stdout).to_string(), "[1, 99, 3]\nالقاهرة\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).to_string(), "[١, ٩٩, ٣]\nالقاهرة\n");
+    assert_eq!(String::from_utf8_lossy(&out2.stdout).to_string(), "[١, ٩٩, ٣]\nالقاهرة\n");
 }
 
 #[test]
@@ -756,11 +756,11 @@ fn repl_session_via_stdin() {
     assert_eq!(out.status.code().unwrap_or(-1), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     assert!(stdout.contains("مرحبا في REPL نيفا"), "stdout: {}", stdout);
-    assert!(stdout.contains("10\n"), "stdout: {}", stdout);
+    assert!(stdout.contains("١٠\n"), "stdout: {}", stdout);
     // Step 1: the call completes the pending function block, so
     // its result follows the continuation prompt (....), not a
     // fresh نيفا> prompt — the block only ends on a line at indent 0.
-    assert!(stdout.contains("5\n"), "stdout: {}", stdout);
+    assert!(stdout.contains("٥\n"), "stdout: {}", stdout);
 }
 
 #[test]
@@ -789,15 +789,15 @@ fn vm_slice4_builtins_match_interpreter() {
     let out2 = Command::new(bin()).arg(&path).output().expect("run niva");
     let _ = fs::remove_dir_all(&dir);
     assert_eq!(out.status.code().unwrap_or(-1), 0, "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert_eq!(String::from_utf8_lossy(&out.stdout).to_string(), "3\n6\n3\n1\n5\n42\n5\nقائمة\n[0, 1, 2]\n");
-    assert_eq!(String::from_utf8_lossy(&out2.stdout).to_string(), "3\n6\n3\n1\n5\n42\n5\nقائمة\n[0, 1, 2]\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).to_string(), "٣\n٦\n٣\n١\n٥\n٤٢\n٥\nقائمة\n[٠, ١, ٢]\n");
+    assert_eq!(String::from_utf8_lossy(&out2.stdout).to_string(), "٣\n٦\n٣\n١\n٥\n٤٢\n٥\nقائمة\n[٠, ١, ٢]\n");
 }
 
 #[test]
 fn vm_slice5_classes_match_interpreter() {
     use std::process::Command;
     let cases = [
-        ("11-classes.niva", "3\n4\n7\n13\n13\n"),
+        ("11-classes.niva", "٣\n٤\n٧\n١٣\n١٣\n"),
         ("12-inheritance-interfaces.niva", "طالب: محمود\nيدرس\nمحمود\n"),
     ];
     for (name, expected) in cases {

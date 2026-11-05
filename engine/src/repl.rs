@@ -324,9 +324,9 @@ mod tests {
     #[test]
     fn repl_bare_expression_prints_value() {
         let mut r = Repl::new();
-        assert_eq!(done_out(r.eval("١ + ٢")), "3\n");
+        assert_eq!(done_out(r.eval("١ + ٢")), "٣\n");
         assert_eq!(done_out(r.eval("\"مرحبا\"")), "مرحبا\n");
-        assert_eq!(done_out(r.eval("[١، ٢]")), "[1, 2]\n");
+        assert_eq!(done_out(r.eval("[١، ٢]")), "[١, ٢]\n");
     }
 
     #[test]
@@ -334,10 +334,10 @@ mod tests {
         let mut r = Repl::new();
         assert_eq!(
             done_out(r.eval("دالة جمع(أ، ب):\n    ارجع أ + ب\nجمع(٢، ٣)")),
-            "5\n"
+            "٥\n"
         );
         // A trailing call after a definition prints its value.
-        assert_eq!(done_out(r.eval("س = ٧\nس * ٢")), "14\n");
+        assert_eq!(done_out(r.eval("س = ٧\nس * ٢")), "١٤\n");
     }
 
     // Simulate run_repl's line feeding: an indented line while a
@@ -395,8 +395,8 @@ mod tests {
                 "أ()",
             ],
         );
-        // The definition block runs silently; the two calls print 1, 2.
-        assert_eq!(outs, vec!["", "1\n", "2\n"]);
+        // The definition block runs silently; the two calls print ١, ٢.
+        assert_eq!(outs, vec!["", "١\n", "٢\n"]);
     }
 
     #[test]
@@ -405,7 +405,7 @@ mod tests {
         // the REPL needs no block continuation for it.
         let mut r = Repl::new();
         assert_eq!(done_out(r.eval("مضاعف = دالة_مجهولة(س): س * ٢")), "");
-        assert_eq!(done_out(r.eval("مضاعف(٥)")), "10\n");
+        assert_eq!(done_out(r.eval("مضاعف(٥)")), "١٠\n");
         assert_eq!(done_out(r.eval("مضاعف")), "<دالة مجهولة>\n");
     }
 
@@ -416,8 +416,8 @@ mod tests {
         let mut r = Repl::new();
         assert_eq!(done_out(r.eval("ق = [١، ٢]")), "");
         assert_eq!(done_out(r.eval("ق.أضف(٣)")), "لاشيء\n");
-        assert_eq!(done_out(r.eval("ق")), "[1, 2, 3]\n");
-        assert_eq!(done_out(r.eval("\"مرحبا\".طول()")), "5\n");
+        assert_eq!(done_out(r.eval("ق")), "[١, ٢, ٣]\n");
+        assert_eq!(done_out(r.eval("\"مرحبا\".طول()")), "٥\n");
     }
 
     #[test]
@@ -426,20 +426,20 @@ mod tests {
         // other import — the REPL keeps the same interpreter.
         let mut r = Repl::new();
         assert_eq!(done_out(r.eval("استورد رياضيات")), "");
-        assert_eq!(done_out(r.eval("رياضيات.جذر(١٦)")), "4\n");
-        assert_eq!(done_out(r.eval("رياضيات.باي")), "3.141592653589793\n");
+        assert_eq!(done_out(r.eval("رياضيات.جذر(١٦)")), "٤\n");
+        assert_eq!(done_out(r.eval("رياضيات.باي")), "٣٫١٤١٥٩٢٦٥٣٥٨٩٧٩٣\n");
     }
 
     #[test]
     fn repl_variables_and_functions_persist() {
         let mut r = Repl::new();
         assert_eq!(done_out(r.eval("س = ٥")), "");
-        assert_eq!(done_out(r.eval("س * ٢")), "10\n");
+        assert_eq!(done_out(r.eval("س * ٢")), "١٠\n");
         assert_eq!(
             done_out(r.eval("دالة جمع(أ، ب):\n    ارجع أ + ب")),
             ""
         );
-        assert_eq!(done_out(r.eval("جمع(٢، ٣)")), "5\n");
+        assert_eq!(done_out(r.eval("جمع(٢، ٣)")), "٥\n");
     }
 
     #[test]
@@ -455,13 +455,13 @@ mod tests {
         let mut r = Repl::new();
         assert!(is_failed(r.eval("غيرمعرف")));
         assert_eq!(done_out(r.eval("س = ١")), "");
-        assert_eq!(done_out(r.eval("س")), "1\n");
+        assert_eq!(done_out(r.eval("س")), "١\n");
     }
 
     #[test]
     fn repl_print_output_and_reset() {
         let mut r = Repl::new();
-        assert_eq!(done_out(r.eval("اطبع ٥")), "5\n");
+        assert_eq!(done_out(r.eval("اطبع ٥")), "٥\n");
         assert_eq!(done_out(r.eval("س = ٥")), "");
         r.reset();
         assert!(is_failed(r.eval("س")));
