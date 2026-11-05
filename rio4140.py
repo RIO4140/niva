@@ -170,6 +170,12 @@ def _is_space(tok: str) -> bool:
 
 def translate_code(code: str) -> str:
     """Translate one code line (no strings, no comment) to Python."""
+    # Strip diacritics BEFORE tokenising: otherwise a diacritic inside a
+    # keyword (e.g. اِطبع) splits the token and the keyword is missed.
+    # Strings and comments are already removed at this point, so this
+    # cannot alter them. Identifiers are stripped of diacritics only,
+    # never hamza-normalised, so distinct names stay distinct.
+    code = strip_diacritics(code)
     tokens = _TOKEN_RE.findall(code)
     out = []
     i = 0
@@ -227,6 +233,8 @@ def translate_line(line: str) -> str:
         py = f"{m.group(1)}print({m.group(2).rstrip()})"
     for idx, lit in enumerate(strings):
         py = py.replace(f"__RIO_STR_{idx}__", lit)
+    if comment and py and not py.endswith(" "):
+        py += " "  # keep the comment readable: print(س) # comment
     return py + comment
 
 
