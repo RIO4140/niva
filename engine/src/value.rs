@@ -1,5 +1,5 @@
 //! Values and the type system.
-//! Rio4140 is dynamically typed: a variable may hold any type and may be
+//! Rio is dynamically typed: a variable may hold any type and may be
 //! reassigned to another type, but every operation checks types at runtime
 //! and fails with an Arabic type error instead of silently coercing.
 //! Types: عدد (Number), نص (String), منطقي (Bool), قائمة (List),

@@ -1,4 +1,4 @@
-//! Integration tests for the Rio4140 Rust engine.
+//! Integration tests for the Rio Rust engine.
 //! Run with: cargo test
 //! Each example in examples/ is run with the real `rio` binary and its
 //! stdout is compared exactly. Error tests run small programs from a
@@ -59,7 +59,7 @@ fn examples_pass() {
     let cases: &[(&str, &str)] = &[
         (
             "01-hello.rio",
-            "أهلا بك في Rio4140\n5\nالنتيجة: 20\n",
+            "أهلا بك في Rio\n5\nالنتيجة: 20\n",
         ),
         (
             "02-variables.rio",
@@ -83,7 +83,7 @@ fn examples_pass() {
         ),
         (
             "07-try-files.rio",
-            "خطأ في القسمة\nانتهى\nمرحبا من محرك Rio4140\n",
+            "خطأ في القسمة\nانتهى\nمرحبا من محرك Rio\n",
         ),
         (
             "08-full-program.rio",
@@ -134,6 +134,89 @@ fn division_by_zero_error() {
     let (_, err, code) = run_src("اطبع ١٠ / ٠\n");
     assert_ne!(code, 0);
     assert!(err.contains("قسمة على صفر"), "stderr: {}", err);
+}
+
+#[test]
+fn recursion_depth_limit_returns_arabic_error_not_crash() {
+    // P0 (v1.2 final review): unbounded recursion must NOT overflow
+    // the Rust stack. It must return a Rio error with kind, line, col.
+    let (_, err, code) = run_src(
+        "دالة عميقة(ن):\n    ارجع عميقة(ن + ١)\nاطبع عميقة(٠)\n",
+    );
+    assert_ne!(code, 0, "unbounded recursion must fail, not hang");
+    assert!(
+        err.contains("عمق الاستدعاء"),
+        "expected Arabic depth error, got stderr: {}",
+        err
+    );
+    assert!(err.contains("السطر"), "stderr: {}", err);
+    assert!(
+        !err.contains("stack overflow"),
+        "must not crash the process, stderr: {}",
+        err
+    );
+}
+
+#[test]
+fn shallow_recursion_still_works_and_depth_is_released() {
+    // Depth 100 (well under the 200 limit) must work, and depth
+    // must return to zero after a call, so a second call is not
+    // falsely rejected.
+    let (out, _, code) = run_src(
+        "دالة عد(ن):\n    إذا ن == ٠:\n        ارجع ٠\n    وإلا:\n        ارجع عد(ن - ١) + ١\nاطبع عد(١٠٠)\nاطبع عد(١٠)\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(out, "100\n10\n");
+}
+
+#[test]
+fn semantic_undefined_variable_caught_before_any_output() {
+    // Phase 1A Step 1: the analyzer runs before execution, so a
+    // program that prints first and then uses an undefined variable
+    // must print NOTHING, not the first print.
+    let (out, err, code) = run_src(
+        "اطبع \"قبل\"\nاطبع غير_معرف\n",
+    );
+    assert_ne!(code, 0);
+    assert_eq!(out, "", "analyzer must run before execution, out: {}", out);
+    assert!(err.contains("متغير غير معرف"), "stderr: {}", err);
+    assert!(err.contains("دلالي"), "stderr: {}", err);
+}
+
+#[test]
+fn semantic_return_break_and_arity_errors() {
+    let (_, err, code) = run_src("ارجع ١\n");
+    assert_ne!(code, 0);
+    assert!(err.contains("ارجع خارج دالة"), "stderr: {}", err);
+
+    let (_, err, code) = run_src("اكسر\n");
+    assert_ne!(code, 0);
+    assert!(err.contains("اكسر خارج حلقة"), "stderr: {}", err);
+
+    let (_, err, code) = run_src(
+        "دالة جمع(أ، ب):\n    ارجع أ + ب\nاطبع جمع(١)\n",
+    );
+    assert_ne!(code, 0);
+    assert!(err.contains("عدد المعاملات غير صحيح"), "stderr: {}", err);
+
+    let (_, err, code) = run_src("اطبع طول(١، ٢)\n");
+    assert_ne!(code, 0);
+    assert!(err.contains("عدد المعاملات غير صحيح"), "stderr: {}", err);
+}
+
+#[test]
+fn semantic_forward_call_fails_like_runtime() {
+    // Calling a function before its definition fails at analysis,
+    // matching runtime top-down definition order. Recursion passes.
+    let (_, err, code) = run_src("اطبع جمع(١، ٢)\nدالة جمع(أ، ب):\n    ارجع أ + ب\n");
+    assert_ne!(code, 0);
+    assert!(err.contains("متغير غير معرف"), "stderr: {}", err);
+
+    let (out, _, code) = run_src(
+        "دالة عد(ن):\n    إذا ن == ٠:\n        ارجع ٠\n    وإلا:\n        ارجع عد(ن - ١)\nاطبع عد(٣)\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(out, "0\n");
 }
 
 #[test]

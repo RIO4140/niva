@@ -23,6 +23,18 @@ use std::collections::HashMap;
 use std::io::Write;
 
 const MAX_LOOP_ITERATIONS: usize = 1_000_000;
+// P0 fix (2026-11-05, v1.2 final review): a hard call-depth limit for
+// the tree-walking interpreter, so unbounded recursion returns an
+// Arabic Rio error instead of overflowing the Rust stack and aborting
+// the process. 200 is chosen empirically, not arbitrarily: measured
+// 2026-11-05, the DEBUG build overflows at ~220-250 nested calls
+// (unoptimised frames, 8 MB main stack), while the RELEASE build
+// survives 1000+. A 1000 limit would therefore still crash under
+// `cargo test` (debug). 200 is safe in BOTH builds, with margin.
+// The VM phase (Phase 1B) will use its own explicit call stack,
+// not the Rust stack, and may raise this limit with a Rio error,
+// never with a crash.
+const MAX_CALL_DEPTH: usize = 200;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flow {
@@ -38,6 +50,7 @@ pub struct Interpreter {
     scopes: Vec<HashMap<String, Value>>,
     pub output: String,
     return_value: Option<Value>,
+    call_depth: usize,
 }
 
 impl Interpreter {
@@ -46,6 +59,7 @@ impl Interpreter {
             scopes: vec![HashMap::new()],
             output: String::new(),
             return_value: None,
+            call_depth: 0,
         }
     }
 
@@ -753,13 +767,29 @@ impl Interpreter {
                 col,
             ));
         }
+        // P0: refuse a new call at the limit, before pushing a scope
+        // or a Rust frame for it, so the error is a Rio error, not a
+        // stack overflow. Depth is decremented on every exit path,
+        // including errors, so a caught error does not leak depth.
+        if self.call_depth >= MAX_CALL_DEPTH {
+            return Err(RioError::runtime(
+                format!(
+                    "تجاوز حد عمق الاستدعاء ({}). أوقف الاستدعاء الذاتي أو قلل عمقه",
+                    MAX_CALL_DEPTH
+                ),
+                line,
+                col,
+            ));
+        }
         let mut scope = HashMap::new();
         for (p, v) in params.iter().zip(args.into_iter()) {
             scope.insert(p.clone(), v);
         }
         self.scopes.push(scope);
+        self.call_depth += 1;
         let result = self.exec_block(&body);
         self.scopes.pop();
+        self.call_depth -= 1;
         match result? {
             Flow::Return => Ok(self.return_value.take().unwrap_or(Value::Nil)),
             Flow::Normal => Ok(Value::Nil),

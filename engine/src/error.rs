@@ -1,4 +1,4 @@
-//! Error handling: every Rio4140 error carries a kind, an Arabic message,
+//! Error handling: every Rio error carries a kind, an Arabic message,
 //! and a line + column (character columns, not bytes, so Arabic text counts
 //! as the user sees it). The CLI prints exactly this format to stderr.
 
@@ -11,6 +11,11 @@ pub enum ErrorKind {
     Type,
     Runtime,
     Io,
+    // Phase 1A Step 1: errors found by the semantic analyzer BEFORE
+    // execution (undefined variables, return/break outside their
+    // context, wrong call arity). These are not runtime errors,
+    // because the program never runs when they occur.
+    Semantic,
 }
 
 impl ErrorKind {
@@ -21,6 +26,7 @@ impl ErrorKind {
             ErrorKind::Type => "نوع",
             ErrorKind::Runtime => "وقت التشغيل",
             ErrorKind::Io => "إدخال/إخراج",
+            ErrorKind::Semantic => "دلالي",
         }
     }
 }
@@ -48,6 +54,9 @@ impl RioError {
     }
     pub fn runtime(message: impl Into<String>, line: usize, col: usize) -> Self {
         Self::new(ErrorKind::Runtime, message, line, col)
+    }
+    pub fn semantic(message: impl Into<String>, line: usize, col: usize) -> Self {
+        Self::new(ErrorKind::Semantic, message, line, col)
     }
 }
 

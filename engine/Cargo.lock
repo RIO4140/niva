@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "rio4140-engine"
+name = "rio-engine"
 version = "1.0.0"

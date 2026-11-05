@@ -1,7 +1,7 @@
-# Rio4140 Engine — محرك مستقل بلغة Rust
+# Rio Engine — محرك مستقل بلغة Rust
 
 محرك تنفيذ مستقل تماما عن Python: Lexer + Parser + AST +
-Tree-Walking Interpreter، مكتوب بـ Rust، ولا يحوّل برامج Rio4140
+Tree-Walking Interpreter، مكتوب بـ Rust، ولا يحوّل برامج Rio
 إلى Python، ولا إلى لغة آلة في v1.
 
 ## البناء والتشغيل (دون Python)

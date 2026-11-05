@@ -1,4 +1,4 @@
-//! Rio4140 engine CLI: `rio program.rio`
+//! Rio engine CLI: `rio program.rio`
 //! Tree-walking interpreter written in Rust. No Python, no transpilation,
 //! no machine-code compiler in v1. The produced binary runs alone:
 //! it needs no Python installation and no runtime other than itself.
@@ -14,9 +14,11 @@ mod error;
 mod interpreter;
 mod lexer;
 mod parser;
+mod semantic;
 mod value;
 
 use interpreter::Interpreter;
+use semantic::SemanticAnalyzer;
 use lexer::tokenize;
 use parser::Parser;
 use std::env;
@@ -37,7 +39,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if args.iter().any(|a| a == "--version") {
-        println!("Rio4140 engine 1.0.0 (Rust, Tree-Walking Interpreter, no Python)");
+        println!("Rio engine 1.0.0 (Rust, Tree-Walking Interpreter, no Python)");
         return ExitCode::SUCCESS;
     }
     if args.len() < 2 {
@@ -72,6 +74,15 @@ fn main() -> ExitCode {
 
     if show_ast {
         println!("{:#?}", program);
+    }
+
+    // Phase 1A Step 1: semantic analysis BEFORE execution. If it
+    // fails, the program never runs, so no side effect (print, file
+    // write) happens before the error.
+    let mut analyzer = SemanticAnalyzer::new();
+    if let Err(e) = analyzer.analyze_program(&program) {
+        eprintln!("{}", e);
+        return ExitCode::FAILURE;
     }
 
     let mut interp = Interpreter::new();
