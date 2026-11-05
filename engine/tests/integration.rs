@@ -121,6 +121,10 @@ fn examples_pass() {
             "16-stdlib.niva",
             "4\n1024\n3\n4\n3.141592653589793\n2.718281828459045\n5\nصحيح\nصحيح\nصحيح\nصحيح\n",
         ),
+        (
+            "17-word-operators.niva",
+            "صحيح\nصحيح\nصحيح\nصحيح\nصحيح\nصحيح\nخطأ\nصحيح\nكبير\n",
+        ),
     ];
     for (name, expected) in cases {
         let path = example_path(name);
@@ -808,4 +812,35 @@ fn vm_slice5_classes_match_interpreter() {
         assert_eq!(String::from_utf8_lossy(&out.stdout).to_string(), expected, "vm {}", name);
         assert_eq!(String::from_utf8_lossy(&out2.stdout).to_string(), expected, "interp {}", name);
     }
+}
+
+#[test]
+fn word_operators_work_in_interpreter_and_vm() {
+    // اجتماع 19: كلمات المقارنة تنتج نفس عقد AST الرموز،
+    // فيعمل المفسر وVM بلا تغيير فيهما.
+    let src = "اطبع ٥ يساوي ٥\nاطبع ٥ لا يساوي ٦\nاطبع ٧ أكبر من ٥\nاطبع ٣ أصغر من ٥\nاطبع ٥ أكبر من أو يساوي ٥\nاطبع ٥ أصغر من أو يساوي ٦\nاطبع ٥ أكبر من أو يساوي ٦\nاطبع ٥ أكبر من ٧ أو ٥ يساوي ٥\n";
+    let expected = "صحيح\nصحيح\nصحيح\nصحيح\nصحيح\nصحيح\nخطأ\nصحيح\n";
+    let (out, _, code) = run_src(src);
+    assert_eq!(code, 0);
+    assert_eq!(out, expected);
+    // --vm: نفس المخرجات (نفس عقد AST).
+    let dir = std::env::temp_dir().join(format!("niva-vm-words-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("prog.niva");
+    fs::write(&path, src).unwrap();
+    let vm = Command::new(bin()).arg(&path).arg("--vm").output().expect("run niva --vm");
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(vm.status.code().unwrap_or(-1), 0, "vm stderr={}", String::from_utf8_lossy(&vm.stderr));
+    assert_eq!(String::from_utf8_lossy(&vm.stdout), expected);
+}
+
+#[test]
+fn word_operators_with_not_and_or() {
+    // ليس تربط أضعف من المقارنة حتى مع الكلمات، و«أو» بعد
+    // «أكبر من» تبقى أو منطقية لا جزءا من العامل.
+    let (out, _, code) = run_src(
+        "س = ١٠\nإذا ليس س يساوي ٩٩:\n    اطبع \"ليس ٩٩\"\nاطبع ١ أكبر من ٢ أو ٣ أصغر من ٤\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(out, "ليس ٩٩\nصحيح\n");
 }

@@ -660,6 +660,21 @@ impl Parser {
     fn parse_comparison(&mut self) -> RioResult<Expr> {
         let mut left = self.parse_additive()?;
         loop {
+            // كلمات المقارنة (اجتماع 19): بأطول مطابقة أولا،
+            // وتنتج نفس عقد AST الرموز.
+            if let Some((op, count)) = self.word_operator() {
+                let tok = self.peek().clone();
+                for _ in 0..count {
+                    self.advance();
+                }
+                let right = self.parse_additive()?;
+                left = Expr::new(
+                    ExprKind::Binary { left: Box::new(left), op, right: Box::new(right) },
+                    tok.line,
+                    tok.col,
+                );
+                continue;
+            }
             // ليس في  -> NotIn (two tokens)
             if matches!(self.peek().kind, TokenKind::Keyword(Keyword::Not))
                 && matches!(self.peek_at(1).kind, TokenKind::Keyword(Keyword::In))
@@ -693,6 +708,51 @@ impl Parser {
             );
         }
         Ok(left)
+    }
+
+    /// كلمات المقارنة (اجتماع 19): تعيد العامل وعدد الرموز
+    /// التي يستهلكها، أو لا شيء. بأطول مطابقة أولا، لأن
+    /// «أكبر من أو يساوي» تحوي «أو» (كلمة محجوزة قائمة)
+    /// فيجب أن تُقرأ عاملا واحدا لا «أكبر من» + «أو» +
+    /// «يساوي». والرموز تبقى صالحة بجانب الكلمات.
+    fn word_operator(&self) -> Option<(BinOp, usize)> {
+        let k = |i: usize| &self.peek_at(i).kind;
+        // 4 رموز: أكبر/أصغر من أو يساوي.
+        if matches!(k(0), TokenKind::Keyword(Keyword::Greater))
+            && matches!(k(1), TokenKind::Keyword(Keyword::From))
+            && matches!(k(2), TokenKind::Keyword(Keyword::Or))
+            && matches!(k(3), TokenKind::Keyword(Keyword::Equals))
+        {
+            return Some((BinOp::GtEq, 4));
+        }
+        if matches!(k(0), TokenKind::Keyword(Keyword::Smaller))
+            && matches!(k(1), TokenKind::Keyword(Keyword::From))
+            && matches!(k(2), TokenKind::Keyword(Keyword::Or))
+            && matches!(k(3), TokenKind::Keyword(Keyword::Equals))
+        {
+            return Some((BinOp::LtEq, 4));
+        }
+        // رمزان: أكبر من، أصغر من، لا يساوي.
+        if matches!(k(0), TokenKind::Keyword(Keyword::Greater))
+            && matches!(k(1), TokenKind::Keyword(Keyword::From))
+        {
+            return Some((BinOp::Gt, 2));
+        }
+        if matches!(k(0), TokenKind::Keyword(Keyword::Smaller))
+            && matches!(k(1), TokenKind::Keyword(Keyword::From))
+        {
+            return Some((BinOp::Lt, 2));
+        }
+        if matches!(k(0), TokenKind::Keyword(Keyword::No))
+            && matches!(k(1), TokenKind::Keyword(Keyword::Equals))
+        {
+            return Some((BinOp::NotEq, 2));
+        }
+        // رمز واحد: يساوي.
+        if matches!(k(0), TokenKind::Keyword(Keyword::Equals)) {
+            return Some((BinOp::Eq, 1));
+        }
+        None
     }
 
     fn parse_additive(&mut self) -> RioResult<Expr> {

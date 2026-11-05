@@ -40,6 +40,10 @@ pub enum Keyword {
     Repeat,   // كرر
     Times,    // مرات
     AsLongAs, // طالما
+    Greater,  // أكبر (كلمة مقارنة: أكبر من)
+    Smaller,  // أصغر (كلمة مقارنة: أصغر من)
+    Equals,   // يساوي (كلمة مقارنة: ==)
+    No,       // لا (كلمة مقارنة: لا يساوي)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -138,6 +142,11 @@ fn keyword_for(normalized: &str) -> Option<Keyword> {
         "كرر" => Keyword::Repeat,
         "مرات" => Keyword::Times,
         "طالما" => Keyword::AsLongAs,
+        // كلمات المقارنة (اجتماع 19): تطبيع أ -> ا.
+        "اكبر" => Keyword::Greater,
+        "اصغر" => Keyword::Smaller,
+        "يساوي" => Keyword::Equals,
+        "لا" => Keyword::No,
         _ => return None,
     })
 }
