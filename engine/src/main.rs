@@ -76,17 +76,13 @@ fn main() -> ExitCode {
         println!("{:#?}", program);
     }
 
-    // Phase 1A Step 1: semantic analysis BEFORE execution. If it
-    // fails, the program never runs, so no side effect (print, file
-    // write) happens before the error.
-    let mut analyzer = SemanticAnalyzer::new();
-    if let Err(e) = analyzer.analyze_program(&program) {
-        eprintln!("{}", e);
-        return ExitCode::FAILURE;
-    }
-
-    // Phase 1A Step 2: modules are resolved relative to the main
-    // program's directory, not the current working directory.
+    // Phase 1A Step 5 fix: run the interpreter in a thread with a
+    // large stack (64 MB), so Rio's own call-depth limit (200) is
+    // enforced by a Rio error, not by a Rust stack overflow, in
+    // BOTH debug and release builds. Debug frames grew with the
+    // class/interface AST variants, and depth-100 recursion that
+    // previously passed in debug began overflowing the default
+    // 8 MB main stack. This restores the original guarantee.
     let program_dir = std::path::Path::new(path)
         .parent()
         .map(|p| {
@@ -101,17 +97,35 @@ fn main() -> ExitCode {
             }
         })
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let mut interp = Interpreter::with_program_dir(program_dir);
-    match interp.run(&program) {
-        Ok(()) => {
-            print!("{}", interp.output);
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            // Partial output first, then the Arabic error with line/col.
-            print!("{}", interp.output);
-            eprintln!("{}", e);
-            ExitCode::FAILURE
-        }
+    let handle = std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            // Phase 1A Step 1: semantic analysis BEFORE execution. If it
+            // fails, the program never runs, so no side effect (print, file
+            // write) happens before the error.
+            let mut analyzer = SemanticAnalyzer::new();
+            if let Err(e) = analyzer.analyze_program(&program) {
+                eprintln!("{}", e);
+                return ExitCode::FAILURE;
+            }
+            // Phase 1A Step 2: modules are resolved relative to the main
+            // program's directory, not the current working directory.
+            let mut interp = Interpreter::with_program_dir(program_dir);
+            match interp.run(&program) {
+                Ok(()) => {
+                    print!("{}", interp.output);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    // Partial output first, then the Arabic error with line/col.
+                    print!("{}", interp.output);
+                    eprintln!("{}", e);
+                    ExitCode::FAILURE
+                }
+            }
+        });
+    match handle {
+        Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),
+        Err(_) => ExitCode::FAILURE,
     }
 }

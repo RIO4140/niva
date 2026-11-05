@@ -28,7 +28,10 @@ pub enum Keyword {
     Try,      // حاول
     Except,   // ماعدا
     Finally,  // أخيرا
-    Class,    // فئة (parsed, then rejected with a clear v1 message)
+    Class,    // فئة
+    Create,   // أنشئ (إنشاء كائن من فئة)
+    Inherit,  // ورث
+    Interface, // واجهة
     Import,   // استورد
     Export,   // صدّر (Phase 1A Step 2: modules)
     As,       // باسم
@@ -118,7 +121,13 @@ fn keyword_for(normalized: &str) -> Option<Keyword> {
         "حاول" => Keyword::Try,
         "ماعدا" => Keyword::Except,
         "اخيرا" => Keyword::Finally,
+        // فئة normalizes to فيه (ئ -> ي, ة -> ه); the فئه key
+        // never matches normalized input, but is kept harmless.
         "فئه" => Keyword::Class,
+        "فيه" => Keyword::Class,
+        "انشي" => Keyword::Create,
+        "ورث" => Keyword::Inherit,
+        "واجهه" => Keyword::Interface,
         "استورد" => Keyword::Import,
         "صدر" => Keyword::Export,
         "باسم" => Keyword::As,

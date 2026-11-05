@@ -89,6 +89,22 @@ fn examples_pass() {
             "08-full-program.rio",
             "محمود: ناجح\nسارة: ممتاز\nعلي: راسب\nالمتوسط:\n72.33333333333333\nأعلى درجة:\n92\nمجموع من الحلقة:\n217\n",
         ),
+        (
+            "09-modules.rio",
+            "7\n42\n3\n",
+        ),
+        (
+            "10-types.rio",
+            "5\n7\nمحمود\n",
+        ),
+        (
+            "11-classes.rio",
+            "3\n4\n7\n13\n13\n",
+        ),
+        (
+            "12-inheritance-interfaces.rio",
+            "طالب: محمود\nيدرس\nمحمود\n",
+        ),
     ];
     for (name, expected) in cases {
         let path = example_path(name);
@@ -448,4 +464,51 @@ fn type_module_function_runtime_check() {
     );
     assert_ne!(code, 0);
     assert!(err.contains("نوع غير متطابق"), "stderr: {}", err);
+}
+
+#[test]
+fn class_simple_constructor_methods_and_field_persistence() {
+    let (out, err, code) = run_src(
+        "فئة نقطة:\n    دالة أنشئ(س، ص):\n        نفس.س = س\n        نفس.ص = ص\n    دالة مجموع():\n        ارجع نفس.س + نفس.ص\n    دالة زد(مقدار):\n        نفس.س = نفس.س + مقدار\n        ارجع نفس.س\nك = أنشئ نقطة(٣، ٤)\nاطبع ك.س\nاطبع ك.مجموع()\nاطبع ك.زد(١٠)\nاطبع ك.س\n",
+    );
+    assert_eq!(code, 0, "stderr: {}", err);
+    assert_eq!(out, "3\n7\n13\n13\n");
+}
+
+#[test]
+fn class_errors_are_arabic() {
+    let (_, err, code) = run_src("ك = أنشئ غيرموجود()\n");
+    assert_ne!(code, 0);
+    assert!(err.contains("فئة غير معرفة"), "stderr: {}", err);
+    let (_, err, code) = run_src("فئة س:\n    مرر\nك = س(١)\n");
+    assert_ne!(code, 0);
+    assert!(err.contains("استخدم أنشئ"), "stderr: {}", err);
+    let (_, err, code) = run_src(
+        "فئة س:\n    مرر\nك = أنشئ س()\nاطبع ك.غيرموجود\n",
+    );
+    assert_ne!(code, 0);
+    assert!(err.contains("ليس له حقل أو طريقة"), "stderr: {}", err);
+}
+
+#[test]
+fn class_inheritance_override_and_constructor_inheritance() {
+    let (out, err, code) = run_src(
+        "فئة شخص:\n    دالة أنشئ(اسم):\n        نفس.اسم = اسم\n    دالة عرّف():\n        ارجع نفس.اسم\nفئة طالب ورث شخص:\n    دالة عرّف():\n        ارجع \"طالب: \" + نفس.اسم\nط = أنشئ طالب(\"محمود\")\nاطبع ط.عرّف()\nاطبع ط.اسم\n",
+    );
+    assert_eq!(code, 0, "stderr: {}", err);
+    assert_eq!(out, "طالب: محمود\nمحمود\n");
+}
+
+#[test]
+fn class_interface_compliance_errors() {
+    let (_, err, code) = run_src(
+        "واجهة قابل:\n    دالة م():\n        مرر\nفئة س واجهة قابل:\n    مرر\n",
+    );
+    assert_ne!(code, 0);
+    assert!(err.contains("لا تنفذ طريقة م"), "stderr: {}", err);
+    let (_, err, code) = run_src(
+        "واجهة قابل:\n    دالة م(أ، ب):\n        مرر\nفئة س واجهة قابل:\n    دالة م(أ):\n        مرر\n",
+    );
+    assert_ne!(code, 0);
+    assert!(err.contains("عدد معاملات غير صحيح"), "stderr: {}", err);
 }

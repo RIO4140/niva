@@ -6,9 +6,59 @@
 //! قاموس (Dict), لاشيء (Nil), دالة (Function).
 
 use crate::ast::Stmt;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
-#[derive(Debug, Clone, PartialEq)]
+// Phase 1A Step 4: classes. Class and instance data live behind Rc
+// so cloning an instance value shares its fields: a method that
+// writes نفس.حقل = قيمة mutates the same fields the caller sees,
+// without any write-back bookkeeping in the interpreter.
+// ClassData methods map method name -> Function value.
+#[derive(Debug, Clone)]
+pub struct ClassData {
+    pub name: String,
+    pub methods: HashMap<String, Value>,
+    // Phase 1A Step 5: inheritance + interfaces.
+    // base: parent class, if any (ورث). interfaces: names of
+    // interfaces this class declares it implements (واجهة).
+    // Method lookup walks base chain; interfaces are checked
+    // at class definition time, not stored as methods.
+    pub base: Option<Rc<ClassData>>,
+    pub interfaces: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InterfaceData {
+    pub name: String,
+    // (method name, param count). v1 checks existence + arity only,
+    // not param types or return types.
+    pub methods: Vec<(String, usize)>,
+}
+
+impl ClassData {
+    // Method lookup: own methods first, then base chain recursively.
+    // Overriding works because own methods win.
+    pub fn lookup_method(&self, name: &str) -> Option<Value> {
+        if let Some(m) = self.methods.get(name) {
+            return Some(m.clone());
+        }
+        if let Some(base) = &self.base {
+            return base.lookup_method(name);
+        }
+        None
+    }
+}
+
+#[derive(Debug)]
+pub struct InstanceData {
+    pub class: Rc<ClassData>,
+    pub fields: RefCell<HashMap<String, Value>>,
+}
+// Value::Instance holds Rc<InstanceData>, so cloning a Value clones
+// the Rc pointer and shares fields; InstanceData itself is not Clone.
+
+#[derive(Debug, Clone)]
 pub enum Value {
     Number(f64),
     Str(String),
@@ -38,6 +88,46 @@ pub enum Value {
         exports: HashMap<String, Value>,
         scope: HashMap<String, Value>,
     },
+    // Class definition value: فئة اسم.
+    Class(Rc<ClassData>),
+    // Interface definition value: واجهة اسم.
+    Interface(Rc<InterfaceData>),
+    // Object instance: كائن من فئة. Rc-shared fields, see above.
+    Instance(Rc<InstanceData>),
+    // A method bound to an instance, produced by ك.طريقة evaluation.
+    // Calling it binds نفس to the instance automatically.
+    BoundMethod { func: Box<Value>, instance: Rc<InstanceData> },
+}
+
+// Manual PartialEq: Rc values compare by identity, not by deep
+// field comparison, so == on classes/instances means same object.
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Number(a), Value::Number(b)) => a == b,
+            (Value::Str(a), Value::Str(b)) => a == b,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::List(a), Value::List(b)) => a == b,
+            (Value::Dict(a), Value::Dict(b)) => a == b,
+            (Value::Nil, Value::Nil) => true,
+            (
+                Value::Function { name: n1, params: p1, body: b1, module: m1, param_types: pt1, return_type: r1 },
+                Value::Function { name: n2, params: p2, body: b2, module: m2, param_types: pt2, return_type: r2 },
+            ) => n1 == n2 && p1 == p2 && b1 == b2 && m1 == m2 && pt1 == pt2 && r1 == r2,
+            (
+                Value::Module { name: n1, exports: e1, scope: s1 },
+                Value::Module { name: n2, exports: e2, scope: s2 },
+            ) => n1 == n2 && e1 == e2 && s1 == s2,
+            (Value::Class(a), Value::Class(b)) => Rc::ptr_eq(a, b),
+            (Value::Interface(a), Value::Interface(b)) => Rc::ptr_eq(a, b),
+            (Value::Instance(a), Value::Instance(b)) => Rc::ptr_eq(a, b),
+            (
+                Value::BoundMethod { func: f1, instance: i1 },
+                Value::BoundMethod { func: f2, instance: i2 },
+            ) => f1 == f2 && Rc::ptr_eq(i1, i2),
+            _ => false,
+        }
+    }
 }
 
 impl Value {
@@ -51,6 +141,10 @@ impl Value {
             Value::Nil => "لاشيء",
             Value::Function { .. } => "دالة",
             Value::Module { .. } => "وحدة",
+            Value::Class(_) => "فئة",
+            Value::Interface(_) => "واجهة",
+            Value::Instance(_) => "كائن",
+            Value::BoundMethod { .. } => "دالة",
         }
     }
 
@@ -89,6 +183,13 @@ impl Value {
             Value::Nil => "لاشيء".to_string(),
             Value::Function { name, .. } => format!("<دالة {}>", name),
             Value::Module { name, .. } => format!("<وحدة {}>", name),
+            Value::Class(data) => format!("<فئة {}>", data.name),
+            Value::Interface(data) => format!("<واجهة {}>", data.name),
+            Value::Instance(data) => format!("<كائن {}>", data.class.name),
+            Value::BoundMethod { func, .. } => match &**func {
+                Value::Function { name, .. } => format!("<دالة {}>", name),
+                _ => "<دالة>".to_string(),
+            },
         }
     }
 

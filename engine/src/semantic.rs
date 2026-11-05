@@ -261,6 +261,7 @@ impl SemanticAnalyzer {
                 }
             }
             ExprKind::Index { .. } | ExprKind::Dot { .. } => None,
+            ExprKind::Create { .. } => Some("كائن".to_string()),
         }
     }
 
@@ -315,6 +316,12 @@ impl SemanticAnalyzer {
                         // If no annotation and the variable already
                         // exists in this scope, its declared type
                         // (if any) is kept.
+                    }
+                    AssignTarget::Dot { target: t, name: _ } => {
+                        // Field assignment: target must be analyzable
+                        // (a variable, نفس inside a method, or a dot
+                        // chain). Field existence/type is runtime.
+                        self.analyze_expr(t)?;
                     }
                     AssignTarget::Index { target: t, index: i } => {
                         // Narrowed v1.3 Target: only Ident[Expr] is
@@ -508,6 +515,74 @@ impl SemanticAnalyzer {
                 Ok(())
             }
             StmtKind::ExprStmt { expr } => self.analyze_expr(expr),
+            StmtKind::ClassDef { name, base, interfaces, methods } => {
+                // Base and interfaces must already be defined
+                // (top-down, like functions). Compliance itself
+                // is checked at runtime, where method maps exist.
+                if let Some(b) = base {
+                    if !self.is_defined(b) {
+                        return Err(RioError::semantic(
+                            format!("فئة أب غير معرفة: {}", b),
+                            stmt.line,
+                            stmt.col,
+                        ));
+                    }
+                }
+                for iname in interfaces {
+                    if !self.is_defined(iname) {
+                        return Err(RioError::semantic(
+                            format!("واجهة غير معرفة: {}", iname),
+                            stmt.line,
+                            stmt.col,
+                        ));
+                    }
+                }
+                // Class name is defined BEFORE its methods, so a
+                // method body may create instances of its own class.
+                // Its static type is فئة.
+                self.define(name, VarInfo::var_typed("فئة"));
+                for m in methods {
+                    if let StmtKind::FuncDef { name: mn, params, param_types, return_type, body } = &m.kind {
+                        let mut seen = HashSet::new();
+                        for p in params {
+                            if !seen.insert(p) {
+                                return Err(RioError::semantic(
+                                    format!("معامل مكرر في الطريقة {}: {}", mn, p),
+                                    m.line,
+                                    m.col,
+                                ));
+                            }
+                        }
+                        // Method scope: params + نفس (auto-bound to
+                        // the instance, type كائن). نفس is NOT a param.
+                        self.scopes.push(HashMap::new());
+                        for (p, pt) in params.iter().zip(param_types.iter()) {
+                            match pt {
+                                Some(t) => self.define(p, VarInfo::var_typed(t)),
+                                None => self.define(p, VarInfo::var()),
+                            }
+                        }
+                        self.define("نفس", VarInfo::var_typed("كائن"));
+                        self.function_depth += 1;
+                        self.return_type_stack.push(return_type.clone());
+                        let saved_loop = self.loop_depth;
+                        self.loop_depth = 0;
+                        let r = self.analyze_block(body);
+                        self.loop_depth = saved_loop;
+                        self.return_type_stack.pop();
+                        self.function_depth -= 1;
+                        self.scopes.pop();
+                        r?;
+                    }
+                }
+                Ok(())
+            }
+            StmtKind::InterfaceDef { name, .. } => {
+                // Interface name is defined, type واجهة.
+                // Its methods have no body to analyze (مرر only).
+                self.define(name, VarInfo::var_typed("واجهة"));
+                Ok(())
+            }
             StmtKind::Import { module, alias, names } => {
                 match names {
                     Some(names) => {
@@ -637,6 +712,22 @@ impl SemanticAnalyzer {
             ExprKind::Index { target, index } => {
                 self.analyze_expr(target)?;
                 self.analyze_expr(index)?;
+                Ok(())
+            }
+            ExprKind::Create { class, args } => {
+                // Class must be defined (top-down, like functions).
+                // Its type is checked at runtime, so a variable
+                // holding a class passes here (gradual).
+                if !self.is_defined(class) {
+                    return Err(RioError::semantic(
+                        format!("فئة غير معرفة: {}", class),
+                        expr.line,
+                        expr.col,
+                    ));
+                }
+                for a in args {
+                    self.analyze_expr(a)?;
+                }
                 Ok(())
             }
             ExprKind::Dot { target, name: _ } => {

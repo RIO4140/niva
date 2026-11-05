@@ -20,8 +20,10 @@ use crate::ast::{AssignTarget, BinOp, Expr, ExprKind, Stmt, StmtKind, UnOp};
 use crate::error::{ErrorKind, RioError, RioResult};
 use crate::lexer;
 use crate::parser::Parser;
-use crate::value::Value;
+use crate::value::{ClassData, InstanceData, InterfaceData, Value};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -172,6 +174,9 @@ impl Interpreter {
                     AssignTarget::Index { target: t, index: i } => {
                         self.assign_index(t, i, v, stmt.line, stmt.col)?;
                     }
+                    AssignTarget::Dot { target: t, name } => {
+                        self.assign_dot(t, name, v, stmt.line, stmt.col)?;
+                    }
                 }
                 Ok(Flow::Normal)
             }
@@ -295,6 +300,111 @@ impl Interpreter {
                     return_type: return_type.clone(),
                 };
                 self.define_local(name, func);
+                Ok(Flow::Normal)
+            }
+            StmtKind::ClassDef { name, base, interfaces, methods } => {
+                // Resolve base class first (must already be defined).
+                let base_data: Option<Rc<ClassData>> = match base {
+                    Some(bname) => match self.lookup(bname) {
+                        Some(Value::Class(data)) => Some(data),
+                        Some(other) => {
+                            return Err(RioError::typ(
+                                format!("{} ليست فئة، بل {}", bname, other.type_name()),
+                                stmt.line,
+                                stmt.col,
+                            ));
+                        }
+                        None => {
+                            return Err(RioError::runtime(
+                                format!("فئة أب غير معرفة: {}", bname),
+                                stmt.line,
+                                stmt.col,
+                            ));
+                        }
+                    },
+                    None => None,
+                };
+                // Methods defined in a module file carry that module
+                // name, so their bodies can read module globals,
+                // like top-level module functions in Step 2.
+                let mod_name = self.loading_stack.last().cloned();
+                let mut map: HashMap<String, Value> = HashMap::new();
+                for m in methods {
+                    if let StmtKind::FuncDef { name: mn, params, param_types, return_type, body } = &m.kind {
+                        map.insert(mn.clone(), Value::Function {
+                            name: mn.clone(),
+                            params: params.clone(),
+                            body: body.clone(),
+                            module: mod_name.clone(),
+                            param_types: param_types.clone(),
+                            return_type: return_type.clone(),
+                        });
+                    }
+                }
+                let class_data = Rc::new(ClassData {
+                    name: name.clone(),
+                    methods: map,
+                    base: base_data,
+                    interfaces: interfaces.clone(),
+                });
+                // Interface compliance: every required method must
+                // exist (own or inherited) with the right arity.
+                // v1 checks existence + arity only, not param types.
+                for iname in interfaces {
+                    let iface = match self.lookup(iname) {
+                        Some(Value::Interface(data)) => data,
+                        Some(other) => {
+                            return Err(RioError::typ(
+                                format!("{} ليست واجهة، بل {}", iname, other.type_name()),
+                                stmt.line,
+                                stmt.col,
+                            ));
+                        }
+                        None => {
+                            return Err(RioError::runtime(
+                                format!("واجهة غير معرفة: {}", iname),
+                                stmt.line,
+                                stmt.col,
+                            ));
+                        }
+                    };
+                    for (mname, arity) in &iface.methods {
+                        match class_data.lookup_method(mname) {
+                            Some(Value::Function { params, .. }) => {
+                                if params.len() != *arity {
+                                    return Err(RioError::runtime(
+                                        format!(
+                                            "الفئة {} تنفذ طريقة {} من واجهة {} بعدد معاملات غير صحيح: تتوقع {} لكن وجد {}",
+                                            name, mname, iname, arity, params.len()
+                                        ),
+                                        stmt.line,
+                                        stmt.col,
+                                    ));
+                                }
+                            }
+                            _ => {
+                                return Err(RioError::runtime(
+                                    format!(
+                                        "الفئة {} لا تنفذ طريقة {} المطلوبة من واجهة {}",
+                                        name, mname, iname
+                                    ),
+                                    stmt.line,
+                                    stmt.col,
+                                ));
+                            }
+                        }
+                    }
+                }
+                let class = Value::Class(class_data);
+                self.define_local(name, class);
+                Ok(Flow::Normal)
+            }
+            StmtKind::InterfaceDef { name, methods } => {
+                let iface = Value::Interface(Rc::new(InterfaceData {
+                    name: name.clone(),
+                    methods: methods.clone(),
+                }));
+                self.define_local(name, iface);
                 Ok(Flow::Normal)
             }
             StmtKind::Import { module, alias, names } => {
@@ -547,6 +657,33 @@ impl Interpreter {
         }
     }
 
+    // Phase 1A Step 4: dot field assignment: ك.س = قيمة.
+    // The target is evaluated to an Instance; because instance
+    // fields live behind Rc, mutating the cloned Rc value mutates
+    // the same fields the caller sees, for any target form
+    // (variable, نفس, chained dot, list/dict element).
+    fn assign_dot(
+        &mut self,
+        target: &Expr,
+        name: &str,
+        value: Value,
+        line: usize,
+        col: usize,
+    ) -> RioResult<()> {
+        let t = self.eval_expr(target)?;
+        match t {
+            Value::Instance(data) => {
+                data.fields.borrow_mut().insert(name.to_string(), value);
+                Ok(())
+            }
+            other => Err(RioError::typ(
+                format!("لا يمكن تعيين حقل في نوع {}", other.type_name()),
+                line,
+                col,
+            )),
+        }
+    }
+
     fn assign_index(
         &mut self,
         target: &Expr,
@@ -692,6 +829,14 @@ impl Interpreter {
                             Value::Function { .. } => {
                                 self.call_user(v, arg_values, expr.line, expr.col)
                             }
+                            Value::Class(data) => Err(RioError::typ(
+                                format!(
+                                    "استخدم أنشئ لإنشاء كائن من فئة {}، مثل أنشئ {}()",
+                                    data.name, data.name
+                                ),
+                                callee.line,
+                                callee.col,
+                            )),
                             other => Err(RioError::typ(
                                 format!("القيمة {} ليست دالة", other.type_name()),
                                 callee.line,
@@ -705,6 +850,9 @@ impl Interpreter {
                 match callee_value {
                     Value::Function { .. } => {
                         self.call_user(callee_value, arg_values, expr.line, expr.col)
+                    }
+                    Value::BoundMethod { func, instance } => {
+                        self.call_method(*func, instance, arg_values, expr.line, expr.col)
                     }
                     other => Err(RioError::typ(
                         format!("القيمة {} ليست دالة", other.type_name()),
@@ -791,15 +939,84 @@ impl Interpreter {
                             )
                         })
                     }
+                    Value::Instance(data) => {
+                        // Field first, then method (bound to this
+                        // instance). A field shadowing a method name
+                        // wins, so ك.س can be data, not a method.
+                        if let Some(v) = data.fields.borrow().get(name) {
+                            Ok(v.clone())
+                        } else if let Some(m) = data.class.lookup_method(name) {
+                            Ok(Value::BoundMethod {
+                                func: Box::new(m.clone()),
+                                instance: Rc::clone(data),
+                            })
+                        } else {
+                            Err(RioError::runtime(
+                                format!(
+                                    "الكائن من فئة {} ليس له حقل أو طريقة باسم {}",
+                                    data.class.name, name
+                                ),
+                                expr.line,
+                                expr.col,
+                            ))
+                        }
+                    }
                     other => Err(RioError::typ(
                         format!(
-                            "الوصول بالنقطة مدعوم على الوحدات فقط في هذه المرحلة، وليس على نوع {}",
+                            "الوصول بالنقطة مدعوم على الوحدات والكائنات فقط، وليس على نوع {}",
                             other.type_name()
                         ),
                         expr.line,
                         expr.col,
                     )),
                 }
+            }
+            ExprKind::Create { class, args } => {
+                let mut arg_values = Vec::new();
+                for a in args {
+                    arg_values.push(self.eval_expr(a)?);
+                }
+                let class_value = match self.lookup(class) {
+                    Some(v) => v,
+                    None => {
+                        return Err(RioError::runtime(
+                            format!("فئة غير معرفة: {}", class),
+                            expr.line,
+                            expr.col,
+                        ));
+                    }
+                };
+                let class_data = match class_value {
+                    Value::Class(data) => data,
+                    other => {
+                        return Err(RioError::typ(
+                            format!("{} ليست فئة، بل {}", class, other.type_name()),
+                            expr.line,
+                            expr.col,
+                        ));
+                    }
+                };
+                let instance = Rc::new(InstanceData {
+                    class: Rc::clone(&class_data),
+                    fields: RefCell::new(HashMap::new()),
+                });
+                // Constructor: a method named أنشئ, if present,
+                // is called automatically with نفس bound.
+                if let Some(ctor) = class_data.lookup_method("أنشئ") {
+                    let ctor = ctor.clone();
+                    self.call_method(ctor, Rc::clone(&instance), arg_values, expr.line, expr.col)?;
+                } else if !arg_values.is_empty() {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الفئة {} ليس لها منشئ أنشئ، لكن أعطيت {} معاملات",
+                            class_data.name,
+                            arg_values.len()
+                        ),
+                        expr.line,
+                        expr.col,
+                    ));
+                }
+                Ok(Value::Instance(instance))
             }
         }
     }
@@ -1081,6 +1298,124 @@ impl Interpreter {
                         return Err(RioError::typ(
                             format!(
                                 "نوع غير متطابق: الدالة {} معلنة أن ترجع {}، لكن لم ترجع شيئا",
+                                name, rt
+                            ),
+                            line,
+                            col,
+                        ));
+                    }
+                }
+                Ok(Value::Nil)
+            }
+            Flow::Break => Err(RioError::runtime("اكسر خارج حلقة", line, col)),
+            Flow::Continue => Err(RioError::runtime("تابع خارج حلقة", line, col)),
+        }
+    }
+
+    // Phase 1A Step 4: call a method bound to an instance.
+    // نفس is bound to the instance in the method scope, after
+    // parameters, so نفس always refers to the instance even if
+    // a parameter were (incorrectly) named نفس. Method params
+    // are the user arguments only; نفس is NOT a parameter.
+    fn call_method(
+        &mut self,
+        func: Value,
+        instance: Rc<InstanceData>,
+        args: Vec<Value>,
+        line: usize,
+        col: usize,
+    ) -> RioResult<Value> {
+        let (name, params, body, module, param_types, return_type) = match func {
+            Value::Function { name, params, body, module, param_types, return_type } => {
+                (name, params, body, module, param_types, return_type)
+            }
+            _ => unreachable!(),
+        };
+        if args.len() != params.len() {
+            return Err(RioError::runtime(
+                format!(
+                    "عدد المعاملات غير صحيح: الطريقة {} تتوقع {} لكن أعطيت {}",
+                    name,
+                    params.len(),
+                    args.len()
+                ),
+                line,
+                col,
+            ));
+        }
+        for (i, arg) in args.iter().enumerate() {
+            if let Some(Some(pt)) = param_types.get(i) {
+                if pt != "أي" && arg.type_name() != pt {
+                    return Err(RioError::typ(
+                        format!(
+                            "نوع غير متطابق: معامل {} في الطريقة {} معلن {}، لكن القيمة {}",
+                            params[i],
+                            name,
+                            pt,
+                            arg.type_name()
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+            }
+        }
+        if self.call_depth >= MAX_CALL_DEPTH {
+            return Err(RioError::runtime(
+                format!(
+                    "تجاوز حد عمق الاستدعاء ({}). أوقف الاستدعاء الذاتي أو قلل عمقه",
+                    MAX_CALL_DEPTH
+                ),
+                line,
+                col,
+            ));
+        }
+        let mut pushed_module_scope = false;
+        if let Some(mod_name) = &module {
+            if let Some(Value::Module { scope, .. }) = self.loaded_modules.get(mod_name) {
+                let scope = scope.clone();
+                self.scopes.push(scope);
+                pushed_module_scope = true;
+            }
+        }
+        let mut scope = HashMap::new();
+        for (p, v) in params.iter().zip(args.into_iter()) {
+            scope.insert(p.clone(), v);
+        }
+        scope.insert("نفس".to_string(), Value::Instance(Rc::clone(&instance)));
+        self.scopes.push(scope);
+        self.call_depth += 1;
+        let result = self.exec_block(&body);
+        self.scopes.pop();
+        if pushed_module_scope {
+            self.scopes.pop();
+        }
+        self.call_depth -= 1;
+        match result? {
+            Flow::Return => {
+                let v = self.return_value.take().unwrap_or(Value::Nil);
+                if let Some(rt) = &return_type {
+                    if rt != "أي" && v.type_name() != rt {
+                        return Err(RioError::typ(
+                            format!(
+                                "نوع غير متطابق: الطريقة {} معلنة أن ترجع {}، لكن رجعت {}",
+                                name,
+                                rt,
+                                v.type_name()
+                            ),
+                            line,
+                            col,
+                        ));
+                    }
+                }
+                Ok(v)
+            }
+            Flow::Normal => {
+                if let Some(rt) = &return_type {
+                    if rt != "أي" && rt != "لاشيء" {
+                        return Err(RioError::typ(
+                            format!(
+                                "نوع غير متطابق: الطريقة {} معلنة أن ترجع {}، لكن لم ترجع شيئا",
                                 name, rt
                             ),
                             line,

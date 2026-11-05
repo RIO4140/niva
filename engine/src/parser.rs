@@ -181,11 +181,8 @@ impl Parser {
                 Ok(Stmt::new(StmtKind::Pass, tok.line, tok.col))
             }
             TokenKind::Keyword(Keyword::Try) => self.parse_try(),
-            TokenKind::Keyword(Keyword::Class) => Err(RioError::parse(
-                "الفئات غير مدعومة في المحرك v1",
-                tok.line,
-                tok.col,
-            )),
+            TokenKind::Keyword(Keyword::Class) => self.parse_classdef(),
+            TokenKind::Keyword(Keyword::Interface) => self.parse_interfacedef(),
             TokenKind::Keyword(Keyword::Import) => self.parse_import(),
             TokenKind::Keyword(Keyword::From) => self.parse_from_import(),
             TokenKind::Keyword(Keyword::Export) => self.parse_export(),
@@ -351,7 +348,14 @@ impl Parser {
 
     fn parse_funcdef(&mut self) -> RioResult<Stmt> {
         let tok = self.advance(); // دالة
-        let (name, _, _) = self.expect_ident("اسم الدالة")?;
+        // Constructor method name أنشئ is a keyword, not an Ident,
+        // so accept it explicitly as a method name here.
+        let (name, _, _) = if matches!(self.peek().kind, TokenKind::Keyword(Keyword::Create)) {
+            self.advance();
+            ("أنشئ".to_string(), tok.line, tok.col)
+        } else {
+            self.expect_ident("اسم الدالة")?
+        };
         self.expect(&TokenKind::LParen, "قوس فتح (")?;
         let mut params = Vec::new();
         let mut param_types: Vec<Option<String>> = Vec::new();
@@ -393,6 +397,107 @@ impl Parser {
             tok.line,
             tok.col,
         ))
+    }
+
+    fn parse_classdef(&mut self) -> RioResult<Stmt> {
+        let tok = self.advance(); // فئة
+        let (name, _, _) = self.expect_ident("اسم الفئة")?;
+        // Optional: ورث أب
+        let mut base: Option<String> = None;
+        if matches!(self.peek().kind, TokenKind::Keyword(Keyword::Inherit)) {
+            self.advance();
+            let (b, _, _) = self.expect_ident("اسم فئة الأب بعد ورث")?;
+            base = Some(b);
+        }
+        // Optional: واجهة و1، و2
+        let mut interfaces: Vec<String> = Vec::new();
+        if matches!(self.peek().kind, TokenKind::Keyword(Keyword::Interface)) {
+            self.advance();
+            loop {
+                let (iname, _, _) = self.expect_ident("اسم واجهة")?;
+                interfaces.push(iname);
+                if matches!(self.peek().kind, TokenKind::Comma) {
+                    self.advance();
+                    continue;
+                }
+                break;
+            }
+        }
+        self.expect_colon()?;
+        let body = self.parse_block()?;
+        let mut methods: Vec<Stmt> = Vec::new();
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::FuncDef { name: mname, params, .. } => {
+                    if params.iter().any(|p| p == "نفس") {
+                        return Err(RioError::parse(
+                            "نفس محجوز داخل طرق الفئة، ولا يكتب كمعامل",
+                            stmt.line,
+                            stmt.col,
+                        ));
+                    }
+                    if methods.iter().any(|m| matches!(&m.kind, StmtKind::FuncDef { name: n, .. } if n == mname)) {
+                        return Err(RioError::parse(
+                            format!("طريقة مكررة في الفئة {}: {}", name, mname),
+                            stmt.line,
+                            stmt.col,
+                        ));
+                    }
+                    methods.push(stmt);
+                }
+                StmtKind::Pass => {}
+                _ => {
+                    return Err(RioError::parse(
+                        "جسم الفئة يجب أن يحتوي على دوال فقط",
+                        stmt.line,
+                        stmt.col,
+                    ));
+                }
+            }
+        }
+        Ok(Stmt::new(StmtKind::ClassDef { name, base, interfaces, methods }, tok.line, tok.col))
+    }
+
+    fn parse_interfacedef(&mut self) -> RioResult<Stmt> {
+        let tok = self.advance(); // واجهة
+        let (name, _, _) = self.expect_ident("اسم الواجهة")?;
+        self.expect_colon()?;
+        let body = self.parse_block()?;
+        let mut methods: Vec<(String, usize)> = Vec::new();
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::FuncDef { name: mname, params, body: mbody, .. } => {
+                    // Interface methods must have no implementation:
+                    // body must be exactly مرر.
+                    let is_pass_only = mbody.len() == 1
+                        && matches!(mbody[0].kind, StmtKind::Pass);
+                    if !is_pass_only {
+                        return Err(RioError::parse(
+                            "طريقة الواجهة يجب أن تكون بلا تنفيذ (مرر)",
+                            stmt.line,
+                            stmt.col,
+                        ));
+                    }
+                    if methods.iter().any(|(n, _)| n == mname) {
+                        return Err(RioError::parse(
+                            format!("طريقة مكررة في الواجهة {}: {}", name, mname),
+                            stmt.line,
+                            stmt.col,
+                        ));
+                    }
+                    methods.push((mname.clone(), params.len()));
+                }
+                StmtKind::Pass => {}
+                _ => {
+                    return Err(RioError::parse(
+                        "جسم الواجهة يجب أن يحتوي على توقيعات دوال فقط",
+                        stmt.line,
+                        stmt.col,
+                    ));
+                }
+            }
+        }
+        Ok(Stmt::new(StmtKind::InterfaceDef { name, methods }, tok.line, tok.col))
     }
 
     fn parse_try(&mut self) -> RioResult<Stmt> {
@@ -474,6 +579,10 @@ impl Parser {
                 ExprKind::Index { target, index } => AssignTarget::Index {
                     target: target.clone(),
                     index: index.clone(),
+                },
+                ExprKind::Dot { target, name } => AssignTarget::Dot {
+                    target: target.clone(),
+                    name: name.clone(),
                 },
                 _ => {
                     return Err(RioError::parse(
@@ -722,6 +831,29 @@ impl Parser {
             TokenKind::Keyword(Keyword::Nil) => {
                 self.advance();
                 Ok(Expr::new(ExprKind::Nil, tok.line, tok.col))
+            }
+            TokenKind::Keyword(Keyword::Create) => {
+                self.advance(); // أنشئ
+                let (class, _, _) = self.expect_ident("اسم فئة بعد أنشئ")?;
+                let mut args = Vec::new();
+                if matches!(self.peek().kind, TokenKind::LParen) {
+                    self.advance();
+                    if !matches!(self.peek().kind, TokenKind::RParen) {
+                        loop {
+                            args.push(self.parse_expr()?);
+                            if matches!(self.peek().kind, TokenKind::Comma) {
+                                self.advance();
+                                if matches!(self.peek().kind, TokenKind::RParen) {
+                                    break;
+                                }
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+                    self.expect(&TokenKind::RParen, "قوس إغلاق )")?;
+                }
+                Ok(Expr::new(ExprKind::Create { class, args }, tok.line, tok.col))
             }
             TokenKind::Ident(name) => {
                 let name = name.clone();

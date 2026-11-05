@@ -31,6 +31,8 @@ pub enum UnOp {
 pub enum AssignTarget {
     Var(String),
     Index { target: Box<Expr>, index: Box<Expr> },
+    // Phase 1A Step 4: classes, dot field assignment: ك.س = ٥
+    Dot { target: Box<Expr>, name: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,10 +48,11 @@ pub enum ExprKind {
     Unary { op: UnOp, expr: Box<Expr> },
     Call { callee: Box<Expr>, args: Vec<Expr> },
     Index { target: Box<Expr>, index: Box<Expr> },
-    // Phase 1A Step 2: module.member (and later object.member).
-    // In Step 2, Dot is only valid on a Module value; on any other
-    // value it is a runtime type error.
+    // Phase 1A Step 2: module.member. Step 4: object.member too.
+    // Dot on any other value is a runtime type error.
     Dot { target: Box<Expr>, name: String },
+    // Phase 1A Step 4: classes. أنشئ فئة(معاملات)
+    Create { class: String, args: Vec<Expr> },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -68,7 +71,7 @@ impl Expr {
 /// Known type names for gradual typing (Phase 1A Step 3).
 /// `أي` means Any / unknown: no static or runtime check.
 pub const TYPE_NAMES: &[&str] = &[
-    "عدد", "نص", "منطقي", "قائمة", "قاموس", "لاشيء", "دالة", "وحدة", "أي",
+    "عدد", "نص", "منطقي", "قائمة", "قاموس", "لاشيء", "دالة", "وحدة", "فئة", "كائن", "واجهة", "أي",
 ];
 
 pub fn is_known_type(name: &str) -> bool {
@@ -127,6 +130,26 @@ pub enum StmtKind {
     // صدّر اسم1، اسم2 : declares names public for this module file.
     // Only exported names are accessible via import (strict rule).
     Export { names: Vec<String> },
+    // Phase 1A Step 4: simple classes, extended in Step 5 with
+    // inheritance and interfaces. فئة اسم [ورث أب] [واجهة و1، و2]:
+    // + indented block of دالة methods only.
+    // Methods are FuncDef statements; نفس is auto-bound to the
+    // instance inside a method body, and is NOT a method parameter.
+    // A method named أنشئ, if present, is the constructor, called
+    // automatically by أنشئ اسم(معاملات).
+    ClassDef {
+        name: String,
+        base: Option<String>,
+        interfaces: Vec<String>,
+        methods: Vec<Stmt>,
+    },
+    // Phase 1A Step 5: interfaces. واجهة اسم: + indented block of
+    // دالة signatures only, each body must be مرر (no implementation).
+    // Each signature is stored as (method name, param count).
+    InterfaceDef {
+        name: String,
+        methods: Vec<(String, usize)>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
