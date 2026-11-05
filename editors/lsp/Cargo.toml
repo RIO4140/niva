@@ -1,0 +1,16 @@
+[package]
+name = "niva-lsp"
+version = "1.0.0"
+edition = "2021"
+description = "Niva language server (LSP over stdio): diagnostics, hover, symbols, completion"
+
+[[bin]]
+name = "niva-lsp"
+path = "src/main.rs"
+
+[dependencies]
+niva-engine = { path = "../../engine" }
+lsp-server = "0.7"
+lsp-types = "0.97"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -54,6 +54,20 @@ pub(crate) const MAX_LOOP_ITERATIONS: usize = 1_000_000;
 // (debug, 10 locals + wide expression) is safe past 700, so 500
 // holds ~30% margin; release ceilings are far higher. The cap is
 // enforced as a clean Niva error, never a stack overflow.
+// Meeting 17 (WASM): the browser stack is far smaller than the
+// native 256 MB thread (the playground builds with a 16 MB WASM
+// stack), so the WASM cap is measured separately.
+// Measured 2026-11-05 in Node (V8, the same engine Chromium
+// uses), Meeting-15 extreme shape (10 locals + wide expression),
+// cap lifted: largest completing N = 1500, smallest failing
+// N = 1531 (a JS RangeError, not a WASM trap). Max executing
+// depth = N+1, so the ceiling is depth ~1501. Cap 1000 holds
+// ~33% margin on the worst shape — the same margin rule as
+// Meeting 15. Depth beyond the cap is a clean Niva error,
+// never a browser crash.
+#[cfg(target_arch = "wasm32")]
+pub(crate) const MAX_CALL_DEPTH: usize = 1000;
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const MAX_CALL_DEPTH: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1768,6 +1782,18 @@ impl Interpreter {
         line: usize,
         col: usize,
     ) -> RioResult<Value> {
+        // Meeting 17 (WASM): in the browser there is no filesystem
+        // and no stdin, and user code is untrusted — these three
+        // builtins are inert, with a clean Arabic error, instead
+        // of touching std::fs / stdin at all.
+        #[cfg(target_arch = "wasm32")]
+        if matches!(name, "اقرأ_ملف" | "اكتب_ملف" | "ادخل") {
+            return Err(RioError::runtime(
+                "هذه الدالة غير مدعومة في متصفح الويب",
+                line,
+                col,
+            ));
+        }
         let arity = |expected: usize| -> RioResult<()> {
             if args.len() != expected {
                 Err(RioError::runtime(

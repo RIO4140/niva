@@ -10,23 +10,15 @@
 //!   niva program.niva --ast    print the AST, then run
 //!   niva --help               usage
 //!   niva --version            version
+//!
+//! The engine itself lives in lib.rs; this file is only the CLI
+//! (flags, file reading, the 256 MB stack thread, exit codes).
 
-mod ast;
-mod error;
-mod interpreter;
-mod lexer;
-mod parser;
-mod permissions;
-mod repl;
-mod semantic;
-mod stdlib;
-mod value;
-mod vm;
-
-use interpreter::Interpreter;
-use semantic::SemanticAnalyzer;
-use lexer::tokenize;
-use parser::Parser;
+use niva_engine::interpreter::Interpreter;
+use niva_engine::semantic::SemanticAnalyzer;
+use niva_engine::lexer::tokenize;
+use niva_engine::parser::Parser;
+use niva_engine::{repl, vm};
 use std::env;
 use std::fs;
 use std::process::ExitCode;

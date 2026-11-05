@@ -186,7 +186,12 @@ fn next_u64() -> u64 {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0x9E3779B97F4A7C15);
-        state = nanos ^ (std::process::id() as u64).wrapping_mul(0x9E3779B97F4A7C15) ^ 0x2545F4914F6CDD1D;
+        // No processes on wasm32 — the time nanos alone seed it.
+        #[cfg(target_arch = "wasm32")]
+        let pid_part = 0u64;
+        #[cfg(not(target_arch = "wasm32"))]
+        let pid_part = (std::process::id() as u64).wrapping_mul(0x9E3779B97F4A7C15);
+        state = nanos ^ pid_part ^ 0x2545F4914F6CDD1D;
         if state == 0 {
             state = 0x2545F4914F6CDD1D;
         }
@@ -276,6 +281,13 @@ fn time_sleep(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     if secs < 0.0 {
         return Err(RioError::runtime("نوم مدة سالبة غير مسموح", line, col));
     }
+    // Meeting 17 (WASM): thread::sleep blocks (and panics) on
+    // single-threaded WASM — a clean error instead.
+    #[cfg(target_arch = "wasm32")]
+    {
+        return Err(RioError::runtime("نوم غير مدعوم في متصفح الويب", line, col));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
     std::thread::sleep(Duration::from_secs_f64(secs));
     Ok(Value::Nil)
 }

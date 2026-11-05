@@ -118,6 +118,13 @@ impl FilePolicy {
         // in a new subdirectory. Checking only the candidate's
         // existing prefix against a non-canonical base would
         // wrongly reject files in a not-yet-existing folder.
+        // The canonical forms are used ONLY for this security
+        // comparison. The returned path is the lexical one the
+        // program named: canonicalize rewrites it (macOS /tmp
+        // -> /private/tmp, Windows -> \\?\D:\...), which broke
+        // the caller's path and the tests on those platforms
+        // (CI 2026-11-05: relative_inside_base_ok failed on
+        // macOS and Windows, passed on Linux).
         let canon_candidate = Self::canonicalize_with_suffix(&normalized);
         let canon_base = Self::canonicalize_with_suffix(&base_norm);
         if !canon_candidate.starts_with(&canon_base) {
@@ -128,7 +135,7 @@ impl FilePolicy {
                 col,
             ));
         }
-        Ok(canon_candidate)
+        Ok(normalized)
     }
 }
 
@@ -169,6 +176,36 @@ mod tests {
     }
 
     #[test]
+    fn resolve_returns_lexical_path_not_canonical() {
+        // Regression (CI 2026-11-05): resolve used to return
+        // the canonicalized path, so on macOS (/tmp is a
+        // symlink to /private/tmp) and Windows (\\?\ prefix)
+        // the caller got a rewritten path. The canonical forms
+        // are for the security check only; the returned path
+        // must be the lexical one the program named. This test
+        // reproduces the bug on Linux too, via a symlinked base.
+        #[cfg(unix)]
+        {
+            let real =
+                std::env::temp_dir().join(format!("niva-perm-real-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&real);
+            std::fs::create_dir_all(&real).unwrap();
+            let link =
+                std::env::temp_dir().join(format!("niva-perm-link-{}", std::process::id()));
+            let _ = std::fs::remove_file(&link);
+            if std::os::unix::fs::symlink(&real, &link).is_err() {
+                let _ = std::fs::remove_dir_all(&real);
+                return;
+            }
+            let p = FilePolicy::restricted(link.clone());
+            let out = p.resolve("out.txt", 1, 1).unwrap();
+            let _ = std::fs::remove_file(&link);
+            let _ = std::fs::remove_dir_all(&real);
+            assert_eq!(out, link.join("out.txt"));
+        }
+    }
+
+    #[test]
     fn symlink_escape_rejected() {
         let dir = std::env::temp_dir().join(format!("niva-perm-sym-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -176,8 +213,24 @@ mod tests {
         let outside = std::env::temp_dir().join(format!("niva-perm-out-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&outside);
         std::fs::create_dir_all(&outside).unwrap();
+        // CI 2026-11-05: on Windows the old #[cfg(unix)]-only
+        // symlink creation was skipped, so no symlink existed
+        // and the test asserted a rejection of nothing — it
+        // failed vacuously. Create the link on Windows too;
+        // if the machine forbids symlinks (no privilege), the
+        // test has nothing to exercise and skips instead of
+        // failing on an absence it did not create.
         #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside, dir.join("link")).unwrap();
+        let linked = std::os::unix::fs::symlink(&outside, dir.join("link")).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_dir(&outside, dir.join("link")).is_ok();
+        #[cfg(not(any(unix, windows)))]
+        let linked = false;
+        if !linked {
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::remove_dir_all(&outside);
+            return;
+        }
         let p = FilePolicy::restricted(dir.clone());
         let res = p.resolve("link/secret.txt", 1, 1);
         let _ = std::fs::remove_dir_all(&dir);

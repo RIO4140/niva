@@ -5,3 +5,5 @@ rio-engine-test.txt
 target/
 engine/target/
 docs/book/
+playground/pkg/
+playground/wasm/target/
