@@ -56,7 +56,9 @@ function run() {
   try {
     result = JSON.parse(run_niva(codeEl.value));
   } catch (e) {
-    show('البرنامج تجاوز ذاكرة المتصفح (عمق استدعاء كبير جدا). قلل عمق الاستدعاء وحاول مجددا.\n' + e, true);
+    // A WASM trap (stack exhaustion, or an engine bug) reaches
+    // here as a JS exception; do not guess its cause.
+    show('حدث خطأ غير متوقع داخل المحرك. جرّب تبسيط البرنامج وحاول مجددا.\n' + e, true);
     return;
   }
   show(result.output + (result.ok ? '' : result.error), !result.ok);

@@ -11,3 +11,10 @@ path = "src/main.rs"
 
 [profile.release]
 opt-level = 2
+
+# The engine has no runtime dependencies on native targets.
+# On wasm32 only, js-sys gives the browser clock (Date.now),
+# because std::time::SystemTime traps on wasm32-unknown-unknown
+# (it has no clock). Used only for the random seed and وقت.الآن.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"

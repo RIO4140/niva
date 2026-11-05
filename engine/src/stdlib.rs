@@ -182,6 +182,11 @@ static RNG_STATE: AtomicU64 = AtomicU64::new(0);
 fn next_u64() -> u64 {
     let mut state = RNG_STATE.load(Ordering::Relaxed);
     if state == 0 {
+        // SystemTime traps on wasm32-unknown-unknown (no clock
+        // in std there), so the browser clock comes from js-sys.
+        #[cfg(target_arch = "wasm32")]
+        let nanos = (js_sys::Date::now() * 1_000_000.0) as u64;
+        #[cfg(not(target_arch = "wasm32"))]
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
@@ -268,6 +273,11 @@ fn time_entries() -> Vec<(&'static str, Value)> {
 
 fn time_now(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("وقت.الآن", args, 0, line, col)?;
+    // SystemTime traps on wasm32-unknown-unknown; the browser
+    // clock comes from js-sys there.
+    #[cfg(target_arch = "wasm32")]
+    let secs = js_sys::Date::now() / 1000.0;
+    #[cfg(not(target_arch = "wasm32"))]
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs_f64())
