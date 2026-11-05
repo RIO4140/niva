@@ -283,6 +283,9 @@ public class MainActivity extends Activity {
         boolean selecting = false;
         /** يُستدعى عند ضغطة إنتر (من أي مصدر). */
         Runnable onEnterSubmit;
+        /** يُستدعى عند الخروج البرمجي من وضع التحديد
+         * (لإنهاء شريط الإجراءات من النشاط). */
+        Runnable onExitSelection;
 
         public TerminalEditText(Context ctx) {
             super(ctx);
@@ -303,6 +306,18 @@ public class MainActivity extends Activity {
                     return null;
                 }
             }});
+        }
+
+        /** الخروج من وضع التحديد إلى سطر الإدخال (حارس
+         * السجل v1.1.5): المؤشر إلى نهاية النص، بلا حذف
+         * وبلا إدراج. يُستدعى من مسارات لوحة المفاتيح
+         * قبل أي كتابة أو مسح، فينهي شريط الإجراءات عبر
+         * onExitSelection أولا. */
+        void exitSelectionToInput() {
+            selecting = false;
+            if (onExitSelection != null) onExitSelection.run();
+            int len = getText() == null ? 0 : getText().length();
+            setSelection(len, len);
         }
 
         @Override
@@ -347,6 +362,10 @@ public class MainActivity extends Activity {
             return new InputConnectionWrapper(ic, true) {
                 @Override
                 public boolean commitText(CharSequence text, int newCursorPosition) {
+                    // الكتابة في وضع التحديد تخرج منه إلى
+                    // سطر الإدخال (حارس السجل v1.1.5) — لا
+                    // تُدرج أبدا في السجل.
+                    if (selecting) exitSelectionToInput();
                     if (text != null) {
                         String t = text.toString();
                         int nl = t.indexOf('\n');
@@ -364,11 +383,59 @@ public class MainActivity extends Activity {
 
                 @Override
                 public boolean setComposingText(CharSequence text, int newCursorPosition) {
+                    if (selecting) exitSelectionToInput();
                     if (text != null && text.toString().contains("\n")) {
                         String clean = text.toString().replace("\n", "");
                         return super.setComposingText(clean, newCursorPosition);
                     }
                     return super.setComposingText(text, newCursorPosition);
+                }
+
+                @Override
+                public boolean deleteSurroundingText(int beforeLength, int afterLength) {
+                    // حارس السجل (v1.1.5): مسح لوحة المفاتيح
+                    // البرمجية يصل هنا مباشرة ويستدعي
+                    // Editable.delete — الذي لا يمر على فلتر
+                    // الإدخال إطلاقا. فبدون هذا الحارس يأكل
+                    // المسحُ والمؤشر عند بداية سطر الإدخال
+                    // أحرفَ الموجّه ثم سطر الرد الأخير حرفا
+                    // حرفا — وهذا عطل الهاتف المُبلَّغ
+                    // (السطر الأخير يُحذف رغم أنه رد).
+                    if (selecting) {
+                        exitSelectionToInput();
+                        return true;
+                    }
+                    if (inputStart < 0) return true;
+                    int selStart = getSelectionStart();
+                    int selEnd = getSelectionEnd();
+                    if (selStart < 0 || selEnd < 0) return true;
+                    if (selStart < inputStart) return true;
+                    int allowedBefore = selStart - inputStart;
+                    int b = Math.min(beforeLength, allowedBefore);
+                    if (b <= 0 && afterLength <= 0) return true;
+                    return super.deleteSurroundingText(b, afterLength);
+                }
+
+                @Override
+                public boolean deleteSurroundingTextInCodePoints(int beforeLength, int afterLength) {
+                    // النسخة بنقاط الشفرة من الحارس نفسه —
+                    // بعض اللوحات تستدعيها بدلا من نسخة
+                    // الأحرف (كالرموز التعبيرية).
+                    if (selecting) {
+                        exitSelectionToInput();
+                        return true;
+                    }
+                    if (inputStart < 0) return true;
+                    int selStart = getSelectionStart();
+                    int selEnd = getSelectionEnd();
+                    if (selStart < 0 || selEnd < 0) return true;
+                    if (selStart < inputStart) return true;
+                    CharSequence text = getText();
+                    int allowedBefore = text == null ? 0
+                            : Character.codePointCount(text, inputStart, selStart);
+                    int b = Math.min(beforeLength, allowedBefore);
+                    if (b <= 0 && afterLength <= 0) return true;
+                    return super.deleteSurroundingTextInCodePoints(b, afterLength);
                 }
 
                 @Override
@@ -378,6 +445,28 @@ public class MainActivity extends Activity {
                         if (onEnterSubmit != null) onEnterSubmit.run();
                         return true;
                     }
+                    if (event.getAction() == KeyEvent.ACTION_DOWN
+                            && (event.getKeyCode() == KeyEvent.KEYCODE_DEL
+                            || event.getKeyCode() == KeyEvent.KEYCODE_FORWARD_DEL)) {
+                        // حارس السجل (v1.1.5): مسح لوحة مفاتيح
+                        // مادية يصل هنا فيستدعي
+                        // deleteSurroundingText على الاتصال
+                        // الأصلي مباشرة متجاوزا الحارس أعلاه —
+                        // فيُفحص هنا قبل التمرير.
+                        if (selecting) {
+                            exitSelectionToInput();
+                            return true;
+                        }
+                        if (inputStart < 0) return true;
+                        int selStart = getSelectionStart();
+                        int selEnd = getSelectionEnd();
+                        if (selStart < 0 || selEnd < 0) return true;
+                        if (event.getKeyCode() == KeyEvent.KEYCODE_DEL) {
+                            if (selStart <= inputStart) return true;
+                        } else if (selStart < inputStart) {
+                            return true;
+                        }
+                    }
                     return super.sendKeyEvent(event);
                 }
             };
@@ -385,6 +474,9 @@ public class MainActivity extends Activity {
     }
 
     private TerminalEditText terminalView;
+    /** شريط إجراءات التحديد الحالي (يُنهى عند الخروج
+     * البرمجي من وضع التحديد — حارس السجل v1.1.5). */
+    private ActionMode selectionMode;
     private TextView netStateView;
     /** درج الجلسات: لوحة جانبية بسيطة (لا DrawerLayout —
      * لا اعتماديات خارجية)، تظهر وتختفي فقط. */
@@ -523,6 +615,9 @@ public class MainActivity extends Activity {
         terminalView.setPadding(16, 8, 16, 16);
         terminalView.setHorizontallyScrolling(false);
         terminalView.onEnterSubmit = this::submitLine;
+        terminalView.onExitSelection = () -> {
+            if (selectionMode != null) selectionMode.finish();
+        };
         // النقر في أي مكان يضع المؤشر في نهاية سطر الكتابة
         // ويُظهر لوحة المفاتيح (أمر المالك 2026-11-05
         // ~23:02: اللمس في منتصف الشاشة أيضا). النقرة على
@@ -569,6 +664,7 @@ public class MainActivity extends Activity {
                 new ActionMode.Callback() {
                     @Override
                     public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                        selectionMode = mode;
                         terminalView.selecting = true;
                         terminalView.performHapticFeedback(
                                 HapticFeedbackConstants.LONG_PRESS);
@@ -617,6 +713,7 @@ public class MainActivity extends Activity {
 
                     @Override
                     public void onDestroyActionMode(ActionMode mode) {
+                        selectionMode = null;
                         terminalView.selecting = false;
                         moveCursorToEnd();
                     }
@@ -1924,6 +2021,20 @@ public class MainActivity extends Activity {
         terminalView.programmatic = true;
         Editable text = terminalView.getText();
         int safe = Math.min(start, text.length());
+        // حارس السجل (v1.1.5): إن كانت بداية سطر
+        // الإدخال قديمة (المنطقة منها إلى نهاية النص
+        // تحوي سطرا جديدا غير أخير) فالاستبدال حينها
+        // يأكل ردودا — لا يُستبدل شيء، وتُعاد البداية
+        // إلى نهاية النص (شفاء ذاتي، بلا حذف).
+        String region = text.toString().substring(safe);
+        String probe = region.endsWith("\n")
+                ? region.substring(0, region.length() - 1) : region;
+        if (probe.contains("\n")) {
+            terminalView.inputStart = text.length();
+            if (!sessions.isEmpty()) active().inputStart = text.length();
+            terminalView.programmatic = false;
+            return;
+        }
         text.replace(safe, text.length(), line);
         terminalView.programmatic = false;
         moveCursorToEnd();
@@ -1941,6 +2052,44 @@ public class MainActivity extends Activity {
             return;
         }
         dispatchLine(s, line, true);
+    }
+
+    /** تطبيع عربي خفيف لمطابقة الأوامر (v1.1.5 —
+     * تقوية دفاعية): تجريد التشكيل والتطويل وتوحيد
+     * الهمزات، كما يفعل محرك نيفا للكلمات المفتاحية.
+     * الحكم على الاعتراض: (أ) — المالك كان على 1.1.3
+     * حين وصلت «تحديث نيفا» إلى المحرك؛ وهذا التطبيع
+     * يمنع فقط فشل مطابقة مستقبليا (تشكيل عارض من
+     * لوحة المفاتيح مثلا)، وليس إصلاحا لثغرة قائمة. */
+    private static String normalizeArabicForMatch(String s) {
+        if (s == null) return "";
+        StringBuilder out = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c >= '\u064B' && c <= '\u0652') continue;
+            if (c == '\u0670') continue;
+            if (c == '\u0640') continue;
+            switch (c) {
+                case '\u0623': case '\u0625': case '\u0622': case '\u0671':
+                    out.append('\u0627');
+                    break;
+                case '\u0624':
+                    out.append('\u0648');
+                    break;
+                case '\u0626':
+                    out.append('\u064A');
+                    break;
+                case '\u0629':
+                    out.append('\u0647');
+                    break;
+                case '\u0649':
+                    out.append('\u064A');
+                    break;
+                default:
+                    out.append(c);
+            }
+        }
+        return out.toString();
     }
 
     /** إرسال سطر واحد: المحفوظات + العرض + التوجيه
@@ -1971,15 +2120,18 @@ public class MainActivity extends Activity {
             return;
         }
         // اختصارات التطبيق أولا: لا تصل إلى المحرك أبدا.
+        // المطابقة بعد التطبيع (v1.1.5) فلا يكسرها
+        // تشكيل عارض من لوحة المفاتيح.
         String trimmed = line.trim();
-        String first = trimmed.split("\\s+")[0];
-        if (isAppCode(first)) {
-            handleAppShortcut(s, first, trimmed);
+        String norm = normalizeArabicForMatch(trimmed);
+        String normFirst = norm.split("\\s+")[0];
+        if (isAppCode(normFirst)) {
+            handleAppShortcut(s, normFirst, norm);
             return;
         }
         // عبارة التحديث الذاتي (v1.1.4): لا تصل إلى
         // المحرك أبدا — فحص إصدارات جيت هاب من التطبيق.
-        if (UPDATE_PHRASE.equals(trimmed)) {
+        if (normalizeArabicForMatch(UPDATE_PHRASE).equals(norm)) {
             runSelfUpdate(s);
             return;
         }
