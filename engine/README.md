@@ -1,10 +1,10 @@
-# Rio Engine — محرك مستقل بلغة Rust
+# Rio Engine — محرك بلغة Rust
 
-محرك تنفيذ مستقل تماما عن Python: Lexer + Parser + AST +
+محرك تنفيذ: Lexer + Parser + AST +
 Tree-Walking Interpreter، مكتوب بـ Rust، ولا يحوّل برامج Rio
-إلى Python، ولا إلى لغة آلة في v1.
+إلى لغة آلة في v1.
 
-## البناء والتشغيل (دون Python)
+## البناء والتشغيل
 
 البناء يحتاج أدوات Rust فقط (cargo/rustc). التشغيل لا يحتاج شيئا
 آخر: الملف التنفيذي الناتج مستقل بذاته.
