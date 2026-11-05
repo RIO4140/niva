@@ -11,12 +11,20 @@
   .examples { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 1rem 0; }
   .examples button { background: #f0f0f0; border: 1px solid #ccc; border-radius: 6px; padding: 0.3rem 0.9rem; cursor: pointer; font-size: 1rem; }
   .examples button:hover { background: #e4e4e4; }
-  textarea { width: 100%; box-sizing: border-box; font-family: "Cascadia Code", Consolas, monospace; font-size: 1.05rem; line-height: 1.6; padding: 0.8rem; border: 1px solid #999; border-radius: 8px; direction: ltr; text-align: left; }
+  /* Arabic shaping: the code fonts above have no Arabic glyphs,
+     so without Arabic fonts in this stack the browser falls
+     back to the generic monospace font, which renders Arabic
+     letters disconnected (ت ن ب ي ة instead of تنبيه).
+     The Arabic fonts below are fully shaping (Segoe UI /
+     Tahoma on Windows, Noto Naskh Arabic on Android/Linux);
+     Latin and digits keep the code font, Arabic falls
+     through to a shaping font, per character. */
+  textarea { width: 100%; box-sizing: border-box; font-family: "Cascadia Code", Consolas, "Segoe UI", Tahoma, "Noto Naskh Arabic", "Noto Sans Arabic", monospace; font-size: 1.05rem; line-height: 1.6; padding: 0.8rem; border: 1px solid #999; border-radius: 8px; direction: ltr; text-align: left; }
   .actions { margin: 0.8rem 0; display: flex; gap: 1rem; align-items: center; }
   #run { background: #0b6e4f; color: white; border: none; border-radius: 8px; padding: 0.6rem 1.6rem; font-size: 1.1rem; cursor: pointer; }
   #run:hover { background: #095c41; }
   .hint { color: #666; font-size: 0.95rem; }
-  #output { background: #111; color: #e8e8e8; padding: 1rem; border-radius: 8px; min-height: 6rem; white-space: pre-wrap; word-break: break-word; }
+  #output { background: #111; color: #e8e8e8; padding: 1rem; border-radius: 8px; min-height: 6rem; white-space: pre-wrap; word-break: break-word; font-family: "Cascadia Code", Consolas, "Segoe UI", Tahoma, "Noto Naskh Arabic", "Noto Sans Arabic", monospace; }
   #output.error { color: #ff9d9d; }
   .note { color: #666; font-size: 0.95rem; }
   footer { margin-top: 2rem; color: #777; font-size: 0.9rem; }
