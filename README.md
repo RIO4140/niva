@@ -2,6 +2,8 @@
 
 صنع بواسطة محمود عبد النبي.
 
+تطبيق الترمنال للأندرويد: [نزّل نيفا ١٫٠٫٠ (APK)](https://github.com/RIO4140/niva/releases/download/v1.0.0/niva-terminal.apk) — أو من [صفحة التنزيل](https://rio4140.github.io/niva/download.html).
+
 ## التثبيت (Linux)
 
 بأمر واحد:

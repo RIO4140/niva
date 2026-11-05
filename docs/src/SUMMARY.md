@@ -13,3 +13,4 @@
 - [الأخطاء والملفات](./errors.md)
 - [المرجع](./reference.md)
 - [الأمثلة](./examples.md)
+- [تنزيل التطبيق](./download.md)
