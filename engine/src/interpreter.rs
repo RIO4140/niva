@@ -2163,6 +2163,7 @@ impl Interpreter {
                 | "موجود"
                 | "نوع_المسار"
                 | "عد_الملفات"
+                | "تفاصيل_المسار"
         ) {
             return Err(RioError::runtime(
                 "هذه الدالة غير مدعومة في متصفح الويب",
@@ -2910,6 +2911,45 @@ impl Interpreter {
                     }
                     other => Err(RioError::typ(
                         format!("نوع_المسار يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            // تفاصيل المسار (stat): نوعه وحجمه وتاريخ آخر
+            // تعديل — قاموس واحد، لا خطأ على الغائب (مثل
+            // نوع_المسار: «غير موجود»، حجم ٠، بلا تاريخ).
+            "تفاصيل_المسار" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(path) => {
+                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let kind = match std::fs::metadata(&resolved) {
+                            Ok(m) if m.is_dir() => "مجلد",
+                            Ok(_) => "ملف",
+                            Err(_) => "غير موجود",
+                        };
+                        let mut budget: usize = 10000;
+                        let size = Self::dir_size(&resolved, &mut budget);
+                        let modified = std::fs::metadata(&resolved)
+                            .and_then(|m| m.modified())
+                            .ok()
+                            .and_then(|t| {
+                                t.duration_since(std::time::UNIX_EPOCH).ok()
+                            })
+                            .map(|d| Self::format_unix_utc(d.as_secs()))
+                            .unwrap_or_else(|| "—".to_string());
+                        Ok(Value::Dict(vec![
+                            ("نوع".to_string(), Value::Str(kind.to_string())),
+                            ("حجم".to_string(), Value::Number(size as f64)),
+                            ("معدل".to_string(), Value::Str(modified)),
+                        ]))
+                    }
+                    other => Err(RioError::typ(
+                        format!(
+                            "تفاصيل_المسار يتطلب مسارا نصيا، وليس {}",
+                            other.type_name()
+                        ),
                         line,
                         col,
                     )),

@@ -363,16 +363,16 @@ fn is_pure_builtin(name: &str) -> bool {
 
 /// مهمة 5: every file builtin the interpreter knows
 /// (the 11 terminal shortcuts + the 15 added for the 50
-/// terminal shortcuts + ادخل). The compiler emits
+/// terminal shortcuts + تفاصيل_المسار + ادخل). The compiler emits
 /// Op::Builtin for these, like the pure ones; the
 /// runtime env-first check in Op::Builtin still applies
 /// (a bound name wins over the builtin).
-const FILE_BUILTINS: [&str; 27] = [
+const FILE_BUILTINS: [&str; 28] = [
     "اقرأ_ملف", "اكتب_ملف", "اعرض_الملفات", "المجلد_الحالي", "انتقل", "أنشئ_مجلد",
     "احذف", "احذف_مجلد", "احذف_ملف", "انسخ", "انقل", "أنشئ_ملف", "اعرض_البداية",
     "اعرض_النهاية", "عد_الأسطر", "عد_الكلمات", "ابحث_في_ملف", "ابحث_عن",
     "اعرض_الشجرة", "حجم_المسار", "أنشئ_رابط", "التاريخ_الآن", "النسخة", "موجود",
-    "نوع_المسار", "عد_الملفات", "ادخل",
+    "نوع_المسار", "عد_الملفات", "تفاصيل_المسار", "ادخل",
 ];
 
 fn is_file_builtin(name: &str) -> bool {
@@ -2500,6 +2500,7 @@ impl Vm {
                 | "موجود"
                 | "نوع_المسار"
                 | "عد_الملفات"
+                | "تفاصيل_المسار"
         ) {
             return Err(RioError::runtime(
                 "هذه الدالة غير مدعومة في متصفح الويب",
@@ -3090,6 +3091,50 @@ impl Vm {
                     }
                     other => Err(RioError::typ(
                         format!("نوع_المسار يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            // تفاصيل المسار (stat) — مرآة ذراع المفسر نفسه:
+            // نوعه وحجمه وتاريخ آخر تعديل، قاموس واحد.
+            "تفاصيل_المسار" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(path) => {
+                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let kind = match std::fs::metadata(&resolved) {
+                            Ok(m) if m.is_dir() => "مجلد",
+                            Ok(_) => "ملف",
+                            Err(_) => "غير موجود",
+                        };
+                        let mut budget: usize = 10000;
+                        let size = crate::interpreter::Interpreter::dir_size(
+                            &resolved, &mut budget,
+                        );
+                        let modified = std::fs::metadata(&resolved)
+                            .and_then(|m| m.modified())
+                            .ok()
+                            .and_then(|t| {
+                                t.duration_since(std::time::UNIX_EPOCH).ok()
+                            })
+                            .map(|d| {
+                                crate::interpreter::Interpreter::format_unix_utc(
+                                    d.as_secs(),
+                                )
+                            })
+                            .unwrap_or_else(|| "—".to_string());
+                        Ok(Value::Dict(vec![
+                            ("نوع".to_string(), Value::Str(kind.to_string())),
+                            ("حجم".to_string(), Value::Number(size as f64)),
+                            ("معدل".to_string(), Value::Str(modified)),
+                        ]))
+                    }
+                    other => Err(RioError::typ(
+                        format!(
+                            "تفاصيل_المسار يتطلب مسارا نصيا، وليس {}",
+                            other.type_name()
+                        ),
                         line,
                         col,
                     )),

@@ -482,13 +482,37 @@ impl Repl {
         }
         // Successful shortcut lines join the session history,
         // like code lines do, so :اعرض shows what was typed.
-        // Session commands (اس، عر، مس، خج) are control, not
+        // Session commands (اس، عر، مس) are control, not
         // content — like the :commands, they are not recorded.
-        if !matches!(def.kind, ShortcutKind::Command) {
+        // كا (Repeat) is not recorded either: the rerun line
+        // records itself through its own path, so :اعرض
+        // shows the command that ran, not the كا that asked
+        // for it.
+        if !matches!(def.kind, ShortcutKind::Command | ShortcutKind::Repeat) {
             self.history.push(line.to_string());
         }
         match def.kind {
             ShortcutKind::Command => Some(self.handle_command(def.key)),
+            ShortcutKind::Repeat => {
+                // كرر الأخير (!!): rerun the last history
+                // line — the last line that is not كا itself.
+                // No previous line: a short Arabic error.
+                let last = self
+                    .history
+                    .iter()
+                    .rev()
+                    .find(|l| l.split_whitespace().next() != Some("كا"))
+                    .cloned();
+                match last {
+                    Some(line) => Some(self.feed_inner(&line)),
+                    None => Some(ReplOutput {
+                        output: "خطأ: لا يوجد سطر سابق لإعادة تنفيذه\n".to_string(),
+                        prompt: self.prompt(),
+                        ended: false,
+                        needs_network: false,
+                    }),
+                }
+            }
             ShortcutKind::Echo => Some(ReplOutput {
                 output: format!("{}\n", args.join(" ")),
                 prompt: self.prompt(),
@@ -498,47 +522,6 @@ impl Repl {
             ShortcutKind::Snippet => {
                 let snippet = match def.key {
                     "عشوائي" => "استورد عشوائي\nعشوائي.عدد_عشوائي()".to_string(),
-                    "جذر" => match parse_shortcut_number(&args[0]) {
-                        Some(n) => format!("استورد رياضيات\nرياضيات.جذر({})", n),
-                        None => {
-                            return Some(ReplOutput {
-                                output: format!("خطأ: {} تتوقع عددا، وليس «{}»\n", code, args[0]),
-                                prompt: self.prompt(),
-                                ended: false,
-                                needs_network: false,
-                            });
-                        }
-                    },
-                    // NOTE: this one snippet uses a comma between
-                    // the two arguments. If the comma-scope ruling
-                    // ever bans commas in calls, this snippet must
-                    // be rebuilt another way; the user never types
-                    // a comma for a shortcut either way.
-                    "قوة" => {
-                        let a = match parse_shortcut_number(&args[0]) {
-                            Some(n) => n,
-                            None => {
-                                return Some(ReplOutput {
-                                    output: format!("خطأ: {} تتوقع أعدادا، وليس «{}»\n", code, args[0]),
-                                    prompt: self.prompt(),
-                                    ended: false,
-                                    needs_network: false,
-                                });
-                            }
-                        };
-                        let b = match parse_shortcut_number(&args[1]) {
-                            Some(n) => n,
-                            None => {
-                                return Some(ReplOutput {
-                                    output: format!("خطأ: {} تتوقع أعدادا، وليس «{}»\n", code, args[1]),
-                                    prompt: self.prompt(),
-                                    ended: false,
-                                    needs_network: false,
-                                });
-                            }
-                        };
-                        format!("استورد رياضيات\nرياضيات.قوة({}، {})", a, b)
-                    }
                     "وقت" => "استورد وقت\nوقت.الآن()".to_string(),
                     "نوم" => match parse_shortcut_number(&args[0]) {
                         Some(n) => format!("استورد وقت\nوقت.نوم({})", n),
@@ -555,6 +538,29 @@ impl Repl {
                         let escaped = args[0].replace('\\', "\\\\").replace('"', "\\\"");
                         format!("استورد شبكة\nشبكة.اجلب(\"{}\")", escaped)
                     }
+                    "الحالية" => "استورد عمليات\nعمليات.الحالية()".to_string(),
+                    // The program + its arguments join into the
+                    // one string عمليات.أنشئ takes (split on
+                    // spaces, no shell) — no comma anywhere.
+                    "أنشئ_برنامج" => {
+                        let joined = args.join(" ");
+                        let escaped = joined.replace('\\', "\\\\").replace('"', "\\\"");
+                        format!("استورد عمليات\nعمليات.أنشئ(\"{}\")", escaped)
+                    }
+                    "أوقف_برنامج" => match parse_shortcut_number(&args[0]) {
+                        Some(n) => format!("استورد عمليات\nعمليات.أوقف({})", n),
+                        None => {
+                            return Some(ReplOutput {
+                                output: format!("خطأ: {} تتوقع عددا، وليس «{}»\n", code, args[0]),
+                                prompt: self.prompt(),
+                                ended: false,
+                                needs_network: false,
+                            });
+                        }
+                    },
+                    // Home is "~" everywhere in Niva (the file
+                    // policy resolves it to the program dir).
+                    "بيت" => "انتقل(\"~\")".to_string(),
                     _ => unreachable!("unknown snippet key"),
                 };
                 // A snippet whose value is لاشيء prints nothing,
@@ -672,8 +678,8 @@ impl Repl {
     /// Audit م-12: a line that parses as Niva code runs as
     /// code — shortcut codes must not shadow names. The check
     /// is a trial semantic analysis on a CLONE of the
-    /// analyzer: parse-only is not enough ("طع -٥" parses as
-    /// one binary expression but is not valid code while طع is
+    /// analyzer: parse-only is not enough ("اد ٥" parses as
+    /// one binary expression but is not valid code while اد is
     /// undefined). One line of code is normally one statement,
     /// so a multi-statement line is shortcut-shaped. A bare
     /// reference to a shortcut-named variable falls through to
@@ -969,10 +975,13 @@ enum ShortcutKind {
     /// Print the arguments joined with spaces (echo).
     Echo,
     /// Evaluate a constructed stdlib snippet (رياضيات /
-    /// عشوائي / وقت / شبكة).
+    /// عشوائي / وقت / شبكة / عمليات).
     Snippet,
     /// A REPL command (:مساعدة / :اعرض / :مسح / :خروج).
     Command,
+    /// Rerun the last history line (!!): كا. The key is
+    /// unused; the arm reads self.history directly.
+    Repeat,
 }
 
 /// One row of the 50-shortcut table
@@ -990,7 +999,7 @@ struct ShortcutDef {
 
 fn shortcut_def(code: &str) -> Option<ShortcutDef> {
     Some(match code {
-        // --- ملفات ومجلدات (19) ---
+        // --- ملفات ومجلدات (24) ---
         "ات" => ShortcutDef { key: "اعرض_الملفات", min: 0, max: 0, kind: ShortcutKind::StrArgs },
         "مح" => ShortcutDef { key: "المجلد_الحالي", min: 0, max: 0, kind: ShortcutKind::StrArgs },
         "نم" => ShortcutDef { key: "انتقل", min: 1, max: 1, kind: ShortcutKind::StrArgs },
@@ -1013,25 +1022,21 @@ fn shortcut_def(code: &str) -> Option<ShortcutDef> {
         "اك" => ShortcutDef { key: "اكتب_ملف", min: 2, max: usize::MAX, kind: ShortcutKind::RestJoined },
         "وج" => ShortcutDef { key: "موجود", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "ام" => ShortcutDef { key: "نوع_المسار", min: 1, max: 1, kind: ShortcutKind::StrArgs },
+        "تم" => ShortcutDef { key: "تفاصيل_المسار", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "عم" => ShortcutDef { key: "عد_الملفات", min: 0, max: 1, kind: ShortcutKind::StrArgs },
-        // --- أوامر الجلسة (4) ---
+        // --- أوامر الجلسة (3) ---
         "اس" => ShortcutDef { key: ":مساعدة", min: 0, max: 0, kind: ShortcutKind::Command },
         "عر" => ShortcutDef { key: ":اعرض", min: 0, max: 0, kind: ShortcutKind::Command },
         "مس" => ShortcutDef { key: ":مسح", min: 0, max: 0, kind: ShortcutKind::Command },
-        "خج" => ShortcutDef { key: ":خروج", min: 0, max: 0, kind: ShortcutKind::Command },
         // --- إصدار المحرك (1) ---
         "اص" => ShortcutDef { key: "النسخة", min: 0, max: 0, kind: ShortcutKind::StrArgs },
-        // --- نص وأعداد (10) ---
-        "طن" => ShortcutDef { key: "طول", min: 1, max: 1, kind: ShortcutKind::StrArgs },
+        // --- نص وأعداد (6) ---
         "مع" => ShortcutDef { key: "مجموع", min: 1, max: usize::MAX, kind: ShortcutKind::NumList },
         "اد" => ShortcutDef { key: "أدنى", min: 1, max: usize::MAX, kind: ShortcutKind::NumList },
         "اق" => ShortcutDef { key: "أقصى", min: 1, max: usize::MAX, kind: ShortcutKind::NumList },
-        "طع" => ShortcutDef { key: "مطلق", min: 1, max: 1, kind: ShortcutKind::NumArgs },
         "حع" => ShortcutDef { key: "عدد", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "مى" => ShortcutDef { key: "مدى", min: 1, max: 3, kind: ShortcutKind::NumArgs },
         "رع" => ShortcutDef { key: "عشوائي", min: 0, max: 0, kind: ShortcutKind::Snippet },
-        "جذ" => ShortcutDef { key: "جذر", min: 1, max: 1, kind: ShortcutKind::Snippet },
-        "قو" => ShortcutDef { key: "قوة", min: 2, max: 2, kind: ShortcutKind::Snippet },
         // --- وقت وشبكة (4) ---
         "تا" => ShortcutDef { key: "التاريخ_الآن", min: 0, max: 0, kind: ShortcutKind::StrArgs },
         "وق" => ShortcutDef { key: "وقت", min: 0, max: 0, kind: ShortcutKind::Snippet },
@@ -1039,6 +1044,13 @@ fn shortcut_def(code: &str) -> Option<ShortcutDef> {
         "اج" => ShortcutDef { key: "اجلب", min: 1, max: 1, kind: ShortcutKind::Snippet },
         // --- طباعة (1) ---
         "اط" => ShortcutDef { key: "", min: 0, max: usize::MAX, kind: ShortcutKind::Echo },
+        // --- عمليات (3) ---
+        "عع" => ShortcutDef { key: "الحالية", min: 0, max: 0, kind: ShortcutKind::Snippet },
+        "نب" => ShortcutDef { key: "أنشئ_برنامج", min: 1, max: usize::MAX, kind: ShortcutKind::Snippet },
+        "اب" => ShortcutDef { key: "أوقف_برنامج", min: 1, max: 1, kind: ShortcutKind::Snippet },
+        // --- بيت وتكرار (2) ---
+        "ال" => ShortcutDef { key: "بيت", min: 0, max: 0, kind: ShortcutKind::Snippet },
+        "كا" => ShortcutDef { key: "", min: 0, max: 0, kind: ShortcutKind::Repeat },
         _ => return None,
     })
 }
@@ -1778,18 +1790,22 @@ mod tests {
 
     // The 50-shortcut table (owner's correction 2026-11-05
     // ~22:11, superseding the 100): exactly 50 engine codes,
-    // all present, no collisions. The 7 app-level codes (جل،
-    // جد، مش، شب، سش، مد، اع) are NOT here — the app
+    // all present, no collisions. The 6 app-level codes (جل،
+    // مش، شب، سش، مد، اع) are NOT here — the app
     // intercepts them before the line reaches the engine.
+    // Change 2026-11-06 (owner's whole-table no-alif rule):
+    // خج/طن/طع/جذ/قو left the engine table and جد left the
+    // app table; عع/نب/اب/تم/ال/كا joined the engine table
+    // — 44 engine codes + 6 app codes = 50.
     #[test]
     fn shortcut_table_is_fifty_unique_codes() {
         let codes = [
             "ات", "مح", "نم", "شم", "حم", "حف", "سم", "قم", "اف", "شف", "عب", "عن", "عس",
-            "عك", "بم", "بع", "عش", "حج", "شر", "اك", "وج", "ام", "عم", "اس", "عر", "مس",
-            "خج", "اص", "طن", "مع", "اد", "اق", "طع", "حع", "مى", "رع", "جذ", "قو", "تا",
-            "وق", "نو", "اج", "اط",
+            "عك", "بم", "بع", "عش", "حج", "شر", "اك", "وج", "ام", "تم", "عم", "اس", "عر",
+            "مس", "اص", "مع", "اد", "اق", "حع", "مى", "رع", "تا", "وق", "نو", "اج", "اط",
+            "عع", "نب", "اب", "ال", "كا",
         ];
-        assert_eq!(codes.len(), 43, "engine codes (50 total - 7 app-level)");
+        assert_eq!(codes.len(), 44, "engine codes (50 total - 6 app-level)");
         let mut seen = std::collections::HashSet::new();
         for code in codes {
             assert!(shortcut_def(code).is_some(), "missing code: {}", code);
@@ -1800,8 +1816,12 @@ mod tests {
             assert!(shortcut_def(code).is_some(), "original code lost: {}", code);
         }
         // App-level codes must NOT be engine shortcuts.
-        for code in ["جل", "جد", "مش", "شب", "سش", "مد", "اع"] {
+        for code in ["جل", "مش", "شب", "سش", "مد", "اع"] {
             assert!(shortcut_def(code).is_none(), "app code leaked into engine: {}", code);
+        }
+        // The removed codes are gone from both tables.
+        for code in ["خج", "طن", "طع", "جذ", "قو", "جد"] {
+            assert!(shortcut_def(code).is_none(), "removed code still present: {}", code);
         }
     }
 
@@ -1866,29 +1886,89 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // Text and numbers through the shortcuts: length, sum,
-    // min, max, abs, convert, range, random, sqrt, power, echo.
+    // Text and numbers through the shortcuts: sum, min,
+    // max, convert, range, random, echo. (طن/طع/جذ/قو left
+    // the table 2026-11-06 under the no-alif rule; their
+    // builtins — طول/مطلق/رياضيات.جذر/رياضيات.قوة — still
+    // work in programs.)
     #[test]
     fn repl_shortcut_numbers_and_text() {
         let mut r = Repl::new();
-        assert_eq!(r.feed("طن مرحبا").output, "٥\n");
         assert_eq!(r.feed("مع ١ ٢ ٣").output, "٦\n");
         assert_eq!(r.feed("اد ٥ ٢ ٨").output, "٢\n");
         assert_eq!(r.feed("اق ٥ ٢ ٨").output, "٨\n");
-        assert_eq!(r.feed("طع -٥").output, "٥\n");
         assert_eq!(r.feed("حع ٥").output, "٥\n");
         assert_eq!(r.feed("مى ١ ٥").output, "١\n٢\n٣\n٤\n");
         let o = r.feed("رع");
         let n = parse_shortcut_number(o.output.trim());
         assert!(matches!(n, Some(v) if (0.0..1.0).contains(&v)), "got: {}", o.output);
-        assert_eq!(r.feed("جذ ١٦").output, "٤\n");
-        assert_eq!(r.feed("قو ٢ ٣").output, "٨\n");
         assert_eq!(r.feed("اط مرحبا بالعالم").output, "مرحبا بالعالم\n");
         // A non-number where a number is expected: short error.
         let o = r.feed("مع ١ س");
         assert!(o.output.contains("تتوقع أعدادا"), "got: {}", o.output);
-        let o = r.feed("جذ س");
-        assert!(o.output.contains("تتوقع عددا"), "got: {}", o.output);
+    }
+
+    // The 2026-11-06 replacements (owner's whole-table
+    // no-alif rule): عع/نب/اب/تم/ال/كا — each wired to a
+    // real action. The نب/اب error paths assume the serial
+    // runner (CI runs --test-threads=1): the snippet's
+    // `استورد عمليات` resets the global process policy
+    // right before the spawn, so no other test can
+    // interleave — exactly the guarantee the processes
+    // tests get from their lock.
+    #[test]
+    fn repl_shortcut_replacements() {
+        // عع: the current process id — a positive number.
+        let mut r = Repl::new();
+        let o = r.feed("عع");
+        let pid = parse_shortcut_number(o.output.trim());
+        assert!(matches!(pid, Some(v) if v > 0.0), "got: {}", o.output);
+        // نب/اب: wiring only — no universal program exists
+        // on all three CI runners for a happy path (the
+        // spawn/kill happy paths are covered in
+        // processes.rs). A missing program surfaces the
+        // Arabic spawn error; an unknown id surfaces the
+        // Arabic kill error.
+        let o = r.feed("نب لاوجود");
+        assert!(o.output.contains("غير موجود"), "got: {}", o.output);
+        let o = r.feed("اب ٩٩٩٩٩٩");
+        assert!(o.output.contains("عملية غير معروفة"), "got: {}", o.output);
+        // ال: from a subdir back home — the prompt returns
+        // to "~ $ ".
+        let dir = shortcut_dir();
+        std::fs::create_dir(dir.join("فرعي")).unwrap();
+        let mut r = Repl::with_program_dir(dir.clone());
+        let o = r.feed("نم فرعي");
+        assert_eq!(o.prompt, "~/فرعي $ ");
+        let o = r.feed("ال");
+        assert_eq!(o.output, "");
+        assert_eq!(o.prompt, "~ $ ");
+        // تم: details of a file, a dir, and a missing path.
+        std::fs::write(dir.join("ملف.txt"), "abc").unwrap();
+        let o = r.feed("تم ملف.txt");
+        assert!(o.output.contains("\"نوع\": \"ملف\""), "got: {}", o.output);
+        assert!(o.output.contains("\"حجم\": ٣"), "got: {}", o.output);
+        let o = r.feed("تم فرعي");
+        assert!(o.output.contains("\"نوع\": \"مجلد\""), "got: {}", o.output);
+        let o = r.feed("تم غائب.txt");
+        assert!(o.output.contains("\"نوع\": \"غير موجود\""), "got: {}", o.output);
+        let _ = std::fs::remove_dir_all(&dir);
+        // كا: rerun the last line (!!). Empty history is a
+        // short Arabic error; كا never reruns itself.
+        let mut r = Repl::new();
+        let o = r.feed("كا");
+        assert!(o.output.contains("لا يوجد سطر سابق"), "got: {}", o.output);
+        assert_eq!(r.feed("اط مرحبا").output, "مرحبا\n");
+        assert_eq!(r.feed("كا").output, "مرحبا\n");
+        assert_eq!(r.feed("كا").output, "مرحبا\n");
+        assert_eq!(r.feed("س = ٥").output, "");
+        assert_eq!(r.feed("كا").output, "");
+        // The removed codes' builtins still work as code.
+        assert_eq!(done_out(r.eval("طول(\"مرحبا\")")), "٥\n");
+        assert_eq!(done_out(r.eval("مطلق(٠ - ٥)")), "٥\n");
+        assert_eq!(done_out(r.eval("استورد رياضيات")), "");
+        assert_eq!(done_out(r.eval("رياضيات.جذر(١٦)")), "٤\n");
+        assert_eq!(done_out(r.eval("رياضيات.قوة(٢، ٣)")), "٨\n");
     }
 
     // Time, version, and the session commands through the
@@ -1926,7 +2006,7 @@ mod tests {
         assert!(!o.ended);
         let o = r.feed("عر");
         assert!(!o.output.contains("س = ٥"), "got: {}", o.output);
-        let o = r.feed("خج");
+        let o = r.feed(":خروج");
         assert!(o.ended);
     }
 
@@ -2143,12 +2223,12 @@ mod tests {
         assert!(is_failed(r.eval("س")));
     }
 
-    // ك-2 (مهمة 7): الاختصارات تعمل على محرك VM — طن
-    // (طول) يمر عبر VmSession::call_builtin مباشرة.
+    // ك-2 (مهمة 7): الاختصارات تعمل على محرك VM — حع
+    // (عدد) يمر عبر VmSession::call_builtin مباشرة.
     #[test]
     fn repl_vm_shortcut_calls_builtin() {
         let mut r = Repl::new();
-        assert_eq!(r.feed("طن ٥").output, "١\n");
+        assert_eq!(r.feed("حع ٥").output, "٥\n");
         assert_eq!(r.feed("مع ١ ٢ ٣").output, "٦\n");
         assert_eq!(r.feed("مح").output, "~\n");
     }
