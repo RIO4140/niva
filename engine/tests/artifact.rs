@@ -255,16 +255,23 @@ fn artifact_standalone_runs_alone() {
         let mode = fs::metadata(&standalone).unwrap().permissions().mode();
         assert_eq!(mode & 0o111, 0o111, "الملف المستقل ليس تنفيذيا");
     }
-    // تشغيل بمسار نسبي وPATH منزوع منه نيفا — الملف
-    // نفسه هو البرنامج، لا نيفا المثبتة.
-    // على Unix يلزم ./ لأن مجلد العمل ليس في PATH؛
-    // وعلى Windows .\fib.exe مسار نسبي صريح يحله
-    // النظام ضد مجلد العمل مباشرة.
+    // تشغيل من مجلد الملف نفسه وPATH منزوع منه نيفا —
+    // الملف نفسه هو البرنامج، لا نيفا المثبتة.
+    // على Unix يلزم ./ لأن مجلد العمل ليس في PATH.
+    // وعلى Windows لا يصح مسار نسبي مع current_dir:
+    // توثيق std يحذر أن تفسير مسار نسبي مع current_dir
+    // غامض وغير مستقر عبر المنصات وينصح بمسار مطلق،
+    // وعلى Windows يُحل اسم البرنامج قبل التشغيل ضد
+    // PATH الفرعي ومجلد الثنائي والنظام — لا ضد
+    // current_dir الفرعي — فـ.\fib.exe فشل بـNotFound
+    // رغم وجود الملف (تشغيل 42226514480). المسار
+    // المطلق هنا يحفظ قصد الاختبار: التشغيل من مجلد
+    // الملف نفسه، بلا نيفا على PATH.
     #[cfg(unix)]
-    let rel = "./fib";
+    let prog = "./fib";
     #[cfg(windows)]
-    let rel = ".\\fib.exe";
-    let mut cmd = Command::new(rel);
+    let prog = standalone.clone();
+    let mut cmd = Command::new(prog);
     cmd.current_dir(&dir).env("PATH", scrubbed_path());
     let res = cmd.output().expect("run standalone");
     assert_eq!(res.status.code(), Some(0));
