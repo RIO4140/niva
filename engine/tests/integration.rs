@@ -176,15 +176,44 @@ fn operations_subprogram_both_modes() {
     );
 }
 
+/// تجهيزة Unix لبرامج النظام في اختبارات التكامل: أول موجود
+/// من /bin/<الاسم> ثم /usr/bin/<الاسم> — نمط true_program
+/// في processes.rs. الغرض هنا تشغيل برامج حقيقية في الوضع
+/// الموثوق، لا تخطيط نظام بعينه: /bin/true غائب عن عدّاء
+/// macOS 26 (التشغيل 42221442116 — التكامل 78/79 بينما lib
+/// خضراء لأن تجهيزتها تنتقل إلى /usr/bin/true)، فالكتابة
+/// الثابتة لـ/bin/true تفشل هناك بينما /usr/bin/true موجود.
+/// إن غاب الاثنان يفشل الاختبار بصوت عال بدلا من التخطي.
+#[cfg(unix)]
+fn os_program(name: &str) -> String {
+    for dir in ["/bin", "/usr/bin"] {
+        let p = format!("{}/{}", dir, name);
+        if std::path::Path::new(&p).exists() {
+            if dir == "/usr/bin" {
+                eprintln!("ملاحظة اختبار: {} غائب عن /bin — يُستخدم {}", name, p);
+            }
+            return p;
+        }
+    }
+    panic!(
+        "لا يوجد برنامج {} على هذا النظام — لا /bin/{} ولا /usr/bin/{}",
+        name, name, name
+    );
+}
+
 /// مهمة 10 (عمليات): برامج نظام حقيقية في الوضع الموثوق
 /// (--اسمح-بالكل) — Unix فقط (لا true/false/sleep في Windows).
 #[test]
 #[cfg(unix)]
 fn operations_os_program_trusted_both_modes() {
-    let files: &[(&str, &str)] = &[(
-        "برنامج.نيفا",
-        "استورد عمليات\nمن عمليات استورد انتظر\nأ = عمليات.أنشئ(\"/bin/true\")\nاطبع انتظر(أ)\nب = عمليات.أنشئ(\"/bin/false\")\nاطبع انتظر(ب)\nج = عمليات.أنشئ(\"/bin/sleep 30\")\nعمليات.أوقف(ج)\nاطبع \"تم الإيقاف\"\nاطبع عمليات.الحالية() > ٠\n",
-    )];
+    let prog_true = os_program("true");
+    let prog_false = os_program("false");
+    let prog_sleep = os_program("sleep");
+    let src = format!(
+        "استورد عمليات\nمن عمليات استورد انتظر\nأ = عمليات.أنشئ(\"{}\")\nاطبع انتظر(أ)\nب = عمليات.أنشئ(\"{}\")\nاطبع انتظر(ب)\nج = عمليات.أنشئ(\"{} 30\")\nعمليات.أوقف(ج)\nاطبع \"تم الإيقاف\"\nاطبع عمليات.الحالية() > ٠\n",
+        prog_true, prog_false, prog_sleep
+    );
+    let files: &[(&str, &str)] = &[("برنامج.نيفا", src.as_str())];
     let (out_i, err_i, code_i) = run_with_modules_flags(
         files,
         "برنامج.نيفا",

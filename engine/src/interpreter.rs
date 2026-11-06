@@ -2838,7 +2838,22 @@ impl Interpreter {
                         let link_path = self.resolve_cwd(link, line, col)?;
                         #[cfg(unix)]
                         let res = std::os::unix::fs::symlink(&target_path, &link_path);
-                        #[cfg(not(unix))]
+                        // Windows يفرّق بين رابط الملف ورابط المجلد:
+                        // يُختار حسب نوع الهدف، والهدف الغائب يُربط
+                        // كملف (الحالة الشائعة). الرفض عند غياب
+                        // الامتياز يصل كخطأ إدخال/إخراج عربي كغيره.
+                        #[cfg(windows)]
+                        let res = match std::fs::metadata(&target_path) {
+                            Ok(m) if m.is_dir() => std::os::windows::fs::symlink_dir(
+                                &target_path,
+                                &link_path,
+                            ),
+                            _ => std::os::windows::fs::symlink_file(
+                                &target_path,
+                                &link_path,
+                            ),
+                        };
+                        #[cfg(not(any(unix, windows)))]
                         let res: std::io::Result<()> = Err(std::io::Error::new(
                             std::io::ErrorKind::Unsupported,
                             "إنشاء الروابط غير مدعوم على هذه المنصة",
