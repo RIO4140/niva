@@ -1986,19 +1986,20 @@ fn net_test_server() -> u16 {
                 .nth(1)
                 .unwrap_or("/")
                 .to_string();
-            let body = "مرحبا من الخادم".as_bytes().to_vec();
-            let (status, extra): (&str, String) = match path.as_str() {
-                "/hello" => (
-                    "200 OK",
-                    format!("Content-Length: {}\r\n", body.len()),
-                ),
-                _ => ("404 Not Found", "Content-Length: 0\r\n".to_string()),
+            let (status, body): (&str, Vec<u8>) = match path.as_str() {
+                "/hello" => ("200 OK", "مرحبا من الخادم".as_bytes().to_vec()),
+                // إصلاح ترميز المسار في اجلب: الخادم يرى
+                // المسار مرمّزا — فالرابط العربي الخام يصل
+                // هنا مرمّزا، وبلا الترميز كان يسقط في 404.
+                "/%D8%A3%D8%AF%D8%A7%D8%A9.%D9%86%D9%8A%D9%81%D8%A7" => {
+                    ("200 OK", "أداة من الخادم".as_bytes().to_vec())
+                }
+                _ => ("404 Not Found", Vec::new()),
             };
+            let extra = format!("Content-Length: {}\r\n", body.len());
             let mut resp = format!("HTTP/1.1 {}\r\n{}Connection: close\r\n\r\n", status, extra)
                 .into_bytes();
-            if path == "/hello" {
-                resp.extend_from_slice(&body);
-            }
+            resp.extend_from_slice(&body);
             let _ = stream.write_all(&resp);
         }
     });
@@ -2087,6 +2088,30 @@ fn network_fetch_with_flag() {
     );
     assert_eq!(code, 0, "stderr: {}", err);
     assert_eq!(out, "مرحبا من الخادم\n", "stderr: {}", err);
+}
+
+// إصلاح ترميز المسار في اجلب: برنامج نيفا يجلب رابطا
+// عربيا خاما في الوضعين — والخادم يرى المسار مرمّزا.
+#[test]
+fn network_fetch_arabic_path_both_modes() {
+    let port = net_test_server();
+    let src = format!(
+        "استورد شبكة\nاطبع شبكة.اجلب(\"http://127.0.0.1:{}/أداة.نيفا\")\n",
+        port
+    );
+    let (out_i, err_i, code_i) = run_src_flags(
+        &src,
+        &["--مفسر", "--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"],
+    );
+    let (out_v, err_v, code_v) = run_src_flags(
+        &src,
+        &["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"],
+    );
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(out_v, "أداة من الخادم\n", "stderr={}", err_v);
 }
 
 #[test]

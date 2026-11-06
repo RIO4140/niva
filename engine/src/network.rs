@@ -1823,6 +1823,99 @@ fn time_left(
     Ok(left)
 }
 
+/// ترميز هدف الطلب (المسار + الاستعلام) بالنسب المئوية
+/// قبل إرساله في سطر الطلب — على نمط curl.
+///
+/// لماذا: سطر الطلب في HTTP/1.1 بايتات ASCII؛ والمسار
+/// العربي الخام (UTF-8) يرفضه المحلل الصارم (llhttp في
+/// Node) برمز 400 قبل أن يصل الطلب إلى المعالج، بينما
+/// المسار ASCII نفسه على الخادم نفسه ينجح (200). والترميز
+/// هنا مرة واحدة عند الإرسال فيغطي HTTP/1.1 وHTTP/2
+/// (مكتبة http ترفض الـ URI غير ASCII أصلا) وإعادات
+/// التوجيه (تمر من هنا ثانية عند كل محاولة).
+///
+/// القواعد:
+/// - المخطط والمضيف والمنفذ لا تُمس (الترميز للمسار
+///   والاستعلام فقط).
+/// - يبقى كما هو كل بايت ASCII من: غير المحجوز
+///   (A-Z a-z 0-9 - _ . ~) + المحددات الفرعية
+///   (! $ & ' ( ) * + , ; =) + ( : @ / ? ) — فالمسارات
+///   ASCII تبقى بايتيا كما هي.
+/// - `%` متبوعة برقمين ست عشريين تُترك كما هي (مرمّز
+///   أصلا — بلا ترميز مزدوج)؛ و`%` غير ذلك تُرمّز
+///   هي نفسها (%25).
+/// - كل بايت آخر (ومنها كل بايت UTF-8 غير ASCII
+///   والمسافة) يُرمّز %XX بأحرف ست عشرية كبيرة.
+/// - الجزء (#...) لا يُرسل أبدا (كما يفعل curl؛
+///   وparse_url يسقطه أصلا حين يكون المسار كله جزءا).
+/// - مسار فارغ (دفاعا) يصير "/".
+#[cfg(not(target_arch = "wasm32"))]
+fn encode_request_target(path: &str) -> String {
+    // الجزء لا يُرسل.
+    let path = match path.find('#') {
+        Some(i) => &path[..i],
+        None => path,
+    };
+    let (head, query) = match path.find('?') {
+        Some(i) => (&path[..i], Some(&path[i + 1..])),
+        None => (path, None),
+    };
+    let mut out = String::with_capacity(path.len());
+    if head.is_empty() {
+        out.push('/');
+    } else {
+        encode_target_part(&mut out, head);
+    }
+    if let Some(q) = query {
+        out.push('?');
+        encode_target_part(&mut out, q);
+    }
+    out
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn encode_target_part(out: &mut String, part: &str) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let bytes = part.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        // ثلاثية مرمّزة أصلا: تُترك (بلا ترميز مزدوج).
+        if b == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            out.push('%');
+            out.push(bytes[i + 1] as char);
+            out.push(bytes[i + 2] as char);
+            i += 3;
+            continue;
+        }
+        if is_target_safe(b) {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(b >> 4) as usize] as char);
+            out.push(HEX[(b & 0xF) as usize] as char);
+        }
+        i += 1;
+    }
+}
+
+/// بايت ASCII يُترك كما هو في هدف الطلب: غير محجوز +
+/// محددات فرعية + ( : @ / ? ).
+#[cfg(not(target_arch = "wasm32"))]
+fn is_target_safe(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || matches!(
+            b,
+            b'-' | b'_' | b'.' | b'~'
+            | b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'='
+            | b':' | b'@' | b'/' | b'?'
+        )
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch_one_native(
     url: &ParsedUrl,
@@ -1897,9 +1990,13 @@ fn fetch_one_native(
     } else {
         format!("{}:{}", url.host, url.port)
     };
+    // ترميز هدف الطلب قبل الإرسال: المسار العربي الخام
+    // يرفضه المحلل الصارم (llhttp) برمز 400. والهدف
+    // المرمّز نفسه يمر إلى HTTP/2 أدناه.
+    let target = encode_request_target(&url.path);
     let request = format!(
         "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Niva/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n",
-        url.path, host_header
+        target, host_header
     );
     // Meeting 26: HTTPS wraps the connected TcpStream in TLS
     // (after the §7 IP check above, before the handshake).
@@ -1910,7 +2007,7 @@ fn fetch_one_native(
     if url.scheme == "https" {
         #[cfg(feature = "http2")]
         {
-            return fetch_https_h2(stream, url, &request, &host_header, deadline, line, col);
+            return fetch_https_h2(stream, url, &request, &target, &host_header, deadline, line, col);
         }
         #[cfg(not(feature = "http2"))]
         {
@@ -1988,6 +2085,7 @@ fn fetch_https_h2(
     stream: std::net::TcpStream,
     url: &ParsedUrl,
     request: &str,
+    path: &str,
     host_header: &str,
     deadline: std::time::Instant,
     line: usize,
@@ -1996,7 +2094,9 @@ fn fetch_https_h2(
     use std::io::Write;
     let host = url.host.clone();
     let host_async = host.clone();
-    let path = url.path.clone();
+    // الهدف المرمّز من fetch_one_native (لا url.path الخام:
+    // مكتبة http ترفض الـ URI غير ASCII أصلا).
+    let path = path.to_string();
     let host_header = host_header.to_string();
     let outcome = run_on_runtime(async move {
         fetch_https_h2_async(stream, &host_async, &path, &host_header, deadline, line, col).await
@@ -2725,6 +2825,73 @@ mod tests {
         assert!(parse_url("http://exa mple.com", 1, 1).is_err());
     }
 
+    // إصلاح ترميز المسار في اجلب: المسار العربي الخام
+    // يُرمّز بالنسب المئوية قبل الإرسال.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn encode_target_arabic_path() {
+        assert_eq!(
+            encode_request_target("/أداة.نيفا"),
+            "/%D8%A3%D8%AF%D8%A7%D8%A9.%D9%86%D9%8A%D9%81%D8%A7"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn encode_target_ascii_unchanged() {
+        assert_eq!(encode_request_target("/"), "/");
+        assert_eq!(
+            encode_request_target("/a/b.txt?x=1&y=hello+world"),
+            "/a/b.txt?x=1&y=hello+world"
+        );
+        assert_eq!(
+            encode_request_target("/a-b_c.d~e!f$g&h'i(j)k*l+m,n;o=p:q@r"),
+            "/a-b_c.d~e!f$g&h'i(j)k*l+m,n;o=p:q@r"
+        );
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn encode_target_already_encoded_kept() {
+        assert_eq!(
+            encode_request_target("/%D8%A3%D8%AF%D8%A7%D8%A9"),
+            "/%D8%A3%D8%AF%D8%A7%D8%A9"
+        );
+        // ست عشري صغير يُترك كما هو أيضا: بلا إعادة
+        // ترميز وبلا توحيد حالة الأحرف.
+        assert_eq!(encode_request_target("/%d8%a3"), "/%d8%a3");
+        assert_eq!(encode_request_target("/a%2Fb"), "/a%2Fb");
+        // ثلاثية صحيحة منفردة تُترك (فك ترميزها عند
+        // الخادم بايت تالف — لكن الإرسال يحفظها كما كُتبت).
+        assert_eq!(encode_request_target("/%D8"), "/%D8");
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn encode_target_bare_percent_encoded() {
+        assert_eq!(encode_request_target("/100%"), "/100%25");
+        assert_eq!(encode_request_target("/%ZZ"), "/%25ZZ");
+        assert_eq!(encode_request_target("/%2"), "/%252");
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn encode_target_arabic_query_and_space() {
+        assert_eq!(
+            encode_request_target("/بحث?q=مرحبا"),
+            "/%D8%A8%D8%AD%D8%AB?q=%D9%85%D8%B1%D8%AD%D8%A8%D8%A7"
+        );
+        assert_eq!(encode_request_target("/a b"), "/a%20b");
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn encode_target_fragment_stripped() {
+        assert_eq!(encode_request_target("/p#frag"), "/p");
+        assert_eq!(encode_request_target("/p?q=1#frag"), "/p?q=1");
+        assert_eq!(encode_request_target(""), "/");
+    }
+
     #[test]
     fn ip_class_covers_spec() {
         use std::net::IpAddr;
@@ -2817,6 +2984,27 @@ mod tests {
                     match path.as_str() {
                         "/hello" => {
                             let b = "مرحبا من الخادم".as_bytes().to_vec();
+                            (
+                                "200 OK",
+                                vec![format!("Content-Length: {}", b.len())],
+                                b,
+                            )
+                        }
+                        // إصلاح ترميز المسار: الخادم يرى المسار
+                        // مرمّزا — فالرابط العربي الخام يصل هنا
+                        // مرمّزا، والرابط المرمّز أصلا يصل كما هو.
+                        // بلا الترميز كان المسار الخام يصل UTF-8
+                        // خاما فيسقط في 404.
+                        "/%D8%A3%D8%AF%D8%A7%D8%A9.%D9%86%D9%8A%D9%81%D8%A7" => {
+                            let b = "أداة من الخادم".as_bytes().to_vec();
+                            (
+                                "200 OK",
+                                vec![format!("Content-Length: {}", b.len())],
+                                b,
+                            )
+                        }
+                        "/%D8%A8%D8%AD%D8%AB?q=%D9%85%D8%B1%D8%AD%D8%A8%D8%A7" => {
+                            let b = "بحث ناجح".as_bytes().to_vec();
                             (
                                 "200 OK",
                                 vec![format!("Content-Length: {}", b.len())],
@@ -2917,6 +3105,34 @@ mod tests {
         assert_eq!(
             fetch_ok(&format!("http://127.0.0.1:{}/chunked", port)),
             "chunked-ok"
+        );
+        set_network_allowed(false);
+    }
+
+    // إصلاح ترميز المسار في اجلب: الرابط العربي الخام
+    // يصل إلى الخادم مرمّزا (المسار والاستعلام)؛ والرابط
+    // المرمّز أصلا يصل كما هو بلا ترميز مزدوج.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn fetch_arabic_path_encoded_on_wire() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = test_server();
+        assert_eq!(
+            fetch_ok(&format!("http://127.0.0.1:{}/أداة.نيفا", port)),
+            "أداة من الخادم"
+        );
+        assert_eq!(
+            fetch_ok(&format!(
+                "http://127.0.0.1:{}/%D8%A3%D8%AF%D8%A7%D8%A9.%D9%86%D9%8A%D9%81%D8%A7",
+                port
+            )),
+            "أداة من الخادم"
+        );
+        assert_eq!(
+            fetch_ok(&format!("http://127.0.0.1:{}/بحث?q=مرحبا", port)),
+            "بحث ناجح"
         );
         set_network_allowed(false);
     }
