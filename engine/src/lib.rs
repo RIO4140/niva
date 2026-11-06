@@ -28,6 +28,7 @@ pub mod semantic;
 pub mod sockets;
 pub mod stdlib;
 pub mod system;
+pub mod time;
 pub mod value;
 pub mod vm;
 

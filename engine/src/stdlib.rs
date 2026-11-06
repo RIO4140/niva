@@ -776,7 +776,228 @@ fn time_entries() -> Vec<(&'static str, Value)> {
     vec![
         ("الآن", native("الآن", time_now)),
         ("نوم", native("نوم", time_sleep)),
+        ("التاريخ", native("التاريخ", time_date)),
+        ("التاريخ_العالمي", native("التاريخ_العالمي", time_date_utc)),
+        ("من_التاريخ", native("من_التاريخ", time_from_date)),
+        (
+            "من_التاريخ_العالمي",
+            native("من_التاريخ_العالمي", time_from_date_utc),
+        ),
+        ("نص", native("نص", time_text)),
+        ("نص_التاريخ", native("نص_التاريخ", time_text_date)),
+        ("نص_الوقت", native("نص_الوقت", time_text_time)),
+        ("اسم_اليوم", native("اسم_اليوم", time_weekday_name)),
+        ("اسم_الشهر", native("اسم_الشهر", time_month_name)),
+        ("فرق", native("فرق", time_diff)),
+        ("أضف", native("أضف", time_add)),
     ]
+}
+
+/// ثواني يونكس الآن كعدد صحيح (تُهمل الكسور).
+/// `وقت.الآن` يعيد كسرا عشريا؛ والتقويم يعمل
+/// بالثواني الصحيحة.
+fn now_epoch() -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        (js_sys::Date::now() / 1000.0).floor() as i64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    }
+}
+
+/// عدد ثواني يونكس من وسيط عددي (يقبل الكسر —
+/// `وقت.الآن()` كسري — فيُهمل الجزء الكسري).
+fn need_epoch(display: &str, v: &Value, line: usize, col: usize) -> RioResult<i64> {
+    let x = need_number(display, v, line, col)?;
+    if !x.is_finite() || x.abs() >= 9.0e15 {
+        return Err(RioError::typ(
+            format!("الدالة {display} تتوقع عددا صحيحا للثواني"),
+            line,
+            col,
+        ));
+    }
+    Ok(x.floor() as i64)
+}
+
+fn time_date(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let epoch = match args.len() {
+        0 => now_epoch(),
+        1 => need_epoch("وقت.التاريخ", &args[0], line, col)?,
+        _ => {
+            return Err(RioError::runtime(
+                "الدالة وقت.التاريخ تتوقع صفر معاملات أو معاملا واحدا (ثواني)",
+                line,
+                col,
+            ))
+        }
+    };
+    Ok(crate::time::to_dict(&crate::time::datetime_from_epoch(
+        epoch,
+        false,
+        "وقت.التاريخ",
+        line,
+        col,
+    )?))
+}
+
+fn time_date_utc(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let epoch = match args.len() {
+        0 => now_epoch(),
+        1 => need_epoch("وقت.التاريخ_العالمي", &args[0], line, col)?,
+        _ => {
+            return Err(RioError::runtime(
+                "الدالة وقت.التاريخ_العالمي تتوقع صفر معاملات أو معاملا واحدا (ثواني)",
+                line,
+                col,
+            ))
+        }
+    };
+    Ok(crate::time::to_dict(&crate::time::datetime_from_epoch(
+        epoch,
+        true,
+        "وقت.التاريخ_العالمي",
+        line,
+        col,
+    )?))
+}
+
+fn time_from_date(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    time_from_date_impl(args, false, "وقت.من_التاريخ", line, col)
+}
+
+fn time_from_date_utc(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    time_from_date_impl(args, true, "وقت.من_التاريخ_العالمي", line, col)
+}
+
+fn time_from_date_impl(
+    args: &[Value],
+    utc: bool,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args(display, args, 6, line, col)?;
+    let y = need_integer(display, &args[0], line, col)?;
+    let mo = need_integer(display, &args[1], line, col)?;
+    let d = need_integer(display, &args[2], line, col)?;
+    let h = need_integer(display, &args[3], line, col)?;
+    let mi = need_integer(display, &args[4], line, col)?;
+    let s = need_integer(display, &args[5], line, col)?;
+    Ok(crate::time::to_dict(
+        &crate::time::datetime_from_components(y, mo, d, h, mi, s, utc, display, line, col)?,
+    ))
+}
+
+fn time_text(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("وقت.نص", args, 1, line, col)?;
+    let dt = crate::time::from_dict(&args[0], "وقت.نص", line, col)?;
+    Ok(Value::Str(crate::time::format_datetime(&dt)))
+}
+
+fn time_text_date(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("وقت.نص_التاريخ", args, 1, line, col)?;
+    let dt = crate::time::from_dict(&args[0], "وقت.نص_التاريخ", line, col)?;
+    Ok(Value::Str(crate::time::format_date(&dt)))
+}
+
+fn time_text_time(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("وقت.نص_الوقت", args, 1, line, col)?;
+    let dt = crate::time::from_dict(&args[0], "وقت.نص_الوقت", line, col)?;
+    Ok(Value::Str(crate::time::format_time(&dt)))
+}
+
+fn time_weekday_name(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("وقت.اسم_اليوم", args, 1, line, col)?;
+    let dt = crate::time::from_dict(&args[0], "وقت.اسم_اليوم", line, col)?;
+    Ok(Value::Str(
+        crate::time::weekday_name(dt.weekday).to_string(),
+    ))
+}
+
+fn time_month_name(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("وقت.اسم_الشهر", args, 1, line, col)?;
+    let dt = crate::time::from_dict(&args[0], "وقت.اسم_الشهر", line, col)?;
+    Ok(Value::Str(
+        crate::time::month_name(dt.month).to_string(),
+    ))
+}
+
+fn time_diff(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("وقت.فرق", args, 2, line, col)?;
+    let a = crate::time::from_dict(&args[0], "وقت.فرق", line, col)?;
+    let b = crate::time::from_dict(&args[1], "وقت.فرق", line, col)?;
+    Ok(Value::Number(
+        crate::time::diff(&a, &b, "وقت.فرق", line, col)? as f64,
+    ))
+}
+
+fn time_add(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("وقت.أضف", args, 2, line, col)?;
+    let dt = crate::time::from_dict(&args[0], "وقت.أضف", line, col)?;
+    let delta = need_integer("وقت.أضف", &args[1], line, col)?;
+    Ok(crate::time::to_dict(&crate::time::shift(
+        &dt, delta, "وقت.أضف", line, col,
+    )?))
 }
 
 fn time_now(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
