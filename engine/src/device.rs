@@ -1,5 +1,6 @@
-//! جهاز — حوار تفاعلي + تنبيه (المهمتان 20 و21 من
-//! خطة البناء، أول قدرات واجهات الجهاز — المرحلة 4).
+//! جهاز — حوار تفاعلي + تنبيه + نطق (المهام 20 و21
+//! و23 من خطة البناء، أول قدرات واجهات الجهاز —
+//! المرحلة 4).
 //!
 //! المبدأ: المحرك عملية فرعية في التطبيق، فيطلب
 //! الحوار أو التنبيه عبر قناة التحكم المنظمة على
@@ -39,6 +40,14 @@ const NOTIFY_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:نبّه:";
 /// يفشل فشلا ذا معنى حين يكون المعرّف حيّا).
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 const REMOVE_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:أزل_تنبيه:";
+/// بادئة سطر طلب النطق على stderr (المهمة 23) —
+/// أندرويد فقط.
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const SPEAK_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:انطق:";
+/// بادئة سطر طلب سرد محركات النطق على stderr
+/// (المهمة 23) — أندرويد فقط.
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const ENGINES_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:محركات_النطق:";
 /// بادئة سطر نتيجة التحكم على stdin — أندرويد فقط.
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 const RESULT_PREFIX: &str = "\u{0001}نيفا-نتيجة:";
@@ -496,6 +505,163 @@ pub fn serialize_notify_request(title: &str, text: &str, id: u64) -> String {
 /// تسلسل طلب إزالة التنبيه إلى JSON.
 pub fn serialize_remove_request(id: u64) -> String {
     format!("{{\"معرف\":{}}}", id)
+}
+
+/// التحقق الخالص من وسائط `جهاز.انطق` — معامل واحد
+/// نص غير فارغ (المهمة 23).
+pub fn validate_speak_args(args: &[Value], line: usize, col: usize) -> RioResult<String> {
+    const DISPLAY: &str = "جهاز.انطق";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 معامل لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let text = match &args[0] {
+        Value::Str(s) => s.clone(),
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع نصا لنص النطق لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if text.is_empty() {
+        return Err(RioError::runtime("نص النطق فارغ", line, col));
+    }
+    Ok(text)
+}
+
+/// التحقق الخالص من وسائط `جهاز.محركات_النطق` —
+/// بلا معاملات (المهمة 23).
+pub fn validate_engines_args(args: &[Value], line: usize, col: usize) -> RioResult<()> {
+    const DISPLAY: &str = "جهاز.محركات_النطق";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 0 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+/// تسلسل طلب النطق إلى JSON (تهريب يدوي — يعيد
+/// استخدام `json_escape`).
+pub fn serialize_speak_request(text: &str) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str("\"نص\":");
+    out.push_str(&json_escape(text));
+    out.push('}');
+    out
+}
+
+/// تسلسل طلب سرد محركات النطق إلى JSON — كائن فارغ
+/// (بلا معاملات).
+pub fn serialize_engines_request() -> String {
+    "{}".to_string()
+}
+
+/// نقطة الدخول: `جهاز.انطق(...)` — التحقق أولا (كل
+/// المنصات)، ثم بوابة المنصة، ثم القناة، ثم الإرسال
+/// والانتظار حتى ينتهي النطق؛ وترجع `صحيح` عند
+/// الانتهاء (المهمة 23).
+pub fn speak_text(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let text = validate_speak_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = text;
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        speak_text_native(&text, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn speak_text_native(text: &str, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = text;
+        Err(RioError::runtime(
+            "جهاز.انطق غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                SPEAK_CONTROL_PREFIX,
+                serialize_speak_request(text)
+            );
+            wait_for_result(line, col)
+        } else {
+            Err(RioError::runtime("النطق متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.محركات_النطق(...)` — التحقق
+/// أولا، ثم بوابة المنصة، ثم القناة، ثم الإرسال
+/// والانتظار؛ وترجع قائمة قواميس {اسم، وصف} (وقائمة
+/// فارغة إجابة صادقة لا خطأ — المهمة 23).
+pub fn list_speech_engines(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_engines_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        list_speech_engines_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn list_speech_engines_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.محركات_النطق غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                ENGINES_CONTROL_PREFIX,
+                serialize_engines_request()
+            );
+            wait_for_result(line, col)
+        } else {
+            Err(RioError::runtime("النطق متاح داخل التطبيق فقط", line, col))
+        }
+    }
 }
 
 /// نقطة الدخول: `جهاز.نبّه(...)` — التحقق أولا (كل
@@ -1585,5 +1751,123 @@ mod tests {
         let id = reserve_notify_id(1, 1).unwrap();
         assert!(consume_notify_id(id));
         assert!(!consume_notify_id(id));
+    }
+
+    #[test]
+    fn validate_speak_args_ok_and_bad() {
+        // نص صحيح.
+        assert_eq!(
+            validate_speak_args(&[str_val("مرحبا بالعالم")], 1, 1).unwrap(),
+            "مرحبا بالعالم".to_string()
+        );
+        // بلا معامل / معاملان.
+        let err = validate_speak_args(&[], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+        let err = validate_speak_args(&[str_val("أ"), str_val("ب")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+        // غير نص.
+        let err = validate_speak_args(&[num_val(5.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا لنص النطق"), "got: {}", err);
+        // نص فارغ.
+        let err = validate_speak_args(&[str_val("")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("نص النطق فارغ"), "got: {}", err);
+    }
+
+    #[test]
+    fn validate_engines_args_ok_and_bad() {
+        // بلا معاملات.
+        assert!(validate_engines_args(&[], 1, 1).is_ok());
+        // معامل واحد زائد.
+        let err = validate_engines_args(&[str_val("زائد")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+    }
+
+    #[test]
+    fn serialize_speak_and_engines_requests_round_trip() {
+        // النطق: النص يُهرَّب (تنصيص وسطر جديد).
+        let text = serialize_speak_request("قال: \"مرحبا\"\nبالعالم");
+        let parsed = parse_json(&text).unwrap();
+        assert_eq!(
+            parsed,
+            Json::Obj(vec![(
+                "نص".to_string(),
+                Json::Str("قال: \"مرحبا\"\nبالعالم".to_string())
+            )])
+        );
+        // السرد: كائن فارغ.
+        let text = serialize_engines_request();
+        let parsed = parse_json(&text).unwrap();
+        assert_eq!(parsed, Json::Obj(vec![]));
+    }
+
+    #[test]
+    fn parse_engines_result_list_of_dicts() {
+        // نتيجة سرد المحركات: قائمة قواميس {اسم، وصف}.
+        let value = parse_control_result(
+            "{\"قيمة\": [{\"اسم\": \"com.google.android.tts\", \"وصف\": \"محرك جوجل\"}, {\"اسم\": \"com.samsung.tts\", \"وصف\": \"محرك سامسونج\"}]}",
+            1,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            value,
+            Value::List(vec![
+                dict_val(vec![
+                    ("اسم", str_val("com.google.android.tts")),
+                    ("وصف", str_val("محرك جوجل")),
+                ]),
+                dict_val(vec![
+                    ("اسم", str_val("com.samsung.tts")),
+                    ("وصف", str_val("محرك سامسونج")),
+                ]),
+            ])
+        );
+        // وقائمة فارغة إجابة صادقة (لا محرك مثبّت).
+        let value = parse_control_result("{\"قيمة\": []}", 1, 1).unwrap();
+        assert_eq!(value, Value::List(vec![]));
+        // ونجاح النطق: صحيح.
+        let value = parse_control_result("{\"قيمة\": true}", 1, 1).unwrap();
+        assert_eq!(value, Value::Bool(true));
+    }
+
+    #[test]
+    fn speak_and_engines_refuse_off_android() {
+        // على هذه الآلة (لينكس): الوسائط الصحيحة تصل
+        // إلى بوابة المنصة وترفض بالعربية.
+        let err = speak_text(&[str_val("مرحبا")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("جهاز.انطق غير مدعوم على هذه المنصة"), "got: {}", err);
+        // والوسائط الخاطئة ترفض قبل المنصة.
+        let err = speak_text(&[str_val("")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("نص النطق فارغ"), "got: {}", err);
+        let err = speak_text(&[num_val(3.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا لنص النطق"), "got: {}", err);
+        // السرد: المنصة قبل أي شيء (بلا وسائط أصلا).
+        let err = list_speech_engines(&[], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("جهاز.محركات_النطق غير مدعوم على هذه المنصة"),
+            "got: {}",
+            err
+        );
+        // والوسائط الزائدة للسرد ترفض قبل المنصة.
+        let err = list_speech_engines(&[str_val("زائد")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
     }
 }

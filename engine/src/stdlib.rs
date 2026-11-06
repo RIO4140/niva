@@ -1373,6 +1373,8 @@ fn device_entries() -> Vec<(&'static str, Value)> {
         ("حوار", native("حوار", device_dialog)),
         ("نبّه", native("نبّه", device_notify)),
         ("أزل_تنبيه", native("أزل_تنبيه", device_remove_notify)),
+        ("انطق", native("انطق", device_speak)),
+        ("محركات_النطق", native("محركات_النطق", device_list_engines)),
     ]
 }
 
@@ -1386,4 +1388,12 @@ fn device_notify(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col:
 
 fn device_remove_notify(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     crate::device::remove_notification(args, line, col)
+}
+
+fn device_speak(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::speak_text(args, line, col)
+}
+
+fn device_list_engines(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::list_speech_engines(args, line, col)
 }
