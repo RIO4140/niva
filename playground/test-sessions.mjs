@@ -89,11 +89,11 @@ class Session {
     this.niva = new NivaConsole();
     this.lines = [];
     this.netChoice = null;
-    this.prompt = 'نيفا: ';
+    this.prompt = '~ $ ';
     for (const line of NivaConsole.banner().split('\n')) this.lines.push(line);
   }
   feed(line) {
-    this.lines.push(`نيفا: ${line}`);
+    this.lines.push(`~ $ ${line}`);
     const r = JSON.parse(this.niva.eval(line));
     if (r.output) for (const l of r.output.replace(/\n$/, '').split('\n')) this.lines.push(l);
     this.prompt = r.prompt;
@@ -105,7 +105,7 @@ class Session {
 check('banner', NivaConsole.banner(), 'محرك نيفا ١٫٠٫٠');
 const s1 = new Session();
 check('fresh session lines = banner only', s1.lines, ['محرك نيفا ١٫٠٫٠']);
-check('fresh session prompt', s1.prompt, 'نيفا: ');
+check('fresh session prompt', s1.prompt, '~ $ ');
 check('fresh session network off', s1.niva.is_network_allowed(), false);
 
 // Two consoles are independent: a variable defined in
@@ -124,10 +124,10 @@ check('session 2 scrollback has no ٥ result', s2.lines.includes('٥'), false);
 s1.feed('اطبع س + ١');
 check('session 1 scrollback restored + appended', s1.lines, [
   'محرك نيفا ١٫٠٫٠',
-  'نيفا: س = ٥',
-  'نيفا: اطبع س',
+  '~ $ س = ٥',
+  '~ $ اطبع س',
   '٥',
-  'نيفا: اطبع س + ١',
+  '~ $ اطبع س + ١',
   '٦',
 ]);
 check('session 2 scrollback untouched by session 1', s2.lines[0], 'محرك نيفا ١٫٠٫٠');

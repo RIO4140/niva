@@ -16,18 +16,85 @@ path = "src/main.rs"
 # owner's verdict. Enable explicitly to test the prototype:
 # cargo test --features prototype-rtl
 prototype-rtl = []
+# Meeting 26 (§41): the one audited TLS stack (rustls + ring +
+# webpki-roots), native only, behind this feature. On by
+# default for the native CLI; absent on wasm32 (the browser
+# does TLS there). The core lib stays dependency-free; this
+# single stack is the only exception, and any new dependency
+# needs a meeting. Build without it:
+# cargo test --no-default-features
+# Meeting 27 (§42): HTTP/2 (h2 + tokio), native only, behind
+# its own feature, on by default for the native CLI; absent
+# on wasm32 (the browser speaks HTTP/2 there, not the engine).
+# The h2 unblock (2026-11-06): the sparse index and the static
+# CDN are reachable through the egress proxy — cargo fetch
+# downloaded h2 0.4.20 directly; the old "crates.io 403" was
+# the REST API only, never the index or the .crate files.
+default = ["https", "http2"]
+https = ["dep:rustls", "dep:webpki-roots"]
+# http2 implies https: HTTP/2 in Niva is HTTPS-only (ALPN
+# negotiation over TLS); there is no cleartext h2c. The
+# feature also pulls http + bytes, the message types of the
+# h2 API (Request/Response/Bytes).
+http2 = ["dep:h2", "dep:tokio", "dep:tokio-rustls", "dep:http", "dep:bytes", "https"]
 
 [profile.release]
 opt-level = 2
 
-# The engine has no runtime dependencies on native targets.
+# The engine has no runtime dependencies on native targets,
+# except the one audited TLS stack (Meeting 26, §41): rustls
+# 0.23 + ring + webpki-roots, native only, behind the `https`
+# feature (on by default for the native CLI) — and the HTTP/2
+# stack (Meeting 27, §42): h2 0.4 + tokio 1 (features rt, net,
+# io-util, time; current-thread runtime on a dedicated thread),
+# native only, behind the `http2` feature (also on by default).
+# Any new dependency needs a meeting decision.
 # On wasm32 only, js-sys gives the browser clock (Date.now),
 # because std::time::SystemTime traps on wasm32-unknown-unknown
 # (it has no clock). Used only for the random seed and وقت.الآن.
 # Meeting 22: web-sys (wasm32 only) gives the synchronous
 # XMLHttpRequest that شبكة.اجلب uses in the browser — the
 # interpreter is synchronous, so it cannot await a fetch
-# Promise. Native stays dependency-free.
+# Promise. Native stays dependency-free (apart from the TLS
+# stack above).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"], optional = true }
+webpki-roots = { version = "1", optional = true }
+h2 = { version = "0.4", optional = true }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time"], optional = true }
+# tokio-rustls 0.26: the async adapter for the audited rustls
+# stack — it only wraps the rustls connection for tokio; no
+# new trust roots, no verification change, same Arabic errors.
+# default-features = false is LOAD-BEARING: tokio-rustls's
+# default enables rustls/aws-lc-rs, and ring + aws-lc-rs
+# together make rustls panic at first TLS use
+# ("Could not automatically determine the CryptoProvider").
+# The engine's one provider is ring (Meeting 26): enable
+# tokio-rustls's own `ring` feature, which forwards to
+# rustls/ring, plus logging + tls12 to match the engine's
+# rustls features.
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "ring"], optional = true }
+# http 1 + bytes 1: the message types of the h2 API
+# (Request/Response/Bytes); same versions h2 0.4.20 uses.
+http = { version = "1", optional = true }
+bytes = { version = "1", optional = true }
+
+# Meeting 26: the TLS test server in the integration tests
+# uses the same audited stack (test-only; never shipped).
+# Meeting 27 §42: the HTTP/2 parity-gate test drives a real
+# h2 client (h2 + tokio + tokio-rustls + http + bytes) —
+# same versions as the engine, test-only, never shipped.
+[dev-dependencies]
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+h2 = "0.4"
+tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "time"] }
+# Same default-features = false as the lib dep (see the
+# comment there): tokio-rustls's default would enable
+# rustls/aws-lc-rs and panic every TLS use in tests.
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "ring"] }
+http = "1"
+bytes = "1"
+
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"
 web-sys = { version = "0.3", features = ["XmlHttpRequest"] }

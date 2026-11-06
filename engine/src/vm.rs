@@ -1293,6 +1293,12 @@ pub struct Vm {
     pub loading_stack: Rc<RefCell<Vec<String>>>,
     pub return_value: Option<Value>,
     pub call_depth: usize,
+    /// Meeting 27: the server flag (خادم HTTPS). Same
+    /// per-instance pattern as the interpreter's — read
+    /// through the HandlerCaller context when a native
+    /// function runs; inherited by child VMs so a handler
+    /// calling اخدم again sees the same permission.
+    pub server_allowed: bool,
     /// ك-1.2: حالات الحلقات قيد التنفيذ (الأعلى هي الأعمق).
     loop_states: Vec<LoopState>,
     /// ك-1.2: معالجات حاول قيد التنفيذ (الأعلى هي الأعمق).
@@ -1324,6 +1330,7 @@ impl Vm {
             loading_stack: Rc::new(RefCell::new(Vec::new())),
             return_value: None,
             call_depth: 0,
+            server_allowed: false,
             loop_states: Vec::new(),
             handlers: Vec::new(),
             finally_stack: Vec::new(),
@@ -1356,6 +1363,19 @@ impl Vm {
     /// يُستدعى من main.rs في مسار VM كما في مسار المفسر.
     pub fn set_trusted(&mut self, trusted: bool) {
         self.file_policy.borrow_mut().trusted = trusted;
+    }
+
+    /// Meeting 27: server capability (--اسمح-بالخادم).
+    /// Default OFF; the network flag alone is not enough.
+    /// Read through the HandlerCaller context when a native
+    /// function runs; inherited by child VMs.
+    pub fn set_server_allowed(&mut self, allowed: bool) {
+        self.server_allowed = allowed;
+    }
+
+    /// This VM's own server permission.
+    pub fn server_allowed(&self) -> bool {
+        self.server_allowed
     }
 
     /// ك-2 (مهمة 7): حمّل برنامجا مترجما جديدا على نسخة VM
@@ -1505,6 +1525,7 @@ impl Vm {
             loading_stack: Rc::clone(&self.loading_stack),
             return_value: None,
             call_depth: self.call_depth + 1,
+            server_allowed: self.server_allowed,
             // ك-1.2: نسخة الدالة تبدأ بلا حلقات ولا معالجات —
             // اكسر داخل جسم دالة لا يكسر حلقة المتصل أبدا.
             loop_states: Vec::new(),
@@ -1537,6 +1558,7 @@ impl Vm {
             loading_stack: Rc::clone(&self.loading_stack),
             return_value: None,
             call_depth: self.call_depth,
+            server_allowed: self.server_allowed,
             loop_states: Vec::new(),
             handlers: Vec::new(),
             finally_stack: Vec::new(),
@@ -2040,7 +2062,7 @@ impl Vm {
             Value::BoundMethod { func, instance } => {
                 self.call_method_value(*func, instance, args, line, col)
             }
-            Value::NativeFunction { func, .. } => func(&args, line, col),
+            Value::NativeFunction { func, .. } => func(self, &args, line, col),
             other => Err(RioError::typ(
                 format!("القيمة {} ليست دالة", other.type_name()),
                 line,
@@ -2599,6 +2621,14 @@ impl Vm {
                             Ok(m) if m.is_dir() => {
                                 *self.cwd.borrow_mut() =
                                     crate::interpreter::Interpreter::normalize_lexical(&resolved);
+                                // مهمة 10: تغيّر مجلد الجلسة —
+                                // أعد مزامنة سياسة العمليات حالا
+                                // (مرآة ذراع المفسر نفسه).
+                                crate::processes::set_process_policy(
+                                    self.file_policy.borrow().base.clone(),
+                                    self.file_policy.borrow().trusted,
+                                    self.cwd.borrow().clone(),
+                                );
                                 Ok(Value::Nil)
                             }
                             Ok(_) => Err(RioError::new(
@@ -3592,7 +3622,7 @@ impl Vm {
                             // (من رياضيات استورد جذر) — تُستدعى
                             // بالمؤشر مباشرة، كما في المفسر.
                             Value::NativeFunction { func, .. } => {
-                                let result = func(&args, line, col)?;
+                                let result = func(self, &args, line, col)?;
                                 self.stack.push(result);
                                 return Ok(StepFlow::Next);
                             }
@@ -4497,6 +4527,7 @@ pub struct VmSession {
     vm: Vm,
     program_dir: std::path::PathBuf,
     network_allowed: bool,
+    server_allowed: bool,
 }
 
 impl VmSession {
@@ -4510,6 +4541,7 @@ impl VmSession {
             vm: Vm::new(empty, program_dir.clone()),
             program_dir,
             network_allowed: false,
+            server_allowed: false,
         }
     }
 
@@ -4521,6 +4553,15 @@ impl VmSession {
         // Interpreter::run — the gate always reflects the
         // session that is currently evaluating.
         crate::network::set_network_allowed(self.network_allowed);
+        // Meeting 27: the server flag, same per-instance
+        // pattern — synced onto the VM before evaluation.
+        self.vm.set_server_allowed(self.server_allowed);
+        // مهمة 10: سياسة العمليات نفس النمط.
+        crate::processes::set_process_policy(
+            self.program_dir.clone(),
+            self.vm.file_policy.borrow().trusted,
+            self.vm.cwd.borrow().clone(),
+        );
         let compiled = Compiler::compile_program(program)?;
         self.vm.load(compiled);
         self.vm.run()
@@ -4529,6 +4570,12 @@ impl VmSession {
     /// قيّم تعبيرا واحدا وأعد قيمته (للتعبير الأخير في REPL).
     pub fn eval_one(&mut self, expr: &Expr) -> RioResult<Value> {
         crate::network::set_network_allowed(self.network_allowed);
+        self.vm.set_server_allowed(self.server_allowed);
+        crate::processes::set_process_policy(
+            self.program_dir.clone(),
+            self.vm.file_policy.borrow().trusted,
+            self.vm.cwd.borrow().clone(),
+        );
         let compiled = Compiler::compile_expr_program(expr)?;
         self.vm.load(compiled);
         self.vm.run()?;
@@ -4544,6 +4591,12 @@ impl VmSession {
         col: usize,
     ) -> RioResult<Value> {
         crate::network::set_network_allowed(self.network_allowed);
+        self.vm.set_server_allowed(self.server_allowed);
+        crate::processes::set_process_policy(
+            self.program_dir.clone(),
+            self.vm.file_policy.borrow().trusted,
+            self.vm.cwd.borrow().clone(),
+        );
         self.vm.call_builtin(name, args, line, col)
     }
 
@@ -4579,6 +4632,18 @@ impl VmSession {
         self.network_allowed
     }
 
+    /// Meeting 27: server capability (--اسمح-بالخادم).
+    /// Same per-instance pattern as the network flag.
+    pub fn set_server_allowed(&mut self, allowed: bool) {
+        self.server_allowed = allowed;
+        self.vm.set_server_allowed(allowed);
+    }
+
+    /// This session's own server permission.
+    pub fn server_allowed(&self) -> bool {
+        self.server_allowed
+    }
+
     pub fn allow_local_network_host(&mut self, host: &str) {
         crate::network::allow_local_host(host);
     }
@@ -4588,6 +4653,7 @@ impl VmSession {
     pub fn reset(&mut self) {
         let trusted = self.vm.file_policy.borrow().trusted;
         let network_allowed = self.network_allowed;
+        let server_allowed = self.server_allowed;
         let empty = CompiledProgram {
             code: Vec::new(),
             functions: HashMap::new(),
@@ -4596,6 +4662,45 @@ impl VmSession {
         self.vm = Vm::new(empty, self.program_dir.clone());
         self.vm.set_trusted(trusted);
         self.network_allowed = network_allowed;
+        self.server_allowed = server_allowed;
+        self.vm.set_server_allowed(server_allowed);
+    }
+}
+
+// --- سياق الدوال الأصلية (خادم HTTPS، اجتماع 27) ---
+//
+// المترجم يستدعي المعالج عبر call_value نفسه: دالة
+// مستخدم → نسخة VM فرعية (تنفيذ معزول: مكدس وعمق
+// ومخرجات محلية، تُدمَج مخرجاتها في مخرجات المتصل
+// بعد العودة)، وطريقة مربوطة → call_method_value،
+// ودالة أصلية → استدعاء مباشر. البيئة المعجمية
+// الملتقَطة مشتركة بالتصميم (الإغلاقات)، أما حالة
+// التنفيذ فمعزولة لكل طلب — القراءة الصادقة لعبارة
+// «لا حالة نيفا مشتركة بين الاتصالات» في §42.
+impl crate::stdlib::HandlerCaller for Vm {
+    fn call_handler(
+        &mut self,
+        func: &Value,
+        arg: Value,
+        line: usize,
+        col: usize,
+    ) -> (RioResult<Value>, String) {
+        let before = self.output.len();
+        let res = self.call_value(func.clone(), vec![arg], line, col);
+        let produced = self.output[before..].to_string();
+        (res, produced)
+    }
+
+    fn server_allowed(&self) -> bool {
+        self.server_allowed
+    }
+
+    fn server_file_policy(&self) -> crate::permissions::FilePolicy {
+        self.file_policy.borrow().clone()
+    }
+
+    fn server_cwd(&self) -> std::path::PathBuf {
+        self.cwd.borrow().clone()
     }
 }
 

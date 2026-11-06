@@ -94,6 +94,10 @@ pub enum ReplControl {
     /// This output asks for network permission (first use of
     /// اجلب with the gate closed).
     NetworkNeeded,
+    /// This output asks for server permission (first use of
+    /// اخدم with the gate closed). The network flag alone is
+    /// never enough for the server (Meeting 27 §42.4).
+    ServerNeeded,
     /// The session was cleared (:مسح) — the host clears its
     /// arrow-key history.
     SessionCleared,
@@ -191,6 +195,20 @@ impl Engine {
         }
     }
 
+    fn set_server_allowed(&mut self, allowed: bool) {
+        match self {
+            Engine::Vm(s) => s.set_server_allowed(allowed),
+            Engine::Interp(i) => i.set_server_allowed(allowed),
+        }
+    }
+
+    fn server_allowed(&self) -> bool {
+        match self {
+            Engine::Vm(s) => s.server_allowed(),
+            Engine::Interp(i) => i.server_allowed(),
+        }
+    }
+
     fn allow_local_network_host(&mut self, host: &str) {
         match self {
             Engine::Vm(s) => s.allow_local_network_host(host),
@@ -198,13 +216,14 @@ impl Engine {
         }
     }
 
-    fn reset(&mut self, trusted: bool, network_allowed: bool) {
+    fn reset(&mut self, trusted: bool, network_allowed: bool, server_allowed: bool) {
         match self {
             Engine::Vm(s) => s.reset(),
             Engine::Interp(i) => {
                 *i = Interpreter::new();
                 i.set_trusted(trusted);
                 i.set_network_allowed(network_allowed);
+                i.set_server_allowed(server_allowed);
             }
         }
     }
@@ -223,6 +242,10 @@ pub struct Repl {
     // interpreter holds the process-wide gate, and reset()
     // must restore the same value.
     network_allowed: bool,
+    // Meeting 27: same pattern for the server flag — the
+    // engine holds it per instance, and reset() must restore
+    // the same value (the network flag alone never opens it).
+    server_allowed: bool,
     // Audit م-6: the control signal of the last fed line
     // (None / NetworkNeeded / SessionCleared), read by
     // `last_control()` — a side channel so run_repl can emit
@@ -242,6 +265,7 @@ impl Repl {
             pending: String::new(),
             trusted: false,
             network_allowed: false,
+            server_allowed: false,
             last_control: ReplControl::None,
         }
     }
@@ -256,6 +280,7 @@ impl Repl {
             pending: String::new(),
             trusted: false,
             network_allowed: false,
+            server_allowed: false,
             last_control: ReplControl::None,
         }
     }
@@ -289,6 +314,18 @@ impl Repl {
     /// one console's approval never leaks into another).
     pub fn network_allowed(&self) -> bool {
         self.engine.network_allowed()
+    }
+
+    /// Meeting 27: server capability (--اسمح-بالخادم).
+    /// Default OFF; the network flag alone is not enough.
+    pub fn set_server_allowed(&mut self, allowed: bool) {
+        self.server_allowed = allowed;
+        self.engine.set_server_allowed(allowed);
+    }
+
+    /// This session's own server permission (per-instance).
+    pub fn server_allowed(&self) -> bool {
+        self.engine.server_allowed()
     }
 
     pub fn allow_local_network_host(&mut self, host: &str) {
@@ -378,6 +415,19 @@ impl Repl {
                 // user allows the network; it never appears in
                 // the terminal text or in :اعرض.
                 self.set_network_allowed(true);
+                ReplOutput {
+                    output: String::new(),
+                    prompt: self.prompt(),
+                    ended: false,
+                    needs_network: false,
+                }
+            }
+            Some(ReplCommand::AllowServer) => {
+                // Meeting 27: the same in-process flip for the
+                // server flag — the network flag alone is never
+                // enough. The app sends this line itself when
+                // the user allows the server.
+                self.set_server_allowed(true);
                 ReplOutput {
                     output: String::new(),
                     prompt: self.prompt(),
@@ -606,6 +656,15 @@ impl Repl {
             // Audit م-6: the host offers the permission prompt
             // on this structured signal, not on the text.
             self.last_control = ReplControl::NetworkNeeded;
+        }
+        // Meeting 27: the same structured signal for the
+        // server-permission error — the host offers the
+        // first-use server prompt on it, not on the text.
+        if out
+            .output
+            .contains(crate::network::SERVER_PERMISSION_MARKER)
+        {
+            self.last_control = ReplControl::ServerNeeded;
         }
         out
     }
@@ -849,7 +908,8 @@ impl Repl {
     pub fn reset(&mut self) {
         let trusted = self.trusted;
         let network_allowed = self.network_allowed;
-        self.engine.reset(trusted, network_allowed);
+        let server_allowed = self.server_allowed;
+        self.engine.reset(trusted, network_allowed, server_allowed);
         self.analyzer = SemanticAnalyzer::new();
         self.history.clear();
         self.pending.clear();
@@ -867,7 +927,7 @@ pub fn banner() -> &'static str {
 /// `:مساعدة` output: a BARE command list — terminal convention,
 /// not teaching. No explanations, no examples, no notes.
 pub fn help_text() -> &'static str {
-    ":مساعدة\n:اعرض\n:امسح-المحفوظات\n:مسح\n:اسمح-بالشبكة\n:خروج\n"
+    ":مساعدة\n:اعرض\n:امسح-المحفوظات\n:مسح\n:اسمح-بالشبكة\n:اسمح-بالخادم\n:خروج\n"
 }
 
 pub enum ReplCommand {
@@ -883,6 +943,9 @@ pub enum ReplCommand {
     /// Audit م-2: allow the network inside the running
     /// process (no restart). Sent by the host app on approval.
     AllowNetwork,
+    /// Meeting 27: allow the server inside the running
+    /// process (no restart). Sent by the host app on approval.
+    AllowServer,
     Quit,
 }
 
@@ -1021,6 +1084,7 @@ pub fn parse_command(line: &str) -> Option<ReplCommand> {
         ":امسح-المحفوظات" => Some(ReplCommand::ClearHistory),
         ":مسح" => Some(ReplCommand::Clear),
         ":اسمح-بالشبكة" => Some(ReplCommand::AllowNetwork),
+        ":اسمح-بالخادم" => Some(ReplCommand::AllowServer),
         ":خروج" | "خروج" => Some(ReplCommand::Quit),
         _ => None,
     }
@@ -1034,6 +1098,7 @@ pub fn parse_command(line: &str) -> Option<ReplCommand> {
 pub fn run_repl(
     trusted: bool,
     network_allowed: bool,
+    server_allowed: bool,
     local_hosts: &[String],
     use_interpreter: bool,
 ) -> ExitCode {
@@ -1044,6 +1109,7 @@ pub fn run_repl(
     };
     repl.set_trusted(trusted);
     repl.set_network_allowed(network_allowed);
+    repl.set_server_allowed(server_allowed);
     for host in local_hosts {
         repl.allow_local_network_host(host);
     }
@@ -1080,6 +1146,7 @@ pub fn run_repl(
         {
             match repl.last_control() {
                 ReplControl::NetworkNeeded => eprintln!("\u{0001}نيفا-تحكم:شبكة"),
+                ReplControl::ServerNeeded => eprintln!("\u{0001}نيفا-تحكم:خادم"),
                 ReplControl::SessionCleared => eprintln!("\u{0001}نيفا-تحكم:مسح"),
                 ReplControl::None => {}
             }
@@ -1401,7 +1468,7 @@ mod tests {
         let o = r.feed(":مساعدة");
         assert_eq!(
             o.output,
-            "ألغيت الكتلة غير المكتملة.\n:مساعدة\n:اعرض\n:امسح-المحفوظات\n:مسح\n:اسمح-بالشبكة\n:خروج\n"
+            "ألغيت الكتلة غير المكتملة.\n:مساعدة\n:اعرض\n:امسح-المحفوظات\n:مسح\n:اسمح-بالشبكة\n:اسمح-بالخادم\n:خروج\n"
         );
         assert_eq!(o.prompt, "~ $ ");
         assert!(!o.ended);
@@ -1469,7 +1536,12 @@ mod tests {
         assert_eq!(done_out(r.eval("س")), "١\n");
     }
 
+    // Meeting 26: without the `https` feature, HTTPS is refused
+    // before any traffic, even allowed. With the feature, the
+    // same fetch attempts a real connection (see the variant
+    // below) — so this test is the no-feature one.
     #[test]
+    #[cfg(not(feature = "https"))]
     fn repl_network_allowed_flag_sticks_after_reset() {
         let _guard = crate::network::NET_TEST_LOCK.lock().unwrap();
         crate::network::set_network_allowed(false);
@@ -1487,6 +1559,32 @@ mod tests {
         assert_eq!(o.output, "");
         let o = r.feed("شبكة.اجلب(\"https://example.com/\")");
         assert!(o.output.contains("HTTPS غير مدعوم"), "got: {}", o.output);
+        crate::network::set_network_allowed(false);
+    }
+
+    // Meeting 26: with the `https` feature, the flag-sticks
+    // check uses a plain HTTP fetch to a closed local port:
+    // the connection is refused at once, so the error is a
+    // connection error, not a permission ask.
+    #[test]
+    #[cfg(feature = "https")]
+    fn repl_network_allowed_flag_sticks_after_reset() {
+        let _guard = crate::network::NET_TEST_LOCK.lock().unwrap();
+        crate::network::set_network_allowed(false);
+        crate::network::allow_local_host("127.0.0.1");
+        let mut r = Repl::new();
+        r.set_network_allowed(true);
+        let o = r.feed("استورد شبكة");
+        assert_eq!(o.output, "");
+        let o = r.feed("شبكة.اجلب(\"http://127.0.0.1:9/\")");
+        assert!(o.output.contains("تعذر الاتصال"), "got: {}", o.output);
+        assert!(!o.needs_network, "a connection error is not a permission ask");
+        r.reset();
+        // reset() restores the flag: still allowed afterwards.
+        let o = r.feed("استورد شبكة");
+        assert_eq!(o.output, "");
+        let o = r.feed("شبكة.اجلب(\"http://127.0.0.1:9/\")");
+        assert!(o.output.contains("تعذر الاتصال"), "got: {}", o.output);
         crate::network::set_network_allowed(false);
     }
 
@@ -1944,6 +2042,90 @@ mod tests {
     // ك-2 (مهمة 7): وضع التشخيص الخفي — الجلسة نفسها على
     // مفسر الشجرة (Repl::new_interpreter): المتغيرات تبقى،
     // والتعبير الأخير يُطبع، والشبكة تُفتح من داخل الجلسة.
+    #[test]
+    fn repl_allow_server_command_flips_flag_in_process() {
+        // (اجتماع 27، س4): :اسمح-بالخادم يقلب علم الخادم
+        // للجلسة نفسها، بلا إعادة تشغيل؛ و:اسمح-بالخادم
+        // لا يفتح الشبكة العامة (العلمان مستقلان).
+        let _guard = crate::network::NET_TEST_LOCK.lock().unwrap();
+        let mut r = Repl::new();
+        let o = r.feed("استورد شبكة");
+        assert_eq!(o.output, "");
+        // المعالج دالة مجهولة كمعامل — القيمة نفسها
+        // لا تهم: فحص الإذن يأتي قبل أي شيء آخر.
+        let line = "شبكة.اخدم(١٨٤٤٣، \"server-cert.pem\"، \"server-key.pem\"، دالة_مجهولة(طلب): \"x\")";
+        let o = r.feed(line);
+        assert!(
+            o.output.contains("الخادم مغلق افتراضيا"),
+            "got: {}",
+            o.output
+        );
+        assert_eq!(r.last_control(), ReplControl::ServerNeeded);
+        assert!(!o.needs_network, "the server gate must not set the network signal");
+        let o = r.feed(":اسمح-بالخادم");
+        assert_eq!(o.output, "");
+        assert!(!o.ended);
+        // الاستدعاء نفسه يتجاوز البوابة الآن — يفشل على
+        // ملف الشهادة الغائب (مع الميزة) أو على غياب
+        // دعم TLS (بلا الميزة) بدلا من رفض الإذن —
+        // وبقيت الجلسة حية بعد الأمر.
+        let o = r.feed(line);
+        assert!(
+            !o.output.contains("الخادم مغلق افتراضيا"),
+            "got: {}",
+            o.output
+        );
+        #[cfg(feature = "https")]
+        let expected = "تعذر قراءة ملف الشهادة";
+        #[cfg(not(feature = "https"))]
+        let expected = "الخادم يحتاج HTTPS";
+        assert!(
+            o.output.contains(expected),
+            "got: {}",
+            o.output
+        );
+        assert_eq!(r.last_control(), ReplControl::None);
+        let o = r.feed("اطبع ٥");
+        assert_eq!(o.output, "٥\n");
+    }
+
+    #[test]
+    fn repl_server_and_network_flags_are_independent() {
+        // (اجتماع 27، س4): علم الخادم وحده لا يفتح
+        // الشبكة العامة (العلمان مستقلان).
+        let _guard = crate::network::NET_TEST_LOCK.lock().unwrap();
+        let mut r = Repl::new();
+        let o = r.feed(":اسمح-بالخادم");
+        assert_eq!(o.output, "");
+        // الشبكة العامة ما زالت مغلقة: اجلب مرفوض.
+        let o = r.feed("استورد شبكة\nاطبع شبكة.اجلب(\"http://127.0.0.1:9/\")");
+        assert!(
+            o.output.contains("الشبكة مغلقة افتراضيا"),
+            "got: {}",
+            o.output
+        );
+        assert_eq!(r.last_control(), ReplControl::NetworkNeeded);
+        // والخادم في الوقت نفسه مفتوح: الاستدعاء يتجاوز
+        // البوابة ويفشل على ملف الشهادة الغائب (مع
+        // الميزة) أو على غياب دعم TLS (بلا الميزة) فقط.
+        let o = r.feed("شبكة.اخدم(١٨٤٤٣، \"server-cert.pem\"، \"server-key.pem\"، دالة_مجهولة(طلب): \"x\")");
+        assert!(
+            !o.output.contains("الخادم مغلق افتراضيا"),
+            "got: {}",
+            o.output
+        );
+        #[cfg(feature = "https")]
+        let expected = "تعذر قراءة ملف الشهادة";
+        #[cfg(not(feature = "https"))]
+        let expected = "الخادم يحتاج HTTPS";
+        assert!(
+            o.output.contains(expected),
+            "got: {}",
+            o.output
+        );
+        assert_eq!(r.last_control(), ReplControl::None);
+    }
+
     #[test]
     fn repl_interpreter_mode_session_works() {
         let mut r = Repl::new_interpreter();

@@ -1,13 +1,14 @@
-//! مصنوعات AOT — مهمة 8 (ك-2.2): `نيفا ابنِ` و`نيفا شغّل`
+//! مصنوعات AOT — مهمة 8 (ك-2.2): `نيفا ابن` و`نيفا شغل`
 //! والملف التنفيذي المستقل.
 //!
-//! كل اختبار يشغّل الثنائي الحقيقي (CARGO_BIN_EXE_niva)
+//! كل اختبار يشغل الثنائي الحقيقي (CARGO_BIN_EXE_niva)
 //! في مجلدات مؤقتة فريدة، ويقارن المخرج والخطأ ورمز
 //! الخروج حرفيا بين التشغيل العادي والمصنوع — كما تفعل
 //! بوابة التكافؤ. لا تطبيع إلا لمسار المجلد المؤقت
 //! نفسه في رسائل الخطأ.
 
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -48,7 +49,33 @@ fn copy_examples_to(dir: &PathBuf) {
     }
 }
 
-/// شغّل أمر نيفا بمعاملاته في مجلد، وأعد
+/// PATH منزوع منه نيفا المثبتة — لإثبات أن المستقل
+/// يعمل وحده. على Unix مجلدا النظام فقط؛ وعلى Windows
+/// مجلدا النظام من SystemRoot (مسارات Unix غير موجودة
+/// هناك، ووضعها كان يكسر تحميل مكتبات النظام).
+fn scrubbed_path() -> String {
+    #[cfg(unix)]
+    {
+        "/usr/bin:/bin".to_string()
+    }
+    #[cfg(windows)]
+    {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+        format!("{}\\System32;{}", root, root)
+    }
+}
+
+/// اسم الملف التنفيذي المستقل — بلا لاحقة على Unix،
+/// و.exe على Windows (كما يبنيه build_standalone).
+fn standalone_name() -> &'static str {
+    if cfg!(windows) {
+        "fib.exe"
+    } else {
+        "fib"
+    }
+}
+
+/// شغل أمر نيفا بمعاملاته في مجلد، وأعد
 /// (المخرج، الخطأ بعد تطبيع المجلد، رمز الخروج).
 fn run_cmd(args: &[&str], dir: &PathBuf, scrub_path: bool) -> (String, String, i32) {
     let mut cmd = Command::new(bin());
@@ -56,7 +83,7 @@ fn run_cmd(args: &[&str], dir: &PathBuf, scrub_path: bool) -> (String, String, i
     if scrub_path {
         // بلا ~/.local/bin في PATH — إثبات أن المستقل
         // يعمل وحده، لا بنيفا المثبتة.
-        cmd.env("PATH", "/usr/bin:/bin");
+        cmd.env("PATH", scrubbed_path());
     }
     let out = cmd.output().expect("run نيفا");
     let dir_str = dir.to_string_lossy().to_string();
@@ -99,20 +126,20 @@ fn artifact_roundtrip_all_examples() {
         // بناء المصنوع وتشغيله في مجلد خاص آخر.
         let dir_b = fresh_dir();
         copy_examples_to(&dir_b);
-        let (build_out, build_err, build_code) = run_cmd(&["ابنِ", name], &dir_b, false);
+        let (build_out, build_err, build_code) = run_cmd(&["ابن", name], &dir_b, false);
         assert_eq!(
             build_code, 0,
-            "ابنِ فشل في المثال «{}»: مخرج:\n{}\nخطأ:\n{}",
+            "ابن فشل في المثال «{}»: مخرج:\n{}\nخطأ:\n{}",
             name, build_out, build_err
         );
         let artifact_name = name.replace(".نيفا", ".نيفاب");
         assert!(
             dir_b.join(&artifact_name).exists(),
-            "المصنوع {} غير موجود بعد ابنِ في المثال «{}»",
+            "المصنوع {} غير موجود بعد ابن في المثال «{}»",
             artifact_name,
             name
         );
-        let via_artifact = run_cmd(&["شغّل", &artifact_name], &dir_b, false);
+        let via_artifact = run_cmd(&["شغل", &artifact_name], &dir_b, false);
         assert_eq!(
             direct, via_artifact,
             "اختلاف مصنوع في المثال «{}»:\n--- عادي: {:?}\n--- مصنوع: {:?}",
@@ -157,9 +184,9 @@ fn artifact_roundtrip_hesab_module() {
         fs::write(dir.join("prog.نيفا"), &driver).unwrap();
         fs::write(dir.join("حساب.نيفا"), &hesab).unwrap();
         let got = if mode {
-            let (_, build_err, build_code) = run_cmd(&["ابنِ", "prog.نيفا"], &dir, false);
-            assert_eq!(build_code, 0, "ابنِ فشل: {}", build_err);
-            run_cmd(&["شغّل", "prog.نيفاب"], &dir, false)
+            let (_, build_err, build_code) = run_cmd(&["ابن", "prog.نيفا"], &dir, false);
+            assert_eq!(build_code, 0, "ابن فشل: {}", build_err);
+            run_cmd(&["شغل", "prog.نيفاب"], &dir, false)
         } else {
             run_cmd(&["prog.نيفا"], &dir, false)
         };
@@ -194,9 +221,9 @@ fn artifact_fib_value() {
         "اطبع ليف(٢٥)",
     ]);
     fs::write(dir.join("fib.نيفا"), &fib).unwrap();
-    let (_, build_err, build_code) = run_cmd(&["ابنِ", "fib.نيفا"], &dir, false);
-    assert_eq!(build_code, 0, "ابنِ فشل: {}", build_err);
-    let (out, err, code) = run_cmd(&["شغّل", "fib.نيفاب"], &dir, false);
+    let (_, build_err, build_code) = run_cmd(&["ابن", "fib.نيفا"], &dir, false);
+    assert_eq!(build_code, 0, "ابن فشل: {}", build_err);
+    let (out, err, code) = run_cmd(&["شغل", "fib.نيفاب"], &dir, false);
     assert_eq!((out.trim(), err.as_str(), code), ("٧٥٠٢٥", "", 0));
     let _ = fs::remove_dir_all(&dir);
 }
@@ -217,16 +244,28 @@ fn artifact_standalone_runs_alone() {
     ]);
     fs::write(dir.join("fib.نيفا"), &fib).unwrap();
     let (_, build_err, build_code) =
-        run_cmd(&["ابنِ", "--مستقل", "fib.نيفا"], &dir, false);
-    assert_eq!(build_code, 0, "ابنِ --مستقل فشل: {}", build_err);
-    let standalone = dir.join("fib");
+        run_cmd(&["ابن", "--مستقل", "fib.نيفا"], &dir, false);
+    assert_eq!(build_code, 0, "ابن --مستقل فشل: {}", build_err);
+    let standalone = dir.join(standalone_name());
     assert!(standalone.exists(), "الملف المستقل غير موجود");
-    let mode = fs::metadata(&standalone).unwrap().permissions().mode();
-    assert_eq!(mode & 0o111, 0o111, "الملف المستقل ليس تنفيذيا");
+    // بتات التنفيذ Unix فقط — على Windows لا بتات
+    // تنفيذية، والوجود باسم .exe هو الإثبات.
+    #[cfg(unix)]
+    {
+        let mode = fs::metadata(&standalone).unwrap().permissions().mode();
+        assert_eq!(mode & 0o111, 0o111, "الملف المستقل ليس تنفيذيا");
+    }
     // تشغيل بمسار نسبي وPATH منزوع منه نيفا — الملف
     // نفسه هو البرنامج، لا نيفا المثبتة.
-    let mut cmd = Command::new("./fib");
-    cmd.current_dir(&dir).env("PATH", "/usr/bin:/bin");
+    // على Unix يلزم ./ لأن مجلد العمل ليس في PATH؛
+    // وعلى Windows .\fib.exe مسار نسبي صريح يحله
+    // النظام ضد مجلد العمل مباشرة.
+    #[cfg(unix)]
+    let rel = "./fib";
+    #[cfg(windows)]
+    let rel = ".\\fib.exe";
+    let mut cmd = Command::new(rel);
+    cmd.current_dir(&dir).env("PATH", scrubbed_path());
     let res = cmd.output().expect("run standalone");
     assert_eq!(res.status.code(), Some(0));
     assert_eq!(
@@ -240,7 +279,7 @@ fn artifact_standalone_runs_alone() {
     // تشغيل بمسار مطلق من مجلد آخر.
     let other = fresh_dir();
     let mut cmd = Command::new(&standalone);
-    cmd.current_dir(&other).env("PATH", "/usr/bin:/bin");
+    cmd.current_dir(&other).env("PATH", scrubbed_path());
     let res = cmd.output().expect("run standalone");
     assert_eq!(res.status.code(), Some(0));
     assert_eq!(
@@ -259,36 +298,36 @@ fn artifact_standalone_runs_alone() {
 fn artifact_rejects_bad_inputs() {
     let dir = fresh_dir();
     fs::write(dir.join("prog.نيفا"), "اطبع ٥\n").unwrap();
-    // شغّل على ملف مصدر.
-    let (_, err, code) = run_cmd(&["شغّل", "prog.نيفا"], &dir, false);
-    assert_eq!(code, 1, "شغّل قبل مصدرا");
-    assert!(err.contains("ليس مصنوع"), "رسالة شغّل على مصدر: {}", err);
+    // شغل على ملف مصدر.
+    let (_, err, code) = run_cmd(&["شغل", "prog.نيفا"], &dir, false);
+    assert_eq!(code, 1, "شغل قبل مصدرا");
+    assert!(err.contains("ليس مصنوع"), "رسالة شغل على مصدر: {}", err);
     // مصنوع مقطوع.
-    let (_, _, build_code) = run_cmd(&["ابنِ", "prog.نيفا"], &dir, false);
+    let (_, _, build_code) = run_cmd(&["ابن", "prog.نيفا"], &dir, false);
     assert_eq!(build_code, 0);
     let mut bytes = fs::read(dir.join("prog.نيفاب")).unwrap();
     bytes.truncate(bytes.len() / 2);
     fs::write(dir.join("مقطوع.نيفاب"), &bytes).unwrap();
-    let (_, err, code) = run_cmd(&["شغّل", "مقطوع.نيفاب"], &dir, false);
-    assert_eq!(code, 1, "شغّل قبل مصنوعا مقطوعا");
+    let (_, err, code) = run_cmd(&["شغل", "مقطوع.نيفاب"], &dir, false);
+    assert_eq!(code, 1, "شغل قبل مصنوعا مقطوعا");
     assert!(err.contains("تالف"), "رسالة مصنوع مقطوع: {}", err);
     // ملف غائب.
-    let (_, err, code) = run_cmd(&["شغّل", "غائب.نيفاب"], &dir, false);
-    assert_eq!(code, 1, "شغّل قبل ملفا غائبا");
+    let (_, err, code) = run_cmd(&["شغل", "غائب.نيفاب"], &dir, false);
+    assert_eq!(code, 1, "شغل قبل ملفا غائبا");
     assert!(!err.is_empty(), "رسالة ملف غائب فارغة");
     // النموذج المعكوس مرفوض في البناء كما في التشغيل.
     fs::write(dir.join("معكوس.نيفا"), "٥ = س\n").unwrap();
-    let (_, err, code) = run_cmd(&["ابنِ", "معكوس.نيفا"], &dir, false);
-    assert_eq!(code, 1, "ابنِ قبل النموذج المعكوس");
+    let (_, err, code) = run_cmd(&["ابن", "معكوس.نيفا"], &dir, false);
+    assert_eq!(code, 1, "ابن قبل النموذج المعكوس");
     assert!(
         err.contains("هدف التعيين غير صالح"),
         "رسالة النموذج المعكوس: {}",
         err
     );
-    // ابنِ بلا ملف، وشغّل بلا ملف.
-    let (_, _, code) = run_cmd(&["ابنِ"], &dir, false);
-    assert_eq!(code, 1, "ابنِ بلا ملف نجح");
-    let (_, _, code) = run_cmd(&["شغّل"], &dir, false);
-    assert_eq!(code, 1, "شغّل بلا ملف نجح");
+    // ابن بلا ملف، وشغل بلا ملف.
+    let (_, _, code) = run_cmd(&["ابن"], &dir, false);
+    assert_eq!(code, 1, "ابن بلا ملف نجح");
+    let (_, _, code) = run_cmd(&["شغل"], &dir, false);
+    assert_eq!(code, 1, "شغل بلا ملف نجح");
     let _ = fs::remove_dir_all(&dir);
 }

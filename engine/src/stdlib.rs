@@ -20,8 +20,42 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-/// A native stdlib function: args, source line, source column.
-pub type NativeFn = fn(&[Value], usize, usize) -> RioResult<Value>;
+/// A native stdlib function: engine context, args, source
+/// line, source column.
+///
+/// --- سياق استدعاء الدوال الأصلية (خادم HTTPS، اجتماع 27) ---
+///
+/// الدوال الأصلية (NativeFunction) كانت تستدعى بلا سياق
+/// محرك؛ فلا تستطيع دالة أصلية استدعاء دالة نيفا (معالج
+/// الخادم مثلا). كل دالة أصلية تستلم الآن `&mut dyn
+/// HandlerCaller`: واجهة المحرك المنفذ (المفسر أو المترجم)
+/// الذي يوفر استدعاء المعالج + إذن الخادم + سياسة
+/// ملفات الشهادة/المفتاح. القيم Rc لا تعبر الخيوط،
+/// فالسياق لا يُنقَل إلى خيط اتصال أبدا — خيوط
+/// الاتصالات ترسل الطلب إلى خيط المحرك عبر قناة،
+/// والمحرك وحده يستدعي المعالج عبر هذا السياق.
+pub trait HandlerCaller {
+    /// استدعاء دالة نيفا (معالج) بقيمة واحدة، وإرجاع
+    /// (النتيجة، المخرجات المطبوعة أثناء الاستدعاء).
+    fn call_handler(
+        &mut self,
+        func: &Value,
+        arg: Value,
+        line: usize,
+        col: usize,
+    ) -> (RioResult<Value>, String);
+    /// هل فُتح الخادم لهذا المحرك (علم --اسمح-بالخادم
+    /// أو :اسمح-بالخادم)؟
+    fn server_allowed(&self) -> bool;
+    /// سياسة الملفات لتحميل الشهادة والمفتاح (مجلد
+    /// البرنامج + موثوق) — تُقرأ من المحرك نفسه،
+    /// لا من متغير عام.
+    fn server_file_policy(&self) -> crate::permissions::FilePolicy;
+    /// المجلد الحالي للجلسة (أساس المسارات النسبية).
+    fn server_cwd(&self) -> std::path::PathBuf;
+}
+
+pub type NativeFn = fn(&mut dyn HandlerCaller, &[Value], usize, usize) -> RioResult<Value>;
 
 /// Build the native module with this name, or None if it is not
 /// a native module (then the caller falls back to a `.نيفا` file).
@@ -35,6 +69,11 @@ pub fn native_module(name: &str) -> Option<Value> {
         // Network is OFF by default (see network.rs); without
         // permission اجلب fails with a clear Arabic error.
         "شبكة" => network_entries(),
+        // Catalog task 10 (عمليات, from kernel/): spawn, wait,
+        // kill, current pid. Permission design first — see
+        // CATALOG-01-OPERATIONS.md §1 (program-dir only by
+        // default, --اسمح-بالكل lifts it; no shell ever).
+        "عمليات" => processes_entries(),
         _ => return None,
     };
     let mut exports: HashMap<String, Value> = HashMap::new();
@@ -138,7 +177,7 @@ fn math_entries() -> Vec<(&'static str, Value)> {
     ]
 }
 
-fn math_sqrt(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+fn math_sqrt(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("رياضيات.جذر", args, 1, line, col)?;
     let x = need_number("رياضيات.جذر", &args[0], line, col)?;
     if x < 0.0 {
@@ -147,29 +186,29 @@ fn math_sqrt(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     Ok(Value::Number(x.sqrt()))
 }
 
-fn math_pow(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+fn math_pow(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("رياضيات.قوة", args, 2, line, col)?;
     let base = need_number("رياضيات.قوة", &args[0], line, col)?;
     let exp = need_number("رياضيات.قوة", &args[1], line, col)?;
     Ok(Value::Number(base.powf(exp)))
 }
 
-fn math_sin(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+fn math_sin(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("رياضيات.جيب", args, 1, line, col)?;
     Ok(Value::Number(need_number("رياضيات.جيب", &args[0], line, col)?.sin()))
 }
 
-fn math_cos(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+fn math_cos(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("رياضيات.جيب_تمام", args, 1, line, col)?;
     Ok(Value::Number(need_number("رياضيات.جيب_تمام", &args[0], line, col)?.cos()))
 }
 
-fn math_tan(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+fn math_tan(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("رياضيات.ظل", args, 1, line, col)?;
     Ok(Value::Number(need_number("رياضيات.ظل", &args[0], line, col)?.tan()))
 }
 
-fn math_ln(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+fn math_ln(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("رياضيات.لوغاريتم", args, 1, line, col)?;
     let x = need_number("رياضيات.لوغاريتم", &args[0], line, col)?;
     if x <= 0.0 {
@@ -178,17 +217,17 @@ fn math_ln(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     Ok(Value::Number(x.ln()))
 }
 
-fn math_exp(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+fn math_exp(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("رياضيات.أس_طبيعي", args, 1, line, col)?;
     Ok(Value::Number(need_number("رياضيات.أس_طبيعي", &args[0], line, col)?.exp()))
 }
 
-fn math_floor(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+fn math_floor(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("رياضيات.أرضية", args, 1, line, col)?;
     Ok(Value::Number(need_number("رياضيات.أرضية", &args[0], line, col)?.floor()))
 }
 
-fn math_ceil(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+fn math_ceil(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("رياضيات.سقف", args, 1, line, col)?;
     Ok(Value::Number(need_number("رياضيات.سقف", &args[0], line, col)?.ceil()))
 }
@@ -238,12 +277,12 @@ fn random_entries() -> Vec<(&'static str, Value)> {
     ]
 }
 
-fn random_float(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+fn random_float(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("عشوائي.عدد_عشوائي", args, 0, line, col)?;
     Ok(Value::Number((next_u64() >> 11) as f64 / (1u64 << 53) as f64))
 }
 
-fn random_int(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+fn random_int(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("عشوائي.صحيح_عشوائي", args, 2, line, col)?;
     let min = need_integer("عشوائي.صحيح_عشوائي", &args[0], line, col)?;
     let max = need_integer("عشوائي.صحيح_عشوائي", &args[1], line, col)?;
@@ -258,7 +297,7 @@ fn random_int(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     Ok(Value::Number((min as i128 + (next_u64() % range) as i128) as f64))
 }
 
-fn random_choice(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+fn random_choice(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("عشوائي.اختيار", args, 1, line, col)?;
     match &args[0] {
         Value::List(items) => {
@@ -285,13 +324,133 @@ fn random_choice(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
 // --- شبكة (Meeting 22, DESIGN §16) ---
 
 fn network_entries() -> Vec<(&'static str, Value)> {
-    vec![("اجلب", native("اجلب", network_fetch))]
+    vec![
+        ("اجلب", native("اجلب", network_fetch)),
+        ("اخدم", native("اخدم", network_serve)),
+    ]
 }
 
-fn network_fetch(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+fn network_fetch(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("شبكة.اجلب", args, 1, line, col)?;
     let url = need_string("شبكة.اجلب", &args[0], line, col)?;
     crate::network::fetch(&url, line, col)
+}
+
+// --- خادم HTTPS (اجتماع 27، س1 ب) ---
+//
+// `شبكة.اخدم منفذ شهادة مفتاح معالج [مضيف]` — خادم HTTPS
+// جاهز بمعالج واحد: المعالج دالة نيفا تأخذ قاموس طلب
+// (طريقة، مسار، استعلام، ترويسات، جسم) وتعيد نصا أو
+// قاموس استجابة (حالة، نص، ترويسات). الاستدعاء يحجب
+// (يخدم حتى المقاطعة). المضيف الخامس اختياري: الافتراضي
+// 127.0.0.1 (محلي فقط)، و0.0.0.0 للكشف فقط بمضيف صريح.
+// المعاملات مفصولة بمسافات، بلا فواصل — ككل استدعاءات
+// نيفا. الخادم مغلق افتراضيا: يحتاج --اسمح-بالخادم
+// (علم الشبكة وحده لا يكفي) أو :اسمح-بالخادم في الكونسول.
+fn network_serve(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    if args.len() != 4 && args.len() != 5 {
+        return Err(RioError::typ(
+            "الدالة شبكة.اخدم تتوقع 4 معاملات (منفذ شهادة مفتاح معالج) أو 5 (مع مضيف)",
+            line,
+            col,
+        ));
+    }
+    let port = need_integer("شبكة.اخدم", &args[0], line, col)?;
+    if !(1..=65535).contains(&port) {
+        return Err(RioError::typ(
+            "الدالة شبكة.اخدم تتوقع منفذا بين 1 و 65535",
+            line,
+            col,
+        ));
+    }
+    let cert = need_string("شبكة.اخدم", &args[1], line, col)?;
+    let key = need_string("شبكة.اخدم", &args[2], line, col)?;
+    let handler = args[3].clone();
+    if !matches!(handler, Value::Function { .. }) {
+        return Err(RioError::typ(
+            "الدالة شبكة.اخدم تتوقع معالجا دالة نيفا",
+            line,
+            col,
+        ));
+    }
+    let host = if args.len() == 5 {
+        need_string("شبكة.اخدم", &args[4], line, col)?
+    } else {
+        "127.0.0.1".to_string()
+    };
+    crate::network::serve(
+        ctx,
+        port as u16,
+        &cert,
+        &key,
+        handler,
+        &host,
+        line,
+        col,
+    )
+}
+
+// --- عمليات (catalog task 10, from kernel/) ---
+
+fn processes_entries() -> Vec<(&'static str, Value)> {
+    // The stored key for أنشئ is its normalized spelling
+    // "انشي": the lexer turns أنشئ into Keyword::Create, and
+    // the parser names the member by keyword_spelling — so
+    // both `عمليات.أنشئ` and `عمليات.انشي` reach this entry.
+    // The other three are plain identifiers: the lexer keeps
+    // their spelling exactly (hamza/ة preserved — only
+    // diacritics are stripped), so the keys are the spellings
+    // the user writes: أوقف، الحالية.
+    vec![
+        ("انشي", native("انشي", proc_spawn)),
+        ("انتظر", native("انتظر", proc_wait)),
+        ("أوقف", native("أوقف", proc_kill)),
+        ("الحالية", native("الحالية", proc_current)),
+    ]
+}
+
+fn proc_spawn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("عمليات.أنشئ", args, 1, line, col)?;
+    let cmd = need_string("عمليات.أنشئ", &args[0], line, col)?;
+    Ok(Value::Number(
+        crate::processes::spawn_process(&cmd, line, col)? as f64,
+    ))
+}
+
+fn proc_wait(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("عمليات.انتظر", args, 1, line, col)?;
+    let id = need_integer("عمليات.انتظر", &args[0], line, col)?;
+    if id < 0 {
+        return Err(RioError::typ(
+            "الدالة عمليات.انتظر تتوقع معرف عملية غير سالب",
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Number(
+        crate::processes::wait_process(id as u64, line, col)? as f64,
+    ))
+}
+
+fn proc_kill(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("عمليات.أوقف", args, 1, line, col)?;
+    let id = need_integer("عمليات.أوقف", &args[0], line, col)?;
+    if id < 0 {
+        return Err(RioError::typ(
+            "الدالة عمليات.أوقف تتوقع معرف عملية غير سالب",
+            line,
+            col,
+        ));
+    }
+    crate::processes::kill_process(id as u64, line, col)?;
+    Ok(Value::Nil)
+}
+
+fn proc_current(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("عمليات.الحالية", args, 0, line, col)?;
+    Ok(Value::Number(
+        crate::processes::current_process_id(line, col)? as f64,
+    ))
 }
 
 // --- وقت ---
@@ -303,7 +462,7 @@ fn time_entries() -> Vec<(&'static str, Value)> {
     ]
 }
 
-fn time_now(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+fn time_now(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("وقت.الآن", args, 0, line, col)?;
     // SystemTime traps on wasm32-unknown-unknown; the browser
     // clock comes from js-sys there.
@@ -317,7 +476,7 @@ fn time_now(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     Ok(Value::Number(secs))
 }
 
-fn time_sleep(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+fn time_sleep(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("وقت.نوم", args, 1, line, col)?;
     let secs = need_number("وقت.نوم", &args[0], line, col)?;
     if secs < 0.0 {

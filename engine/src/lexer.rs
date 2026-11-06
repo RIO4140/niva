@@ -104,6 +104,19 @@ fn normalize_keyword(word: &str) -> String {
         .collect()
 }
 
+/// تطبيع كلمة أمر/علم في CLI بنفس قواعد المحلل تماما:
+/// تجريد التشكيل والتطويل (is_diacritic) ثم توحيد الهمزات
+/// والتاء المربوطة والألف المقصورة (normalize_keyword).
+/// الصيغ القانونية بلا تشكيل أبدا (ابن، شغل)؛ والصيغ
+/// المشكولة (ابنِ، شغّل) مقبولة توافقا فقط، لا تُطلَب.
+/// (أمر المالك 2026-11-06 ~05:08: لا تشكيل ولا تطويل
+/// في أي اسم أمر/كلمة مفتاحية/علم/دالة مدمجة/ثابت —
+/// حروف عادية فقط، دائما.)
+pub fn normalize_cli_word(word: &str) -> String {
+    let stripped: String = word.chars().filter(|c| !is_diacritic(*c)).collect();
+    normalize_keyword(&stripped)
+}
+
 fn keyword_for(normalized: &str) -> Option<Keyword> {
     Some(match normalized {
         "اطبع" => Keyword::Print,
@@ -149,6 +162,54 @@ fn keyword_for(normalized: &str) -> Option<Keyword> {
         "لا" => Keyword::No,
         _ => return None,
     })
+}
+
+/// Canonical (normalized) spelling of a keyword, for use as a
+/// member name after a dot: `عمليات.أنشئ` lexes أنشئ as
+/// Keyword::Create (the lexeme is discarded), so the parser
+/// needs the spelling back to name the member. Every spelling
+/// round-trips: keyword_for(spelling) == the keyword
+/// (unit-tested below). These are the same strings keyword_for
+/// matches on — plain letters only, no tashkeel, no tatweel.
+pub(crate) fn keyword_spelling(kw: Keyword) -> &'static str {
+    match kw {
+        Keyword::Print => "اطبع",
+        Keyword::If => "اذا",
+        Keyword::Else => "والا",
+        Keyword::While => "بينما",
+        Keyword::For => "لكل",
+        Keyword::In => "في",
+        Keyword::Func => "داله",
+        Keyword::Lambda => "داله_مجهوله",
+        Keyword::Return => "ارجع",
+        Keyword::And => "و",
+        Keyword::Or => "او",
+        Keyword::Not => "ليس",
+        Keyword::True => "صحيح",
+        Keyword::False => "خطا",
+        Keyword::Nil => "لاشيء",
+        Keyword::Break => "اكسر",
+        Keyword::Continue => "تابع",
+        Keyword::Pass => "مرر",
+        Keyword::Try => "حاول",
+        Keyword::Except => "ماعدا",
+        Keyword::Finally => "اخيرا",
+        Keyword::Class => "فيه",
+        Keyword::Create => "انشي",
+        Keyword::Inherit => "ورث",
+        Keyword::Interface => "واجهه",
+        Keyword::Import => "استورد",
+        Keyword::Export => "صدر",
+        Keyword::As => "باسم",
+        Keyword::From => "من",
+        Keyword::Repeat => "كرر",
+        Keyword::Times => "مرات",
+        Keyword::AsLongAs => "طالما",
+        Keyword::Greater => "اكبر",
+        Keyword::Smaller => "اصغر",
+        Keyword::Equals => "يساوي",
+        Keyword::No => "لا",
+    }
 }
 
 fn arabic_digit_value(c: char) -> Option<u32> {
@@ -392,5 +453,62 @@ mod tests {
     fn diacritic_keyword() {
         let toks = tokenize("اِطبع \"مرحبا\"\n").unwrap();
         assert!(matches!(toks[0].kind, TokenKind::Keyword(Keyword::Print)));
+    }
+
+    #[test]
+    fn keyword_spelling_round_trips() {
+        // مهمة 10: كل كلمة مفتاحية لها صيغة قانونية واحدة
+        // تعيدها keyword_for إلى نفس الكلمة — فاسم العضو
+        // بعد النقطة (مثل انشي من أنشئ) ثابت دائما.
+        let all = [
+            Keyword::Print,
+            Keyword::If,
+            Keyword::Else,
+            Keyword::While,
+            Keyword::For,
+            Keyword::In,
+            Keyword::Func,
+            Keyword::Lambda,
+            Keyword::Return,
+            Keyword::And,
+            Keyword::Or,
+            Keyword::Not,
+            Keyword::True,
+            Keyword::False,
+            Keyword::Nil,
+            Keyword::Break,
+            Keyword::Continue,
+            Keyword::Pass,
+            Keyword::Try,
+            Keyword::Except,
+            Keyword::Finally,
+            Keyword::Class,
+            Keyword::Create,
+            Keyword::Inherit,
+            Keyword::Interface,
+            Keyword::Import,
+            Keyword::Export,
+            Keyword::As,
+            Keyword::From,
+            Keyword::Repeat,
+            Keyword::Times,
+            Keyword::AsLongAs,
+            Keyword::Greater,
+            Keyword::Smaller,
+            Keyword::Equals,
+            Keyword::No,
+        ];
+        assert_eq!(all.len(), 36);
+        for kw in all {
+            let spelling = keyword_spelling(kw);
+            assert_eq!(keyword_for(spelling), Some(kw), "spelling: {}", spelling);
+            // بلا تشكيل ولا تطويل أبدا (قاعدة بلا تشكيل).
+            assert!(
+                !spelling.chars().any(is_diacritic),
+                "tashkeel in spelling: {}",
+                spelling
+            );
+            assert!(!spelling.contains('ـ'), "tatweel in spelling: {}", spelling);
+        }
     }
 }

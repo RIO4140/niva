@@ -126,6 +126,10 @@ fn examples_pass() {
             "17-word-operators.نيفا",
             "صحيح\nصحيح\nصحيح\nصحيح\nصحيح\nصحيح\nخطأ\nصحيح\nكبير\n",
         ),
+        (
+            "18-عمليات.نيفا",
+            "المساعد يعمل\nالفاشل يبدأ\n٠\n١\nصحيح\nمرفوض كما يجب\n",
+        ),
     ];
     for (name, expected) in cases {
         let path = example_path(name);
@@ -139,6 +143,82 @@ fn examples_pass() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let _ = fs::remove_file(manifest.join("niva-engine-test.txt"));
     let _ = fs::remove_file(manifest.join("examples").join("niva-engine-test.txt"));
+}
+
+/// مهمة 10 (عمليات): برنامجا نيفا فرعيان (ناجح وفاشل)
+/// يُشغَّلان ويُنتظَران في الوضعين — المخرج والخطأ
+/// والخروج متطابقة حرفيا (مخرجات الطفلين حية أولا، ثم
+/// مخرجات الأب المجمّعة — انظر مثال 18).
+#[test]
+fn operations_subprogram_both_modes() {
+    let files: &[(&str, &str)] = &[
+        ("مساعد.نيفا", "اطبع \"المساعد يعمل\"\n"),
+        ("فاشل.نيفا", "اطبع \"الفاشل يبدأ\"\nاطبع ١ / ٠\n"),
+        (
+            "برنامج.نيفا",
+            "استورد عمليات\nمعرف_مساعد = عمليات.أنشئ(\"مساعد.نيفا\")\nاطبع عمليات.انتظر(معرف_مساعد)\nمعرف_فاشل = عمليات.انشي(\"فاشل.نيفا\")\nاطبع عمليات.انتظر(معرف_فاشل)\nاطبع عمليات.الحالية() > ٠\nحاول:\n    عمليات.أنشئ(\"/bin/true\")\nماعدا:\n    اطبع \"مرفوض كما يجب\"\n",
+        ),
+    ];
+    let (out_i, err_i, code_i) =
+        run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v,
+        "المساعد يعمل\nالفاشل يبدأ\n٠\n١\nصحيح\nمرفوض كما يجب\n"
+    );
+    assert_eq!(
+        err_v,
+        "خطأ وقت التشغيل: قسمة على صفر (السطر 2، العمود 8)\n"
+    );
+}
+
+/// مهمة 10 (عمليات): برامج نظام حقيقية في الوضع الموثوق
+/// (--اسمح-بالكل) — Unix فقط (لا true/false/sleep في Windows).
+#[test]
+#[cfg(unix)]
+fn operations_os_program_trusted_both_modes() {
+    let files: &[(&str, &str)] = &[(
+        "برنامج.نيفا",
+        "استورد عمليات\nمن عمليات استورد انتظر\nأ = عمليات.أنشئ(\"/bin/true\")\nاطبع انتظر(أ)\nب = عمليات.أنشئ(\"/bin/false\")\nاطبع انتظر(ب)\nج = عمليات.أنشئ(\"/bin/sleep 30\")\nعمليات.أوقف(ج)\nاطبع \"تم الإيقاف\"\nاطبع عمليات.الحالية() > ٠\n",
+    )];
+    let (out_i, err_i, code_i) = run_with_modules_flags(
+        files,
+        "برنامج.نيفا",
+        &["--اسمح-بالكل", "--مفسر"],
+    );
+    let (out_v, err_v, code_v) =
+        run_with_modules_flags(files, "برنامج.نيفا", &["--اسمح-بالكل"]);
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(out_v, "٠\n١\nتم الإيقاف\nصحيح\n");
+}
+
+/// مهمة 10 (عمليات): الرفض في الوضع المقيد (الافتراضي)
+/// — خارج المجلد، واسم غير موجود، ومعرف غير معروف، وأمر
+/// فارغ — كلها أخطاء عربية تُمسكها ماعدا، متطابقة في الوضعين.
+#[test]
+fn operations_permission_refused_both_modes() {
+    let files: &[(&str, &str)] = &[(
+        "برنامج.نيفا",
+        "استورد عمليات\nحاول:\n    عمليات.أنشئ(\"/bin/true\")\nماعدا:\n    اطبع \"مرفوض كما يجب\"\nحاول:\n    عمليات.أنشئ(\"لاوجود\")\nماعدا:\n    اطبع \"غير موجود كما يجب\"\nحاول:\n    عمليات.انتظر(٩٩٩٩٩٩)\nماعدا:\n    اطبع \"غير معروف كما يجب\"\nحاول:\n    عمليات.أنشئ(\"\")\nماعدا:\n    اطبع \"فارغ كما يجب\"\n",
+    )];
+    let (out_i, err_i, code_i) =
+        run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v,
+        "مرفوض كما يجب\nغير موجود كما يجب\nغير معروف كما يجب\nفارغ كما يجب\n"
+    );
 }
 
 #[test]
@@ -617,6 +697,34 @@ fn type_any_passes() {
     );
     assert_eq!(code, 0);
     assert_eq!(out, "نص\n٧\nأ\n");
+}
+
+#[test]
+fn type_nil_writable_accept_and_reject() {
+    // Meeting 26 (§41.3): لاشيء is a writable type name.
+    // Accept: a لاشيء variable holds only لاشيء; a function
+    // declared `: لاشيء` returns لاشيء or nothing (bare
+    // return, or falling off the end).
+    let (out, _, code) = run_src(
+        "س: لاشيء = لاشيء\nاطبع س\nدالة بلا_قيمة(): لاشيء:\n    ارجع\nاطبع بلا_قيمة()\nدالة ساقطة(): لاشيء:\n    مرر\nاطبع ساقطة()\nدالة خذ(ق: لاشيء): لاشيء:\n    ارجع ق\nاطبع خذ(لاشيء)\n",
+    );
+    assert_eq!(code, 0);
+    assert_eq!(out, "لاشيء\nلاشيء\nلاشيء\nلاشيء\n");
+
+    // Reject: a لاشيء variable cannot hold a number.
+    let (_, err, code) = run_src("س: لاشيء = ٥\n");
+    assert_ne!(code, 0);
+    assert!(err.contains("نوع غير متطابق"), "stderr: {}", err);
+
+    // Reject: a function declared `: لاشيء` cannot return a number.
+    let (_, err, code) = run_src("دالة احصل(): لاشيء:\n    ارجع ٥\nاطبع احصل()\n");
+    assert_ne!(code, 0);
+    assert!(err.contains("نوع غير متطابق"), "stderr: {}", err);
+
+    // Reject: a لاشيء parameter cannot take a number.
+    let (_, err, code) = run_src("دالة خذ(ق: لاشيء):\n    ارجع ق\nاطبع خذ(٥)\n");
+    assert_ne!(code, 0);
+    assert!(err.contains("نوع غير متطابق"), "stderr: {}", err);
 }
 
 #[test]
@@ -1516,6 +1624,72 @@ fn net_program(port: u16) -> String {
     )
 }
 
+/// A TLS-only test server (self-signed fixture cert) for the
+/// binary-level tests: the binary cannot inject a test root,
+/// so a self-signed certificate must be rejected with the
+/// Arabic certificate error in both modes (Meeting 26).
+#[cfg(feature = "https")]
+fn net_tls_test_server() -> u16 {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    let cert_der = include_bytes!("fixtures/tls-selfsigned-cert.der").to_vec();
+    let key_der = include_bytes!("fixtures/tls-selfsigned-key.der").to_vec();
+    let cert = rustls::pki_types::CertificateDer::from(cert_der);
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(
+        rustls::pki_types::PrivatePkcs8KeyDer::from(key_der),
+    );
+    let config = std::sync::Arc::new(
+        rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .expect("test TLS server cert"),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let stream = match stream {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let conn = match rustls::ServerConnection::new(std::sync::Arc::clone(&config)) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let mut tls = rustls::StreamOwned::new(conn, stream);
+            // Read the request, then answer (the client never
+            // gets here: the handshake fails on the certificate
+            // first — but a tolerant client would see /hello).
+            let mut req: Vec<u8> = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                match tls.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        req.extend_from_slice(&buf[..n]);
+                        if req.len() >= 4 && &req[req.len() - 4..] == b"\r\n\r\n" {
+                            break;
+                        }
+                        if req.len() > 8192 {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let body = "مرحبا من الخادم".as_bytes().to_vec();
+            let mut resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            resp.extend_from_slice(&body);
+            let _ = tls.write_all(&resp);
+        }
+    });
+    port
+}
+
 #[test]
 fn network_fetch_with_flag() {
     let port = net_test_server();
@@ -1539,7 +1713,11 @@ fn network_permission_refused_without_flag() {
     );
 }
 
+// Meeting 26: without the `https` feature, HTTPS is refused
+// before any traffic. With the feature, this same fetch
+// attempts a real TLS connection (see the parity test below).
 #[test]
+#[cfg(not(feature = "https"))]
 fn network_https_refused_with_flag() {
     let (_out, err, code) = run_src_flags(
         "استورد شبكة\nاطبع شبكة.اجلب(\"https://example.com/\")\n",
@@ -1582,8 +1760,8 @@ fn network_unknown_flag_is_arabic_error() {
 fn network_fetch_parity_in_vm() {
     // Meeting 25 task 4 (ك-1.3): شبكة.اجلب يعمل الآن في VM
     // عبر جلب المحرك نفسه وبوابته العملية-الواسعة —
-    // الجسم نفسه، وخطأ البوابة المغلقة نفسه، وخطأ رفض
-    // HTTPS نفسه، في الوضعين.
+    // الجسم نفسه، وخطأ البوابة المغلقة نفسه، وخطأ HTTPS
+    // نفسه، في الوضعين.
     let port = net_test_server();
     let prog = net_program(port);
     // مسموح: الجسم نفسه في الوضعين.
@@ -1606,10 +1784,16 @@ fn network_fetch_parity_in_vm() {
     assert_ne!(code_v2, 0);
     assert!(err_i2.contains("الشبكة مغلقة افتراضيا"), "stderr: {}", err_i2);
     assert_eq!(err_v2, err_i2, "VM gate error differs from interpreter");
-    // HTTPS مرفوض: الخطأ العربي نفسه في الوضعين.
+    // HTTPS: الخطأ العربي نفسه في الوضعين. مع الميزة،
+    // العميل يتحدث TLS إلى خادم موقَّع ذاتيا فتُرفض الشهادة؛
+    // وبدونها، HTTPS مرفوض قبل أي حركة.
+    #[cfg(feature = "https")]
+    let https_port = net_tls_test_server();
+    #[cfg(not(feature = "https"))]
+    let https_port = port;
     let https_prog = format!(
         "استورد شبكة\nاطبع شبكة.اجلب(\"https://127.0.0.1:{}/hello\")\n",
-        port
+        https_port
     );
     let (_, err_i3, code_i3) = run_src_flags(
         &https_prog,
@@ -1621,6 +1805,13 @@ fn network_fetch_parity_in_vm() {
     );
     assert_ne!(code_i3, 0);
     assert_ne!(code_v3, 0);
+    #[cfg(feature = "https")]
+    assert!(
+        err_i3.contains("شهادة الخادم غير موثوقة"),
+        "stderr: {}",
+        err_i3
+    );
+    #[cfg(not(feature = "https"))]
     assert!(err_i3.contains("HTTPS غير مدعوم"), "stderr: {}", err_i3);
     assert_eq!(err_v3, err_i3, "VM HTTPS error differs from interpreter");
 }
@@ -1740,4 +1931,310 @@ fn cli_latin_flags_are_rejected_in_arabic() {
         assert_ne!(code, 0, "{} was accepted", latin);
         assert!(err.contains("خيار غير معروف"), "{}: {}", latin, err);
     }
+}
+
+// --- خادم HTTPS (اجتماع 27) ---
+//
+// برنامج الخادم يحجب إلى الأبد، فهذه الاختبارات تشغّل
+// ثنائي CLI (مخرج موصول بأنبوب)، وتنتظر سطر البدء،
+// وتجلب بعميل rustls يثق بشهادة اختبار CA، ثم تقتل
+// العملية. البرنامج يعمل بعلم --اسمح-بالخادم وحده
+// (بلا --اسمح-بالشبكة): علم الخادم وحده هو المطلوب.
+
+fn server_program(port: u16) -> String {
+    format!(
+        "استورد شبكة\nدالة عالج(طلب):\n    إذا طلب[\"مسار\"] == \"/dict\":\n        ارجع {{\"حالة\": ٢٠١، \"نص\": \"تم\"، \"ترويسات\": {{\"X-Custom\": \"نعم\"}}}}\n    إذا طلب[\"مسار\"] == \"/err\":\n        ارجع ١ / ٠\n    ارجع \"مسار:\" + طلب[\"مسار\"]\nشبكة.اخدم {} \"server-cert.pem\" \"server-key.pem\" عالج\n",
+        port
+    )
+}
+
+fn server_program_selfsigned(port: u16) -> String {
+    format!(
+        "استورد شبكة\nدالة عالج(طلب):\n    ارجع \"ذاتي\"\nشبكة.اخدم {} \"server-selfsigned-cert.pem\" \"server-selfsigned-key.pem\" عالج\n",
+        port
+    )
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+fn server_pem(name: &str) -> &'static str {
+    match name {
+        "server-cert.pem" => include_str!("fixtures/server-cert.pem"),
+        "server-key.pem" => include_str!("fixtures/server-key.pem"),
+        "server-selfsigned-cert.pem" => {
+            include_str!("fixtures/server-selfsigned-cert.pem")
+        }
+        "server-selfsigned-key.pem" => {
+            include_str!("fixtures/server-selfsigned-key.pem")
+        }
+        _ => panic!("unknown server fixture: {}", name),
+    }
+}
+
+/// شغّل برنامج خادم: يكتب البرنامج + الشهادات في مجلد
+/// مؤقت، ويشغّل الثنائي بمخرج موصول، ويعيد (العملية،
+/// قناة سطور المخرج، المجلد). القارئ في خيط منفصل
+/// لأن المخرج أنبوب والعملية تحجب.
+fn spawn_server(
+    prog: &str,
+    flags: &[&str],
+) -> (
+    std::process::Child,
+    std::sync::mpsc::Receiver<String>,
+    PathBuf,
+) {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    let dir = {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "rio4140-engine-server-{}-{}",
+            std::process::id(),
+            n
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    };
+    fs::write(dir.join("prog.نيفا"), prog).unwrap();
+    for f in [
+        "server-cert.pem",
+        "server-key.pem",
+        "server-selfsigned-cert.pem",
+        "server-selfsigned-key.pem",
+    ] {
+        fs::write(dir.join(f), server_pem(f)).unwrap();
+    }
+    let mut cmd = Command::new(bin());
+    for f in flags {
+        cmd.arg(f);
+    }
+    let mut child = cmd
+        .arg(dir.join("prog.نيفا"))
+        .current_dir(&dir)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn نيفا server");
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        while reader.read_line(&mut line).is_ok() {
+            if line.is_empty() {
+                break;
+            }
+            let _ = tx.send(std::mem::take(&mut line));
+            line = String::new();
+        }
+    });
+    (child, rx, dir)
+}
+
+/// اجمع سطور المخرج حتى سطر البدء (أو انتهاء المهلة)، ثم
+/// استنزف 500ms إضافية (سطر الإعلان — مثل تحذير الموقعة
+/// ذاتيا — يأتي بعد سطر البدء مباشرة)؛ يعيد كل السطور.
+fn wait_startup(rx: &std::sync::mpsc::Receiver<String>, secs: u64) -> Vec<String> {
+    let mut lines = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    let mut started = false;
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        let wait = if started {
+            std::time::Duration::from_millis(500).min(left)
+        } else {
+            left
+        };
+        match rx.recv_timeout(wait) {
+            Ok(line) => {
+                if line.starts_with("الخادم يعمل على") {
+                    started = true;
+                }
+                lines.push(line);
+                if started {
+                    // استنزاف إضافي واحد فقط: السطر التالي
+                    // (الإعلان) أو انتهاء 500ms.
+                    match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+                        Ok(extra) => lines.push(extra),
+                        Err(_) => {}
+                    }
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    lines
+}
+
+fn kill_server(mut child: std::process::Child, dir: &PathBuf) {
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = fs::remove_dir_all(dir);
+}
+
+/// جلب HTTPS بعميل يثق بشهادة اختبار CA فقط؛ يعيد
+/// (رمز الحالة، الجسم).
+fn https_fetch(port: u16, path: &str) -> (u16, String) {
+    use std::io::{Read, Write};
+    let ca_der = include_bytes!("fixtures/tls-ca-cert.der").to_vec();
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(rustls::pki_types::CertificateDer::from(ca_der))
+        .unwrap();
+    let config = std::sync::Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    );
+    let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    let name = rustls::pki_types::ServerName::try_from("127.0.0.1".to_string()).unwrap();
+    let conn = rustls::ClientConnection::new(config, name).unwrap();
+    let mut tls = rustls::StreamOwned::new(conn, stream);
+    tls.write_all(
+        format!(
+            "GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            path
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    let mut raw = Vec::new();
+    tls.read_to_end(&mut raw).unwrap();
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    let (head, body) = match text.split_once("\r\n\r\n") {
+        Some((h, b)) => (h, b.to_string()),
+        None => (text.as_str(), String::new()),
+    };
+    let status: u16 = head
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    (status, body)
+}
+
+#[test]
+#[cfg(feature = "https")]
+fn server_serves_in_both_modes() {
+    // المعالج دالة نيفا حقيقية، والبرنامج نفسه في
+    // الوضعين، وعلم الخادم وحده (بلا علم الشبكة).
+    let port = free_port();
+    let prog = server_program(port);
+    let mut all = Vec::new();
+    for interpreter in [false, true] {
+        let flags: &[&str] = if interpreter {
+            &["--مفسر", "--اسمح-بالخادم"]
+        } else {
+            &["--اسمح-بالخادم"]
+        };
+        let (child, rx, dir) = spawn_server(&prog, flags);
+        let startup = wait_startup(&rx, 10);
+        assert!(
+            startup.iter().any(|l| l.starts_with("الخادم يعمل على")),
+            "no startup line, interpreter={}: {:?}",
+            interpreter,
+            startup
+        );
+        assert!(
+            !startup.iter().any(|l| l.contains("موقعة ذاتيا")),
+            "a CA-signed server must not announce self-signed: {:?}",
+            startup
+        );
+        let hello = https_fetch(port, "/hello");
+        let dict = https_fetch(port, "/dict");
+        let err = https_fetch(port, "/err");
+        assert_eq!(hello, (200, "مسار:/hello".to_string()));
+        assert_eq!(dict, (201, "تم".to_string()));
+        assert_eq!(err, (500, "خطأ في معالج الطلب".to_string()));
+        assert!(
+            !err.1.contains("قسمة"),
+            "the real handler error leaked: {:?}",
+            err
+        );
+        all.push((startup, hello, dict, err));
+        kill_server(child, &dir);
+    }
+    assert_eq!(all[0], all[1], "VM and interpreter server outputs differ");
+}
+
+#[test]
+fn server_permission_refused_without_flag() {
+    let port = free_port();
+    let prog = server_program(port);
+    for interpreter in [false, true] {
+        let flags: &[&str] = if interpreter { &["--مفسر"] } else { &[] };
+        let (_out, err, code) = run_src_flags(&prog, flags);
+        assert_ne!(code, 0, "interpreter={}", interpreter);
+        assert!(
+            err.contains("الخادم مغلق افتراضيا"),
+            "interpreter={} stderr: {}",
+            interpreter,
+            err
+        );
+    }
+}
+
+#[test]
+fn server_network_flag_alone_is_not_enough() {
+    let port = free_port();
+    let prog = server_program(port);
+    let (_out, err, code) = run_src_flags(&prog, &["--اسمح-بالشبكة"]);
+    assert_ne!(code, 0);
+    assert!(
+        err.contains("الخادم مغلق افتراضيا"),
+        "stderr: {}",
+        err
+    );
+}
+
+#[test]
+#[cfg(feature = "https")]
+fn server_self_signed_announcement_and_client_rejection() {
+    let port = free_port();
+    let prog = server_program_selfsigned(port);
+    let (child, rx, dir) = spawn_server(&prog, &["--اسمح-بالخادم"]);
+    let startup = wait_startup(&rx, 10);
+    assert!(
+        startup.iter().any(|l| l.contains("الشهادة موقعة ذاتيا — للتطوير فقط")),
+        "no self-signed announcement: {:?}",
+        startup
+    );
+    // عميل يثق بـ CA الاختبار فقط: يرفض الموقعة ذاتيا.
+    let refused = {
+        use std::io::Write;
+        let ca_der = include_bytes!("fixtures/tls-ca-cert.der").to_vec();
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(rustls::pki_types::CertificateDer::from(ca_der))
+            .unwrap();
+        let config = std::sync::Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let name = rustls::pki_types::ServerName::try_from("127.0.0.1".to_string()).unwrap();
+        let conn = rustls::ClientConnection::new(config, name).unwrap();
+        let mut tls = rustls::StreamOwned::new(conn, stream);
+        tls.write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .is_err()
+    };
+    assert!(refused, "the test-CA client should reject the self-signed server");
+    kill_server(child, &dir);
 }

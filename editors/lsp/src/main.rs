@@ -54,7 +54,7 @@ const KEYWORDS: &[(&str, &str)] = &[
     ("ورث", "وراثة: فئة ابن ورث أب:"),
     ("واجهة", "تعريف واجهة: واجهة اسم:"),
     ("استورد", "يستورد وحدة: استورد رياضيات"),
-    ("صدّر", "يصدّر اسما من الوحدة: صدّر اسم"),
+    ("صدر", "يصدّر اسما من الوحدة: صدر اسم"),
     ("باسم", "يستورد باسم آخر: استورد رياضيات باسم ر"),
     ("من", "يستورد أسماء محددة: من رياضيات استورد جذر"),
     ("كرر", "حلقة تكرار: كرر ٣ مرات:"),
@@ -80,6 +80,30 @@ const BUILTINS: &[(&str, &str)] = &[
     ("اقرأ_ملف", "اقرأ_ملف(مسار) ← نص الملف (مقيد بمجلد البرنامج)"),
     ("اكتب_ملف", "اكتب_ملف(مسار، نص) ← لاشيء"),
     ("ادخل", "ادخل() أو ادخل(سؤال) ← نص من المستخدم"),
+    ("اعرض_الملفات", "اعرض_الملفات(مسار) ← قائمة أسماء في المجلد"),
+    ("المجلد_الحالي", "المجلد_الحالي() ← نص المسار الحالي بصيغة الترمنال (~)"),
+    ("انتقل", "انتقل(مسار) ← يغيّر المجلد الحالي"),
+    ("أنشئ_مجلد", "أنشئ_مجلد(مسار) ← ينشئ مجلدا"),
+    ("احذف", "احذف(مسار) ← يحذف ملفا أو مجلدا فارغا"),
+    ("احذف_مجلد", "احذف_مجلد(مسار) ← يحذف مجلدا فارغا"),
+    ("احذف_ملف", "احذف_ملف(مسار) ← يحذف ملفا"),
+    ("انسخ", "انسخ(مصدر، هدف) ← ينسخ ملفا"),
+    ("انقل", "انقل(مصدر، هدف) ← ينقل ملفا أو مجلدا"),
+    ("أنشئ_ملف", "أنشئ_ملف(مسار) ← ينشئ ملفا فارغا"),
+    ("اعرض_البداية", "اعرض_البداية(مسار) أو (مسار، عدد) ← أول أسطر الملف"),
+    ("اعرض_النهاية", "اعرض_النهاية(مسار) أو (مسار، عدد) ← آخر أسطر الملف"),
+    ("عد_الأسطر", "عد_الأسطر(مسار) ← عدد أسطر الملف"),
+    ("عد_الكلمات", "عد_الكلمات(مسار) ← عدد كلمات الملف"),
+    ("ابحث_في_ملف", "ابحث_في_ملف(مسار، نص) ← أسطر تحوي النص"),
+    ("ابحث_عن", "ابحث_عن(نص) أو (نص، مسار) ← ملفات تحوي النص"),
+    ("اعرض_الشجرة", "اعرض_الشجرة(مسار) ← شجرة المجلدات والملفات"),
+    ("حجم_المسار", "حجم_المسار(مسار) ← حجم الملف أو المجلد بالبايت"),
+    ("أنشئ_رابط", "أنشئ_رابط(هدف، رابط) ← ينشئ رابطا رمزيا"),
+    ("التاريخ_الآن", "التاريخ_الآن() ← نص التاريخ والوقت الحاليين"),
+    ("النسخة", "النسخة() ← نص إصدار المحرك"),
+    ("موجود", "موجود(مسار) ← منطقي: المسار موجود؟"),
+    ("نوع_المسار", "نوع_المسار(مسار) ← نص: ملف أو مجلد أو غير موجود"),
+    ("عد_الملفات", "عد_الملفات(مسار) ← عدد الملفات في المجلد"),
 ];
 
 const TYPES: &[(&str, &str)] = &[
@@ -91,6 +115,8 @@ const TYPES: &[(&str, &str)] = &[
     ("لاشيء", "نوع: القيمة الفارغة."),
     ("دالة", "نوع: دالة."),
     ("وحدة", "نوع: وحدة مستوردة."),
+    ("فئة", "نوع: فئة."),
+    ("واجهة", "نوع: واجهة."),
     ("كائن", "نوع: كائن من فئة."),
     ("أي", "نوع: أي قيمة، بلا فحص."),
 ];
@@ -99,6 +125,8 @@ const STDLIB: &[(&str, &str)] = &[
     ("رياضيات", "وحدة: جذر، قوة، جيب، جيب_تمام، ظل، لوغاريتم، أس_طبيعي، أرضية، سقف، باي، هـ"),
     ("عشوائي", "وحدة: عدد_عشوائي، صحيح_عشوائي، اختيار (للألعاب والمحاكاة فقط، ليست تشفيرا)"),
     ("وقت", "وحدة: الآن (ثواني Unix)، نوم (ثواني)"),
+    ("شبكة", "وحدة: اجلب (رابط) ← نص صفحة — مغلقة افتراضيا، HTTP وHTTPS معا في النسخة الأصلية؛ اخدم (منفذ، شهادة، مفتاح، معالج) ← خادم HTTPS — مغلق افتراضيا بعلم --اسمح-بالخادم"),
+    ("عمليات", "وحدة: أنشئ (أمر) ← معرف عملية، انتظر (معرف) ← رمز الخروج، أوقف (معرف)، الحالية () ← معرف العملية — مقيدة بمجلد البرنامج افتراضيا، بلا صدفة أبدا"),
 ];
 
 const STR_METHODS: &[(&str, &str)] = &[
@@ -365,9 +393,36 @@ fn completion_items(dot_context: bool) -> Vec<CompletionItem> {
 // Server plumbing.
 // ---------------------------------------------------------------------
 
+/// ترميز URI للنشر: العملاء الصحيحون يرسلون URI
+/// مرمّزا (VS Code يرمّز العربية)، لكن عميلا يرسل
+/// المسار خاما (file:///tmp/test.نيفا) كان يُسقط
+/// الخادم كاملا — تحليل Uri يرفض غير ASCII، والخطأ
+/// كان يصعد بـ `?` حتى main فيخرج الخادم. نرمّز كل
+/// بايت غير ASCII والفراغ قبل التحليل، فتصل التشخيصات
+/// دائما؛ وإن بقي التحليل مستحيلا، نتخطى هذا الإشعار
+/// فقط ولا نُسقط الخادم أبدا.
+fn encode_uri(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for b in raw.bytes() {
+        if b >= 0x80 || b == b' ' {
+            out.push_str(&format!("%{:02X}", b));
+        } else {
+            out.push(b as char);
+        }
+    }
+    out
+}
+
 fn publish(connection: &Connection, uri: &str, text: &str) -> Result<(), Box<dyn Error>> {
+    let parsed: Uri = match encode_uri(uri).parse() {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("تخطي نشر التشخيصات: URI غير صالح {}: {}", uri, e);
+            return Ok(());
+        }
+    };
     let params = PublishDiagnosticsParams {
-        uri: uri.parse::<Uri>()?,
+        uri: parsed,
         diagnostics: diagnostics_for(text),
         version: None,
     };
@@ -389,6 +444,19 @@ fn respond_ok(
     Ok(())
 }
 
+/// استخراج URI نصيا خاما من معاملات JSON — بلا تحليل
+/// Uri الصارم (يرفض غير ASCII: عميل يرسل مسارا خاما
+/// مثل file:///tmp/test.نيفا كان يُسقط الخادم كاملا
+/// عند فكّ المعاملات). الترميز يتم عند النشر فقط
+/// (encode_uri). غياب المفتاح يعيد None.
+fn raw_uri(params: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    let mut v = params;
+    for k in keys {
+        v = v.get(*k)?;
+    }
+    v.as_str().map(|s| s.to_string())
+}
+
 fn main_loop(connection: Connection) -> Result<(), Box<dyn Error>> {
     let mut docs: HashMap<String, String> = HashMap::new();
     for msg in &connection.receiver {
@@ -402,14 +470,12 @@ fn main_loop(connection: Connection) -> Result<(), Box<dyn Error>> {
                     .as_str()
                 {
                     "textDocument/hover" => {
-                        let p: HoverParams = serde_json::from_value(req.params.clone())?;
-                        let pos = p.text_document_position_params.position;
-                        let uri = p
-                            .text_document_position_params
-                            .text_document
-                            .uri
-                            .as_str()
-                            .to_string();
+                        // HoverParams مسطّح (serde flatten):
+                        // textDocument و position في أعلى المعاملات.
+                        let uri = raw_uri(&req.params, &["textDocument", "uri"])
+                            .ok_or("hover بلا URI")?;
+                        let pos: Position =
+                            serde_json::from_value(req.params["position"].clone())?;
                         let hover = docs.get(&uri).and_then(|text| {
                             word_at(text, pos.line, pos.character).and_then(|(word, range)| {
                                 hover_for(&word).map(|doc| Hover {
@@ -424,9 +490,8 @@ fn main_loop(connection: Connection) -> Result<(), Box<dyn Error>> {
                         Ok(serde_json::to_value(hover)?)
                     }
                     "textDocument/documentSymbol" => {
-                        let p: DocumentSymbolParams =
-                            serde_json::from_value(req.params.clone())?;
-                        let uri = p.text_document.uri.as_str().to_string();
+                        let uri = raw_uri(&req.params, &["textDocument", "uri"])
+                            .ok_or("رموز بلا URI")?;
                         let symbols = docs
                             .get(&uri)
                             .map(|text| symbols_for(text))
@@ -434,11 +499,11 @@ fn main_loop(connection: Connection) -> Result<(), Box<dyn Error>> {
                         Ok(serde_json::to_value(symbols)?)
                     }
                     "textDocument/completion" => {
-                        let p: CompletionParams = serde_json::from_value(req.params.clone())?;
-                        let dot = p
-                            .context
-                            .as_ref()
-                            .and_then(|c| c.trigger_character.as_deref())
+                        let dot = req
+                            .params
+                            .get("context")
+                            .and_then(|c| c.get("triggerCharacter"))
+                            .and_then(|t| t.as_str())
                             == Some(".");
                         let items = completion_items(dot);
                         Ok(serde_json::to_value(CompletionResponse::Array(items))?)
@@ -464,27 +529,61 @@ fn main_loop(connection: Connection) -> Result<(), Box<dyn Error>> {
             }
             Message::Response(_) => {}
             Message::Notification(not) => match not.method.as_str() {
+                // رسالة واحدة سيئة لا تُسقط الخادم أبدا:
+                // تجاهلها وسجّلها، وتابع الرسالة التالية.
                 "textDocument/didOpen" => {
-                    let p: DidOpenTextDocumentParams = serde_json::from_value(not.params)?;
-                    let uri = p.text_document.uri.as_str().to_string();
-                    let text = p.text_document.text.clone();
+                    let uri = match raw_uri(&not.params, &["textDocument", "uri"]) {
+                        Some(u) => u,
+                        None => {
+                            eprintln!("تجاهل didOpen بلا URI");
+                            continue;
+                        }
+                    };
+                    let text = match not.params["textDocument"]["text"].as_str() {
+                        Some(t) => t.to_string(),
+                        None => {
+                            eprintln!("تجاهل didOpen بلا نص");
+                            continue;
+                        }
+                    };
                     docs.insert(uri.clone(), text.clone());
-                    publish(&connection, &uri, &text)?;
+                    if let Err(e) = publish(&connection, &uri, &text) {
+                        eprintln!("نشر التشخيصات فشل: {}", e);
+                    }
                 }
                 "textDocument/didChange" => {
-                    let p: DidChangeTextDocumentParams = serde_json::from_value(not.params)?;
-                    let uri = p.text_document.uri.as_str().to_string();
-                    if let Some(change) = p.content_changes.into_iter().last() {
-                        let text = change.text.clone();
+                    let uri = match raw_uri(&not.params, &["textDocument", "uri"]) {
+                        Some(u) => u,
+                        None => {
+                            eprintln!("تجاهل didChange بلا URI");
+                            continue;
+                        }
+                    };
+                    if let Some(text) = not.params["contentChanges"]
+                        .as_array()
+                        .and_then(|a| a.last())
+                        .and_then(|c| c.get("text"))
+                        .and_then(|t| t.as_str())
+                    {
+                        let text = text.to_string();
                         docs.insert(uri.clone(), text.clone());
-                        publish(&connection, &uri, &text)?;
+                        if let Err(e) = publish(&connection, &uri, &text) {
+                            eprintln!("نشر التشخيصات فشل: {}", e);
+                        }
                     }
                 }
                 "textDocument/didClose" => {
-                    let p: DidCloseTextDocumentParams = serde_json::from_value(not.params)?;
-                    let uri = p.text_document.uri.as_str().to_string();
+                    let uri = match raw_uri(&not.params, &["textDocument", "uri"]) {
+                        Some(u) => u,
+                        None => {
+                            eprintln!("تجاهل didClose بلا URI");
+                            continue;
+                        }
+                    };
                     docs.remove(&uri);
-                    publish(&connection, &uri, "")?;
+                    if let Err(e) = publish(&connection, &uri, "") {
+                        eprintln!("نشر التشخيصات فشل: {}", e);
+                    }
                 }
                 "exit" => break,
                 _ => {}

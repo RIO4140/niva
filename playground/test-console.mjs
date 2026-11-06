@@ -29,29 +29,29 @@ const c = new NivaConsole();
 function feed(line) {
   return JSON.parse(c.eval(line));
 }
-check('س = ٥', feed('س = ٥'), { output: '', prompt: 'نيفا: ', ended: false, needs_network: false });
-check('ص = ٣', feed('ص = ٣'), { output: '', prompt: 'نيفا: ', ended: false, needs_network: false });
-check('اطبع س + ص', feed('اطبع س + ص'), { output: '٨\n', prompt: 'نيفا: ', ended: false, needs_network: false });
-check('إذا line -> continuation', feed('إذا س أكبر من ص:'), { output: '', prompt: 'أكمل: ', ended: false, needs_network: false });
-check('indented line -> still waiting', feed('    اطبع "س أكبر"'), { output: '', prompt: 'أكمل: ', ended: false, needs_network: false });
-check('ع = ٧ evaluates block', feed('ع = ٧'), { output: 'س أكبر\n', prompt: 'نيفا: ', ended: false, needs_network: false });
-check('اطبع ع * ٢', feed('اطبع ع * ٢'), { output: '١٤\n', prompt: 'نيفا: ', ended: false, needs_network: false });
+check('س = ٥', feed('س = ٥'), { output: '', prompt: '~ $ ', ended: false, needs_network: false });
+check('ص = ٣', feed('ص = ٣'), { output: '', prompt: '~ $ ', ended: false, needs_network: false });
+check('اطبع س + ص', feed('اطبع س + ص'), { output: '٨\n', prompt: '~ $ ', ended: false, needs_network: false });
+check('إذا line -> continuation', feed('إذا س أكبر من ص:'), { output: '', prompt: '> ', ended: false, needs_network: false });
+check('indented line -> still waiting', feed('    اطبع "س أكبر"'), { output: '', prompt: '> ', ended: false, needs_network: false });
+check('ع = ٧ evaluates block', feed('ع = ٧'), { output: 'س أكبر\n', prompt: '~ $ ', ended: false, needs_network: false });
+check('اطبع ع * ٢', feed('اطبع ع * ٢'), { output: '١٤\n', prompt: '~ $ ', ended: false, needs_network: false });
 
 // PROTOTYPE ABSENT: the reversed form must be rejected with
 // the normal parse error, not performed as an assignment.
 const rev = feed('٥ = س');
 check('٥ = س rejected', rev.output.includes('هدف التعيين غير صالح'), true);
-check('٥ = س prompt back to normal', rev.prompt, 'نيفا: ');
+check('٥ = س prompt back to normal', rev.prompt, '~ $ ');
 check('٥ = س is not a network ask', rev.needs_network, false);
 check('٥ = س not ended', rev.ended, false);
 // And س is still ٥ afterwards (no assignment happened).
-check('س unchanged after rejection', feed('س'), { output: '٥\n', prompt: 'نيفا: ', ended: false, needs_network: false });
+check('س unchanged after rejection', feed('س'), { output: '٥\n', prompt: '~ $ ', ended: false, needs_network: false });
 
 // Word operators and Arabic digits (public) still work.
-check('word operator', feed('اطبع ٣ أكبر من ٢'), { output: 'صحيح\n', prompt: 'نيفا: ', ended: false, needs_network: false });
+check('word operator', feed('اطبع ٣ أكبر من ٢'), { output: 'صحيح\n', prompt: '~ $ ', ended: false, needs_network: false });
 
 // :خروج ends the session; a fresh console starts clean.
-check(':خروج ends', feed(':خروج'), { output: '', prompt: 'نيفا: ', ended: true, needs_network: false });
+check(':خروج ends', feed(':خروج'), { output: '', prompt: '~ $ ', ended: true, needs_network: false });
 const c2 = new NivaConsole();
 check('fresh console is empty', JSON.parse(c2.eval('س')).output.includes('غير معرف'), true);
 

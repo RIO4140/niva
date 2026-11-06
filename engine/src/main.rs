@@ -21,7 +21,7 @@
 
 use niva_engine::interpreter::Interpreter;
 use niva_engine::semantic::SemanticAnalyzer;
-use niva_engine::lexer::tokenize;
+use niva_engine::lexer::{normalize_cli_word, tokenize};
 use niva_engine::parser::Parser;
 use niva_engine::{artifact, repl, vm};
 use std::env;
@@ -40,18 +40,19 @@ fn usage() -> String {
      نيفا --تفاعلي        دخول الوضع التفاعلي\n\
      نيفا --مساعدة         عرض هذه المساعدة\n\
      نيفا --نسخة           عرض الإصدار\n\
-     نيفا ابنِ برنامج.نيفا  بناء مصنوع بايت كود محمول (.نيفاب)\n\
-     نيفا ابنِ --مستقل برنامج.نيفا   بناء ملف تنفيذي مستقل يعمل وحده\n\
-     نيفا شغّل مصنوع.نيفاب  تشغيل مصنوع بايت كود\n\
+     نيفا ابن برنامج.نيفا  بناء مصنوع بايت كود محمول (.نيفاب)\n\
+     نيفا ابن --مستقل برنامج.نيفا   بناء ملف تنفيذي مستقل يعمل وحده\n\
+     نيفا شغل مصنوع.نيفاب  تشغيل مصنوع بايت كود\n\
      --شجرة                عرض الشجرة النحوية ثم التشغيل\n\
      --اسمح-بالكل         السماح بملفات خارج مجلد البرنامج (للموثوقة فقط)\n\
      --اسمح-بالشبكة       السماح بالشبكة (شبكة.اجلب) — مغلقة افتراضيا\n\
+     --اسمح-بالخادم       السماح بالخادم (شبكة.اخدم) — مغلق افتراضيا، وعلم الشبكة وحده لا يكفي\n\
      --مضيف-محلي مضيف       السماح بمضيف محلي صراحة (مثل 127.0.0.1) — وحده لا يفتح الشبكة\n\
-     --مستقل               مع ابنِ: ملف تنفيذي مستقل بدلا من المصنوع\n"
+     --مستقل               مع ابن: ملف تنفيذي مستقل بدلا من المصنوع\n"
         .to_string()
 }
 
-/// استخدام البرنامج المستقل (ملف تنفيذي بُني بـ ابنِ --مستقل).
+/// استخدام البرنامج المستقل (ملف تنفيذي بُني بـ ابن --مستقل).
 fn standalone_usage() -> String {
     "استخدام: <البرنامج> [--اسمح-بالكل] [--اسمح-بالشبكة] [--مضيف-محلي مضيف]\n\
      برنامج نيفا مستقل — يعمل وحده بلا تثبيت نيفا.\n\
@@ -59,6 +60,7 @@ fn standalone_usage() -> String {
      --نسخة           عرض إصدار المحرك\n\
      --اسمح-بالكل   السماح بملفات خارج مجلد البرنامج (للموثوقة فقط)\n\
      --اسمح-بالشبكة السماح بالشبكة — مغلقة افتراضيا\n\
+     --اسمح-بالخادم السماح بالخادم — مغلق افتراضيا، وعلم الشبكة وحده لا يكفي\n\
      --مضيف-محلي مضيف السماح بمضيف محلي صراحة (مثل 127.0.0.1) — وحده لا يفتح الشبكة\n"
         .to_string()
 }
@@ -86,11 +88,20 @@ fn main() -> ExitCode {
         return run_standalone(payload);
     }
     let args: Vec<String> = env::args().collect();
-    if args.iter().any(|a| a == "--مساعدة") {
+    // أمر المالك 2026-11-06 ~05:08: لا تشكيل ولا تطويل في أي
+    // أمر/علم — المطابقة على الصيغة المطبّعة (نفس قواعد
+    // المحلل)؛ والمسارات تبقى خاما كما كتبها المستخدم.
+    // تنبيه: nargs مطبّعة — التطبيع يحوّل ة إلى ه،
+    // فكل مقارنة أدناه تُكتب بالصيغة المطبّعة
+    // (--مساعده، --نسخه، --شجره، --اسمح-بالشبكه)؛
+    // أما نصوص العرض (usage والرسائل) فتبقى بالصيغة
+    // القانونية (مساعدة، نسخة، شجرة، شبكة).
+    let nargs: Vec<String> = args.iter().map(|a| normalize_cli_word(a)).collect();
+    if nargs.iter().any(|a| a == "--مساعده") {
         print!("{}", usage());
         return ExitCode::SUCCESS;
     }
-    if args.iter().any(|a| a == "--نسخة") {
+    if nargs.iter().any(|a| a == "--نسخه") {
         println!("محرك نيفا ١٫٠٫٠");
         return ExitCode::SUCCESS;
     }
@@ -98,21 +109,22 @@ fn main() -> ExitCode {
     // Arabic flags only — a Latin flag is rejected here.
     // --مفسر is a HIDDEN diagnostic flag (DESIGN §39.3):
     // known to the parser, but never shown in --مساعدة.
-    const KNOWN_FLAGS: [&str; 9] = [
-        "--مساعدة",
-        "--نسخة",
+    const KNOWN_FLAGS: [&str; 10] = [
+        "--مساعده",
+        "--نسخه",
         "--تفاعلي",
         "--مفسر",
-        "--شجرة",
+        "--شجره",
         "--اسمح-بالكل",
-        "--اسمح-بالشبكة",
+        "--اسمح-بالشبكه",
+        "--اسمح-بالخادم",
         "--مضيف-محلي",
         "--مستقل",
     ];
     // ك-2 (مهمة 7): --افتراضي أُزيل — الآلة الافتراضية هي
     // المحرك الافتراضي الآن، فلا معنى للعلم. خطأ عربي واضح
     // يقول ذلك، بدلا من «خيار غير معروف» المضللة.
-    if args.iter().any(|a| a == "--افتراضي") {
+    if nargs.iter().any(|a| a == "--افتراضي") {
         eprintln!("الآلة الافتراضية هي المحرك الافتراضي الآن — لا حاجة إلى --افتراضي");
         eprint!("{}", usage());
         return ExitCode::FAILURE;
@@ -120,7 +132,9 @@ fn main() -> ExitCode {
     if let Some(unknown) = args
         .iter()
         .skip(1)
-        .find(|a| a.starts_with('-') && !KNOWN_FLAGS.contains(&a.as_str()))
+        .zip(nargs.iter().skip(1))
+        .find(|(_, n)| n.starts_with('-') && !KNOWN_FLAGS.contains(&n.as_str()))
+        .map(|(raw, _)| raw)
     {
         eprintln!("خيار غير معروف: {}", unknown);
         eprint!("{}", usage());
@@ -131,12 +145,15 @@ fn main() -> ExitCode {
     // authorizes a local host (the only way a loopback/private
     // address can be fetched — see network.rs). The local-host
     // flag alone does NOT open the network.
-    let allow_network = args.iter().any(|a| a == "--اسمح-بالشبكة");
+    let allow_network = nargs.iter().any(|a| a == "--اسمح-بالشبكه");
+    // Meeting 27: the server is a separate permission — the
+    // network flag alone is NOT enough to serve.
+    let allow_server = nargs.iter().any(|a| a == "--اسمح-بالخادم");
     let mut local_hosts: Vec<String> = Vec::new();
     let mut arg_iter = args.iter().skip(1).peekable();
     let mut file_args: Vec<String> = Vec::new();
     while let Some(a) = arg_iter.next() {
-        if a == "--مضيف-محلي" {
+        if normalize_cli_word(a) == "--مضيف-محلي" {
             match arg_iter.next() {
                 Some(host) => local_hosts.push(host.clone()),
                 None => {
@@ -153,21 +170,24 @@ fn main() -> ExitCode {
     // No file path given (no args, or only flags) -> interactive REPL.
     // --تفاعلي is explicit; the REPL runs on the compiler (VM) by
     // default, or on the interpreter with --مفسر (diagnostic only).
-    let allow_all = args.iter().any(|a| a == "--اسمح-بالكل");
+    let allow_all = nargs.iter().any(|a| a == "--اسمح-بالكل");
     // ك-2 (مهمة 7): --مفسر علم تشخيص خفي — مفسر الشجرة
     // للمقارنة والتشخيص فقط، ولا يظهر في --مساعدة.
-    let use_interpreter = args.iter().any(|a| a == "--مفسر");
+    let use_interpreter = nargs.iter().any(|a| a == "--مفسر");
     // مهمة 8 (ك-2.2): أوامر البناء والتشغيل — أول موضعي
-    // هو الأمر نفسه (ابنِ/شغّل)، والثاني مساره.
-    if file_args.first().map(|s| s.as_str()) == Some("ابنِ") {
+    // هو الأمر نفسه (ابن/شغل)، والثاني مساره.
+    // الصيغ القانونية بلا تشكيل؛ والمشكولة (ابنِ، شغّل)
+    // مقبولة توافقا عبر التطبيع.
+    let first_cmd = file_args.first().map(|s| normalize_cli_word(s));
+    if first_cmd.as_deref() == Some("ابن") {
         return do_build(&args, &file_args);
     }
-    if file_args.first().map(|s| s.as_str()) == Some("شغّل") {
-        return do_run_artifact(&args, &file_args, allow_all, allow_network, &local_hosts);
+    if first_cmd.as_deref() == Some("شغل") {
+        return do_run_artifact(&args, &file_args, allow_all, allow_network, allow_server, &local_hosts);
     }
-    // --مستقل بلا ابنِ لا معنى له.
-    if args.iter().any(|a| a == "--مستقل") {
-        eprintln!("خطأ: العلم --مستقل يناسب أمر ابنِ فقط — مثال: نيفا ابنِ --مستقل برنامج.نيفا");
+    // --مستقل بلا ابن لا معنى له.
+    if nargs.iter().any(|a| a == "--مستقل") {
+        eprintln!("خطأ: العلم --مستقل يناسب أمر ابن فقط — مثال: نيفا ابن --مستقل برنامج.نيفا");
         eprint!("{}", usage());
         return ExitCode::FAILURE;
     }
@@ -176,14 +196,14 @@ fn main() -> ExitCode {
         // recursion limit is a Niva error, not a Rust stack overflow.
         let handle = std::thread::Builder::new()
             .stack_size(STACK_SIZE_BYTES)
-            .spawn(move || repl::run_repl(allow_all, allow_network, &local_hosts, use_interpreter));
+            .spawn(move || repl::run_repl(allow_all, allow_network, allow_server, &local_hosts, use_interpreter));
         return match handle {
             Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),
             Err(_) => ExitCode::FAILURE,
         };
     }
     let path = file_arg.unwrap();
-    let show_ast = args.iter().any(|a| a == "--شجرة");
+    let show_ast = nargs.iter().any(|a| a == "--شجره");
     // Meeting 4: trusted file mode, explicit flag only.
     // Default is restricted to the program directory.
     // (allow_all was already read above, before the REPL branch.)
@@ -245,6 +265,9 @@ fn main() -> ExitCode {
                 // Meeting 22: network is opt-in only, independent
                 // of file trust (--اسمح-بالكل does not open it).
                 interp.set_network_allowed(allow_network);
+                // Meeting 27: the server flag is separate —
+                // the network flag alone does not open it.
+                interp.set_server_allowed(allow_server);
                 for host in &local_hosts {
                     interp.allow_local_network_host(host);
                 }
@@ -270,7 +293,7 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            return run_vm(compiled, program_dir, allow_all, allow_network, &local_hosts);
+            return run_vm(compiled, program_dir, allow_all, allow_network, allow_server, &local_hosts);
         });
     match handle {
         Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),
@@ -306,14 +329,23 @@ fn run_vm(
     program_dir: std::path::PathBuf,
     allow_all: bool,
     allow_network: bool,
+    allow_server: bool,
     local_hosts: &[String],
 ) -> ExitCode {
     niva_engine::network::set_network_allowed(allow_network);
     for host in local_hosts {
         niva_engine::network::allow_local_host(host);
     }
+    // مهمة 10: سياسة العمليات للمسار المباشر (المترجم
+    // الافتراضي) — مجلد البرنامج + موثوق، وcwd يبدأ منه.
+    niva_engine::processes::set_process_policy(
+        program_dir.clone(),
+        allow_all,
+        program_dir.clone(),
+    );
     let mut vm_inst = vm::Vm::new(compiled, program_dir);
     vm_inst.set_trusted(allow_all);
+    vm_inst.set_server_allowed(allow_server);
     match vm_inst.run() {
         Ok(()) => {
             print!("{}", vm_inst.output);
@@ -341,36 +373,43 @@ fn current_exe_standalone_payload() -> Option<Vec<u8>> {
 /// أعلام الصلاحيات وحدها مسموحة؛ وأي موضعي آخر خطأ.
 fn run_standalone(payload: Vec<u8>) -> ExitCode {
     let args: Vec<String> = env::args().collect();
-    if args.iter().any(|a| a == "--مساعدة") {
+    // المطابقة على الصيغة المطبّعة (أمر المالك 2026-11-06
+    // ~05:08)؛ والرسائل تعرض ما كتبه المستخدم خاما.
+    let nargs: Vec<String> = args.iter().map(|a| normalize_cli_word(a)).collect();
+    if nargs.iter().any(|a| a == "--مساعده") {
         print!("{}", standalone_usage());
         return ExitCode::SUCCESS;
     }
-    if args.iter().any(|a| a == "--نسخة") {
+    if nargs.iter().any(|a| a == "--نسخه") {
         println!("محرك نيفا ١٫٠٫٠");
         return ExitCode::SUCCESS;
     }
-    const ALLOWED: [&str; 5] = [
-        "--مساعدة",
-        "--نسخة",
+    const ALLOWED: [&str; 6] = [
+        "--مساعده",
+        "--نسخه",
         "--اسمح-بالكل",
-        "--اسمح-بالشبكة",
+        "--اسمح-بالشبكه",
+        "--اسمح-بالخادم",
         "--مضيف-محلي",
     ];
     if let Some(unknown) = args
         .iter()
         .skip(1)
-        .find(|a| a.starts_with('-') && !ALLOWED.contains(&a.as_str()))
+        .zip(nargs.iter().skip(1))
+        .find(|(_, n)| n.starts_with('-') && !ALLOWED.contains(&n.as_str()))
+        .map(|(raw, _)| raw)
     {
         eprintln!("خيار غير معروف: {}", unknown);
         eprint!("{}", standalone_usage());
         return ExitCode::FAILURE;
     }
-    let allow_network = args.iter().any(|a| a == "--اسمح-بالشبكة");
-    let allow_all = args.iter().any(|a| a == "--اسمح-بالكل");
+    let allow_network = nargs.iter().any(|a| a == "--اسمح-بالشبكه");
+    let allow_all = nargs.iter().any(|a| a == "--اسمح-بالكل");
+    let allow_server = nargs.iter().any(|a| a == "--اسمح-بالخادم");
     let mut local_hosts: Vec<String> = Vec::new();
     let mut arg_iter = args.iter().skip(1).peekable();
     while let Some(a) = arg_iter.next() {
-        if a == "--مضيف-محلي" {
+        if normalize_cli_word(a) == "--مضيف-محلي" {
             match arg_iter.next() {
                 Some(host) => local_hosts.push(host.clone()),
                 None => {
@@ -407,7 +446,7 @@ fn run_standalone(payload: Vec<u8>) -> ExitCode {
             // المصنوع، فلا يصطدم بها إغلاق وحدة تُترجَم
             // وقت التشغيل.
             vm::reserve_closure_ids_above(artifact::max_closure_id(&prog));
-            run_vm(prog, program_dir, allow_all, allow_network, &local_hosts)
+            run_vm(prog, program_dir, allow_all, allow_network, allow_server, &local_hosts)
         });
     match handle {
         Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),
@@ -415,41 +454,51 @@ fn run_standalone(payload: Vec<u8>) -> ExitCode {
     }
 }
 
-/// أمر ابنِ: `نيفا ابنِ برنامج.نيفا` يبني مصنوع بايت
-/// كود محمول (.نيفاب) بجانب المصدر؛ و`نيفا ابنِ
+/// أمر ابن: `نيفا ابن برنامج.نيفا` يبني مصنوع بايت
+/// كود محمول (.نيفاب) بجانب المصدر؛ و`نيفا ابن
 /// --مستقل برنامج.نيفا` يبني ملفا تنفيذيا مستقلا
 /// (نسخة من نيفا نفسها + المصنوع في ذيلها).
 /// الأخطاء هي أخطاء التشغيل العادي نفسها (لغوي، نحوي،
 /// دلالي، ترجمة) — فالنموذج المعكوس مرفوض هنا كما هناك،
 /// لأنه يُرفَض في التحليل أصلا.
 fn do_build(args: &[String], file_args: &[String]) -> ExitCode {
-    const FORBIDDEN: [&str; 6] = [
+    const FORBIDDEN: [&str; 7] = [
         "--مفسر",
         "--تفاعلي",
-        "--شجرة",
+        "--شجره",
         "--اسمح-بالكل",
-        "--اسمح-بالشبكة",
+        "--اسمح-بالشبكه",
+        "--اسمح-بالخادم",
         "--مضيف-محلي",
     ];
-    if let Some(flag) = args.iter().find(|a| FORBIDDEN.contains(&a.as_str())) {
-        eprintln!("خطأ: العلم {} لا يناسب أمر ابنِ", flag);
+    // المطابقة على الصيغة المطبّعة؛ والرسالة تعرض العلم
+    // كما كتبه المستخدم خاما.
+    if let Some(flag) = args
+        .iter()
+        .zip(args.iter().map(|a| normalize_cli_word(a)))
+        .find(|(_, n)| FORBIDDEN.contains(&n.as_str()))
+        .map(|(raw, _)| raw)
+    {
+        eprintln!("خطأ: العلم {} لا يناسب أمر ابن", flag);
         eprint!("{}", usage());
         return ExitCode::FAILURE;
     }
     let src_path = match file_args.get(1) {
         Some(p) => p.clone(),
         None => {
-            eprintln!("خطأ: ابنِ يحتاج ملف مصدر — مثال: نيفا ابنِ برنامج.نيفا");
+            eprintln!("خطأ: ابن يحتاج ملف مصدر — مثال: نيفا ابن برنامج.نيفا");
             eprint!("{}", usage());
             return ExitCode::FAILURE;
         }
     };
     if file_args.len() > 2 {
-        eprintln!("خطأ: ابنِ يبني ملفا واحدا فقط");
+        eprintln!("خطأ: ابن يبني ملفا واحدا فقط");
         eprint!("{}", usage());
         return ExitCode::FAILURE;
     }
-    let standalone = args.iter().any(|a| a == "--مستقل");
+    let standalone = args
+        .iter()
+        .any(|a| normalize_cli_word(a) == "--مستقل");
     let source = match fs::read_to_string(&src_path) {
         Ok(s) => s,
         Err(e) => {
@@ -578,7 +627,7 @@ fn build_standalone(src_path: &str, payload: &[u8]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// أمر شغّل: `نيفا شغّل مصنوع.نيفاب` يفكّ المصنوع
+/// أمر شغل: `نيفا شغل مصنوع.نيفاب` يفكّ المصنوع
 /// ويشغّله على VM — المخرج ورمز الخروج كما في التشغيل
 /// العادي حرفيا. مجلد البرنامج هو مجلد المصنوع،
 /// فملفات الوحدات المستوردة (.نيفا) تسافر بجانبه
@@ -589,24 +638,30 @@ fn do_run_artifact(
     file_args: &[String],
     allow_all: bool,
     allow_network: bool,
+    allow_server: bool,
     local_hosts: &[String],
 ) -> ExitCode {
-    const FORBIDDEN: [&str; 4] = ["--مفسر", "--تفاعلي", "--شجرة", "--مستقل"];
-    if let Some(flag) = args.iter().find(|a| FORBIDDEN.contains(&a.as_str())) {
-        eprintln!("خطأ: العلم {} لا يناسب أمر شغّل", flag);
+    const FORBIDDEN: [&str; 4] = ["--مفسر", "--تفاعلي", "--شجره", "--مستقل"];
+    if let Some(flag) = args
+        .iter()
+        .zip(args.iter().map(|a| normalize_cli_word(a)))
+        .find(|(_, n)| FORBIDDEN.contains(&n.as_str()))
+        .map(|(raw, _)| raw)
+    {
+        eprintln!("خطأ: العلم {} لا يناسب أمر شغل", flag);
         eprint!("{}", usage());
         return ExitCode::FAILURE;
     }
     let art_path = match file_args.get(1) {
         Some(p) => p.clone(),
         None => {
-            eprintln!("خطأ: شغّل يحتاج مصنوعا — مثال: نيفا شغّل مصنوع.نيفاب");
+            eprintln!("خطأ: شغل يحتاج مصنوعا — مثال: نيفا شغل مصنوع.نيفاب");
             eprint!("{}", usage());
             return ExitCode::FAILURE;
         }
     };
     if file_args.len() > 2 {
-        eprintln!("خطأ: شغّل يشغّل مصنوعا واحدا فقط");
+        eprintln!("خطأ: شغل يشغّل مصنوعا واحدا فقط");
         eprint!("{}", usage());
         return ExitCode::FAILURE;
     }
@@ -640,7 +695,7 @@ fn do_run_artifact(
             // المصنوع، فلا يصطدم بها إغلاق وحدة تُترجَم
             // وقت التشغيل.
             vm::reserve_closure_ids_above(artifact::max_closure_id(&prog));
-            run_vm(prog, program_dir, allow_all, allow_network, &local_hosts)
+            run_vm(prog, program_dir, allow_all, allow_network, allow_server, &local_hosts)
         });
     match handle {
         Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),

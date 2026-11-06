@@ -163,6 +163,7 @@ fn parity_examples() {
         "15-methods.نيفا",
         "16-stdlib.نيفا",
         "17-word-operators.نيفا",
+        "18-عمليات.نيفا",
     ] {
         assert_example_same(name);
     }
@@ -244,6 +245,33 @@ fn parity_integration_scenarios() {
             "اطبع عد(٣)",
         ]),
         ("dot-non-module", &["س = ٥", "اطبع س.شيء"]),
+        // مهمة 10 (عمليات): الرفض والمعرفات — مخرجات حتمية
+        // (أخطاء تُمسك، ومقارنات منطقية) فتصلح للبوابة.
+        ("عمليات-مرفوض", &[
+            "استورد عمليات",
+            "حاول:",
+            "    عمليات.أنشئ(\"/bin/true\")",
+            "ماعدا:",
+            "    اطبع \"مرفوض كما يجب\"",
+        ]),
+        ("عمليات-الحالية", &[
+            "استورد عمليات",
+            "اطبع عمليات.الحالية() > ٠",
+        ]),
+        ("عمليات-معرف-غير-معروف", &[
+            "استورد عمليات",
+            "حاول:",
+            "    عمليات.انتظر(٩٩٩٩٩٩)",
+            "ماعدا:",
+            "    اطبع \"غير معروف كما يجب\"",
+        ]),
+        ("عمليات-أمر-فارغ", &[
+            "استورد عمليات",
+            "حاول:",
+            "    عمليات.أنشئ(\"\")",
+            "ماعدا:",
+            "    اطبع \"فارغ كما يجب\"",
+        ]),
         ("not-looser", &[
             "س = ١٠",
             "إذا ليس س == ٩٩:",
@@ -285,6 +313,17 @@ fn parity_integration_scenarios() {
             r#"اطبع نقل("أ")"#,
         ]),
         ("type-unknown", &["س: غيرمعروف = ٥"]),
+        // Meeting 26 (§41.3): لاشيء is a writable type name.
+        ("type-nil", &[
+            "س: لاشيء = لاشيء",
+            "اطبع س",
+            "دالة بلا_قيمة(): لاشيء:",
+            "    ارجع",
+            "اطبع بلا_قيمة()",
+            "دالة ساقطة(): لاشيء:",
+            "    مرر",
+            "اطبع ساقطة()",
+        ]),
         ("class-simple", &[
             "فئة نقطة:",
             "    دالة أنشئ(س، ص):",
@@ -300,6 +339,20 @@ fn parity_integration_scenarios() {
             "اطبع ك.مجموع()",
             "اطبع ك.زد(١٠)",
             "اطبع ك.س",
+        ]),
+        // Meeting 26 (§41.2): a stored bound method is a value
+        // like any other — `م = ص.قيمة؛ م()` prints ٧ in both
+        // modes (the interpreter's name path was missing the
+        // BoundMethod arm; the VM had it).
+        ("bound-method-stored", &[
+            "فئة صندوق:",
+            "    دالة أنشئ(ق):",
+            "        نفس.ق = ق",
+            "    دالة قيمة():",
+            "        ارجع نفس.ق",
+            "ص = أنشئ صندوق(٧)",
+            "م = ص.قيمة",
+            "اطبع م()",
         ]),
         ("class-err-unknown", &["ك = أنشئ غيرموجود()"]),
         ("class-err-call", &["فئة س:", "    مرر", "ك = س(١)"]),
@@ -650,5 +703,317 @@ fn parity_fib30() {
         (out_i, err_i, code_i),
         (out_v, err_v, code_v),
         "اختلاف تكافؤ في ليف(٣٠)"
+    );
+}
+
+/// خادم HTTPS (اجتماع 27) — حالة بوابة خاصة، لا في
+/// جدول الحالات: برنامج الخادم يحجب إلى الأبد، فلا
+/// ينفع `assert_same_src` (ينتظر انتهاء العملية).
+/// التصميم: تشغيل الوضعين بالتتابع على المنفذ نفسه،
+/// ومقارنة سطر البدء حرفيا + الجسم المجلوب من كل
+/// مسار حرفيا. المعالج دالة نيفا حقيقية، والبرنامج
+/// نفسه، وعلم الخادم وحده (بلا علم الشبكة).
+#[test]
+#[cfg(feature = "https")]
+fn parity_server() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::process::Stdio;
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let prog = format!(
+        "استورد شبكة\nدالة عالج(طلب):\n    إذا طلب[\"مسار\"] == \"/dict\":\n        ارجع {{\"حالة\": ٢٠١، \"نص\": \"تم\"، \"ترويسات\": {{\"X-Custom\": \"نعم\"}}}}\n    إذا طلب[\"مسار\"] == \"/err\":\n        ارجع ١ / ٠\n    ارجع \"مسار:\" + طلب[\"مسار\"]\nشبكة.اخدم {} \"server-cert.pem\" \"server-key.pem\" عالج\n",
+        port
+    );
+    let fetch = |path: &str| -> (u16, String) {
+        let ca_der = include_bytes!("fixtures/tls-ca-cert.der").to_vec();
+        let mut roots = rustls::RootCertStore::empty();
+        roots
+            .add(rustls::pki_types::CertificateDer::from(ca_der))
+            .unwrap();
+        let config = std::sync::Arc::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth(),
+        );
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let name = rustls::pki_types::ServerName::try_from("127.0.0.1".to_string()).unwrap();
+        let conn = rustls::ClientConnection::new(config, name).unwrap();
+        let mut tls = rustls::StreamOwned::new(conn, stream);
+        tls.write_all(
+            format!(
+                "GET {} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+                path
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+        let mut raw = Vec::new();
+        tls.read_to_end(&mut raw).unwrap();
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        let (head, body) = match text.split_once("\r\n\r\n") {
+            Some((h, b)) => (h, b.to_string()),
+            None => (text.as_str(), String::new()),
+        };
+        let status: u16 = head
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        (status, body)
+    };
+
+    let mut pair = Vec::new();
+    for interpreter in [true, false] {
+        let dir = fresh_dir();
+        fs::write(dir.join("prog.نيفا"), &prog).unwrap();
+        for f in ["server-cert.pem", "server-key.pem"] {
+            let content = match f {
+                "server-cert.pem" => include_str!("fixtures/server-cert.pem"),
+                _ => include_str!("fixtures/server-key.pem"),
+            };
+            fs::write(dir.join(f), content).unwrap();
+        }
+        let mut cmd = Command::new(bin());
+        if interpreter {
+            cmd.arg("--مفسر");
+        }
+        let mut child = cmd
+            .arg("--اسمح-بالخادم")
+            .arg(dir.join("prog.نيفا"))
+            .current_dir(&dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn نيفا server");
+        let stdout = child.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            while reader.read_line(&mut line).is_ok() {
+                if line.is_empty() {
+                    break;
+                }
+                let _ = tx.send(std::mem::take(&mut line));
+                line = String::new();
+            }
+        });
+        let mut startup = String::new();
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(left) {
+                Ok(line) => {
+                    if line.starts_with("الخادم يعمل على") {
+                        startup = line;
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        assert!(
+            startup.starts_with("الخادم يعمل على"),
+            "no startup line, interpreter={}",
+            interpreter
+        );
+        let hello = fetch("/hello");
+        let dict = fetch("/dict");
+        let err = fetch("/err");
+        assert_eq!(hello, (200, "مسار:/hello".to_string()));
+        assert_eq!(dict, (201, "تم".to_string()));
+        assert_eq!(err, (500, "خطأ في معالج الطلب".to_string()));
+        pair.push((startup, hello, dict, err));
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = fs::remove_dir_all(&dir);
+    }
+    assert_eq!(
+        pair[0], pair[1],
+        "اختلاف تكافؤ في الخادم:\n--- المفسر: {:?}\n--- الافتراضي: {:?}",
+        pair[0], pair[1]
+    );
+}
+
+/// One h2 GET on an established connection (parity gate):
+/// returns (status, body). `poll_ready` borrows `send`;
+/// `ready()` would consume it.
+#[cfg(feature = "http2")]
+async fn h2_gate_get(
+    send: &mut h2::client::SendRequest<bytes::Bytes>,
+    port: u16,
+    path: &str,
+) -> (u16, String) {
+    std::future::poll_fn(|cx| send.poll_ready(cx))
+        .await
+        .unwrap();
+    let req = http::Request::builder()
+        .method("GET")
+        .uri(format!("https://127.0.0.1:{}{}", port, path))
+        .header("host", format!("127.0.0.1:{}", port))
+        .body(())
+        .unwrap();
+    let (resp_fut, _stream) = send.send_request(req, true).unwrap();
+    let resp = resp_fut.await.unwrap();
+    let (parts, mut body_stream) = resp.into_parts();
+    let status = parts.status.as_u16();
+    let mut body = Vec::new();
+    while let Some(chunk) = body_stream.data().await {
+        let chunk = chunk.unwrap();
+        let _ = body_stream.flow_control().release_capacity(chunk.len());
+        body.extend_from_slice(&chunk);
+    }
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// خادم HTTPS عبر HTTP/2 (اجتماع 27 §42) — حالة بوابة
+/// خاصة، لا في جدول الحالات: برنامج الخادم يحجب إلى
+/// الأبد، فلا ينفع `assert_same_src` (ينتظر انتهاء
+/// العملية). التصميم: تشغيل الوضعين بالتتابع على المنفذ
+/// نفسه، ومقارنة سطر البدء حرفيا + الأجسام المجلوبة عبر
+/// h2 حرفيا. العميل هنا عميل h2 حقيقي (tokio-rustls +
+/// h2، ALPN ‏["h2"] وحده)، فيثبت الاختبار أن الخادم
+/// يتفاوض h2 فعلا وأن الردود متطابقة في الوضعين —
+/// والتدفقات الثلاثة على اتصال واحد تثبت إعادة
+/// استخدام الاتصال. المعالج دالة نيفا حقيقية، والبرنامج
+/// نفسه، وعلم الخادم وحده (بلا علم الشبكة).
+#[test]
+#[cfg(feature = "http2")]
+fn parity_server_h2() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let prog = format!(
+        "استورد شبكة\nدالة عالج(طلب):\n    إذا طلب[\"مسار\"] == \"/dict\":\n        ارجع {{\"حالة\": ٢٠١، \"نص\": \"تم\"، \"ترويسات\": {{\"X-Custom\": \"نعم\"}}}}\n    إذا طلب[\"مسار\"] == \"/err\":\n        ارجع ١ / ٠\n    ارجع \"مسار:\" + طلب[\"مسار\"]\nشبكة.اخدم {} \"server-cert.pem\" \"server-key.pem\" عالج\n",
+        port
+    );
+    // Three paths on ONE h2 connection, sequentially.
+    let fetch_all = |port: u16| -> ((u16, String), (u16, String), (u16, String)) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            let ca_der = include_bytes!("fixtures/tls-ca-cert.der").to_vec();
+            let mut roots = rustls::RootCertStore::empty();
+            roots
+                .add(rustls::pki_types::CertificateDer::from(ca_der))
+                .unwrap();
+            let mut config = rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            config.alpn_protocols = vec![b"h2".to_vec()];
+            let connector =
+                tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+            let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            let name =
+                rustls::pki_types::ServerName::try_from("127.0.0.1".to_string()).unwrap();
+            let tls = connector.connect(name, stream).await.unwrap();
+            assert_eq!(
+                tls.get_ref().1.alpn_protocol(),
+                Some(b"h2".as_slice()),
+                "the Niva server must negotiate h2"
+            );
+            let (mut send, conn) = h2::client::handshake(tls).await.unwrap();
+            tokio::spawn(async move {
+                let _ = conn.await;
+            });
+            let hello = h2_gate_get(&mut send, port, "/hello").await;
+            let dict = h2_gate_get(&mut send, port, "/dict").await;
+            let err = h2_gate_get(&mut send, port, "/err").await;
+            (hello, dict, err)
+        })
+    };
+
+    let mut pair = Vec::new();
+    for interpreter in [true, false] {
+        let dir = fresh_dir();
+        fs::write(dir.join("prog.نيفا"), &prog).unwrap();
+        for f in ["server-cert.pem", "server-key.pem"] {
+            let content = match f {
+                "server-cert.pem" => include_str!("fixtures/server-cert.pem"),
+                _ => include_str!("fixtures/server-key.pem"),
+            };
+            fs::write(dir.join(f), content).unwrap();
+        }
+        let mut cmd = Command::new(bin());
+        if interpreter {
+            cmd.arg("--مفسر");
+        }
+        let mut child = cmd
+            .arg("--اسمح-بالخادم")
+            .arg(dir.join("prog.نيفا"))
+            .current_dir(&dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn نيفا server");
+        let stdout = child.stdout.take().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            while reader.read_line(&mut line).is_ok() {
+                if line.is_empty() {
+                    break;
+                }
+                let _ = tx.send(std::mem::take(&mut line));
+                line = String::new();
+            }
+        });
+        let mut startup = String::new();
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            match rx.recv_timeout(left) {
+                Ok(line) => {
+                    if line.starts_with("الخادم يعمل على") {
+                        startup = line;
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        assert!(
+            startup.starts_with("الخادم يعمل على"),
+            "no startup line, interpreter={}",
+            interpreter
+        );
+        let (hello, dict, err) = fetch_all(port);
+        assert_eq!(hello, (200, "مسار:/hello".to_string()));
+        assert_eq!(dict, (201, "تم".to_string()));
+        assert_eq!(err, (500, "خطأ في معالج الطلب".to_string()));
+        pair.push((startup, hello, dict, err));
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = fs::remove_dir_all(&dir);
+    }
+    assert_eq!(
+        pair[0], pair[1],
+        "اختلاف تكافؤ في الخادم عبر HTTP/2:\n--- المفسر: {:?}\n--- الافتراضي: {:?}",
+        pair[0], pair[1]
     );
 }

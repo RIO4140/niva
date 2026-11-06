@@ -11,7 +11,7 @@
 // - typing after navigating resets to the newest;
 // - history is per session and survives switching;
 // - continuation lines are stored one entry per line and
-//   the أكمل: prompt still works;
+//   the > prompt still works;
 // - the reversed-assignment prototype is still absent.
 import { register } from 'node:module';
 register('./test-history-loader.mjs', import.meta.url);
@@ -119,7 +119,7 @@ function scrollText() {
   return visible.children.map((c) => c.textContent).join('\n');
 }
 
-check('session 1 prompt fresh', promptEl.textContent, 'نيفا: ');
+check('session 1 prompt fresh', promptEl.textContent, '~ $ ');
 check('up with empty history does nothing', up(), '');
 
 type('س = ٥');
@@ -149,7 +149,7 @@ check('up after typing restarts at newest', up(), 'ص = ٧');
 
 // History is per session and survives switching.
 addSession(); // session 2, switched to it
-check('session 2 prompt fresh', promptEl.textContent, 'نيفا: ');
+check('session 2 prompt fresh', promptEl.textContent, '~ $ ');
 check('session 2 up with empty history', up(), '');
 type('أ = ١');
 check('session 2 up', up(), 'أ = ١');
@@ -159,13 +159,13 @@ switchTo(1); // session 2 again
 check('session 2 history survives switch', up(), 'أ = ١');
 
 // Continuation lines are stored one entry per line, and
-// the أكمل: prompt still works.
+// the > prompt still works.
 type('إذا أ أكبر من ٠:');
-check('continuation prompt', promptEl.textContent, 'أكمل: ');
+check('continuation prompt', promptEl.textContent, '> ');
 type('    اطبع "كبير"');
-check('still continuation', promptEl.textContent, 'أكمل: ');
+check('still continuation', promptEl.textContent, '> ');
 type('ب = ٢');
-check('block evaluated, prompt back', promptEl.textContent, 'نيفا: ');
+check('block evaluated, prompt back', promptEl.textContent, '~ $ ');
 check('block output reached scrollback', scrollText().includes('كبير'), true);
 check('up is the last line', up(), 'ب = ٢');
 check('up is the indented line', up(), '    اطبع "كبير"');

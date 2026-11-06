@@ -12,6 +12,41 @@ pub struct Parser {
     pos: usize,
 }
 
+/// Does the next token start a bare-call argument on the same
+/// line as the dotted name (Meeting 27, §42.1)? True for value
+/// starts (number, string, name, brackets, unary minus,
+/// ليس / دالة_مجهولة / أنشئ / صحيح / خطأ / لاشيء) on that
+/// line — false for newlines, separators, operators, and
+/// keywords that never start a value.
+fn bare_call_follows(tok: &Token, line: usize) -> bool {
+    if tok.line != line {
+        return false;
+    }
+    match &tok.kind {
+        TokenKind::Ident(_) | TokenKind::Number(_) | TokenKind::Str(_) => true,
+        // NOTE: LParen and LBracket are deliberately NOT
+        // here: `(` after a dotted name is the
+        // parenthesized call (`شبكة.اجلب("...")`) and
+        // `[` is the index operator (`س.قائمة[٠]`) —
+        // both are handled by the loop arms above, and
+        // the bare-call rule must never steal them.
+        // (Found 2026-11-06: the first version listed
+        // LParen here and broke every parenthesized
+        // dotted call.)
+        TokenKind::LBrace | TokenKind::Minus => true,
+        TokenKind::Keyword(kw) => matches!(
+            kw,
+            Keyword::Lambda
+                | Keyword::Not
+                | Keyword::True
+                | Keyword::False
+                | Keyword::Nil
+                | Keyword::Create
+        ),
+        _ => false,
+    }
+}
+
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
         Self { tokens, pos: 0 }
@@ -87,6 +122,36 @@ impl Parser {
             _ => {
                 let t = self.peek().clone();
                 Err(RioError::parse(format!("توقع {}، وجد غيره", what), t.line, t.col))
+            }
+        }
+    }
+
+    /// Member name after a dot: an identifier, or a keyword
+    /// used as a name (its canonical normalized spelling —
+    /// e.g. `عمليات.أنشئ` lexes أنشئ as Keyword::Create, and
+    /// the member name is "انشي"). Keywords are names in this
+    /// one position only; everywhere else expect_ident still
+    /// rejects them, so no valid program changes meaning
+    /// (this position was a parse error before).
+    fn expect_member_name(&mut self) -> RioResult<(String, usize, usize)> {
+        match &self.peek().kind {
+            TokenKind::Ident(name) => {
+                let name = name.clone();
+                let t = self.advance();
+                Ok((name, t.line, t.col))
+            }
+            TokenKind::Keyword(kw) => {
+                let name = crate::lexer::keyword_spelling(*kw).to_string();
+                let t = self.advance();
+                Ok((name, t.line, t.col))
+            }
+            _ => {
+                let t = self.peek().clone();
+                Err(RioError::parse(
+                    "توقع اسم بعد النقطة، وجد غيره".to_string(),
+                    t.line,
+                    t.col,
+                ))
             }
         }
     }
@@ -386,11 +451,13 @@ impl Parser {
         // After ')', a Colon followed by a type name and another
         // Colon is a return type; a Colon followed by a block
         // (Newline/Indent) is just the block colon.
+        // Meeting 26 (§41.3): لاشيء is a type name too, but it
+        // lexes as Keyword::Nil — the lookahead must accept it.
         let mut return_type: Option<String> = None;
         if matches!(self.peek().kind, TokenKind::Colon) {
-            if matches!(self.peek_at(1).kind, TokenKind::Ident(_))
-                && matches!(self.peek_at(2).kind, TokenKind::Colon)
-            {
+            let next_is_type = matches!(self.peek_at(1).kind, TokenKind::Ident(_))
+                || matches!(self.peek_at(1).kind, TokenKind::Keyword(Keyword::Nil));
+            if next_is_type && matches!(self.peek_at(2).kind, TokenKind::Colon) {
                 self.advance(); // :
                 return_type = Some(self.parse_type_name()?);
             }
@@ -536,6 +603,15 @@ impl Parser {
     }
 
     fn parse_type_name(&mut self) -> RioResult<String> {
+        // Meeting 26 (§41.3): لاشيء is a writable type name, but
+        // it lexes as Keyword::Nil, not Ident — accept it here
+        // only (params, return type, variable annotation all pass
+        // through this one function). The semantic analyzer is
+        // unchanged: it compares type names as text.
+        if matches!(self.peek().kind, TokenKind::Keyword(Keyword::Nil)) {
+            self.advance();
+            return Ok("لاشيء".to_string());
+        }
         let (name, line, col) = self.expect_ident("اسم نوع")?;
         if crate::ast::is_known_type(&name) {
             Ok(name)
@@ -914,12 +990,35 @@ impl Parser {
             }
             if matches!(self.peek().kind, TokenKind::Dot) {
                 let tok = self.advance();
-                let (name, _, _) = self.expect_ident("اسم بعد النقطة")?;
+                let (name, name_line, _) = self.expect_member_name()?;
                 expr = Expr::new(
                     ExprKind::Dot { target: Box::new(expr), name },
                     tok.line,
                     tok.col,
                 );
+                // Meeting 27 (§42.1): bare call — `شبكة.اخدم
+                // ٨٤٤٣ شهادة مفتاح معالج` (args separated by
+                // spaces, no commas). After a dotted name, value
+                // expressions on the SAME line are call
+                // arguments: each arg is a full expression, and
+                // the list ends at a newline, a separator, or a
+                // token that cannot start a value. The
+                // parenthesized form `شبكة.اخدم(٨٤٤٣، ...)`
+                // keeps working as before. Operators still
+                // continue the current expression (`س.طول + ١`
+                // is an addition, not a call), and a dotted
+                // name alone on its line stays a plain value.
+                if bare_call_follows(self.peek(), name_line) {
+                    let mut args = Vec::new();
+                    while bare_call_follows(self.peek(), name_line) {
+                        args.push(self.parse_expr()?);
+                    }
+                    expr = Expr::new(
+                        ExprKind::Call { callee: Box::new(expr), args },
+                        tok.line,
+                        tok.col,
+                    );
+                }
                 continue;
             }
             break;

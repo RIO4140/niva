@@ -116,6 +116,11 @@ pub struct Interpreter {
     // interpreter that is currently evaluating, and one REPL
     // console's approval never leaks into another.
     network_allowed: bool,
+    // Meeting 27: the server flag, same per-instance pattern
+    // as the network flag — but it is read through the
+    // HandlerCaller context (no process-wide static), because
+    // native functions now receive the engine as context.
+    server_allowed: bool,
 }
 
 impl Interpreter {
@@ -132,6 +137,7 @@ impl Interpreter {
             loading_stack: Vec::new(),
             file_policy: crate::permissions::FilePolicy::restricted(program_dir),
             network_allowed: false,
+            server_allowed: false,
         }
     }
 
@@ -321,6 +327,21 @@ impl Interpreter {
         self.network_allowed
     }
 
+    /// Meeting 27: server capability. Default OFF; the CLI
+    /// --اسمح-بالخادم flag (or the console's first-use
+    /// approval, :اسمح-بالخادم) turns it on. The network flag
+    /// alone is NOT enough to serve. Per-instance, like the
+    /// network flag; read through the HandlerCaller context
+    /// when a native function runs.
+    pub fn set_server_allowed(&mut self, allowed: bool) {
+        self.server_allowed = allowed;
+    }
+
+    /// This interpreter's own server permission.
+    pub fn server_allowed(&self) -> bool {
+        self.server_allowed
+    }
+
     /// Explicitly authorize a local hostname for fetching (the
     /// only way a loopback/private address can be reached — see
     /// network.rs). Used by the CLI --مضيف-محلي flag.
@@ -465,6 +486,13 @@ impl Interpreter {
         // process-wide gate to this interpreter before any
         // اجلب can run inside this evaluation.
         crate::network::set_network_allowed(self.network_allowed);
+        // مهمة 10: سياسة العمليات نفس النمط — تُزامَن من
+        // حالة هذه النسخة (مجلد البرنامج + موثوق + cwd).
+        crate::processes::set_process_policy(
+            self.program_dir.clone(),
+            self.file_policy.trusted,
+            self.cwd.clone(),
+        );
         self.eval_expr(expr)
     }
 
@@ -473,6 +501,12 @@ impl Interpreter {
         // eval_one — the gate always reflects the interpreter
         // that is currently evaluating.
         crate::network::set_network_allowed(self.network_allowed);
+        // مهمة 10: سياسة العمليات نفس النمط.
+        crate::processes::set_process_policy(
+            self.program_dir.clone(),
+            self.file_policy.trusted,
+            self.cwd.clone(),
+        );
         for stmt in program {
             match self.exec_stmt(stmt)? {
                 Flow::Normal => {}
@@ -1228,7 +1262,14 @@ impl Interpreter {
                             // Step 2 (Meeting 16): a stdlib function
                             // imported by name (من رياضيات استورد جذر).
                             Value::NativeFunction { func, .. } => {
-                                func(&arg_values, expr.line, expr.col)
+                                func(self, &arg_values, expr.line, expr.col)
+                            }
+                            // Meeting 26 (§41.2): a stored bound
+                            // method is a value like any other —
+                            // the general path below has this arm;
+                            // the name path was missing it.
+                            Value::BoundMethod { func, instance } => {
+                                self.call_method(*func, instance, arg_values, expr.line, expr.col)
                             }
                             Value::Class(data) => Err(RioError::typ(
                                 format!(
@@ -1272,7 +1313,7 @@ impl Interpreter {
                         self.call_user(callee_value, arg_values, expr.line, expr.col)
                     }
                     Value::NativeFunction { func, .. } => {
-                        func(&arg_values, expr.line, expr.col)
+                        func(self, &arg_values, expr.line, expr.col)
                     }
                     Value::BoundMethod { func, instance } => {
                         self.call_method(*func, instance, arg_values, expr.line, expr.col)
@@ -2409,6 +2450,15 @@ impl Interpreter {
                         match std::fs::metadata(&resolved) {
                             Ok(m) if m.is_dir() => {
                                 self.cwd = Self::normalize_lexical(&resolved);
+                                // مهمة 10: تغيّر مجلد الجلسة —
+                                // أعد مزامنة سياسة العمليات حالا،
+                                // فلا يبقى `أنشئ` على المجلد القديم
+                                // بقية هذا التقييم.
+                                crate::processes::set_process_policy(
+                                    self.program_dir.clone(),
+                                    self.file_policy.trusted,
+                                    self.cwd.clone(),
+                                );
                                 Ok(Value::Nil)
                             }
                             Ok(_) => Err(RioError::new(
@@ -2903,6 +2953,53 @@ impl Interpreter {
 impl Default for Interpreter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// --- سياق الدوال الأصلية (خادم HTTPS، اجتماع 27) ---
+//
+// المفسر يستدعي المعالج عبر مسار الاستدعاء العادي
+// نفسه (دالة مستخدم / طريقة مربوطة / دالة أصلية)،
+// فيلتقط المعالج البيئة المعجمية التي أُنشئ فيها
+// (الإغلاقات تعمل)، وتنفيذ كل طلب معزول: النطاقات
+// والمكدس والعمق محلية لكل استدعاء (call_user يبدّل
+// النطاقات ويعيدها)، والمخرجات تُجمَع في self.output
+// فنرجع دلتا المخرجات بعد كل استدعاء.
+impl crate::stdlib::HandlerCaller for Interpreter {
+    fn call_handler(
+        &mut self,
+        func: &Value,
+        arg: Value,
+        line: usize,
+        col: usize,
+    ) -> (RioResult<Value>, String) {
+        let before = self.output.len();
+        let res = match func.clone() {
+            Value::Function { .. } => self.call_user(func.clone(), vec![arg], line, col),
+            Value::BoundMethod { func: f, instance } => {
+                self.call_method(*f, instance, vec![arg], line, col)
+            }
+            Value::NativeFunction { func: f, .. } => f(self, &[arg], line, col),
+            other => Err(RioError::typ(
+                format!("القيمة {} ليست دالة", other.type_name()),
+                line,
+                col,
+            )),
+        };
+        let produced = self.output[before..].to_string();
+        (res, produced)
+    }
+
+    fn server_allowed(&self) -> bool {
+        self.server_allowed
+    }
+
+    fn server_file_policy(&self) -> crate::permissions::FilePolicy {
+        self.file_policy.clone()
+    }
+
+    fn server_cwd(&self) -> std::path::PathBuf {
+        self.cwd.clone()
     }
 }
 

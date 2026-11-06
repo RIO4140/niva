@@ -91,22 +91,22 @@ function feed(line) {
   return JSON.parse(c.eval(line));
 }
 check('isNetworkAllowed default false', c.is_network_allowed(), false);
-check('استورد شبكة', feed('استورد شبكة'), { output: '', prompt: 'نيفا: ', ended: false, needs_network: false });
+check('استورد شبكة', feed('استورد شبكة'), { output: '', prompt: '~ $ ', ended: false, needs_network: false });
 
 // Gate: permission error + needs_network flag.
 const gated = feed(`شبكة.اجلب("${base}/hello")`);
 check('gate error text', gated.output.includes('الشبكة مغلقة افتراضيا'), true);
 check('gate needs_network flag', gated.needs_network, true);
-check('gate prompt back to normal', gated.prompt, 'نيفا: ');
+check('gate prompt back to normal', gated.prompt, '~ $ ');
 
 // Approve (what the console page does after the Arabic ask).
 c.set_network_allowed(true);
 check('isNetworkAllowed after set', c.is_network_allowed(), true);
 
 // Real fetch through the polyfilled sync XHR.
-check('fetch hello', feed(`شبكة.اجلب("${base}/hello")`), { output: 'مرحبا من الخادم\n', prompt: 'نيفا: ', ended: false, needs_network: false });
-check('fetch chunked', feed(`شبكة.اجلب("${base}/chunked")`), { output: 'chunked-ok\n', prompt: 'نيفا: ', ended: false, needs_network: false });
-check('fetch same-host redirect', feed(`شبكة.اجلب("${base}/redirect")`), { output: 'مرحبا من الخادم\n', prompt: 'نيفا: ', ended: false, needs_network: false });
+check('fetch hello', feed(`شبكة.اجلب("${base}/hello")`), { output: 'مرحبا من الخادم\n', prompt: '~ $ ', ended: false, needs_network: false });
+check('fetch chunked', feed(`شبكة.اجلب("${base}/chunked")`), { output: 'chunked-ok\n', prompt: '~ $ ', ended: false, needs_network: false });
+check('fetch same-host redirect', feed(`شبكة.اجلب("${base}/redirect")`), { output: 'مرحبا من الخادم\n', prompt: '~ $ ', ended: false, needs_network: false });
 check('fetch cross-host redirect refused', feed(`شبكة.اجلب("${base}/cross")`).output.includes('مضيف مختلف'), true);
 check('fetch 500 refused', feed(`شبكة.اجلب("${base}/status500")`).output.includes('500'), true);
 check('fetch too big refused', feed(`شبكة.اجلب("${base}/big")`).output.includes('5 ميغابايت'), true);
