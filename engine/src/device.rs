@@ -1,21 +1,27 @@
-//! جهاز — حوار تفاعلي (المهمة 20 من خطة البناء،
-//! أول قدرات واجهات الجهاز — المرحلة 4).
+//! جهاز — حوار تفاعلي + تنبيه (المهمتان 20 و21 من
+//! خطة البناء، أول قدرات واجهات الجهاز — المرحلة 4).
 //!
 //! المبدأ: المحرك عملية فرعية في التطبيق، فيطلب
-//! الحوار عبر قناة التحكم المنظمة على stderr (نمط
-//! م-6: `\u{0001}نيفا-تحكم:…` حين يكون
+//! الحوار أو التنبيه عبر قناة التحكم المنظمة على
+//! stderr (نمط م-6: `\u{0001}نيفا-تحكم:…` حين يكون
 //! `NIVA_CONTROL_CHANNEL=stderr` مضبوطا) وينتظر
 //! النتيجة سطرا منظما على stdin. لا واجهة في
 //! المحرك أبدا — المحرك يطلب فقط، والتطبيق يعرض
-//! ويعيد. وخارج أندرويد لا حوار إطلاقا (خطأ عربي
-//! واضح)، فلا سطر تحكم يُرسَل ولا انتظار يُدخَل.
+//! ويعيد. وخارج أندرويد لا حوار ولا تنبيه إطلاقا
+//! (خطأ عربي واضح)، فلا سطر تحكم يُرسَل ولا انتظار
+//! يُدخَل.
 //!
 //! التصميم الكامل — بما فيه بروتوكول الطلب/النتيجة
 //! وأنواع الحوار التسعة في v1 وتأجيل «صوتي» وبوابة
-//! الإذن وترتيب الفحوص — في CATALOG-12-DEVICE-DIALOG.md.
+//! الإذن وترتيب الفحوص — في CATALOG-12-DEVICE-DIALOG.md؛
+//! وتصميم التنبيه (معرّفاته وسقفه وبوابة إذن
+//! الإشعارات وترتيب فحوصه) في CATALOG-13-DEVICE-NOTIFY.md.
 
 use crate::error::{RioError, RioResult};
 use crate::value::Value;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 #[cfg(target_arch = "wasm32")]
 const WASM_REFUSAL: &str = "هذه الدالة غير مدعومة في متصفح الويب";
@@ -24,7 +30,16 @@ const WASM_REFUSAL: &str = "هذه الدالة غير مدعومة في متص�
 /// أندرويد فقط (لا مرسِل لها في غيره).
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 const CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:حوار:";
-/// بادئة سطر نتيجة الحوار على stdin — أندرويد فقط.
+/// بادئة سطر طلب التنبيه على stderr (المهمة 21) —
+/// أندرويد فقط.
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const NOTIFY_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:نبّه:";
+/// بادئة سطر طلب إزالة التنبيه على stderr (المهمة 21)
+/// — أندرويد فقط؛ بلا انتظار (الإلغاء متزامن ولا
+/// يفشل فشلا ذا معنى حين يكون المعرّف حيّا).
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const REMOVE_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:أزل_تنبيه:";
+/// بادئة سطر نتيجة التحكم على stdin — أندرويد فقط.
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 const RESULT_PREFIX: &str = "\u{0001}نيفا-نتيجة:";
 
@@ -333,32 +348,303 @@ fn show_dialog_native(req: &DialogRequest, line: usize, col: usize) -> RioResult
     }
 }
 
+/// سقف التنبيهات الحية (المهمة 21 — على نمط سقف
+/// المقابس والقنوات: 64).
+pub const MAX_LIVE_NOTIFICATIONS: usize = 64;
+
+/// عدّاد معرّفات التنبيه — رتيب من 1، لا يُعاد أبدا
+/// حتى بعد الإزالة (على نمط معرّفات المقابس والقنوات).
+static NEXT_NOTIFY_ID: AtomicU64 = AtomicU64::new(1);
+
+/// مجموعة المعرّفات الحية — مشتركة بين المحركين
+/// (على نمط سجل كتل `ذاكرة`).
+fn live_notifications() -> &'static Mutex<HashSet<u64>> {
+    static LIVE: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
+    LIVE.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+/// حجز معرّف جديد (يفشل عند السقف — قبل أي إرسال).
+pub fn reserve_notify_id(line: usize, col: usize) -> RioResult<u64> {
+    let mut live = live_notifications()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if live.len() >= MAX_LIVE_NOTIFICATIONS {
+        return Err(RioError::runtime(
+            "وصل عدد التنبيهات الحية إلى الحد (64)",
+            line,
+            col,
+        ));
+    }
+    let id = NEXT_NOTIFY_ID.fetch_add(1, Ordering::SeqCst);
+    live.insert(id);
+    Ok(id)
+}
+
+/// تحرير معرّف محجوز (عند فشل النشر — وإلا تسرّب
+/// المعرّف وعدّ حيّا وهو غير معروض).
+pub fn release_notify_id(id: u64) {
+    match live_notifications().lock() {
+        Ok(mut live) => {
+            live.remove(&id);
+        }
+        Err(poisoned) => {
+            poisoned.into_inner().remove(&id);
+        }
+    }
+}
+
+/// استهلاك معرّف حيّ (للإزالة) — يعيد صحيحا إن كان
+/// حيّا، وخطأ إن لم يكن.
+pub fn consume_notify_id(id: u64) -> bool {
+    match live_notifications().lock() {
+        Ok(mut live) => live.remove(&id),
+        Err(poisoned) => poisoned.into_inner().remove(&id),
+    }
+}
+
+/// التحقق الخالص من وسائط `جهاز.نبّه` — يعمل على كل
+/// المنصات (نمط `تشفير`: أخطاء الوسائط قبل فحص المنصة).
+pub fn validate_notify_args(args: &[Value], line: usize, col: usize) -> RioResult<(String, String)> {
+    const DISPLAY: &str = "جهاز.نبّه";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 2 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let title = match &args[0] {
+        Value::Str(s) => s.clone(),
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع نصا لعنوان التنبيه لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    let text = match &args[1] {
+        Value::Str(s) => s.clone(),
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع نصا لنص التنبيه لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if title.is_empty() {
+        return Err(RioError::runtime("عنوان التنبيه فارغ", line, col));
+    }
+    if text.is_empty() {
+        return Err(RioError::runtime("نص التنبيه فارغ", line, col));
+    }
+    Ok((title, text))
+}
+
+/// التحقق الخالص من وسائط `جهاز.أزل_تنبيه` — معامل
+/// واحد عدد صحيح موجب.
+pub fn validate_remove_args(args: &[Value], line: usize, col: usize) -> RioResult<u64> {
+    const DISPLAY: &str = "جهاز.أزل_تنبيه";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 معامل لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    match &args[0] {
+        Value::Number(x) if x.fract() == 0.0 && *x >= 1.0 && x.abs() < 9.0e15 => Ok(*x as u64),
+        Value::Number(_) => Err(RioError::typ(
+            format!("الدالة {} تتوقع عددا صحيحا موجبا لمعرف التنبيه", DISPLAY),
+            line,
+            col,
+        )),
+        other => Err(typ_error(
+            DISPLAY,
+            &format!("تتوقع عددا لمعرف التنبيه لكن أعطيت {}", other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+/// تسلسل طلب التنبيه إلى JSON (تهريب يدوي — يعيد
+/// استخدام `json_escape`).
+pub fn serialize_notify_request(title: &str, text: &str, id: u64) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str("\"عنوان\":");
+    out.push_str(&json_escape(title));
+    out.push_str(",\"نص\":");
+    out.push_str(&json_escape(text));
+    out.push_str(&format!(",\"معرف\":{}", id));
+    out.push('}');
+    out
+}
+
+/// تسلسل طلب إزالة التنبيه إلى JSON.
+pub fn serialize_remove_request(id: u64) -> String {
+    format!("{{\"معرف\":{}}}", id)
+}
+
+/// نقطة الدخول: `جهاز.نبّه(...)` — التحقق أولا (كل
+/// المنصات)، ثم بوابة المنصة، ثم القناة، ثم السقف
+/// والحجز والإرسال والانتظار؛ وعند خطأ التطبيق
+/// يُحرَّر المعرّف المحجوز.
+pub fn show_notification(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let (title, text) = validate_notify_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (&title, &text);
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        show_notification_native(&title, &text, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn show_notification_native(title: &str, text: &str, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (title, text);
+        Err(RioError::runtime(
+            "جهاز.نبّه غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            let id = reserve_notify_id(line, col)?;
+            eprintln!(
+                "{}{}",
+                NOTIFY_CONTROL_PREFIX,
+                serialize_notify_request(title, text, id)
+            );
+            match wait_for_result(line, col) {
+                Ok(Value::Number(n)) if n.fract() == 0.0 && n == id as f64 => {
+                    Ok(Value::Number(n))
+                }
+                Ok(_) => {
+                    // نتيجة قيمة لا تطابق المعرّف المحجوز —
+                    // خرق بروتوكول من التطبيق.
+                    release_notify_id(id);
+                    Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col))
+                }
+                Err(e) => {
+                    release_notify_id(id);
+                    Err(e)
+                }
+            }
+        } else {
+            Err(RioError::runtime("التنبيه متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.أزل_تنبيه(...)` — التحقق أولا،
+/// ثم بوابة المنصة، ثم القناة، ثم الحياة، ثم
+/// الاستهلاك والإرسال (بلا انتظار) و`لاشيء`.
+pub fn remove_notification(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let id = validate_remove_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = id;
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        remove_notification_native(id, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn remove_notification_native(id: u64, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = id;
+        Err(RioError::runtime(
+            "جهاز.أزل_تنبيه غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            if !consume_notify_id(id) {
+                return Err(RioError::runtime(
+                    format!("تنبيه غير معروف: {}", id),
+                    line,
+                    col,
+                ));
+            }
+            eprintln!(
+                "{}{}",
+                REMOVE_CONTROL_PREFIX,
+                serialize_remove_request(id)
+            );
+            Ok(Value::Nil)
+        } else {
+            Err(RioError::runtime("التنبيه متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
 /// أندرويد فقط: إرسال الطلب على stderr ثم انتظار سطر
 /// النتيجة على stdin (آلية `ادخل` نفسها).
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 fn request_and_wait(req: &DialogRequest, line: usize, col: usize) -> RioResult<Value> {
     eprintln!("{}{}", CONTROL_PREFIX, serialize_request(req));
+    wait_for_result(line, col)
+}
+
+/// أندرويد فقط: انتظار سطر نتيجة تحكم واحد على stdin
+/// (مشترك بين الحوار والتنبيه — المهمة 21 استخرجته
+/// من `request_and_wait` بلا تغيير سلوك).
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+fn wait_for_result(line: usize, col: usize) -> RioResult<Value> {
     let stdin = std::io::stdin();
     let mut buf = String::new();
     loop {
         buf.clear();
         let n = stdin
             .read_line(&mut buf)
-            .map_err(|_| RioError::runtime("تعذر قراءة نتيجة الحوار", line, col))?;
+            .map_err(|_| RioError::runtime("تعذر قراءة نتيجة التحكم", line, col))?;
         if n == 0 {
             return Err(RioError::runtime(
-                "انتهى الإدخال أثناء انتظار نتيجة الحوار",
+                "انتهى الإدخال أثناء انتظار نتيجة التحكم",
                 line,
                 col,
             ));
         }
         let text = buf.trim_end_matches(['\n', '\r']);
         if let Some(payload) = text.strip_prefix(RESULT_PREFIX) {
-            return parse_dialog_result(payload, line, col);
+            return parse_control_result(payload, line, col);
         }
-        // سطر آخر أثناء الحوار — يُتجاهل (لا يصل عمليا:
-        // الحوار نمطي في التطبيق فلا كتابة في الترمنال
-        // أثناءه — والتجاهل دفاع فقط).
+        // سطر آخر أثناء الانتظار — يُتجاهل (لا يصل
+        // عمليا: لا كتابة في الترمنال أثناء الانتظار —
+        // والتجاهل دفاع فقط).
     }
 }
 
@@ -694,11 +980,13 @@ fn json_to_value(json: Json) -> Result<Value, String> {
     }
 }
 
-/// تحليل سطر نتيجة الحوار (الحمولة بعد البادئة) إلى
+/// تحليل سطر نتيجة تحكم (الحمولة بعد البادئة) إلى
 /// قيمة نيفا أو رفع خطأ عربي (إلغاء أو خطأ تطبيق أو
-/// نتيجة مشوهة).
-pub fn parse_dialog_result(payload: &str, line: usize, col: usize) -> RioResult<Value> {
-    let invalid = || RioError::runtime("نتيجة حوار غير صالحة", line, col);
+/// نتيجة مشوهة). مشترك بين الحوار والتنبيه (المهمة
+/// 21 عمّمت `parse_dialog_result` — المنطق نفسه
+/// حرفيا؛ وشكل «ألغي» لا يصل من التنبيه أبدا).
+pub fn parse_control_result(payload: &str, line: usize, col: usize) -> RioResult<Value> {
+    let invalid = || RioError::runtime("نتيجة تحكم غير صالحة", line, col);
     let json = parse_json(payload).map_err(|_| invalid())?;
     let pairs = match json {
         Json::Obj(pairs) => pairs,
@@ -1056,27 +1344,27 @@ mod tests {
     fn parse_result_value_kinds() {
         // منطقي.
         assert_eq!(
-            parse_dialog_result("{\"قيمة\": true}", 1, 1).unwrap(),
+            parse_control_result("{\"قيمة\": true}", 1, 1).unwrap(),
             Value::Bool(true)
         );
         // عدد.
         assert_eq!(
-            parse_dialog_result("{\"قيمة\": 42}", 1, 1).unwrap(),
+            parse_control_result("{\"قيمة\": 42}", 1, 1).unwrap(),
             Value::Number(42.0)
         );
         // نص عربي.
         assert_eq!(
-            parse_dialog_result("{\"قيمة\": \"محمود\"}", 1, 1).unwrap(),
+            parse_control_result("{\"قيمة\": \"محمود\"}", 1, 1).unwrap(),
             Value::Str("محمود".to_string())
         );
         // قائمة نصوص.
         assert_eq!(
-            parse_dialog_result("{\"قيمة\": [\"أ\", \"ب\"]}", 1, 1).unwrap(),
+            parse_control_result("{\"قيمة\": [\"أ\", \"ب\"]}", 1, 1).unwrap(),
             Value::List(vec![Value::Str("أ".to_string()), Value::Str("ب".to_string())])
         );
         // قاموس تاريخ.
         assert_eq!(
-            parse_dialog_result("{\"قيمة\": {\"سنة\": 2026, \"شهر\": 11, \"يوم\": 6}}", 1, 1)
+            parse_control_result("{\"قيمة\": {\"سنة\": 2026, \"شهر\": 11, \"يوم\": 6}}", 1, 1)
                 .unwrap(),
             Value::Dict(vec![
                 ("سنة".to_string(), Value::Number(2026.0)),
@@ -1088,29 +1376,29 @@ mod tests {
 
     #[test]
     fn parse_result_cancel_error_invalid() {
-        let err = parse_dialog_result("{\"ألغي\": true}", 1, 1)
+        let err = parse_control_result("{\"ألغي\": true}", 1, 1)
             .unwrap_err()
             .to_string();
         assert!(err.contains("ألغى المستخدم الحوار"), "got: {}", err);
-        let err = parse_dialog_result("{\"خطأ\": \"أدخل رقما\"}", 1, 1)
+        let err = parse_control_result("{\"خطأ\": \"أدخل رقما\"}", 1, 1)
             .unwrap_err()
             .to_string();
         assert!(err.contains("أدخل رقما"), "got: {}", err);
         // مشوه.
-        let err = parse_dialog_result("ليست json", 1, 1)
+        let err = parse_control_result("ليست json", 1, 1)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("نتيجة حوار غير صالحة"), "got: {}", err);
+        assert!(err.contains("نتيجة تحكم غير صالحة"), "got: {}", err);
         // مفتاح غير معروف.
-        let err = parse_dialog_result("{\"غريب\": 1}", 1, 1)
+        let err = parse_control_result("{\"غريب\": 1}", 1, 1)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("نتيجة حوار غير صالحة"), "got: {}", err);
+        assert!(err.contains("نتيجة تحكم غير صالحة"), "got: {}", err);
         // قيمة null مرفوضة.
-        let err = parse_dialog_result("{\"قيمة\": null}", 1, 1)
+        let err = parse_control_result("{\"قيمة\": null}", 1, 1)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("نتيجة حوار غير صالحة"), "got: {}", err);
+        assert!(err.contains("نتيجة تحكم غير صالحة"), "got: {}", err);
     }
 
     #[test]
@@ -1126,5 +1414,175 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("نوع حوار غير معروف"), "got: {}", err);
+    }
+
+    // ===== المهمة 21 (جهاز.نبّه + أزل_تنبيه) =====
+
+    #[test]
+    fn validate_notify_args_ok_and_bad() {
+        let ok = validate_notify_args(&[str_val("انتهى"), str_val("البناء جاهز")], 1, 1)
+            .unwrap();
+        assert_eq!(ok, ("انتهى".to_string(), "البناء جاهز".to_string()));
+        // عدد معاملات خاطئ.
+        let err = validate_notify_args(&[str_val("عنوان")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 2 معاملات"), "got: {}", err);
+        let err = validate_notify_args(
+            &[str_val("ع"), str_val("ن"), str_val("زائد")],
+            1,
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("تتوقع 2 معاملات"), "got: {}", err);
+        // عنوان غير نص.
+        let err = validate_notify_args(&[num_val(5.0), str_val("نص")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("نصا لعنوان التنبيه"), "got: {}", err);
+        // نص غير نص.
+        let err = validate_notify_args(&[str_val("عنوان"), Value::Bool(true)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("نصا لنص التنبيه"), "got: {}", err);
+        // عنوان فارغ.
+        let err = validate_notify_args(&[str_val(""), str_val("نص")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("عنوان التنبيه فارغ"), "got: {}", err);
+        // نص فارغ.
+        let err = validate_notify_args(&[str_val("عنوان"), str_val("")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("نص التنبيه فارغ"), "got: {}", err);
+    }
+
+    #[test]
+    fn validate_remove_args_ok_and_bad() {
+        assert_eq!(validate_remove_args(&[num_val(3.0)], 1, 1).unwrap(), 3);
+        // بلا معامل / معاملان.
+        let err = validate_remove_args(&[], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+        let err = validate_remove_args(&[num_val(1.0), num_val(2.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+        // غير عدد.
+        let err = validate_remove_args(&[str_val("١")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع عددا لمعرف التنبيه"), "got: {}", err);
+        // كسري.
+        let err = validate_remove_args(&[num_val(1.5)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("عددا صحيحا موجبا"), "got: {}", err);
+        // صفر وسالب.
+        let err = validate_remove_args(&[num_val(0.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("عددا صحيحا موجبا"), "got: {}", err);
+        let err = validate_remove_args(&[num_val(-2.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("عددا صحيحا موجبا"), "got: {}", err);
+    }
+
+    #[test]
+    fn notify_registry_reserve_release_consume() {
+        // الحجز رتيب لا يُعاد؛ والتحرير يعيد السقف لا
+        // المعرّف؛ والاستهلاك يزيل مرة واحدة فقط.
+        let first = reserve_notify_id(1, 1).unwrap();
+        assert!(first >= 1);
+        let second = reserve_notify_id(1, 1).unwrap();
+        assert!(second > first, "ids must grow: {} vs {}", first, second);
+        assert!(consume_notify_id(second));
+        assert!(!consume_notify_id(second));
+        release_notify_id(first);
+        assert!(!consume_notify_id(first));
+        // حجز بعد تحرير لا يعيد المعرّف المحرَّر.
+        let third = reserve_notify_id(1, 1).unwrap();
+        assert!(third > second, "ids must never repeat");
+        release_notify_id(third);
+    }
+
+    #[test]
+    fn notify_registry_cap() {
+        // املأ السقف كاملا ثم تأكد أن الحجز التالي
+        // يرفض — ثم حرّر الكل (فلا يبقى أثر في
+        // الاختبارات التالية).
+        let mut ids = Vec::with_capacity(MAX_LIVE_NOTIFICATIONS);
+        for _ in 0..MAX_LIVE_NOTIFICATIONS {
+            ids.push(reserve_notify_id(1, 1).unwrap());
+        }
+        let err = reserve_notify_id(1, 1).unwrap_err().to_string();
+        assert!(err.contains("الحد (64)"), "got: {}", err);
+        for id in ids {
+            release_notify_id(id);
+        }
+        // بعد التحرير يعود الحجز.
+        let id = reserve_notify_id(1, 1).unwrap();
+        release_notify_id(id);
+    }
+
+    #[test]
+    fn serialize_notify_requests_round_trip() {
+        let text = serialize_notify_request("انتهى \"البناء\"", "جاهز\nالآن", 7);
+        let parsed = parse_json(&text).unwrap();
+        assert_eq!(
+            parsed,
+            Json::Obj(vec![
+                ("عنوان".to_string(), Json::Str("انتهى \"البناء\"".to_string())),
+                ("نص".to_string(), Json::Str("جاهز\nالآن".to_string())),
+                ("معرف".to_string(), Json::Num(7.0)),
+            ])
+        );
+        let text = serialize_remove_request(42);
+        let parsed = parse_json(&text).unwrap();
+        assert_eq!(
+            parsed,
+            Json::Obj(vec![("معرف".to_string(), Json::Num(42.0))])
+        );
+    }
+
+    #[test]
+    fn show_notification_refuses_off_android() {
+        // على هذه الآلة (لينكس): الوسائط الصحيحة تصل
+        // إلى بوابة المنصة وترفض بالعربية.
+        let err = show_notification(&[str_val("عنوان"), str_val("نص")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("جهاز.نبّه غير مدعوم على هذه المنصة"), "got: {}", err);
+        // والوسائط الخاطئة ترفض قبل المنصة.
+        let err = show_notification(&[str_val("عنوان"), str_val("")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("نص التنبيه فارغ"), "got: {}", err);
+        // الإزالة: المنصة قبل الحياة — فمعرف غير حيّ
+        // على لينكس يرفض بالمنصة لا بـ«غير معروف».
+        let err = remove_notification(&[num_val(1.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("جهاز.أزل_تنبيه غير مدعوم على هذه المنصة"),
+            "got: {}",
+            err
+        );
+        // والوسائط الخاطئة للإزالة ترفض قبل المنصة.
+        let err = remove_notification(&[str_val("١")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع عددا لمعرف التنبيه"), "got: {}", err);
+    }
+
+    #[test]
+    fn remove_unknown_id_after_consume() {
+        // استهلاك معرف غير محجوز أصلا يعيد خطأ — على
+        // مستوى السجل الخالص (بلا منصة).
+        assert!(!consume_notify_id(9_999_999));
+        let id = reserve_notify_id(1, 1).unwrap();
+        assert!(consume_notify_id(id));
+        assert!(!consume_notify_id(id));
     }
 }

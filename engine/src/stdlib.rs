@@ -1324,12 +1324,25 @@ fn time_sleep(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: us
     Ok(Value::Nil)
 }
 
-// --- جهاز (catalog task 20, Dialog — أول قدرات المرحلة 4) ---
+// --- جهاز (catalog task 20, Dialog — أول قدرات المرحلة 4؛
+// task 21, Notify — نبّه + أزل_تنبيه) ---
 
 fn device_entries() -> Vec<(&'static str, Value)> {
-    vec![("حوار", native("حوار", device_dialog))]
+    vec![
+        ("حوار", native("حوار", device_dialog)),
+        ("نبّه", native("نبّه", device_notify)),
+        ("أزل_تنبيه", native("أزل_تنبيه", device_remove_notify)),
+    ]
 }
 
 fn device_dialog(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     crate::device::show_dialog(args, line, col)
+}
+
+fn device_notify(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::show_notification(args, line, col)
+}
+
+fn device_remove_notify(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::remove_notification(args, line, col)
 }
