@@ -75,6 +75,20 @@ fn standalone_name() -> &'static str {
     }
 }
 
+/// استبدل مسار المجلد المؤقت في نص بـ`<مجلد>`.
+/// يستبدل صيغتي المسار معا: الأصلية للمنصة (بشرطات
+/// خلفية على Windows) وصيغة الشرطات المائلة التي
+/// يعرض بها المحرك المسارات (slash_display) — لأن
+/// رسالة خطأ قد تحمل المسار بالصيغة الثانية،
+/// فاستبدال الأولى وحدها لا يطابقها على Windows
+/// فيبقى رقم المجلد ويكسر المقارنة. لا يمس شيئا
+/// غير مسار المجلد المؤقت نفسه.
+fn normalize_temp_dir(text: String, dir: &PathBuf) -> String {
+    let native = dir.to_string_lossy().to_string();
+    let slashed = native.replace('\\', "/");
+    text.replace(&native, "<مجلد>").replace(&slashed, "<مجلد>")
+}
+
 /// شغل أمر نيفا بمعاملاته في مجلد، وأعد
 /// (المخرج، الخطأ بعد تطبيع المجلد، رمز الخروج).
 fn run_cmd(args: &[&str], dir: &PathBuf, scrub_path: bool) -> (String, String, i32) {
@@ -86,12 +100,9 @@ fn run_cmd(args: &[&str], dir: &PathBuf, scrub_path: bool) -> (String, String, i
         cmd.env("PATH", scrubbed_path());
     }
     let out = cmd.output().expect("run نيفا");
-    let dir_str = dir.to_string_lossy().to_string();
     (
         String::from_utf8_lossy(&out.stdout).to_string(),
-        String::from_utf8_lossy(&out.stderr)
-            .to_string()
-            .replace(&dir_str, "<مجلد>"),
+        normalize_temp_dir(String::from_utf8_lossy(&out.stderr).to_string(), dir),
         out.status.code().unwrap_or(-1),
     )
 }
