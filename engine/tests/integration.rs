@@ -321,6 +321,75 @@ fn memory_queries_refused_both_modes() {
     assert_eq!(out_v, "غير مدعوم كما يجب\nغير مدعوم كما يجب\n");
 }
 
+/// مهمة 14 (نظام): جدول النداءات في الوضعين على لينكس
+/// (+Android) — العدد موجب، والاسم نص غير فارغ، والرقم
+/// غير المعروف والسالب والنص والوسائط الزائدة أخطاء
+/// عربية تُمسكها ماعدا، متطابقة في الوضعين.
+/// (المطابقة الدقيقة مع جدول النواة في اختبارات الوحدة.)
+#[test]
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn system_syscall_table_both_modes() {
+    let files: &[(&str, &str)] = &[(
+        "برنامج.نيفا",
+        "استورد نظام\nاطبع نظام.عدد_النداءات() > ٠\nاطبع طول(نظام.اسم_النداء(٠)) > ٠\nحاول:\n    نظام.اسم_النداء(٩٩٩٩٩)\nماعدا:\n    اطبع \"غير معروف كما يجب\"\nحاول:\n    نظام.اسم_النداء(-١)\nماعدا:\n    اطبع \"غير معروف كما يجب\"\nحاول:\n    نظام.اسم_النداء(\"نص\")\nماعدا:\n    اطبع \"عدد كما يجب\"\nحاول:\n    نظام.عدد_النداءات(١)\nماعدا:\n    اطبع \"وسائط كما يجب\"\n",
+    )];
+    let (out_i, err_i, code_i) =
+        run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v,
+        "صحيح\nصحيح\nغير معروف كما يجب\nغير معروف كما يجب\nعدد كما يجب\nوسائط كما يجب\n"
+    );
+}
+
+/// مهمة 14 (نظام): استعلامات النواة والهوية على لينكس
+/// (+Android) — قيم حقيقية من النظام، متطابقة في
+/// الوضعين. (المطابقة الدقيقة مع /proc في اختبارات
+/// الوحدة.)
+#[test]
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn system_kernel_queries_linux_both_modes() {
+    let files: &[(&str, &str)] = &[(
+        "برنامج.نيفا",
+        "استورد نظام\nاطبع طول(نظام.نسخة_النواة()) > ٠\nاطبع نظام.اسم_النظام()\nاطبع نظام.معرف_المستخدم() >= ٠\nاطبع نظام.معرف_المجموعة() >= ٠\n",
+    )];
+    let (out_i, err_i, code_i) =
+        run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(out_v, "صحيح\nLinux\nصحيح\nصحيح\n");
+}
+
+/// مهمة 14 (نظام): الدوال الست على غير لينكس
+/// (macOS/Windows) — رفض صادق بخطأ عربي، متطابق في
+/// الوضعين؛ لا قيمة مختلقة ولا انهيار.
+#[test]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn system_queries_refused_both_modes() {
+    let files: &[(&str, &str)] = &[(
+        "برنامج.نيفا",
+        "استورد نظام\nحاول:\n    نظام.اسم_النداء(٠)\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    نظام.عدد_النداءات()\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    نظام.نسخة_النواة()\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    نظام.اسم_النظام()\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    نظام.معرف_المستخدم()\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    نظام.معرف_المجموعة()\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\n",
+    )];
+    let (out_i, err_i, code_i) =
+        run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v,
+        "غير مدعوم كما يجب\nغير مدعوم كما يجب\nغير مدعوم كما يجب\nغير مدعوم كما يجب\nغير مدعوم كما يجب\nغير مدعوم كما يجب\n"
+    );
+}
+
 /// مهمة 12 (ملفات): فتح وقراءة وكتابة في الوضعين — المخرج
 /// والخطأ والخروج متطابقة حرفيا؛ والمعرف غير المعروف
 /// والخروج عن المجلد والمجلد والمجلد الأب الغائب والوسائط

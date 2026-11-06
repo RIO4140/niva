@@ -91,6 +91,15 @@ pub fn native_module(name: &str) -> Option<Value> {
         // program-dir quota as the flat builtins; WASM refuses
         // with the flat builtins' own message).
         "ملفات" => files_entries(),
+        // Catalog task 14 (نظام, from arch/*/entry/syscalls):
+        // the syscall-name table for this architecture plus
+        // read-only identity queries (kernel version, OS name,
+        // uid, gid). Permission design first — see
+        // CATALOG-06-SYSTEM.md §1 (read-only only: no raw
+        // syscall is ever executed — no `نادِ`; the table is
+        // data, the queries read /proc on Linux; everywhere
+        // else they refuse honestly).
+        "نظام" => system_entries(),
         _ => return None,
     };
     let mut exports: HashMap<String, Value> = HashMap::new();
@@ -713,6 +722,52 @@ fn file_write(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usi
     let policy = ctx.server_file_policy();
     crate::files::write_file(&policy, id, &content, line, col)?;
     Ok(Value::Nil)
+}
+
+// --- نظام (catalog task 14, from arch/*/entry/syscalls) ---
+
+fn system_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("اسم_النداء", native("اسم_النداء", sys_name)),
+        ("عدد_النداءات", native("عدد_النداءات", sys_count)),
+        ("نسخة_النواة", native("نسخة_النواة", sys_kernel)),
+        ("اسم_النظام", native("اسم_النظام", sys_os)),
+        ("معرف_المستخدم", native("معرف_المستخدم", sys_uid)),
+        ("معرف_المجموعة", native("معرف_المجموعة", sys_gid)),
+    ]
+}
+
+fn sys_name(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("نظام.اسم_النداء", args, 1, line, col)?;
+    let num = need_integer("نظام.اسم_النداء", &args[0], line, col)?;
+    Ok(Value::Str(crate::system::syscall_name(num, line, col)?))
+}
+
+fn sys_count(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("نظام.عدد_النداءات", args, 0, line, col)?;
+    Ok(Value::Number(
+        crate::system::syscall_count(line, col)? as f64,
+    ))
+}
+
+fn sys_kernel(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("نظام.نسخة_النواة", args, 0, line, col)?;
+    Ok(Value::Str(crate::system::kernel_version(line, col)?))
+}
+
+fn sys_os(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("نظام.اسم_النظام", args, 0, line, col)?;
+    Ok(Value::Str(crate::system::os_name(line, col)?))
+}
+
+fn sys_uid(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("نظام.معرف_المستخدم", args, 0, line, col)?;
+    Ok(Value::Number(crate::system::user_id(line, col)? as f64))
+}
+
+fn sys_gid(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("نظام.معرف_المجموعة", args, 0, line, col)?;
+    Ok(Value::Number(crate::system::group_id(line, col)? as f64))
 }
 
 // --- وقت ---

@@ -27,6 +27,7 @@ pub mod repl;
 pub mod semantic;
 pub mod sockets;
 pub mod stdlib;
+pub mod system;
 pub mod value;
 pub mod vm;
 
