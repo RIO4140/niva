@@ -177,8 +177,12 @@ fn put_back_entry(id: u64, entry: SocketEntry) {
 
 /// A cloned TCP stream for I/O without holding the registry
 /// lock while the call blocks (the clone shares the same
-/// connection, timeouts included).
-fn clone_tcp(id: u64, line: usize, col: usize) -> RioResult<TcpStream> {
+/// connection, timeouts included). Also used by the async
+/// module (task 19), whose workers own the clone. Native
+/// only: no caller exists on WASM, so it is compiled out
+/// there (no dead-code warning).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn clone_tcp(id: u64, line: usize, col: usize) -> RioResult<TcpStream> {
     let cloned = match REGISTRY.lock() {
         Ok(reg) => match reg.get(&id) {
             Some(SocketEntry::TcpConnected(s)) => s.try_clone().ok(),

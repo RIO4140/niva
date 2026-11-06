@@ -132,6 +132,21 @@ pub fn native_module(name: &str) -> Option<Value> {
         // honest refusal elsewhere; in the browser
         // refused with the flat builtins' own message).
         "أمن" => security_entries(),
+        // Catalog task 19 (غير_متزامن, from io_uring/):
+        // non-blocking I/O primitives over files and
+        // sockets — submit a read, write, send, or receive
+        // and collect its result later, without blocking
+        // the program or the REPL. Permission design
+        // first — see CATALOG-11-ASYNC.md §1 (one worker
+        // thread per operation; file paths resolve through
+        // the session FilePolicy at submit time; socket
+        // operations check the network gate and clone the
+        // socket at submit time; I/O failures arrive as
+        // result dicts, never as raised errors; no
+        // io_uring, no tokio runtime, std only; in the
+        // browser refused with the flat builtins' own
+        // message).
+        "غير_متزامن" => async_entries(),
         _ => return None,
     };
     let mut exports: HashMap<String, Value> = HashMap::new();
@@ -801,6 +816,98 @@ fn sec_check(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usiz
     let policy = ctx.server_file_policy();
     let cwd = ctx.server_cwd();
     crate::security::check_access(&policy, &cwd, &path, line, col)
+}
+
+// --- غير_متزامن (catalog task 19, from io_uring/) ---
+//
+// The stored keys are the spellings the user writes
+// (hamza kept, like شبكة.أرسل): اقرأ، أرسل، استقبل.
+
+fn async_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("أنشئ_حلقة", native("أنشئ_حلقة", async_create_loop)),
+        ("اقرأ", native("اقرأ", async_read)),
+        ("اكتب", native("اكتب", async_write)),
+        ("أرسل", native("أرسل", async_send)),
+        ("استقبل", native("استقبل", async_recv)),
+        ("انتظر_النتائج", native("انتظر_النتائج", async_wait)),
+    ]
+}
+
+fn need_loop_id(display: &str, args: &[Value], at: usize, line: usize, col: usize) -> RioResult<u64> {
+    let id = need_integer(display, &args[at], line, col)?;
+    if id < 0 {
+        return Err(RioError::typ(
+            format!("الدالة {} تتوقع معرف حلقة غير سالب", display),
+            line,
+            col,
+        ));
+    }
+    Ok(id as u64)
+}
+
+fn async_create_loop(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("غير_متزامن.أنشئ_حلقة", args, 0, line, col)?;
+    Ok(Value::Number(
+        crate::async_io::create_loop(line, col)? as f64,
+    ))
+}
+
+fn async_read(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("غير_متزامن.اقرأ", args, 3, line, col)?;
+    let loop_id = need_loop_id("غير_متزامن.اقرأ", args, 0, line, col)?;
+    let path = need_string("غير_متزامن.اقرأ", &args[1], line, col)?;
+    let offset = need_integer("غير_متزامن.اقرأ", &args[2], line, col)?;
+    if offset < 0 {
+        return Err(RioError::typ(
+            "الدالة غير_متزامن.اقرأ تتوقع موضعا غير سالب",
+            line,
+            col,
+        ));
+    }
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    Ok(Value::Number(
+        crate::async_io::submit_read(&policy, &cwd, loop_id, &path, offset as u64, line, col)?
+            as f64,
+    ))
+}
+
+fn async_write(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("غير_متزامن.اكتب", args, 3, line, col)?;
+    let loop_id = need_loop_id("غير_متزامن.اكتب", args, 0, line, col)?;
+    let path = need_string("غير_متزامن.اكتب", &args[1], line, col)?;
+    let text = need_string("غير_متزامن.اكتب", &args[2], line, col)?;
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    Ok(Value::Number(
+        crate::async_io::submit_write(&policy, &cwd, loop_id, &path, &text, line, col)? as f64,
+    ))
+}
+
+fn async_send(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("غير_متزامن.أرسل", args, 3, line, col)?;
+    let loop_id = need_loop_id("غير_متزامن.أرسل", args, 0, line, col)?;
+    let socket_id = need_socket_id("غير_متزامن.أرسل", args, 1, line, col)?;
+    let text = need_string("غير_متزامن.أرسل", &args[2], line, col)?;
+    Ok(Value::Number(
+        crate::async_io::submit_send(loop_id, socket_id, &text, line, col)? as f64,
+    ))
+}
+
+fn async_recv(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("غير_متزامن.استقبل", args, 2, line, col)?;
+    let loop_id = need_loop_id("غير_متزامن.استقبل", args, 0, line, col)?;
+    let socket_id = need_socket_id("غير_متزامن.استقبل", args, 1, line, col)?;
+    Ok(Value::Number(
+        crate::async_io::submit_recv(loop_id, socket_id, line, col)? as f64,
+    ))
+}
+
+fn async_wait(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("غير_متزامن.انتظر_النتائج", args, 1, line, col)?;
+    let loop_id = need_loop_id("غير_متزامن.انتظر_النتائج", args, 0, line, col)?;
+    crate::async_io::wait_results(loop_id, line, col)
 }
 
 // --- ذاكرة (catalog task 11, from mm/) ---

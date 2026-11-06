@@ -12,6 +12,7 @@
 //! the CLI (which prints partial output, then the Arabic error).
 
 pub mod artifact;
+pub mod async_io;
 pub mod ast;
 pub mod crypto;
 pub mod error;

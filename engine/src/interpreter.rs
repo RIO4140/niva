@@ -2366,7 +2366,14 @@ impl Interpreter {
                         // Audit م-20: refuse a write that would
                         // push the program dir past its quota
                         // (net growth only — rewriting a file
-                        // counts its size difference).
+                        // counts its size difference). The check
+                        // and the write are atomic under the
+                        // shared file-write lock (task 19): an
+                        // async write worker can no longer slip
+                        // between this check and this write.
+                        let _write_guard = crate::files::FILE_WRITE_LOCK
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
                         let existing =
                             std::fs::metadata(&resolved).map(|m| m.len()).unwrap_or(0);
                         let extra = (content.len() as u64).saturating_sub(existing);

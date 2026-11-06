@@ -43,6 +43,19 @@ static REGISTRY: LazyLock<Mutex<HashMap<u64, OpenFile>>> =
 /// File handles start at 1 and never repeat in one run.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// One writer at a time, across every write path: the
+/// flat `اكتب_ملف`, `ملفات.اكتب`, and the async write
+/// worker (task 19) all hold this lock around (quota
+/// check + write), so the 100 MiB quota can never be
+/// overrun by concurrent writers. Before task 19 a Niva
+/// program was single-threaded, so no write race was
+/// possible at all; the async worker is the first
+/// concurrent writer, and this lock is its guard. It is a
+/// leaf lock (nothing else is taken while holding it),
+/// so no lock ordering cycle exists.
+pub(crate) static FILE_WRITE_LOCK: LazyLock<Mutex<()>> =
+    LazyLock::new(|| Mutex::new(()));
+
 /// Test-only serialization for the process-wide registry:
 /// cargo runs tests in parallel threads, and the registry is
 /// a single static. Every test that touches it locks this
@@ -82,7 +95,12 @@ pub(crate) fn test_open_count() -> usize {
 /// The disk quota for the program dir (100 MiB) — the same
 /// constant and the same walk as the engines' check, so the
 /// message can never drift from `اكتب_ملف`'s.
-fn check_disk_quota(
+/// The disk-quota check (also used by the async write
+/// worker, task 19 — same base, same message). Native
+/// only: no caller exists on WASM, so it is compiled out
+/// there (no dead-code warning).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn check_disk_quota(
     base: &Path,
     extra_bytes: u64,
     line: usize,
@@ -298,7 +316,13 @@ fn write_file_native(
     })?;
     let display = entry.display.clone();
     // Net growth only (rewriting counts its size difference),
-    // against the same 100 MiB quota as `اكتب_ملف`.
+    // against the same 100 MiB quota as `اكتب_ملف`. The
+    // quota check and the write are atomic under the shared
+    // file-write lock (task 19): an async write worker can
+    // no longer slip between this check and this write.
+    let _write_guard = FILE_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let existing = entry.file.metadata().map(|m| m.len()).unwrap_or(0);
     let extra = (content.len() as u64).saturating_sub(existing);
     check_disk_quota(&policy.base, extra, line, col)?;
