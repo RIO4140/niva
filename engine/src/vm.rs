@@ -1765,7 +1765,7 @@ impl Vm {
                 format!(
                     "وحدة غير موجودة: {} (بحثت في {})",
                     module,
-                    path.display()
+                    crate::permissions::slash_display(&path)
                 ),
                 line,
                 col,
@@ -5979,12 +5979,11 @@ mod tests {
                     if p.is_dir() {
                         stack.push(p);
                     } else if p.is_file() {
-                        let rel = p
-                            .strip_prefix(dir)
-                            .unwrap()
-                            .to_string_lossy()
-                            .to_string();
-                        out.push((rel, std::fs::read_to_string(&p).unwrap_or_default()));
+                        let rel = p.strip_prefix(dir).unwrap();
+                        out.push((
+                            crate::permissions::slash_display(rel),
+                            std::fs::read_to_string(&p).unwrap_or_default(),
+                        ));
                     }
                 }
             }

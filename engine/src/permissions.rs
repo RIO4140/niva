@@ -30,6 +30,24 @@
 use crate::error::{ErrorKind, RioError, RioResult};
 use std::path::{Component, Path, PathBuf};
 
+/// Display a path with forward slashes on every platform.
+/// Rust keeps the separator a path was built with, and
+/// Windows joins with `\` — but the language shows `/`
+/// everywhere (terminal style, owner's order 2026-11-05).
+/// Every path the language returns or shows goes through
+/// this one function, so the display never depends on the
+/// platform that built the path. The replacement runs only
+/// where the platform separator IS a backslash: on Unix a
+/// `\` inside a file name is a real character and is kept.
+pub(crate) fn slash_display(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    if std::path::MAIN_SEPARATOR == '\\' {
+        s.replace('\\', "/")
+    } else {
+        s.into_owned()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FilePolicy {
     pub trusted: bool,
@@ -107,7 +125,8 @@ impl FilePolicy {
     /// the program dir (home) is `~`, below it `~/...`; an
     /// absolute path inside Android's private /data/ area never
     /// shows its internal segments — only its leaf name; any
-    /// other path shows as-is. The package name and the
+    /// other path shows as-is, with `/` separators on every
+    /// platform (slash_display). The package name and the
     /// /data/data/... prefix can never reach the display.
     pub fn display_path(&self, path: &Path) -> String {
         if path == self.base {
@@ -117,9 +136,16 @@ impl FilePolicy {
             if rel.as_os_str().is_empty() {
                 return "~".to_string();
             }
-            return format!("~/{}", rel.to_string_lossy());
+            return format!("~/{}", slash_display(rel));
         }
-        if path.is_absolute() {
+        // has_root(), not is_absolute(): on Windows a path
+        // like "/data/..." is rooted but has no drive prefix,
+        // so is_absolute() is false there — and the Android
+        // private-path strip below never ran (CI 2026-11-06:
+        // the Windows error message leaked the raw Android
+        // path). A rooted path is enough: the check only
+        // looks at the first component.
+        if path.has_root() {
             if let Some(first) = path.components().nth(1) {
                 if first.as_os_str() == "data" {
                     if let Some(leaf) = path.file_name() {
@@ -128,21 +154,24 @@ impl FilePolicy {
                 }
             }
         }
-        path.to_string_lossy().to_string()
+        slash_display(path)
     }
 
     /// Display-form of a user-typed path string: already-display
     /// forms (`~`, `~/...`) and relative paths pass through;
-    /// absolute paths go through display_path.
+    /// absolute paths go through display_path. Rooted paths
+    /// (has_root, not is_absolute) count as absolute here for
+    /// the same Windows reason as display_path: "/data/..."
+    /// must reach the Android strip instead of echoing raw.
     pub fn display_str(&self, s: &str) -> String {
         if s == "~" || s.starts_with("~/") {
             return s.to_string();
         }
         let p = Path::new(s);
-        if p.is_absolute() {
+        if p.has_root() {
             return self.display_path(p);
         }
-        s.to_string()
+        slash_display(p)
     }
 
     /// Resolve a user-supplied path string to a filesystem path,
@@ -301,7 +330,14 @@ mod tests {
     fn home_displays_as_tilde_and_expands() {
         // Owner's order 2026-11-05 ~22:38: paths look like any
         // Unix terminal — home is `~`, below it `~/...`.
-        let base = PathBuf::from("/tmp/niva-home-test");
+        // The fake home is built per-platform (a temp dir),
+        // never a hardcoded Unix path: on Windows "/tmp/..."
+        // is a rooted path with no drive. The hardcoded
+        // Android "/data/..." strings below stay as they are:
+        // they are the test's SUBJECT (the leak the display
+        // must strip on every platform), not the home.
+        let base = std::env::temp_dir()
+            .join(format!("niva-home-test-{}", std::process::id()));
         let p = FilePolicy::restricted(base.clone());
         assert_eq!(p.display_path(&base), "~");
         assert_eq!(

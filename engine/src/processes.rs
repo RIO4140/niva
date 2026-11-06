@@ -161,6 +161,21 @@ fn check_executable(
     Ok(())
 }
 
+/// Resolve symlinks in an executable path before the check
+/// and the spawn: `/bin/true` is a symlink (to
+/// `/usr/bin/true`) on macOS and on Linux, and the check +
+/// spawn must see the real file, never the link (CI
+/// 2026-11-06: the macOS runner refused `/bin/true` as
+/// "not found" through the symlinked path). Falls back to
+/// the given path when it does not exist, so the caller's
+/// Arabic "not found" error stays exact. The display in
+/// error messages still uses the program as the user typed
+/// it — the canonical path never leaks out.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn canonical_executable(path: &std::path::Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// Spawn a program: `عمليات.أنشئ "أمر وسائط"` — returns the
 /// process id. The command is split on spaces (no shell, no
 /// quotes); the first token is the program, the rest are args.
@@ -259,8 +274,11 @@ fn spawn_process_native(command: &str, line: usize, col: usize) -> RioResult<u64
         cmd.args(&args);
     } else if is_path_token(program) {
         // A path: resolved under the file rules (relative to
-        // the session cwd), then executed directly.
+        // the session cwd), then executed directly. The
+        // canonical form is what gets checked and spawned
+        // (symlinks resolved — see canonical_executable).
         let path = policy.resolve_in(&cwd, program, line, col)?;
+        let path = canonical_executable(&path);
         check_executable(&path, &display(program), line, col)?;
         cmd = Command::new(path);
         cmd.args(&args);
@@ -272,6 +290,7 @@ fn spawn_process_native(command: &str, line: usize, col: usize) -> RioResult<u64
         // A bare name in restricted mode: an executable file
         // in the session cwd (which is inside program_dir).
         let path = policy.resolve_in(&cwd, program, line, col)?;
+        let path = canonical_executable(&path);
         check_executable(&path, &display(program), line, col)?;
         cmd = Command::new(path);
         cmd.args(&args);
@@ -455,18 +474,60 @@ mod tests {
         dir
     }
 
+    /// Lock the test serialization lock, recovering from
+    /// poisoning: if an earlier test panicked while holding
+    /// it, the next test must still run and report its OWN
+    /// result instead of failing with PoisonError (CI
+    /// 2026-11-06: one macOS panic cascaded into four
+    /// PoisonErrors that hid every other test's verdict).
+    /// This is cascade-hardening only — the panicking test
+    /// itself still fails loudly on its own line.
+    fn proc_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        PROC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Unix fixture: an instantly-exiting program. `/bin/true`
+    /// is a symlink on macOS (and on Linux); prefer it so the
+    /// engine's symlink handling is exercised, and fall back
+    /// to the real file `/usr/bin/true` when the link itself
+    /// is missing on a runner image. The test's purpose is
+    /// the process cap, not the OS layout — but if neither
+    /// exists the test fails loudly instead of skipping.
+    #[cfg(unix)]
+    fn true_program() -> &'static str {
+        if std::path::Path::new("/bin/true").exists() {
+            "/bin/true"
+        } else if std::path::Path::new("/usr/bin/true").exists() {
+            "/usr/bin/true"
+        } else {
+            panic!("لا يوجد برنامج true على هذا النظام — لا /bin/true ولا /usr/bin/true");
+        }
+    }
+
+    /// Same as true_program, for the instantly-failing one.
+    #[cfg(unix)]
+    fn false_program() -> &'static str {
+        if std::path::Path::new("/bin/false").exists() {
+            "/bin/false"
+        } else if std::path::Path::new("/usr/bin/false").exists() {
+            "/usr/bin/false"
+        } else {
+            panic!("لا يوجد برنامج false على هذا النظام — لا /bin/false ولا /usr/bin/false");
+        }
+    }
+
     #[test]
     fn spawn_true_wait_zero() {
         // Unix only: /bin/true + /bin/false are the instant
         // commands; Windows has no such binaries.
         #[cfg(unix)]
         {
-            let _guard = PROC_TEST_LOCK.lock().unwrap();
+            let _guard = proc_test_lock();
             let dir = temp_dir("true");
             test_policy(&dir, true);
-            let id = spawn_process("/bin/true", 1, 1).unwrap();
+            let id = spawn_process(true_program(), 1, 1).unwrap();
             assert_eq!(wait_process(id, 1, 1).unwrap(), 0);
-            let id2 = spawn_process("/bin/false", 1, 1).unwrap();
+            let id2 = spawn_process(false_program(), 1, 1).unwrap();
             assert_eq!(wait_process(id2, 1, 1).unwrap(), 1);
             let _ = fs::remove_dir_all(&dir);
         }
@@ -474,7 +535,7 @@ mod tests {
 
     #[test]
     fn spawn_missing_is_arabic_without_os_leak() {
-        let _guard = PROC_TEST_LOCK.lock().unwrap();
+        let _guard = proc_test_lock();
         let dir = temp_dir("missing");
         test_policy(&dir, false);
         let err = spawn_process("لاوجود", 1, 1).unwrap_err().to_string();
@@ -486,7 +547,7 @@ mod tests {
 
     #[test]
     fn wait_and_kill_unknown_id_error() {
-        let _guard = PROC_TEST_LOCK.lock().unwrap();
+        let _guard = proc_test_lock();
         let dir = temp_dir("unknown");
         test_policy(&dir, true);
         let err = wait_process(999_999, 1, 1).unwrap_err().to_string();
@@ -498,7 +559,7 @@ mod tests {
 
     #[test]
     fn empty_program_dir_refuses() {
-        let _guard = PROC_TEST_LOCK.lock().unwrap();
+        let _guard = proc_test_lock();
         set_process_policy(PathBuf::new(), false, PathBuf::new());
         let err = spawn_process("/bin/true", 1, 1).unwrap_err().to_string();
         assert!(err.contains("بلا مجلد برنامج"), "got: {}", err);
@@ -508,7 +569,7 @@ mod tests {
     fn niva_subprogram_guard() {
         // In a unit test the current exe is the test binary,
         // not niva — the guard must refuse with Arabic.
-        let _guard = PROC_TEST_LOCK.lock().unwrap();
+        let _guard = proc_test_lock();
         let dir = temp_dir("sub");
         fs::write(dir.join("مساعد.نيفا"), "اطبع ١\n").unwrap();
         test_policy(&dir, false);
@@ -530,7 +591,7 @@ mod tests {
         // kill+reap (a mere registry removal would not).
         #[cfg(target_os = "linux")]
         {
-            let _guard = PROC_TEST_LOCK.lock().unwrap();
+            let _guard = proc_test_lock();
             let dir = temp_dir("kill");
             test_policy(&dir, true);
             let id = spawn_process("/bin/sleep 30", 1, 1).unwrap();
@@ -554,20 +615,20 @@ mod tests {
         // the 257th must be refused in Arabic.
         #[cfg(unix)]
         {
-            let _guard = PROC_TEST_LOCK.lock().unwrap();
+            let _guard = proc_test_lock();
             let dir = temp_dir("cap");
             test_policy(&dir, true);
             let mut ids = Vec::new();
             for _ in 0..MAX_LIVE_PROCESSES {
-                ids.push(spawn_process("/bin/true", 1, 1).unwrap());
+                ids.push(spawn_process(true_program(), 1, 1).unwrap());
             }
-            let err = spawn_process("/bin/true", 1, 1).unwrap_err().to_string();
+            let err = spawn_process(true_program(), 1, 1).unwrap_err().to_string();
             assert!(err.contains("تجاوز الحد"), "got: {}", err);
             for id in ids {
                 let _ = wait_process(id, 1, 1);
             }
             // After reaping all, spawning works again.
-            let id = spawn_process("/bin/true", 1, 1).unwrap();
+            let id = spawn_process(true_program(), 1, 1).unwrap();
             assert_eq!(wait_process(id, 1, 1).unwrap(), 0);
             let _ = fs::remove_dir_all(&dir);
         }

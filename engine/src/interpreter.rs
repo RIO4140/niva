@@ -199,13 +199,13 @@ impl Interpreter {
                 let name = e.file_name().to_string_lossy().to_string();
                 let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
                 if name.contains(query) {
-                    let rel = e
-                        .path()
-                        .strip_prefix(base)
-                        .unwrap_or(&e.path())
-                        .to_string_lossy()
-                        .to_string();
-                    out.push(rel);
+                    // Paths the language returns use `/` on
+                    // every platform (slash_display): a raw
+                    // to_string_lossy() shows `\` on Windows
+                    // for paths the OS joined (CI 2026-11-06).
+                    let full = e.path();
+                    let rel = full.strip_prefix(base).unwrap_or(&full);
+                    out.push(crate::permissions::slash_display(rel));
                 }
                 if is_dir {
                     Self::find_files(&e.path(), base, query, depth + 1, out);
@@ -909,7 +909,7 @@ impl Interpreter {
                 format!(
                     "وحدة غير موجودة: {} (بحثت في {})",
                     module,
-                    path.display()
+                    crate::permissions::slash_display(&path)
                 ),
                 line,
                 col,
