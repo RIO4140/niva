@@ -146,11 +146,62 @@ pub fn allow_local_host(host: &str) {
     }
 }
 
-fn local_host_allowed(host: &str) -> bool {
+pub(crate) fn local_host_allowed(host: &str) -> bool {
     POLICY
         .lock()
         .map(|p| p.local_hosts.contains(&host.to_ascii_lowercase()))
         .unwrap_or(false)
+}
+
+/// Shared gate check for the sockets module (catalog task 13):
+/// the same closed-gate wording as `fetch` — one message, one
+/// console prompt, no second wording to drift.
+pub(crate) fn require_network_allowed(line: usize, col: usize) -> RioResult<()> {
+    if network_allowed() {
+        Ok(())
+    } else {
+        Err(RioError::runtime(
+            "الشبكة مغلقة افتراضيا — استخدم --اسمح-بالشبكة للسماح بالشبكة، أو وافق عند أول استخدام في الكونسول",
+            line,
+            col,
+        ))
+    }
+}
+
+/// Resolve a host once, then refuse the address exactly as
+/// `fetch` does (§7): one DNS resolution, the IP is checked,
+/// and the connection goes to that same IP. A classified
+/// address (loopback / private / link-local / multicast /
+/// unspecified) is refused unless the host was explicitly
+/// allowed with `--مضيف-محلي` (see `allow_local_host`).
+/// Shared by the sockets module so the refusal wording can
+/// never drift from `اجلب`'s.
+pub(crate) fn resolve_checked(
+    host: &str,
+    port: u16,
+    line: usize,
+    col: usize,
+) -> RioResult<std::net::SocketAddr> {
+    use std::net::ToSocketAddrs;
+    let addr = (host, port)
+        .to_socket_addrs()
+        .map_err(|_| {
+            RioError::runtime(format!("تعذر حل اسم المضيف {}", host), line, col)
+        })?
+        .next()
+        .ok_or_else(|| {
+            RioError::runtime(format!("تعذر حل اسم المضيف {}", host), line, col)
+        })?;
+    if let Some(class) = ip_class(&addr.ip()) {
+        if !local_host_allowed(host) {
+            return Err(RioError::runtime(
+                format!("الوصول إلى العنوان {} مرفوض (عنوان {})", addr.ip(), class),
+                line,
+                col,
+            ));
+        }
+    }
+    Ok(addr)
 }
 
 /// The اجلب implementation: gate, then the platform fetch.
@@ -1607,7 +1658,7 @@ fn parse_url(url: &str, line: usize, col: usize) -> RioResult<ParsedUrl> {
 /// not on IpAddr, so the check matches on the address family
 /// (IPv6 private is unique-local fc00::/7, link-local is
 /// fe80::/10).
-fn ip_class(ip: &std::net::IpAddr) -> Option<&'static str> {
+pub(crate) fn ip_class(ip: &std::net::IpAddr) -> Option<&'static str> {
     use std::net::IpAddr;
     if ip.is_loopback() {
         Some("حلقي (محلي)")

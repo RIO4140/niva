@@ -2012,6 +2012,215 @@ fn network_fetch_parity_in_vm() {
     assert_eq!(err_v3, err_i3, "VM HTTPS error differs from interpreter");
 }
 
+// --- مقابس (catalog task 13, from net/) ---
+
+/// A one-shot TCP echo server: accepts one client, echoes one
+/// message back, exits. Returns the port it bound.
+fn tcp_echo_server_once() -> (u16, std::thread::JoinHandle<()>) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let handle = std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 1024];
+            if let Ok(n) = stream.read(&mut buf) {
+                if n > 0 {
+                    let _ = stream.write_all(&buf[..n]);
+                }
+            }
+        }
+    });
+    (port, handle)
+}
+
+/// A one-shot UDP echo server: echoes one datagram back.
+fn udp_echo_server_once() -> (u16, std::thread::JoinHandle<()>) {
+    use std::net::UdpSocket;
+    let sock = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let port = sock.local_addr().unwrap().port();
+    let handle = std::thread::spawn(move || {
+        let mut buf = [0u8; 1024];
+        if let Ok((n, src)) = sock.recv_from(&mut buf) {
+            let _ = sock.send_to(&buf[..n], src);
+        }
+    });
+    (port, handle)
+}
+
+/// Does this machine allow a UDP loopback send? Same probe as
+/// the sockets unit tests: this VM's sandbox blocks UDP sendto
+/// with EPERM, GitHub CI runners allow it.
+fn udp_loopback_works() -> bool {
+    use std::net::UdpSocket;
+    let Ok(sock) = UdpSocket::bind("127.0.0.1:0") else {
+        return false;
+    };
+    let Ok(port) = sock.local_addr().map(|a| a.port()) else {
+        return false;
+    };
+    sock.send_to(b"p", ("127.0.0.1", port)).is_ok()
+}
+
+/// Format a port the way `اطبع` prints a number: Arabic-Indic
+/// digits.
+fn arabic_digits(n: u16) -> String {
+    const DIGITS: [&str; 10] = ["٠", "١", "٢", "٣", "٤", "٥", "٦", "٧", "٨", "٩"];
+    n.to_string()
+        .chars()
+        .map(|c| DIGITS[c as usize - '0' as usize])
+        .collect()
+}
+
+#[test]
+fn sockets_tcp_echo_both_modes() {
+    // Client: connect, send, receive, close — identical
+    // output in both modes, fresh echo server per mode.
+    for interpreter in [true, false] {
+        let (port, server) = tcp_echo_server_once();
+        let prog = format!(
+            "استورد شبكة\nم = شبكة.اتصل(\"127.0.0.1\"، {})\nاطبع شبكة.أرسل(م، \"مرحبا\")\nاطبع شبكة.استقبل(م)\nشبكة.أغلق(م)\nاطبع \"تم\"\n",
+            port
+        );
+        let flags: &[&str] = if interpreter {
+            &["--مفسر", "--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"]
+        } else {
+            &["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"]
+        };
+        let (out, err, code) = run_src_flags(&prog, flags);
+        assert_eq!(code, 0, "failed: stderr={}", err);
+        assert_eq!(out, "١٠\nمرحبا\nتم\n");
+        server.join().unwrap();
+    }
+    // The closed gate refuses with the same Arabic error in
+    // both modes (the program needs no server for this).
+    let prog = "استورد شبكة\nم = شبكة.اتصل(\"127.0.0.1\"، 9)\n";
+    let (_, err_i, code_i) = run_src_flags(prog, &["--مفسر"]);
+    let (_, err_v, code_v) = run_src_flags(prog, &[]);
+    assert_ne!(code_i, 0);
+    assert_ne!(code_v, 0);
+    assert!(err_i.contains("الشبكة مغلقة افتراضيا"), "stderr: {}", err_i);
+    assert_eq!(err_v, err_i, "VM gate error differs from interpreter");
+    // A private address is refused the same way in both
+    // modes, even with the network flag on.
+    let prog = "استورد شبكة\nم = شبكة.اتصل(\"10.1.2.3\"، 80)\n";
+    let (_, err_i, code_i) = run_src_flags(prog, &["--مفسر", "--اسمح-بالشبكة"]);
+    let (_, err_v, code_v) = run_src_flags(prog, &["--اسمح-بالشبكة"]);
+    assert_ne!(code_i, 0);
+    assert_ne!(code_v, 0);
+    assert!(err_i.contains("مرفوض"), "stderr: {}", err_i);
+    assert!(err_i.contains("خاص"), "stderr: {}", err_i);
+    assert_eq!(err_v, err_i, "VM private-address error differs");
+}
+
+#[test]
+fn sockets_tcp_listen_accept_both_modes() {
+    // Server: the Niva program itself listens, accepts, and
+    // answers; a Rust client connects and checks the reply.
+    // The child runs in the background while the client
+    // connects — run_src_flags cannot do that (it waits).
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::process::Stdio;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    for interpreter in [true, false] {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "rio4140-engine-sockets-{}-{}",
+            std::process::id(),
+            n
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let port = free_port();
+        let src = format!(
+            "استورد شبكة\nم = شبكة.استمع({})\nاطبع شبكة.المنفذ(م)\nع = شبكة.أقبل(م)\nاطبع شبكة.استقبل(ع)\nشبكة.أرسل(ع، \"جواب\")\nشبكة.أغلق(ع)\nشبكة.أغلق(م)\nاطبع \"تم\"\n",
+            port
+        );
+        fs::write(dir.join("برنامج.نيفا"), &src).unwrap();
+        let mut cmd = Command::new(bin());
+        cmd.arg(dir.join("برنامج.نيفا"));
+        if interpreter {
+            cmd.arg("--مفسر");
+        }
+        cmd.args(["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"]);
+        let mut child = cmd
+            .current_dir(&dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("run نيفا");
+        // Poll until the server listens (up to 5 seconds).
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut stream = loop {
+            match TcpStream::connect(("127.0.0.1", port)) {
+                Ok(s) => break s,
+                Err(_) => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        panic!("Niva server never listened on {}", port);
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+        };
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream.write_all("سؤال".as_bytes()).unwrap();
+        let mut got = Vec::new();
+        let mut buf = [0u8; 64];
+        while got.len() < "جواب".len() {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => got.extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+        }
+        assert_eq!(String::from_utf8(got).unwrap(), "جواب");
+        let out = child.wait_with_output().expect("wait نيفا");
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "server failed: stderr={}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            format!("{}\nسؤال\nتم\n", arabic_digits(port))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+#[test]
+fn sockets_udp_echo_both_modes() {
+    if !udp_loopback_works() {
+        eprintln!("تخطَّى: UDP loopback محظور في هذا الصندوق (EPERM) — يعمل في CI");
+        return;
+    }
+    for interpreter in [true, false] {
+        let (port, server) = udp_echo_server_once();
+        let prog = format!(
+            "استورد شبكة\nم = شبكة.مقبس(\"udp\")\nاطبع شبكة.أرسل_إلى(م، \"127.0.0.1\"، {}، \"حزمة\")\nر = شبكة.استقبل_من(م)\nاطبع ر[\"نص\"]\nاطبع ر[\"مضيف\"]\nاطبع ر[\"منفذ\"]\nشبكة.أغلق(م)\nاطبع \"تم\"\n",
+            port
+        );
+        let flags: &[&str] = if interpreter {
+            &["--مفسر", "--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"]
+        } else {
+            &["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"]
+        };
+        let (out, err, code) = run_src_flags(&prog, flags);
+        assert_eq!(code, 0, "failed: stderr={}", err);
+        assert_eq!(
+            out,
+            format!("٨\nحزمة\n127.0.0.1\n{}\nتم\n", arabic_digits(port))
+        );
+        server.join().unwrap();
+    }
+}
+
 // CLI Arabization (owner's strict rule, 2026-11-05): every flag,
 // the version and the help text are Arabic; Latin flags are
 // rejected with an Arabic error. The binary is still built as

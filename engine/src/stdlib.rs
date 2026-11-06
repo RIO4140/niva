@@ -344,6 +344,26 @@ fn network_entries() -> Vec<(&'static str, Value)> {
     vec![
         ("اجلب", native("اجلب", network_fetch)),
         ("اخدم", native("اخدم", network_serve)),
+        // Catalog task 13 (مقابس, from net/): TCP/UDP sockets
+        // under the same gate as اجلب. The stored keys are the
+        // spellings the user writes: the lexer keeps an
+        // identifier's spelling exactly (hamza preserved — only
+        // diacritics are stripped), so أرسل is stored as
+        // "أرسل", not normalized — the same rule as "أوقف" in
+        // the عمليات module (task 10). Only أنشئ is different:
+        // the lexer turns it into a keyword, so its key is
+        // the normalized "انشي".
+        ("اتصل", native("اتصل", net_connect)),
+        ("مقبس", native("مقبس", net_socket)),
+        ("استمع", native("استمع", net_listen)),
+        ("أقبل", native("أقبل", net_accept)),
+        ("اربط", native("اربط", net_bind)),
+        ("أرسل", native("أرسل", net_send)),
+        ("استقبل", native("استقبل", net_recv)),
+        ("أرسل_إلى", native("أرسل_إلى", net_send_to)),
+        ("استقبل_من", native("استقبل_من", net_recv_from)),
+        ("أغلق", native("أغلق", net_close)),
+        ("المنفذ", native("المنفذ", net_local_port)),
     ]
 }
 
@@ -405,6 +425,145 @@ fn network_serve(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: 
         line,
         col,
     )
+}
+
+// --- مقابس (catalog task 13, from net/) ---
+//
+// Thin wrappers over crate::sockets: arity and types here,
+// the gate and the work in the shared core. A socket handle
+// is a non-negative integer; anything else is an Arabic
+// type error naming the dotted function.
+
+fn need_socket_id(display: &str, args: &[Value], at: usize, line: usize, col: usize) -> RioResult<u64> {
+    let id = need_integer(display, &args[at], line, col)?;
+    if id < 0 {
+        return Err(RioError::typ(
+            format!("الدالة {} تتوقع معرف مقبس غير سالب", display),
+            line,
+            col,
+        ));
+    }
+    Ok(id as u64)
+}
+
+fn net_connect(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    if args.len() == 2 {
+        let host = need_string("شبكة.اتصل", &args[0], line, col)?;
+        let port = need_integer("شبكة.اتصل", &args[1], line, col)?;
+        Ok(Value::Number(
+            crate::sockets::connect_new(&host, port, line, col)? as f64,
+        ))
+    } else if args.len() == 3 {
+        let id = need_socket_id("شبكة.اتصل", args, 0, line, col)?;
+        let host = need_string("شبكة.اتصل", &args[1], line, col)?;
+        let port = need_integer("شبكة.اتصل", &args[2], line, col)?;
+        Ok(Value::Number(
+            crate::sockets::connect_existing(id, &host, port, line, col)? as f64,
+        ))
+    } else {
+        Err(RioError::typ(
+            "الدالة شبكة.اتصل تتوقع معاملين (مضيف، منفذ) أو ثلاثة (معرف، مضيف، منفذ)",
+            line,
+            col,
+        ))
+    }
+}
+
+fn net_socket(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.مقبس", args, 1, line, col)?;
+    let kind = need_string("شبكة.مقبس", &args[0], line, col)?;
+    Ok(Value::Number(
+        crate::sockets::create_socket(&kind, line, col)? as f64,
+    ))
+}
+
+fn net_listen(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    if args.len() == 1 {
+        let port = need_integer("شبكة.استمع", &args[0], line, col)?;
+        Ok(Value::Number(
+            crate::sockets::listen(port, None, line, col)? as f64,
+        ))
+    } else if args.len() == 2 {
+        let port = need_integer("شبكة.استمع", &args[0], line, col)?;
+        let host = need_string("شبكة.استمع", &args[1], line, col)?;
+        Ok(Value::Number(
+            crate::sockets::listen(port, Some(&host), line, col)? as f64,
+        ))
+    } else {
+        Err(RioError::typ(
+            "الدالة شبكة.استمع تتوقع معاملا واحدا (منفذ) أو معاملين (منفذ، مضيف)",
+            line,
+            col,
+        ))
+    }
+}
+
+fn net_accept(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.اقبل", args, 1, line, col)?;
+    let id = need_socket_id("شبكة.اقبل", args, 0, line, col)?;
+    Ok(Value::Number(
+        crate::sockets::accept(id, line, col)? as f64,
+    ))
+}
+
+fn net_bind(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.اربط", args, 2, line, col)?;
+    let id = need_socket_id("شبكة.اربط", args, 0, line, col)?;
+    let port = need_integer("شبكة.اربط", &args[1], line, col)?;
+    crate::sockets::bind_udp(id, port, line, col)?;
+    Ok(Value::Nil)
+}
+
+fn net_send(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.أرسل", args, 2, line, col)?;
+    let id = need_socket_id("شبكة.أرسل", args, 0, line, col)?;
+    let text = need_string("شبكة.أرسل", &args[1], line, col)?;
+    Ok(Value::Number(
+        crate::sockets::send(id, &text, line, col)? as f64,
+    ))
+}
+
+fn net_recv(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.استقبل", args, 1, line, col)?;
+    let id = need_socket_id("شبكة.استقبل", args, 0, line, col)?;
+    Ok(Value::Str(crate::sockets::recv(id, line, col)?))
+}
+
+fn net_send_to(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.أرسل_إلى", args, 4, line, col)?;
+    let id = need_socket_id("شبكة.أرسل_إلى", args, 0, line, col)?;
+    let host = need_string("شبكة.أرسل_إلى", &args[1], line, col)?;
+    let port = need_integer("شبكة.أرسل_إلى", &args[2], line, col)?;
+    let text = need_string("شبكة.أرسل_إلى", &args[3], line, col)?;
+    Ok(Value::Number(
+        crate::sockets::send_to(id, &host, port, &text, line, col)? as f64,
+    ))
+}
+
+fn net_recv_from(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.استقبل_من", args, 1, line, col)?;
+    let id = need_socket_id("شبكة.استقبل_من", args, 0, line, col)?;
+    let (text, host, port) = crate::sockets::recv_from(id, line, col)?;
+    Ok(Value::Dict(vec![
+        ("نص".to_string(), Value::Str(text)),
+        ("مضيف".to_string(), Value::Str(host)),
+        ("منفذ".to_string(), Value::Number(port as f64)),
+    ]))
+}
+
+fn net_close(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.أغلق", args, 1, line, col)?;
+    let id = need_socket_id("شبكة.أغلق", args, 0, line, col)?;
+    crate::sockets::close_socket(id, line, col)?;
+    Ok(Value::Nil)
+}
+
+fn net_local_port(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.المنفذ", args, 1, line, col)?;
+    let id = need_socket_id("شبكة.المنفذ", args, 0, line, col)?;
+    Ok(Value::Number(
+        crate::sockets::local_port(id, line, col)? as f64,
+    ))
 }
 
 // --- عمليات (catalog task 10, from kernel/) ---
