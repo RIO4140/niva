@@ -15,6 +15,7 @@ pub mod artifact;
 pub mod ast;
 pub mod error;
 pub mod files;
+pub mod install;
 pub mod interpreter;
 pub mod lexer;
 pub mod memory;

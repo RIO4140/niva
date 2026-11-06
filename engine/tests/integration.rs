@@ -394,6 +394,29 @@ fn files_policy_error_matches_flat_builtin() {
     let _ = (out_ai, out_av, out_bi, out_bv);
 }
 
+/// تثبيت أدوات نيفا: البرنامج ينشئ مصدره بنفسه (مجلد
+/// فرعي + ملف وحدة)، فيثبّته بالمسار المحلي، فيستورده،
+/// والثانية مرفوضة — المخرج والخطأ والخروج متطابقة
+/// حرفيا في الوضعين.
+#[test]
+fn install_local_both_modes() {
+    let files: &[(&str, &str)] = &[(
+        "برنامج.نيفا",
+        "أنشئ_مجلد(\"مصادر\")\nاكتب_ملف(\"مصادر/أداة.نيفا\", \"صدر قيمة\\nقيمة = ٤٢\\n\")\nاطبع تثبيت(\"مصادر/أداة.نيفا\")\nاستورد أداة\nاطبع أداة.قيمة\nحاول:\n    تثبيت(\"مصادر/أداة.نيفا\")\nماعدا:\n    اطبع \"مثبّتة كما يجب\"\n",
+    )];
+    let (out_i, err_i, code_i) =
+        run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v,
+        "ثُبّتت الوحدة أداة\n٤٢\nمثبّتة كما يجب\n"
+    );
+}
+
 #[test]
 fn function_scope_is_local() {
     let (_, err, code) = run_src(

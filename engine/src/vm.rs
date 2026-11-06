@@ -363,16 +363,16 @@ fn is_pure_builtin(name: &str) -> bool {
 
 /// مهمة 5: every file builtin the interpreter knows
 /// (the 11 terminal shortcuts + the 15 added for the 50
-/// terminal shortcuts + تفاصيل_المسار + ادخل). The compiler emits
+/// terminal shortcuts + تفاصيل_المسار + تثبيت + ادخل). The compiler emits
 /// Op::Builtin for these, like the pure ones; the
 /// runtime env-first check in Op::Builtin still applies
 /// (a bound name wins over the builtin).
-const FILE_BUILTINS: [&str; 28] = [
+const FILE_BUILTINS: [&str; 29] = [
     "اقرأ_ملف", "اكتب_ملف", "اعرض_الملفات", "المجلد_الحالي", "انتقل", "أنشئ_مجلد",
     "احذف", "احذف_مجلد", "احذف_ملف", "انسخ", "انقل", "أنشئ_ملف", "اعرض_البداية",
     "اعرض_النهاية", "عد_الأسطر", "عد_الكلمات", "ابحث_في_ملف", "ابحث_عن",
     "اعرض_الشجرة", "حجم_المسار", "أنشئ_رابط", "التاريخ_الآن", "النسخة", "موجود",
-    "نوع_المسار", "عد_الملفات", "تفاصيل_المسار", "ادخل",
+    "نوع_المسار", "عد_الملفات", "تفاصيل_المسار", "تثبيت", "ادخل",
 ];
 
 fn is_file_builtin(name: &str) -> bool {
@@ -2501,6 +2501,7 @@ impl Vm {
                 | "نوع_المسار"
                 | "عد_الملفات"
                 | "تفاصيل_المسار"
+                | "تثبيت"
         ) {
             return Err(RioError::runtime(
                 "هذه الدالة غير مدعومة في متصفح الويب",
@@ -3133,6 +3134,31 @@ impl Vm {
                     other => Err(RioError::typ(
                         format!(
                             "تفاصيل_المسار يتطلب مسارا نصيا، وليس {}",
+                            other.type_name()
+                        ),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            // تثبيت أدوات نيفا (أمر الاسم الكامل، بلا كود
+            // حرفين): من رابط أو مسار محلي إلى مجلد البرنامج.
+            // التنفيذ المشترك في crate::install — لا تيرمكس
+            // ولا مدير حزم ولا ثنائيات أجنبية أبدا.
+            "تثبيت" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(source) => crate::install::install_module(
+                        &self.file_policy.borrow(),
+                        &self.cwd.borrow(),
+                        &self.program_dir,
+                        source,
+                        line,
+                        col,
+                    ),
+                    other => Err(RioError::typ(
+                        format!(
+                            "تثبيت يتطلب مصدرا نصيا، وليس {}",
                             other.type_name()
                         ),
                         line,

@@ -2164,6 +2164,7 @@ impl Interpreter {
                 | "نوع_المسار"
                 | "عد_الملفات"
                 | "تفاصيل_المسار"
+                | "تثبيت"
         ) {
             return Err(RioError::runtime(
                 "هذه الدالة غير مدعومة في متصفح الويب",
@@ -2948,6 +2949,31 @@ impl Interpreter {
                     other => Err(RioError::typ(
                         format!(
                             "تفاصيل_المسار يتطلب مسارا نصيا، وليس {}",
+                            other.type_name()
+                        ),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            // تثبيت أدوات نيفا (أمر الاسم الكامل، بلا كود
+            // حرفين): من رابط أو مسار محلي إلى مجلد البرنامج.
+            // التنفيذ المشترك في crate::install — لا تيرمكس
+            // ولا مدير حزم ولا ثنائيات أجنبية أبدا.
+            "تثبيت" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(source) => crate::install::install_module(
+                        &self.file_policy,
+                        &self.cwd,
+                        &self.program_dir,
+                        source,
+                        line,
+                        col,
+                    ),
+                    other => Err(RioError::typ(
+                        format!(
+                            "تثبيت يتطلب مصدرا نصيا، وليس {}",
                             other.type_name()
                         ),
                         line,

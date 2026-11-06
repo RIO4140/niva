@@ -649,6 +649,43 @@ impl Repl {
         }
     }
 
+    /// Full-name terminal command (تثبيت): a whole Arabic
+    /// word, not a two-letter code — so it never enters the
+    /// 50-code table (the table stays 50, and the app has no
+    /// code for it either). Like the Snippet shortcuts, it
+    /// builds a builtin call and evaluates it; the typed line
+    /// joins the history, like code lines do. Only at the top
+    /// level, like try_shortcut — never inside a pending block.
+    fn try_full_command(&mut self, line: &str) -> Option<ReplOutput> {
+        let mut words = line.split_whitespace();
+        let first = words.next()?;
+        if first != "تثبيت" {
+            return None;
+        }
+        let args: Vec<String> = words.map(|w| w.to_string()).collect();
+        if args.len() != 1 {
+            return Some(ReplOutput {
+                output: format!("تثبيت تتوقع 1 معاملات لكن أعطيت {}\n", args.len()),
+                prompt: self.prompt(),
+                ended: false,
+                needs_network: false,
+            });
+        }
+        self.history.push(line.to_string());
+        let escaped = args[0].replace('\\', "\\\\").replace('"', "\\\"");
+        let snippet = format!("تثبيت(\"{}\")", escaped);
+        // A snippet whose value is لاشيء prints nothing,
+        // like the other shortcuts do (Nil -> empty).
+        let out = self.eval_display(&snippet);
+        let out = if out == "لاشيء\n" { String::new() } else { out };
+        Some(ReplOutput {
+            output: out,
+            prompt: self.prompt(),
+            ended: false,
+            needs_network: false,
+        })
+    }
+
     /// Feed one typed line and get what to display next. The
     /// wrapper flags the network-permission error so an
     /// interactive console can offer the first-use prompt.
@@ -789,6 +826,9 @@ impl Repl {
         // shortcut layer get its turn.
         if !self.line_is_code(&line) {
             if let Some(out) = self.try_shortcut(&line) {
+                return out;
+            }
+            if let Some(out) = self.try_full_command(&line) {
                 return out;
             }
         }
@@ -1969,6 +2009,167 @@ mod tests {
         assert_eq!(done_out(r.eval("استورد رياضيات")), "");
         assert_eq!(done_out(r.eval("رياضيات.جذر(١٦)")), "٤\n");
         assert_eq!(done_out(r.eval("رياضيات.قوة(٢، ٣)")), "٨\n");
+    }
+
+    // تثبيت أدوات نيفا (أمر الاسم الكامل، بلا كود حرفين):
+    // من مسار محلي إلى مجلد البرنامج، ثم الاستيراد —
+    // في الوضعين (المترجم والمفسر التشخيصي).
+    #[test]
+    fn repl_full_command_install_local() {
+        for interpreter in [false, true] {
+            let dir = shortcut_dir();
+            std::fs::create_dir(dir.join("مصادر")).unwrap();
+            std::fs::write(dir.join("مصادر/أداة.نيفا"), "صدر قيمة\nقيمة = ٤٢\n")
+                .unwrap();
+            let mut r = if interpreter {
+                Repl::with_program_dir_interpreter(dir.clone())
+            } else {
+                Repl::with_program_dir(dir.clone())
+            };
+            let o = r.feed("تثبيت مصادر/أداة.نيفا");
+            assert!(!o.ended);
+            assert_eq!(o.output, "ثُبّتت الوحدة أداة\n", "got: {}", o.output);
+            assert_eq!(
+                std::fs::read_to_string(dir.join("أداة.نيفا")).unwrap(),
+                "صدر قيمة\nقيمة = ٤٢\n"
+            );
+            // والوحدة المثبّتة تُستورد فورا.
+            assert_eq!(r.feed("استورد أداة").output, "");
+            assert_eq!(r.feed("أداة.قيمة").output, "٤٢\n");
+            // الثانية مرفوضة: بلا كتابة صامتة فوق موجود.
+            let o = r.feed("تثبيت مصادر/أداة.نيفا");
+            assert!(
+                o.output.contains("مثبّتة أصلا"),
+                "got: {}",
+                o.output
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.join("أداة.نيفا")).unwrap(),
+                "صدر قيمة\nقيمة = ٤٢\n"
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    // تثبيت: الرفوض — الوسائط، وليس .نيفا، والخروج عن
+    // المجلد، والمجلد، والغائب، واسم الوحدة الأصلية،
+    // والمخطط غير http/https، والشبكة المغلقة (البوابة
+    // قبل الشبكة نفسها). والجدول يبقى 50: تثبيت ليس
+    // كود اختصار أبدا.
+    #[test]
+    fn repl_full_command_install_rejections() {
+        assert!(shortcut_def("تثبيت").is_none());
+        let dir = shortcut_dir();
+        std::fs::create_dir(dir.join("مصادر")).unwrap();
+        std::fs::write(dir.join("مصادر/نص.txt"), "نص").unwrap();
+        std::fs::write(dir.join("مصادر/أداة.نيفا"), "صدر قيمة\nقيمة = ١\n").unwrap();
+        std::fs::write(dir.join("مصادر/رياضيات.نيفا"), "صدر س\nس = ١\n").unwrap();
+        let mut r = Repl::with_program_dir(dir.clone());
+        // العارية وحدها كود (اسم مدمج معروف تحليليا) —
+        // فترد «متغير غير معرف» وقت التشغيل، كأي دالة
+        // مدمجة عارية (طول) — لا خطأ وسائط.
+        let o = r.feed("تثبيت");
+        assert!(
+            o.output.contains("متغير غير معرف: تثبيت"),
+            "got: {}",
+            o.output
+        );
+        let o = r.feed("تثبيت أ ب");
+        assert!(o.output.contains("تتوقع"), "got: {}", o.output);
+        let o = r.feed("تثبيت مصادر/نص.txt");
+        assert!(o.output.contains(".نيفا"), "got: {}", o.output);
+        let o = r.feed("تثبيت ../خارج.نيفا");
+        assert!(
+            o.output.contains("خارج مجلد البرنامج"),
+            "got: {}",
+            o.output
+        );
+        let o = r.feed("تثبيت مصادر");
+        assert!(o.output.contains("ليس ملفا"), "got: {}", o.output);
+        let o = r.feed("تثبيت مصادر/غائب.نيفا");
+        assert!(o.output.contains("غير موجود"), "got: {}", o.output);
+        let o = r.feed("تثبيت مصادر/رياضيات.نيفا");
+        assert!(o.output.contains("وحدة أصلية"), "got: {}", o.output);
+        let o = r.feed("تثبيت ftp://مثال.مصر/أداة.نيفا");
+        assert!(o.output.contains("http وhttps"), "got: {}", o.output);
+        // الشبكة مغلقة افتراضيا: البوابة، لا الشبكة.
+        let o = r.feed("تثبيت http://127.0.0.1:9/أداة.نيفا");
+        assert!(o.needs_network, "got: {}", o.output);
+        assert!(
+            o.output.contains(crate::network::PERMISSION_ERROR_MARKER),
+            "got: {}",
+            o.output
+        );
+        assert!(!dir.join("أداة.نيفا").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// خادم HTTP محلي صغير لاختبار التثبيت من رابط: يرد
+    /// بمحتوى ثابت على أول طلب ثم ينتهي (اتصال واحد —
+    /// بلا keep-alive، كقاعدة المحرك).
+    fn install_test_server(body: &'static str) -> u16 {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            // يقبل حتى 4 طلبات (الاختبار ينزّل مرتين:
+            // رابط خام + رابط مرمّز) ثم ينتهي.
+            for _ in 0..4 {
+                let Ok((mut s, _)) = listener.accept() else {
+                    break;
+                };
+                let mut buf = [0u8; 4096];
+                let _ = s.read(&mut buf);
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = s.write_all(resp.as_bytes());
+            }
+        });
+        port
+    }
+
+    // تثبيت من رابط: خادم محلي، شبكة مسموحة، مضيف محلي
+    // مسموح — في الوضعين. يفترض التشغيل المتسلسل (CI
+    // --test-threads=1): العلم العام يُعاد ضبطه في النهاية.
+    #[test]
+    fn repl_full_command_install_url() {
+        for interpreter in [false, true] {
+            let dir = shortcut_dir();
+            let port = install_test_server("صدر قيمة\nقيمة = ٧\n");
+            let mut r = if interpreter {
+                Repl::with_program_dir_interpreter(dir.clone())
+            } else {
+                Repl::with_program_dir(dir.clone())
+            };
+            r.set_network_allowed(true);
+            r.allow_local_network_host("127.0.0.1");
+            let o = r.feed(&format!(
+                "تثبيت http://127.0.0.1:{}/أداة.نيفا",
+                port
+            ));
+            assert!(!o.ended);
+            assert_eq!(o.output, "ثُبّتت الوحدة أداة\n", "got: {}", o.output);
+            assert_eq!(
+                std::fs::read_to_string(dir.join("أداة.نيفا")).unwrap(),
+                "صدر قيمة\nقيمة = ٧\n"
+            );
+            assert_eq!(r.feed("استورد أداة").output, "");
+            assert_eq!(r.feed("أداة.قيمة").output, "٧\n");
+            // والرابط المرمّز بالنسب المئوية (الصيغة التي
+            // تصل بها الروابط العربية عادة) — الاسم بعد
+            // الفك «أداة» أيضا، والتثبيت الثاني مرفوض.
+            let o = r.feed(&format!(
+                "تثبيت http://127.0.0.1:{}/%D8%A3%D8%AF%D8%A7%D8%A9.%D9%86%D9%8A%D9%81%D8%A7",
+                port
+            ));
+            assert!(o.output.contains("مثبّتة أصلا"), "got: {}", o.output);
+            r.set_network_allowed(false);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     // Time, version, and the session commands through the
