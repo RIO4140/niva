@@ -4,6 +4,12 @@
 
 صنع بواسطة محمود عبد النبي.
 
+## تنزيل ترمنال نيفا
+
+- أندرويد: [niva-terminal-1.2.2.apk](https://github.com/RIO4140/niva/releases/download/v1.2.2/niva-terminal-1.2.2.apk)
+- ويندوز: قريبا
+- ماك: قريبا
+
 ## التثبيت
 
 نيفا محرك Rust محمول — يعمل على Linux وmacOS وWindows وAndroid، والملعب يعمل في المتصفح بلا تثبيت.
