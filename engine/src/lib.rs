@@ -16,6 +16,7 @@ pub mod ast;
 pub mod error;
 pub mod interpreter;
 pub mod lexer;
+pub mod memory;
 pub mod network;
 pub mod parser;
 pub mod permissions;

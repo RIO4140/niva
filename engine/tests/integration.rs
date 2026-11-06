@@ -130,6 +130,10 @@ fn examples_pass() {
             "18-عمليات.نيفا",
             "المساعد يعمل\nالفاشل يبدأ\n٠\n١\nصحيح\nمرفوض كما يجب\n",
         ),
+        (
+            "21-ذاكرة.نيفا",
+            "صحيح\nغير معروفة كما يجب\n",
+        ),
     ];
     for (name, expected) in cases {
         let path = example_path(name);
@@ -248,6 +252,69 @@ fn operations_permission_refused_both_modes() {
         out_v,
         "مرفوض كما يجب\nغير موجود كما يجب\nغير معروف كما يجب\nفارغ كما يجب\n"
     );
+}
+
+/// مهمة 11 (ذاكرة): حجز وتحرير في الوضعين — المخرج
+/// والخطأ والخروج متطابقة حرفيا؛ والمعرف المزدوج
+/// والحجم غير الصالح وتجاوز الحد أخطاء عربية تُمسكها
+/// ماعدا، متطابقة في الوضعين.
+#[test]
+fn memory_alloc_free_both_modes() {
+    let files: &[(&str, &str)] = &[(
+        "برنامج.نيفا",
+        "استورد ذاكرة\nكتلة = ذاكرة.احجز(١٠٢٤)\nاطبع كتلة > ٠\nذاكرة.حرّر(كتلة)\nحاول:\n    ذاكرة.حرّر(كتلة)\nماعدا:\n    اطبع \"غير معروفة كما يجب\"\nحاول:\n    ذاكرة.حرّر(٩٩٩٩٩٩)\nماعدا:\n    اطبع \"غير معروفة كما يجب\"\nحاول:\n    ذاكرة.احجز(٠)\nماعدا:\n    اطبع \"حجم غير صالح كما يجب\"\nحاول:\n    ذاكرة.احجز(٦٤ * ١٠٢٤ * ١٠٢٤ + ١)\nماعدا:\n    اطبع \"تجاوز الحد كما يجب\"\n",
+    )];
+    let (out_i, err_i, code_i) =
+        run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v,
+        "صحيح\nغير معروفة كما يجب\nغير معروفة كما يجب\nحجم غير صالح كما يجب\nتجاوز الحد كما يجب\n"
+    );
+}
+
+/// مهمة 11 (ذاكرة): الاستعلامان على لينكس (+Android)
+/// — قيم موجبة حقيقية من النظام، متطابقة في الوضعين.
+/// (المطابقة الدقيقة مع /proc في اختبارات الوحدة.)
+#[test]
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn memory_queries_linux_both_modes() {
+    let files: &[(&str, &str)] = &[(
+        "برنامج.نيفا",
+        "استورد ذاكرة\nاطبع ذاكرة.المتاح() > ٠\nاطبع ذاكرة.حجم_الصفحة() > ٠\n",
+    )];
+    let (out_i, err_i, code_i) =
+        run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(out_v, "صحيح\nصحيح\n");
+}
+
+/// مهمة 11 (ذاكرة): الاستعلامان على غير لينكس
+/// (macOS/Windows) — رفض صادق بخطأ عربي، متطابق في
+/// الوضعين؛ لا قيمة مختلقة ولا انهيار.
+#[test]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn memory_queries_refused_both_modes() {
+    let files: &[(&str, &str)] = &[(
+        "برنامج.نيفا",
+        "استورد ذاكرة\nحاول:\n    ذاكرة.المتاح()\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    ذاكرة.حجم_الصفحة()\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\n",
+    )];
+    let (out_i, err_i, code_i) =
+        run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(out_v, "غير مدعوم كما يجب\nغير مدعوم كما يجب\n");
 }
 
 #[test]

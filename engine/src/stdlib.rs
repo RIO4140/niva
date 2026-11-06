@@ -74,6 +74,13 @@ pub fn native_module(name: &str) -> Option<Value> {
         // CATALOG-01-OPERATIONS.md §1 (program-dir only by
         // default, --اسمح-بالكل lifts it; no shell ever).
         "عمليات" => processes_entries(),
+        // Catalog task 11 (ذاكرة, from mm/): reserve a block,
+        // free it, free memory now, page size. Permission
+        // design first — see CATALOG-02-MEMORY.md §1 (handles
+        // only, never a raw pointer; 64 MiB per block, 256 MiB
+        // live in total; the two queries are Linux-native and
+        // refuse honestly elsewhere).
+        "ذاكرة" => memory_entries(),
         _ => return None,
     };
     let mut exports: HashMap<String, Value> = HashMap::new();
@@ -450,6 +457,57 @@ fn proc_current(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: 
     need_args("عمليات.الحالية", args, 0, line, col)?;
     Ok(Value::Number(
         crate::processes::current_process_id(line, col)? as f64,
+    ))
+}
+
+// --- ذاكرة (catalog task 11, from mm/) ---
+
+fn memory_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("احجز", native("احجز", mem_alloc)),
+        // المفتاح المخزَّن لـ حرّر هو صيغته المطبّعة "حرر":
+        // الشدة تشكيل فيُجرَّد عند التحليل، فيصل الاسم بلا
+        // شدة — كما في "انشي" للمهمة 10. ويعمل بذلك
+        // `ذاكرة.حرّر` و`ذاكرة.حرر` معا.
+        ("حرر", native("حرر", mem_free)),
+        ("المتاح", native("المتاح", mem_available)),
+        ("حجم_الصفحة", native("حجم_الصفحة", mem_page_size)),
+    ]
+}
+
+fn mem_alloc(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("ذاكرة.احجز", args, 1, line, col)?;
+    let size = need_integer("ذاكرة.احجز", &args[0], line, col)?;
+    Ok(Value::Number(
+        crate::memory::allocate_block(size, line, col)? as f64,
+    ))
+}
+
+fn mem_free(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("ذاكرة.حرّر", args, 1, line, col)?;
+    let id = need_integer("ذاكرة.حرّر", &args[0], line, col)?;
+    if id < 0 {
+        return Err(RioError::typ(
+            "الدالة ذاكرة.حرّر تتوقع معرف كتلة غير سالب",
+            line,
+            col,
+        ));
+    }
+    crate::memory::free_block(id as u64, line, col)?;
+    Ok(Value::Nil)
+}
+
+fn mem_available(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("ذاكرة.المتاح", args, 0, line, col)?;
+    Ok(Value::Number(
+        crate::memory::available_memory(line, col)? as f64,
+    ))
+}
+
+fn mem_page_size(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("ذاكرة.حجم_الصفحة", args, 0, line, col)?;
+    Ok(Value::Number(
+        crate::memory::page_size(line, col)? as f64,
     ))
 }
 
