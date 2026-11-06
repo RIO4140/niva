@@ -36,6 +36,7 @@ import android.text.style.ForegroundColorSpan;
 import android.view.ActionMode;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
+import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.Menu;
 import android.view.MenuItem;
@@ -106,7 +107,9 @@ import java.util.regex.Pattern;
  * الاستكمال `> `. لا يظهر `نيفا: ` كموجّه أبدا.
  *
  * كل جلسة عملية محرك نيفا مستقلة (stdin/stdout عبر أنابيب)
- * مع سجلها ومحفوظاتها وقرار الشبكة الخاص بها.
+ * مع سجلها ومحفوظاتها. والشبكة تلقائية في كل الجلسات
+ * (أمر المالك 2026-11-06) — كما في Termux، بلا سؤال
+ * إذن وبلا تفعيل يدوي لكل جلسة.
  */
 public class MainActivity extends Activity {
 
@@ -218,16 +221,17 @@ public class MainActivity extends Activity {
     private static final int SUBTITLE_GRAY_LIGHT = 0xFF5A5A5A;
 
     /** أكواد الاختصارات التي يعالجها التطبيق نفسه (لا المحرك):
-     * جلسات / جلسة جديدة / مسح الشاشة / حالة الشبكة /
-     * السماح بالشبكة / مدة الجلسة / إعادة تشغيل الجلسة /
-     * تحديث نيفا (v1.1.4). */
+     * جلسات / جلسة جديدة / مسح الشاشة / تنظيف الشاشة /
+     * حالة الشبكة / السماح بالشبكة / مدة الجلسة /
+     * إعادة تشغيل الجلسة / تحديث نيفا (v1.1.4). */
     private static final String[] APP_CODES = {
-            "جل", "جد", "مش", "شب", "سش", "مد", "اع", "تن"
+            "جل", "جد", "مش", "تنظيف", "شب", "سش", "مد", "اع", "تن"
     };
 
     /** صف المفاتيح (أمر المالك 2026-11-05 ~23:02): الأكواد
-     * بالترتيب — 43 للمحرك + 8 للتطبيق. «تن» (تحديث نيفا،
-     * v1.1.4) كود تطبيق إضافي خارج الخمسين المشهورة؛
+     * بالترتيب — 43 للمحرك + 9 للتطبيق. «تن» (تحديث نيفا،
+     * v1.1.4) و«تنظيف» (مسح الشاشة بالاسم الكامل، مهمة 12)
+     * كودا تطبيق إضافيان خارج الخمسين المشهورة؛
      * ضغطة زر تُدرج الكود متبوعا بمسافة، ولا تنفذ تلقائيا. */
     private static final String[] KEY_CODES = {
             "ات", "مح", "نم", "شم", "حم", "حف", "سم", "قم", "اف", "شف",
@@ -235,7 +239,7 @@ public class MainActivity extends Activity {
             "وج", "ام", "عم", "اس", "عر", "مس", "خج", "اص", "طن", "مع",
             "اد", "اق", "طع", "حع", "مى", "رع", "جذ", "قو", "تا", "وق",
             "نو", "اج", "اط",
-            "جل", "جد", "مش", "شب", "سش", "مد", "اع", "تن"
+            "جل", "جد", "مش", "تنظيف", "شب", "سش", "مد", "اع", "تن"
     };
 
     /** رموز صف المفاتيح الصعبة على لوحة مفاتيح الهاتف. */
@@ -254,8 +258,14 @@ public class MainActivity extends Activity {
         List<String> history = new ArrayList<>();
         int histIdx = -1;
         String draft = "";
-        boolean networkAllowed = false;
-        boolean networkAsked = false;
+        // الشبكة تلقائية (أمر المالك 2026-11-06 «المفروض
+        // الشبكه تكون شغاله بشكل تلقائي زي ترمكس»): كل
+        // جلسة جديدة تبدأ مفتوحة، بلا سؤال إذن أول مرة
+        // وبلا تفعيل يدوي — الشبكة قدرة جهاز وليست سرا
+        // لكل جلسة، كما في Termux. حمايات المحرك
+        // (فحص IP والحدود) تبقى كما هي — الذي رُفع
+        // بوابة الموافقة في التطبيق فقط.
+        boolean networkAllowed = true;
         boolean ended = false;
         long startTime = System.currentTimeMillis();
         String pendingLine = null;
@@ -263,8 +273,6 @@ public class MainActivity extends Activity {
         boolean awaitingRestartResend = false;
         /** إعادة تشغيل جارية (فلا تُطلب ثانية). */
         boolean restarting = false;
-        /** حوار شبكة مؤجل حتى تصبح الجلسة نشطة (م-7). */
-        boolean networkPending = false;
         /** السطر الجزئي الحالي (بعد آخر \n) — لاكتشاف
          * الموجّه بلا مسح للنص كله (م-1). */
         String tail = "";
@@ -378,6 +386,13 @@ public class MainActivity extends Activity {
             int len = getText() == null ? 0 : getText().length();
             int min = inputStart >= 0 ? Math.min(inputStart, len) : len;
             if (selStart < min || selEnd < min) {
+                // إصلاح نسخ الأوامر القديمة (مهمة 12): تحديد
+                // غير فارغ في السجل (ضغطة طويلة على أمر
+                // قديم) يُترك كما هو — شريط التحديد يملكه،
+                // وينهار وحده إن لم يكن تحديدا حقيقيا.
+                // أما المؤشر المنهار وحده (بلا تحديد) فيُعاد
+                // إلى سطر الإدخال، كما كان.
+                if (selStart != selEnd) return;
                 setSelection(min, min);
             }
         }
@@ -574,6 +589,12 @@ public class MainActivity extends Activity {
     /** تنبيه تبديل الجلسة (v1.1.7 بنود 9 + 50) —
      * الافتراضي مفعّل. */
     private boolean sessionChangeToast = true;
+    /** مفاتيح الصوت كتحكم (مهمة 12 — كما في Termux:
+     * خفض الصوت = تحكم): الافتراضي معطّل، لأن ضغطة
+     * صوت عارضة أثناء تشغيل برنامج تقاطعه (تعيد تشغيل
+     * المحرك وتفقد متغيراته)؛ يُفعَّل من niva.properties
+     * بالمفتاح «مفاتيح_الصوت=تحكم». */
+    private boolean volumeKeysCtrl = false;
     /** اكتمل إنشاء النشاط واستعادة الجلسات (بند 9):
      * تنبيه التبديل لا يظهر أثناء الاستعادة. */
     private boolean startupDone = false;
@@ -702,7 +723,7 @@ public class MainActivity extends Activity {
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         topBar.addView(title, titleParams);
         netStateView = new TextView(this);
-        netStateView.setText("الشبكة: مغلقة");
+        netStateView.setText("الشبكة: مفتوحة");
         netStateView.setTextColor(colorText);
         topBar.addView(netStateView);
         root.addView(topBar, new LinearLayout.LayoutParams(
@@ -818,6 +839,11 @@ public class MainActivity extends Activity {
                         }
                         menu.add(Menu.NONE, 3, Menu.NONE, "مشاركة");
                         menu.add(Menu.NONE, 4, Menu.NONE, "تحديد الكل");
+                        // مهمة 12 — نسخ الأمر القديم كاملا:
+                        // الضغطة الطويلة تختار كلمة واحدة
+                        // فقط، وهذا ينسخ السطر كله (بلا
+                        // الموجّه) فيعيد لصقه أمرا جاهزا.
+                        menu.add(Menu.NONE, 6, Menu.NONE, "نسخ السطر");
                         // v1.1.6 بند 12: حذف المحدد من العرض
                         // ومن السجل المحفوظ.
                         menu.add(Menu.NONE, 5, Menu.NONE, "احذف المحدد");
@@ -853,6 +879,11 @@ public class MainActivity extends Activity {
                         }
                         if (id == 5) {
                             deleteSelectedText();
+                            mode.finish();
+                            return true;
+                        }
+                        if (id == 6) {
+                            copyLineAtSelection();
                             mode.finish();
                             return true;
                         }
@@ -900,7 +931,9 @@ public class MainActivity extends Activity {
         terminalView.setOnKeyListener((v, keyCode, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
             // لوحة مفاتيح مادية: تحكم+بديل+ (+/−) يغيّر حجم
-            // الخط (بند 3).
+            // الخط (بند 3)؛ ومجموعة Termux للتحكم بالجلسات
+            // (مهمة 12): التالية/السابقة، جديدة، لصق،
+            // كيبورد، قائمة، تسمية، روابط، 1–9 للتبديل.
             if (event.isCtrlPressed() && event.isAltPressed()) {
                 if (keyCode == KeyEvent.KEYCODE_EQUALS
                         || keyCode == KeyEvent.KEYCODE_NUMPAD_ADD) {
@@ -910,6 +943,46 @@ public class MainActivity extends Activity {
                 if (keyCode == KeyEvent.KEYCODE_MINUS
                         || keyCode == KeyEvent.KEYCODE_NUMPAD_SUBTRACT) {
                     setFontSize(fontSizeSp - 2);
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                        || keyCode == KeyEvent.KEYCODE_N) {
+                    switchToAdjacentSession(true);
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_DPAD_UP
+                        || keyCode == KeyEvent.KEYCODE_P) {
+                    switchToAdjacentSession(false);
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_C) {
+                    createSession();
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_V) {
+                    pasteFromClipboard();
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_K) {
+                    toggleKeyboard();
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_M) {
+                    showTopMenu();
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_R) {
+                    showRenameDialog(activeIdx);
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_U) {
+                    showUrlDialog();
+                    return true;
+                }
+                if (keyCode >= KeyEvent.KEYCODE_1
+                        && keyCode <= KeyEvent.KEYCODE_9) {
+                    int idx = keyCode - KeyEvent.KEYCODE_1;
+                    if (idx < sessions.size()) switchTo(idx);
                     return true;
                 }
             }
@@ -1177,8 +1250,10 @@ public class MainActivity extends Activity {
     @Override
     public void onBackPressed() {
         if (terminalView != null && terminalView.selecting) {
-            int end = terminalView.getText().length();
-            terminalView.setSelection(end, end);
+            // إصلاح مهمة 12: الخروج من وضع التحديد كاملا —
+            // setSelection وحده كان يترك `selecting` صحيحا
+            // وشريط الإجراءات حيا والدرج مقفلا.
+            terminalView.exitSelectionToInput();
             return;
         }
         if (drawerPanel.getVisibility() == View.VISIBLE) {
@@ -1190,6 +1265,26 @@ public class MainActivity extends Activity {
             return;
         }
         moveTaskToBack(true);
+    }
+
+    /** مفاتيح الصوت كتحكم (مهمة 12 — كما في Termux:
+     * خفض الصوت = تحكم): مفعّلة فقط بالمفتاح
+     * «مفاتيح_الصوت=تحكم» في niva.properties؛
+     * والافتراضي أنها مفاتيح صوت عادية. لا تُسرق من
+     * لوحة مفاتيح مادية كاملة. رفع الصوت يبقى صوت
+     * النظام — لا مكافئ لـFn عندنا يحتاجه. */
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+        if (volumeKeysCtrl && keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
+                && event.getRepeatCount() == 0) {
+            InputDevice dev = event.getDevice();
+            if (dev == null
+                    || dev.getKeyboardType() != InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
+                onCtrl();
+                return true;
+            }
+        }
+        return super.onKeyDown(keyCode, event);
     }
 
     private boolean isKeyboardVisible() {
@@ -1525,11 +1620,6 @@ public class MainActivity extends Activity {
         }
         updateNetState();
         rebuildSessionList();
-        Session s = active();
-        if (s.networkPending) {
-            s.networkPending = false;
-            showNetworkDialog(s);
-        }
         // تنبيه تبديل الجلسة (v1.1.7 بند 9): بعد اكتمال
         // البدء فقط، ولتبديل فعلي (لا لنفس الجلسة)؛
         // ويُعطَّل بالمفتاح (بند 50).
@@ -1538,6 +1628,18 @@ public class MainActivity extends Activity {
             toast("تم التبديل إلى " + sessionDisplayName(idx));
         }
         terminalView.requestFocus();
+    }
+
+    /** تبديل الجلسة التالية/السابقة مع الالتفاف من
+     * الأخيرة إلى الأولى وبالعكس (مهمة 12: اختصارات
+     * لوحة المفاتيح المادية Ctrl+Alt+N/P وCtrl+Alt+↓/↑
+     * كما في Termux). */
+    private void switchToAdjacentSession(boolean forward) {
+        if (sessions.isEmpty()) return;
+        int next = activeIdx + (forward ? 1 : -1);
+        if (next >= sessions.size()) next = 0;
+        if (next < 0) next = sessions.size() - 1;
+        if (next != activeIdx) switchTo(next);
     }
 
     /** اسم الجلسة للعرض (مخصص أو «جلسة N») — يُستخدم
@@ -1559,6 +1661,11 @@ public class MainActivity extends Activity {
 
     private void syncTerminalFromSession() {
         Session s = active();
+        // أي وضع تحديد من الجلسة السابقة ينتهي هنا —
+        // setText يمحو التحديد لكن شريط الإجراءات قد
+        // يبقى حيا (مهمة 12).
+        if (selectionMode != null) selectionMode.finish();
+        terminalView.selecting = false;
         terminalView.programmatic = true;
         terminalView.setText(s.text.toString());
         terminalView.inputStart = s.inputStart;
@@ -1568,6 +1675,13 @@ public class MainActivity extends Activity {
         paintPrompt();
         int end = terminalView.getText().length();
         terminalView.setSelection(end, end);
+        // إصلاح التبديل (مهمة 12): setText يستبدل النص
+        // فيبقى اتصال لوحة المفاتيح مربوطا بالنص القديم
+        // على بعض الأجهزة، فتظهر اللوحة ولا يصل حرف.
+        // إعادة الربط هنا تجعل الكتابة تعمل فور التبديل.
+        InputMethodManager imm = (InputMethodManager)
+                getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) imm.restartInput(terminalView);
     }
 
     private void rebuildSessionList() {
@@ -1761,8 +1875,21 @@ public class MainActivity extends Activity {
 
     private void showCloseSessionDialog(final int idx) {
         if (idx < 0 || idx >= sessions.size()) return;
+        // مهمة 12 — كما في Termux (حوار القتل يسمّي
+        // العملية): الحوار يسمّي الجلسة، ورقم العملية
+        // حين يتوفر (API 26+)، فلا تُنهى جلسة بالخطأ.
+        Session s = sessions.get(idx);
+        String name = sessionDisplayName(idx);
+        String msg = "أنهي «" + name + "»؟";
+        if (s.process != null
+                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                msg += "\n(العملية " + s.process.pid() + ")";
+            } catch (Exception ignored) {
+            }
+        }
         new AlertDialog.Builder(this)
-                .setMessage("أنهي الجلسة؟")
+                .setMessage(msg)
                 .setPositiveButton("إنهاء", (d, w) -> closeSession(idx))
                 .setNegativeButton("إلغاء", null)
                 .show();
@@ -1770,13 +1897,15 @@ public class MainActivity extends Activity {
 
     /** إنهاء جلسة (بند 6): تُقتل عمليتها وتُزال؛ إن كانت
      * الأخيرة أُنشئت جلسة جديدة بدلا منها، فلا يبقى
-     * التطبيق بلا جلسة أبدا. */
+     * التطبيق بلا جلسة أبدا. القتل بـSIGKILL مباشرة
+     * (مهمة 12 — كما في Termux finishIfRunning):
+     * بلا مهلة إغلاق لطيف، فالمستخدم أكّد الحوار. */
     private void closeSession(int idx) {
         if (idx < 0 || idx >= sessions.size()) return;
         Session s = sessions.get(idx);
         if (s.process != null) {
             try {
-                s.process.destroy();
+                s.process.destroyForcibly();
             } catch (Exception ignored) {
             }
         }
@@ -1794,6 +1923,7 @@ public class MainActivity extends Activity {
                 activeIdx = Math.max(0, Math.min(idx, sessions.size() - 1));
                 syncTerminalFromSession();
                 updateNetState();
+                terminalView.requestFocus();
             } else if (idx < activeIdx) {
                 activeIdx--;
             }
@@ -1978,8 +2108,10 @@ public class MainActivity extends Activity {
                 String meta = readFile(new File(dir, "session-" + idx + ".meta"));
                 String[] lines = meta.split("\n", 3);
                 if (lines.length >= 2) {
-                    s.networkAllowed = "1".equals(lines[0]);
-                    s.networkAsked = s.networkAllowed;
+                    // الشبكة تلقائية (أمر المالك 2026-11-06):
+                    // الجلسة المستعادة تُجبَر على مفتوحة —
+                    // السطر المحفوظ (lines[0]) يُتجاهل عمدا.
+                    s.networkAllowed = true;
                     try {
                         s.startTime = Long.parseLong(lines[1].trim());
                     } catch (NumberFormatException ignored) {
@@ -2203,8 +2335,24 @@ public class MainActivity extends Activity {
      * على مخرجات المستخدم أبدا. */
     private void handleControl(Session s, String signal) {
         if ("شبكة".equals(signal)) {
-            if (!s.networkAsked && !s.networkAllowed) {
-                showNetworkDialog(s);
+            // الشبكة تلقائية (أمر المالك 2026-11-06): لا
+            // سؤال إذن أبدا — كما في Termux. المحرك يبدأ
+            // دائما بعلم الشبكة، فلا تصل هذه الإشارة في
+            // العادة؛ وإن وصلت (محرك قديم أو حالة حدّية)
+            // تُثبَّت الموافقة ويُعاد إرسال السطر المعلق
+            // بلا أي حوار — كما كان يفعل زر «سماح».
+            if (!s.networkAllowed) {
+                s.networkAllowed = true;
+                updateNetState();
+                sendToEngine(s, ALLOW_NETWORK_COMMAND);
+            }
+            if (s.pendingLine != null) {
+                String pl = s.pendingLine;
+                s.pendingLine = null;
+                // عبر فحص الجلب (بند 11 + 12): دون
+                // اتصال يُعرض «لا يوجد اتصال» بدلا من
+                // انتظار مهلة DNS.
+                sendLineToEngine(s, pl);
             }
         } else if ("مسح".equals(signal)) {
             s.history.clear();
@@ -2684,6 +2832,16 @@ public class MainActivity extends Activity {
             toast("تم مسح محفوظات الأسهم");
             return;
         }
+        // مسح بالاسم الكامل (مهمة 12): المحرك لا يعرف
+        // إلا `:مسح` و`مس`؛ أما `مسح` عارية فيرد عليها
+        // «متغير غير معرف» (مُتحقق حيا). تُمرَّر كـ`:مسح`
+        // فيعيد ضبط الجلسة كلها — كما يسمّيها تقرير
+        // v1.1.3 نفسه: مسح (`مس` / `:مسح`). بلا تعديل
+        // في المحرك: التوجيه هنا في التطبيق فقط.
+        if ("مسح".equals(norm) && "مسح".equals(normFirst)) {
+            proceedLineToEngine(s, ":مسح");
+            return;
+        }
         // تأكيد قبل حذف ملف/مجلد (v1.1.6 بند 5): حف
         // وحم بلا تأكيد اليوم.
         if ("حف".equals(normFirst) || "حم".equals(normFirst)) {
@@ -2855,8 +3013,21 @@ public class MainActivity extends Activity {
                 appLine(s, "");
                 break;
             case "جد":
+                // إصلاح عطل التبديل (مهمة 12): dispatchLine
+                // أغلق سطر الإدخال (inputStart=-1) قبل
+                // التوجيه، وإنشاء الجلسة بدّل العرض — فبقيت
+                // الجلسة القديمة بلا موجّه وبلا إدخال،
+                // فيرفض الكتابة عند العودة إليها. يُعاد
+                // الموجّه إلى نموذج الجلسة القديمة فقط
+                // (العرض يعرض الجلسة الجديدة الآن)؛ أما
+                // عند بلوغ الحد الأقصى فـappLine تعيد
+                // الموجّه كالمعتاد.
+                Session prev = s;
                 if (!createSession()) {
                     appLine(s, "وصلت إلى الحد الأقصى (٨ جلسات)");
+                } else {
+                    appendSessionText(prev, prev.lastPrompt);
+                    prev.inputStart = prev.text.length();
                 }
                 break;
             case "مش":
@@ -2866,6 +3037,17 @@ public class MainActivity extends Activity {
                 // ليست `مس`. موثّق في SHORTCUTS-50.md (م-11).
                 clearDisplayOnly(s);
                 break;
+            case "تنظيف":
+                // أمر التنظيف بالاسم الكامل (مهمة 12 — أمر
+                // المالك): نفس `مش` تماما — مسح الشاشة
+                // فقط، والمحرك ومحفوظات الأسهم و:اعرض تبقى.
+                // سلوك Termux في clear (CSI 2J) يمسح
+                // الشاشة الظاهرة ويُبقي السجل؛ أما عندنا
+                // فالشاشة والسجل حقل نص واحد، فمسح العرض
+                // هو مسح السجل المعروض — والفرق موثّق في
+                // التقرير. `مس` هي التي تعيد ضبط المحرك.
+                clearDisplayOnly(s);
+                break;
             case "شب":
                 appLine(s, "الشبكة: " + (s.networkAllowed ? "مفتوحة" : "مغلقة"));
                 break;
@@ -2873,11 +3055,12 @@ public class MainActivity extends Activity {
                 // السماح بالشبكة بلا إعادة تشغيل (م-2): أمر
                 // تحكم داخل العملية نفسها، فتبقى كل متغيرات
                 // الجلسة. الموجّه التالي من المحرك هو الرد.
+                // والشبكة تلقائية أصلا (أمر المالك
+                // 2026-11-06) فهذا تأكيد غير ضار فقط.
                 if (s.networkAllowed) {
                     appLine(s, "الشبكة: مفتوحة بالفعل");
                 } else {
                     s.networkAllowed = true;
-                    s.networkAsked = true;
                     updateNetState();
                     sendToEngine(s, ALLOW_NETWORK_COMMAND);
                 }
@@ -2972,46 +3155,13 @@ public class MainActivity extends Activity {
 
     // ---------- الشبكة ----------
 
+    // (حوار إذن الشبكة أُزيل 2026-11-06: الشبكة تلقائية
+    // بأمر المالك — كما في Termux، بلا سؤال إذن أبدا.
+    // انظر handleControl: إشارة «شبكة» تُثبَّت تلقائيا.)
+
     private void updateNetState() {
         Session s = active();
         netStateView.setText("الشبكة: " + (s.networkAllowed ? "مفتوحة" : "مغلقة"));
-    }
-
-    private void showNetworkDialog(Session s) {
-        // حراسة الحوار (م-7): لا يعرض بعد تدمير النشاط،
-        // ويذكر رقم الجلسة، ولا يعرض تلقائيا إلا للجلسة
-        // النشطة — طلب الجلسات الخلفية يُؤجَّل.
-        if (isFinishing() || isDestroyed()) return;
-        if (s != active()) {
-            s.networkPending = true;
-            return;
-        }
-        s.networkAsked = true;
-        int num = sessions.indexOf(s) + 1;
-        new AlertDialog.Builder(this)
-                .setMessage("الجلسة " + arabicDigits(num)
-                        + ": هذا البرنامج يريد الوصول إلى الشبكة — هل تسمح؟")
-                .setPositiveButton("سماح", (d, w) -> {
-                    // السماح بلا إعادة تشغيل (م-2): أمر تحكم
-                    // داخل العملية، ثم إعادة إرسال السطر المعلق.
-                    s.networkAllowed = true;
-                    updateNetState();
-                    sendToEngine(s, ALLOW_NETWORK_COMMAND);
-                    if (s.pendingLine != null) {
-                        String pl = s.pendingLine;
-                        s.pendingLine = null;
-                        // عبر فحص الجلب (بند 11 + 12): دون
-                        // اتصال يُعرض «لا يوجد اتصال» بدلا من
-                        // انتظار مهلة DNS.
-                        sendLineToEngine(s, pl);
-                    }
-                })
-                .setNegativeButton("رفض", (d, w) -> {
-                    // لا يسأل مرة أخرى في هذه الجلسة.
-                    s.pendingLine = null;
-                })
-                .setCancelable(false)
-                .show();
     }
 
     // ---------- التحديث الذاتي من جيت هاب (v1.1.4) ----------
@@ -3503,6 +3653,11 @@ public class MainActivity extends Activity {
                 } else if ("تنبيه_تبديل_الجلسة".equals(key)) {
                     // v1.1.7 بند 50: الافتراضي مفعّل.
                     sessionChangeToast = !"لا".equals(value);
+                } else if ("مفاتيح_الصوت".equals(key)) {
+                    // مهمة 12: «تحكم» تجعل خفض الصوت =
+                    // تحكم (كما في Termux)؛ أي قيمة أخرى =
+                    // مفاتيح صوت عادية (الافتراضي).
+                    volumeKeysCtrl = "تحكم".equals(value);
                 }
             }
         } catch (IOException ignored) {
@@ -3522,6 +3677,8 @@ public class MainActivity extends Activity {
         // تنبيه تبديل الجلسة.
         boolean hasFull = false, hasFullAlt = false;
         boolean hasFont = false, hasSessToast = false;
+        // مهمة 12: مفاتيح الصوت كتحكم.
+        boolean hasVolKeys = false;
         if (f.isFile()) {
             try (BufferedReader br = new BufferedReader(
                     new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
@@ -3581,6 +3738,10 @@ public class MainActivity extends Activity {
                         // v1.1.7 بند 50.
                         lines.add("تنبيه_تبديل_الجلسة=" + (sessionChangeToast ? "نعم" : "لا"));
                         hasSessToast = true;
+                    } else if ("مفاتيح_الصوت".equals(key)) {
+                        // مهمة 12.
+                        lines.add("مفاتيح_الصوت=" + (volumeKeysCtrl ? "تحكم" : "لا شيء"));
+                        hasVolKeys = true;
                     } else {
                         lines.add(line);
                     }
@@ -3602,6 +3763,7 @@ public class MainActivity extends Activity {
         if (!hasFullAlt) lines.add("بديل_ملء_الشاشة=" + (fullscreenWorkaroundAlt ? "نعم" : "لا"));
         if (!hasFont) lines.add("خط_مخصص=" + customFontPath);
         if (!hasSessToast) lines.add("تنبيه_تبديل_الجلسة=" + (sessionChangeToast ? "نعم" : "لا"));
+        if (!hasVolKeys) lines.add("مفاتيح_الصوت=" + (volumeKeysCtrl ? "تحكم" : "لا شيء"));
         StringBuilder sb = new StringBuilder();
         for (String l : lines) sb.append(l).append('\n');
         try {
@@ -4123,12 +4285,79 @@ public class MainActivity extends Activity {
     /** نسخ النص المحدد إلى الحافظة (بند 1). */
     private void copySelection() {
         String sel = selectedText();
-        if (sel.isEmpty()) return;
+        if (sel.isEmpty()) {
+            // مهمة 12: لا صمت عند فشل النسخ — المستخدم
+            // يعرف أن شيئا لم يُنسخ، بدلا من ظن أن النسخ
+            // تم والحافظة فارغة.
+            toast("لا يوجد نص محدد");
+            return;
+        }
         ClipboardManager cm = (ClipboardManager)
                 getSystemService(Context.CLIPBOARD_SERVICE);
         if (cm == null) return;
         cm.setPrimaryClip(ClipData.newPlainText("نيفا", sel));
         Toast.makeText(this, "تم النسخ", Toast.LENGTH_SHORT).show();
+    }
+
+    /** نسخ السطر (مهمة 12): السطر كله — أو كل الأسطر
+     * التي يمسها التحديد — بلا الموجّه البادئ، فيُلصق
+     * أمرا جاهزا للتنفيذ. فراغات نهاية السطر تُقصّ
+     * كما في نسخ Termux. */
+    private void copyLineAtSelection() {
+        Editable text = terminalView.getText();
+        if (text == null) return;
+        int start = terminalView.getSelectionStart();
+        int end = terminalView.getSelectionEnd();
+        if (start < 0 || end < 0) return;
+        int lo = Math.min(start, end);
+        int hi = Math.max(start, end);
+        String full = text.toString();
+        int lineStart = full.lastIndexOf('\n', Math.max(0, lo - 1)) + 1;
+        int lineEnd = full.indexOf('\n', hi);
+        if (lineEnd < 0) lineEnd = full.length();
+        if (lineStart >= lineEnd) {
+            toast("لا يوجد نص محدد");
+            return;
+        }
+        String region = full.substring(lineStart, lineEnd);
+        String[] lines = region.split("\n", -1);
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < lines.length; i++) {
+            String l = lines[i];
+            if (i == 0) l = stripPromptPrefix(l);
+            int e = l.length();
+            while (e > 0 && l.charAt(e - 1) == ' ') e--;
+            if (i > 0) out.append('\n');
+            out.append(l, 0, e);
+        }
+        String result = out.toString();
+        if (result.trim().isEmpty()) {
+            toast("لا يوجد نص محدد");
+            return;
+        }
+        ClipboardManager cm = (ClipboardManager)
+                getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm == null) return;
+        cm.setPrimaryClip(ClipData.newPlainText("نيفا", result));
+        Toast.makeText(this, "تم نسخ السطر", Toast.LENGTH_SHORT).show();
+    }
+
+    /** إزالة بادئة الموجّه من سطر («~ $ » أو «> » أو
+     * «~/مجلد $ ») — نفس منطق isPrompt، للنسخ فقط. */
+    private static String stripPromptPrefix(String line) {
+        if (line.startsWith("~ $ ")) return line.substring(4);
+        if (line.startsWith("> ")) return line.substring(2);
+        if (line.startsWith("~/")) {
+            int dollar = line.indexOf(" $ ");
+            if (dollar > 2) {
+                String mid = line.substring(2, dollar);
+                if (!mid.isEmpty() && !mid.contains(" ")
+                        && !mid.contains("\n")) {
+                    return line.substring(dollar + 3);
+                }
+            }
+        }
+        return line;
     }
 
     /** حذف النص المحدد من العرض ومن السجل المحفوظ
@@ -4166,7 +4395,10 @@ public class MainActivity extends Activity {
     /** مشاركة النص المحدد فقط (بند 1 — تأتي مع النسخ). */
     private void shareSelection() {
         String sel = selectedText();
-        if (sel.isEmpty()) return;
+        if (sel.isEmpty()) {
+            toast("لا يوجد نص محدد");
+            return;
+        }
         shareText(sel);
     }
 
