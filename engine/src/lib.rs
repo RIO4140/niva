@@ -10,6 +10,7 @@
 //! the result; partial output is returned even on error, like
 //! the CLI (which prints partial output, then the Arabic error).
 
+pub mod artifact;
 pub mod ast;
 pub mod error;
 pub mod interpreter;

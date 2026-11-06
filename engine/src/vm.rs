@@ -318,6 +318,17 @@ fn next_closure_id() -> u64 {
     NEXT_CLOSURE_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// مهمة 8 (ك-2.2): بعد تحميل مصنوع بايت كود مبني في
+/// عملية أخرى، ارفع عدّاد معرّفات الإغلاقات فوق أكبر
+/// معرّف فيه، فلا يصطدم إغلاق وحدة تُترجَم وقت التشغيل
+/// (load_module يدمج سجلها في السجل المشترك) بإغلاق
+/// مصنوع — العدّاد يبدأ من 1 في كل عملية، فبدون هذا
+/// الرفع يكتب إغلاق الوحدة فوق إغلاق المصنوع بالمعرّف
+/// نفسه، ويعمل البرنامج خطأ بصمت.
+pub fn reserve_closure_ids_above(max_id: u64) {
+    NEXT_CLOSURE_ID.fetch_max(max_id.saturating_add(1), Ordering::Relaxed);
+}
+
 /// Slice 5: a compiled class. Methods are FLATTENED at
 /// compile time: base methods copied in, child overrides
 /// win, so runtime lookup is one map lookup and matches
