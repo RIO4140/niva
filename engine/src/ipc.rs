@@ -659,10 +659,16 @@ mod tests {
             test_clear();
             let dir = temp_dir("eof");
             test_policy(&dir, true);
-            // /bin/true exits at once with no output: the
+            // /bin/sleep 0 exits at once with no output: the
             // reader thread hits EOF, so recv reports the
             // clean close in Arabic, never an empty string.
-            let id = open_pipe("/bin/true", 1, 1).unwrap();
+            // /bin/true does NOT exist on the macOS runner
+            // (CI 2026-11-06: 332/333 — only this test
+            // failed there, while the /bin/cat tests passed).
+            // A .نيفا helper cannot spawn from a unit test
+            // either: the guard refuses (the current exe is
+            // the test binary — niva_subprogram_guard).
+            let id = open_pipe("/bin/sleep 0", 1, 1).unwrap();
             let err = recv(id, 1, 1).unwrap_err().to_string();
             assert!(err.contains("أغلق الطرف الآخر الاتصال"), "got: {}", err);
             assert_eq!(close(id, 1, 1).unwrap(), 0);
