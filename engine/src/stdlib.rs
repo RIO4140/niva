@@ -410,6 +410,12 @@ fn random_choice(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col:
 fn network_entries() -> Vec<(&'static str, Value)> {
     vec![
         ("اجلب", native("اجلب", network_fetch)),
+        // المهمة 22 (نزّل): تنزيل ملف إلى القرص —
+        // توأم اجلب على القرص (الجلب نفسه، والجسم
+        // يُكتب ملفا بايتات خاما) + إلغاء بسطر stdin.
+        // (المفتاح بلا شدة — كما «جزئ» و«حرر»: الشدة
+        // تُحذف عند التحليل.)
+        ("نزل", native("نزل", network_download)),
         ("اخدم", native("اخدم", network_serve)),
         // Catalog task 13 (مقابس, from net/): TCP/UDP sockets
         // under the same gate as اجلب. The stored keys are the
@@ -438,6 +444,41 @@ fn network_fetch(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col:
     need_args("شبكة.اجلب", args, 1, line, col)?;
     let url = need_string("شبكة.اجلب", &args[0], line, col)?;
     crate::network::fetch(&url, line, col)
+}
+
+// --- تنزيل ملف (المهمة 22، شبكة.نزّل) ---
+//
+// `شبكة.نزّل رابط مسار` — يرجع عدد البايتات
+// المنزّلة. تحت بوابة الشبكة (كما اجلب) وFilePolicy
+// (كما اكتب_ملف — فالمسار يُحلّ في network::download
+// قبل أي شبكة). الاستدعاءات مفصولة بمسافات بلا
+// فصلة، والصيغة المنقّطة هي الصحيحة (الاسم المستورد
+// العاري لا يُستدعى بالمسافات — قيد محلل موثق في
+// المهمة 20).
+fn network_download(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.نزل", args, 2, line, col)?;
+    let url = need_string("شبكة.نزل", &args[0], line, col)?;
+    let path = need_string("شبكة.نزل", &args[1], line, col)?;
+    if url.is_empty() {
+        return Err(RioError::typ(
+            "الدالة شبكة.نزل تتوقع رابطا غير فارغ",
+            line,
+            col,
+        ));
+    }
+    if path.is_empty() {
+        return Err(RioError::typ(
+            "الدالة شبكة.نزل تتوقع مسارا غير فارغ",
+            line,
+            col,
+        ));
+    }
+    // سياسة الجلسة ومجلدها من السياق نفسه (كما تحميل
+    // الشهادة/المفتاح للخادم — فهما سياسة الجلسة
+    // ومجلدها أنفسهما).
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    crate::network::download(&url, &policy, &cwd, &path, line, col)
 }
 
 // --- خادم HTTPS (اجتماع 27، س1 ب) ---

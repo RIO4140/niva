@@ -3014,10 +3014,11 @@ impl Interpreter {
                         col,
                     ));
                 }
-                let mut line_input = String::new();
-                std::io::stdin()
-                    .read_line(&mut line_input)
-                    .map_err(|e| RioError::new(ErrorKind::Io, format!("تعذر قراءة الإدخال: {}", e), line, col))?;
+                // مهمة 22: القراءة عبر مضخة stdin (لا
+                // مباشرة) — خيط المضخة وحده يملك stdin؛
+                // وEOF يرجع نصا فارغا كما كان (read_line
+                // حين تعيد 0).
+                let line_input = crate::stdin_pump::stdin_line().unwrap_or_default();
                 let trimmed = line_input.trim_end_matches(['\n', '\r']).to_string();
                 Ok(Value::Str(trimmed))
             }

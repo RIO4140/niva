@@ -99,6 +99,81 @@ pub const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
 /// At most 5 same-host redirects (§7).
 pub const MAX_REDIRECTS: usize = 5;
 
+// ----------------------------------------------------------------
+// إلغاء الجلب (المهمة 22 — شبكة.نزّل + إلغاء أمر معلق)
+// ----------------------------------------------------------------
+
+/// علم إلغاء الجلب: تضبطه حلقة انتظار الجلب وحدها
+/// حين ترى سطر الإلغاء من التطبيق
+/// (`\u{0001}نيفا-إلغاء` في stdin_pump)؛ ويُمسح في
+/// بداية كل جلب/تنزيل؛ ويفحصه عامل الجلب بين
+/// القراءات. بلا قفل — ذري واحد، والقراءة/الكتابة
+/// بترتيب SeqCst.
+#[cfg(not(target_arch = "wasm32"))]
+static CANCEL_FETCH: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn request_fetch_cancel() {
+    CANCEL_FETCH.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn cancel_requested() -> bool {
+    CANCEL_FETCH.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn clear_fetch_cancel() {
+    CANCEL_FETCH.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// خطأ الإلغاء العربي — يُرفع عند موقع الاستدعاء
+/// (يُمسك بـ `حاول/ماعدا`).
+#[cfg(not(target_arch = "wasm32"))]
+fn cancel_error(line: usize, col: usize) -> RioError {
+    RioError::runtime("أُلغي الأمر", line, col)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn check_cancelled(line: usize, col: usize) -> RioResult<()> {
+    if cancel_requested() {
+        return Err(cancel_error(line, col));
+    }
+    Ok(())
+}
+
+/// مهلة قراءة واحدة أثناء جلب قابل للإلغاء: المتبقي
+/// حتى المهلة الإجمالية مسقوفا بـ 500ms — فقراءة
+/// متوقفة تماما تعيد WouldBlock كل نصف ثانية،
+/// فيُفحص علم الإلغاء وتُعاد المحاولة. والمهلة
+/// الإجمالية 30 ثانية ما زالت هي الحد — فالتقطير
+/// البطيء (بايت كل 400ms) يستمر كما كان.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_timeout(
+    deadline: std::time::Instant,
+    line: usize,
+    col: usize,
+) -> RioResult<std::time::Duration> {
+    let left = time_left(deadline, line, col)?;
+    Ok(left.min(std::time::Duration::from_millis(500)))
+}
+
+/// عند WouldBlock أثناء قراءة: فحص الإلغاء أولا، ثم
+/// المهلة الإجمالية (انتهت ← خطأ المهلة نفسه)، ثم
+/// إعادة المحاولة. تُستدعى قبل `io_timeout_or` —
+/// فهو يحوّل WouldBlock إلى خطأ مهلة مباشرة.
+#[cfg(not(target_arch = "wasm32"))]
+fn on_read_would_block(
+    deadline: std::time::Instant,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    check_cancelled(line, col)?;
+    let _ = time_left(deadline, line, col)?;
+    Ok(())
+}
+
 struct NetworkPolicy {
     allowed: bool,
     local_hosts: HashSet<String>,
@@ -214,20 +289,153 @@ pub fn fetch(url: &str, line: usize, col: usize) -> RioResult<Value> {
             col,
         ));
     }
-    fetch_allowed(url, line, col)
-}
-
-/// Fetch with the permission gate already passed. Kept separate
-/// so tests can exercise the fetch without going through the
-/// gate (they set the flag via `set_network_allowed` anyway).
-fn fetch_allowed(url: &str, line: usize, col: usize) -> RioResult<Value> {
     #[cfg(target_arch = "wasm32")]
     {
         fetch_wasm(url, line, col)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        fetch_native(url, line, col)
+        // المهمة 22: العمل على خيط عامل (القيم Rc لا
+        // تعبر الخيوط — فالعامل يرجع String والتحويل
+        // إلى Value هنا على الخيط المنفذ)، والانتظار
+        // يقرأ stdin أثناءه (سطر الإلغاء من التطبيق).
+        let url = url.to_string();
+        let text = run_cancellable(
+            move || fetch_text_native(&url, TIMEOUT_SECS, line, col),
+            line,
+            col,
+        )?;
+        Ok(Value::Str(text))
+    }
+}
+
+/// تنزيل ملف إلى القرص (المهمة 22): `شبكة.نزّل رابط
+/// مسار` — يرجع عدد البايتات المنزّلة. تحت بوابة
+/// الشبكة (كما اجلب حرفيا) وFilePolicy (كما
+/// اكتب_ملف حرفيا — والمسار يُحلّ هنا قبل أي شبكة،
+/// فخطأ خارج المجلد يرفض قبل أن يتحرك بايت واحد).
+/// والجسم يتدفق بايتات خاما إلى الملف (بلا سقف
+/// 5MB — سقفه حصة 100MB)؛ والملف الجزئي يُحذف عند
+/// الإلغاء أو الخطأ. WASM: رسالة المتصفح المتبعة.
+pub fn download(
+    url: &str,
+    policy: &crate::permissions::FilePolicy,
+    cwd: &std::path::Path,
+    path: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    if !network_allowed() {
+        return Err(RioError::runtime(
+            "الشبكة مغلقة افتراضيا — استخدم --اسمح-بالشبكة للسماح بالشبكة، أو وافق عند أول استخدام في الكونسول",
+            line,
+            col,
+        ));
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (url, policy, cwd, path);
+        Err(RioError::runtime(
+            "هذه الدالة غير مدعومة في متصفح الويب",
+            line,
+            col,
+        ))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let resolved = policy.resolve_in(cwd, path, line, col)?;
+        let display = policy.display_path(&resolved);
+        let base = policy.base.clone();
+        let url = url.to_string();
+        let written = run_cancellable(
+            move || {
+                download_native_with_timeout(
+                    &url, &resolved, &display, &base, TIMEOUT_SECS, line, col,
+                )
+            },
+            line,
+            col,
+        )?;
+        Ok(Value::Number(written as f64))
+    }
+}
+
+// ----------------------------------------------------------------
+// انتظار قابل للإلغاء (المهمة 22)
+// ----------------------------------------------------------------
+
+/// شغّل عمل جلب على خيط عامل وانتظر نتيجته مع قراءة
+/// stdin أثناء الانتظار: سطر الإلغاء يضبط العلم
+/// فيُجهض العامل (ثم «أُلغي الأمر»)؛ والأسطر العادية
+/// تذهب إلى الطابور المعلق (للموجّه بعد الجلب)؛
+/// ونهاية الإدخال تعني انتظار العامل مباشرة. والعمل
+/// نفسه يرجع نوعا يعبر الخيوط (`String`/`u64` —
+/// فالقيم Rc لا تعبرها، والتحويل إلى Value على
+/// الخيط المنفذ).
+#[cfg(not(target_arch = "wasm32"))]
+fn run_cancellable<T: Send + 'static>(
+    work: impl FnOnce() -> RioResult<T> + Send + 'static,
+    line: usize,
+    col: usize,
+) -> RioResult<T> {
+    use crate::stdin_pump::{
+        is_cancel_line, next_channel_line_timeout, push_pending, RawLine,
+    };
+    clear_fetch_cancel();
+    // إلغاء قديم في القناة (أُرسل قبل بدء الجلب)
+    // يُتجاهل — فلا يلغي جلبا لم يبدأ بعد؛ وأسطر
+    // عادية قديمة تذهب إلى الطابور المعلق.
+    crate::stdin_pump::discard_stale_cancel_lines();
+    let (tx, rx) = std::sync::mpsc::channel::<RioResult<T>>();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    loop {
+        match next_channel_line_timeout(std::time::Duration::from_millis(100)) {
+            RawLine::Line(l) => {
+                if is_cancel_line(&l) {
+                    request_fetch_cancel();
+                    // انتظار العامل حتى يلاحظ العلم
+                    // ويتوقف (≤500ms في المسار المتزامن،
+                    // ≤100ms في h2) — ثم الخطأ العربي
+                    // (والملف الجزئي حذفه العامل نفسه).
+                    let _ = rx.recv();
+                    return Err(cancel_error(line, col));
+                } else {
+                    push_pending(l);
+                }
+            }
+            RawLine::Timeout => match rx.try_recv() {
+                Ok(r) => return r,
+                Err(std::sync::mpsc::TryRecvError::Empty) => continue,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return Err(RioError::runtime(
+                        "تعذر تنفيذ طلب الشبكة",
+                        line,
+                        col,
+                    ))
+                }
+            },
+            RawLine::Eof => {
+                // نهاية الإدخال الحقيقي — لكن القناة قد
+                // تستقبل سطورا محقونة بعدها (اختبارا؛ وفي
+                // الإنتاج لا سطور بعد EOF أصلا)، فلا
+                // نحجب على العامل مباشرة: نستطلع العامل
+                // ونواصل الحلقة (كما Timeout — فالاستطلاع
+                // بشرائح 50ms لا يحجب طويلا).
+                match rx.try_recv() {
+                    Ok(r) => return r,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => continue,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        return Err(RioError::runtime(
+                            "تعذر تنفيذ طلب الشبكة",
+                            line,
+                            col,
+                        ))
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1694,18 +1902,48 @@ pub(crate) fn ip_class(ip: &std::net::IpAddr) -> Option<&'static str> {
 // Native fetch: hand-rolled HTTP/1.1 over std TcpStream.
 // ----------------------------------------------------------------
 
+/// النص الكامل للرد (اجلب): المصرف ذاكرة، والتحويل
+/// إلى Value على المتصل (فالعامل يرجع String يعبر
+/// الخيوط — والقيم Rc لا تعبرها).
 #[cfg(not(target_arch = "wasm32"))]
-fn fetch_native(url: &str, line: usize, col: usize) -> RioResult<Value> {
-    fetch_native_with_timeout(url, TIMEOUT_SECS, line, col)
+fn fetch_text_native(
+    url: &str,
+    timeout_secs: u64,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    let sink: Box<dyn BodySink + Send> = Box::new(MemorySink::new());
+    let sink = fetch_loop(url, timeout_secs, line, col, sink)?;
+    Ok(sink.finish_string().unwrap_or_default())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(test)]
 fn fetch_native_with_timeout(
     url: &str,
     timeout_secs: u64,
     line: usize,
     col: usize,
 ) -> RioResult<Value> {
+    Ok(Value::Str(fetch_text_native(
+        url,
+        timeout_secs,
+        line,
+        col,
+    )?))
+}
+
+/// حلقة الجلب فوق مصرف (إعادات التوجيه + الجسم):
+/// اجلب يمرّر مصرف ذاكرة، ونزّل مصرف ملف. والجسم
+/// نفسه لا يعبر هنا أبدا — المصرف يُرجع مع النتيجة
+/// (أو يُسقَط عند الخطأ فيُغلق ملفه).
+#[cfg(not(target_arch = "wasm32"))]
+fn fetch_loop(
+    url: &str,
+    timeout_secs: u64,
+    line: usize,
+    col: usize,
+    mut sink: Box<dyn BodySink + Send>,
+) -> RioResult<Box<dyn BodySink + Send>> {
     let mut current = parse_url(url, line, col)?;
     let mut redirects = 0usize;
     // Audit م-15: one total deadline for the whole fetch
@@ -1715,9 +1953,11 @@ fn fetch_native_with_timeout(
     let deadline =
         std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     loop {
-        let body = fetch_one_native(&current, deadline, line, col)?;
-        match body {
-            FetchOutcome::Body(text) => return Ok(Value::Str(text)),
+        check_cancelled(line, col)?;
+        let (outcome, s) = fetch_one_native(&current, deadline, line, col, sink)?;
+        sink = s;
+        match outcome {
+            FetchOutcome::Body => return Ok(sink),
             FetchOutcome::Redirect(location) => {
                 if redirects >= MAX_REDIRECTS {
                     return Err(RioError::runtime(
@@ -1753,15 +1993,206 @@ fn fetch_native_with_timeout(
                         col,
                     ));
                 }
+                // جسم 3xx — إن وُجد — لا يلوث الجسم
+                // النهائي: المصرف يُعاد إلى الصفر.
+                sink.reset(line, col)?;
                 current = next;
             }
         }
     }
 }
 
+/// التنزيل إلى القرص (المهمة 22): يفتح الملف
+/// (يستبدله) تحت قفل الكتابة المشترك — ففحص الحصة
+/// والكتابة ذريّان (نمط `ملفات.اكتب` في المهمة 19)
+/// — ويتدفق الجسم إليه؛ وعند أي خطأ (ومنها
+/// الإلغاء) يُحذف الملف الجزئي (فالمصرف يُسقَط
+/// عند الخطأ فيُغلق المقبض قبل الحذف). يرجع عدد
+/// البايتات المنزّلة.
+#[cfg(not(target_arch = "wasm32"))]
+fn download_native_with_timeout(
+    url: &str,
+    resolved: &std::path::Path,
+    display: &str,
+    base: &std::path::Path,
+    timeout_secs: u64,
+    line: usize,
+    col: usize,
+) -> RioResult<u64> {
+    // القفل لكل التدفق: كاتب متزامن آخر لا ينزلق
+    // بين فحص الحصة والكتابة فيتجاوزها.
+    let _write_guard = crate::files::FILE_WRITE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    // الحجم الحالي (قبل القطع) — فالنمو الصافي هو
+    // ما يُحسب من الحصة (كما `ملفات.اكتب`).
+    let existing = std::fs::metadata(resolved).map(|m| m.len()).unwrap_or(0);
+    let mut budget = 10000usize;
+    let used = crate::interpreter::Interpreter::dir_size(base, &mut budget);
+    let limit = crate::interpreter::Interpreter::DISK_QUOTA_BYTES
+        .saturating_sub(used)
+        .saturating_add(existing);
+    let file = std::fs::File::create(resolved).map_err(|_| {
+        RioError::new(
+            crate::error::ErrorKind::Io,
+            format!("تعذر كتابة الملف {}", display),
+            line,
+            col,
+        )
+    })?;
+    let sink: Box<dyn BodySink + Send> = Box::new(FileSink {
+        file,
+        written: 0,
+        limit,
+        display: display.to_string(),
+    });
+    match fetch_loop(url, timeout_secs, line, col, sink) {
+        Ok(sink) => Ok(sink.finish_bytes()),
+        Err(e) => {
+            // الجزئي يُحذف (المقبض أُغلق بسقوط
+            // المصرف عند الخطأ) — فلا ملف نصف مكتمل
+            // باسم الهدف يبدو مكتملا.
+            let _ = std::fs::remove_file(resolved);
+            Err(e)
+        }
+    }
+}
+
+// ----------------------------------------------------------------
+// مصرف جسم الرد (المهمة 22)
+// ----------------------------------------------------------------
+
+/// مصرف جسم الرد: اجلب يجمع في الذاكرة (سقف 5MB)،
+/// ونزّل يكتب ملفا (سقف الحصة). القارئ واحد
+/// (`read_response`) فيدفع القطع إلى المصرف — فلا
+/// قارئين يتباعدان. `Send` لأن المصرف يعبر خيط
+/// العامل (وخيط وقت تشغيل tokio في مسار h2).
+#[cfg(not(target_arch = "wasm32"))]
+trait BodySink: Send {
+    /// ادفع قطعة (يفحص السقف ويرفع خطأه العربي).
+    fn push(&mut self, chunk: &[u8], line: usize, col: usize) -> RioResult<()>;
+    /// إعادة التهيئة عند إعادة توجيه.
+    fn reset(&mut self, line: usize, col: usize) -> RioResult<()>;
+    /// النص الكامل (مصرف الذاكرة فقط).
+    fn finish_string(self: Box<Self>) -> Option<String>;
+    /// البايتات المكتوبة (كل مصرف).
+    fn finish_bytes(&self) -> u64;
+}
+
+/// مصرف الذاكرة (اجلب): السقف نفسه 5MB + 1 بايت
+/// (البايت الزائد يثبت التجاوز بدلا من القطع الصامت).
+#[cfg(not(target_arch = "wasm32"))]
+struct MemorySink {
+    buf: Vec<u8>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl MemorySink {
+    fn new() -> Self {
+        MemorySink { buf: Vec::new() }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl BodySink for MemorySink {
+    fn push(&mut self, chunk: &[u8], line: usize, col: usize) -> RioResult<()> {
+        self.buf.extend_from_slice(chunk);
+        if self.buf.len() > MAX_RESPONSE_BYTES + 1 {
+            return Err(RioError::runtime(
+                "الرد أكبر من الحد الأقصى (5 ميغابايت)",
+                line,
+                col,
+            ));
+        }
+        Ok(())
+    }
+
+    fn reset(&mut self, _line: usize, _col: usize) -> RioResult<()> {
+        self.buf.clear();
+        Ok(())
+    }
+
+    fn finish_string(self: Box<Self>) -> Option<String> {
+        Some(String::from_utf8_lossy(&self.buf).into_owned())
+    }
+
+    fn finish_bytes(&self) -> u64 {
+        self.buf.len() as u64
+    }
+}
+
+/// مصرف الملف (نزّل): يكتب القطع خاما (بايتات كما
+/// وصلت — لا تحويل UTF-8)، ويتتبع البايتات ضد الحد
+/// المتبقي من الحصة (يُحسب مرة واحدة قبل التدفق —
+/// فلا مسح مجلد لكل قطعة)؛ والخطأ رسالة الحصة نفسها.
+#[cfg(not(target_arch = "wasm32"))]
+struct FileSink {
+    file: std::fs::File,
+    written: u64,
+    limit: u64,
+    display: String,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl BodySink for FileSink {
+    fn push(&mut self, chunk: &[u8], line: usize, col: usize) -> RioResult<()> {
+        use std::io::Write;
+        if self.written.saturating_add(chunk.len() as u64) > self.limit {
+            return Err(RioError::new(
+                crate::error::ErrorKind::Io,
+                "تجاوزت حصة التخزين (100 ميغابايت) — احذف ملفات قبل الكتابة",
+                line,
+                col,
+            ));
+        }
+        self.file.write_all(chunk).map_err(|_| {
+            RioError::new(
+                crate::error::ErrorKind::Io,
+                format!("تعذر كتابة الملف {}", self.display),
+                line,
+                col,
+            )
+        })?;
+        self.written += chunk.len() as u64;
+        Ok(())
+    }
+
+    fn reset(&mut self, line: usize, col: usize) -> RioResult<()> {
+        use std::io::Seek;
+        self.file.seek(std::io::SeekFrom::Start(0)).map_err(|_| {
+            RioError::new(
+                crate::error::ErrorKind::Io,
+                format!("تعذر كتابة الملف {}", self.display),
+                line,
+                col,
+            )
+        })?;
+        self.file.set_len(0).map_err(|_| {
+            RioError::new(
+                crate::error::ErrorKind::Io,
+                format!("تعذر كتابة الملف {}", self.display),
+                line,
+                col,
+            )
+        })?;
+        self.written = 0;
+        Ok(())
+    }
+
+    fn finish_string(self: Box<Self>) -> Option<String> {
+        None
+    }
+
+    fn finish_bytes(&self) -> u64 {
+        self.written
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 enum FetchOutcome {
-    Body(String),
+    /// الجسم كاملا في المصرف (النص عند اجلب، والملف
+    /// عند نزّل — لا يعبر هنا أبدا).
+    Body,
     Redirect(String),
 }
 
@@ -1922,7 +2353,8 @@ fn fetch_one_native(
     deadline: std::time::Instant,
     line: usize,
     col: usize,
-) -> RioResult<FetchOutcome> {
+    mut sink: Box<dyn BodySink + Send>,
+) -> RioResult<(FetchOutcome, Box<dyn BodySink + Send>)> {
     use std::io::Write;
     use std::net::{TcpStream, ToSocketAddrs};
 
@@ -2007,7 +2439,7 @@ fn fetch_one_native(
     if url.scheme == "https" {
         #[cfg(feature = "http2")]
         {
-            return fetch_https_h2(stream, url, &request, &target, &host_header, deadline, line, col);
+            return fetch_https_h2(stream, url, &request, &target, &host_header, deadline, line, col, sink);
         }
         #[cfg(not(feature = "http2"))]
         {
@@ -2021,7 +2453,8 @@ fn fetch_one_native(
                     col,
                 )
             })?;
-            return read_response(&mut tls, deadline, line, col);
+            let outcome = read_response(&mut tls, deadline, line, col, &mut *sink)?;
+            return Ok((outcome, sink));
         }
     }
     stream.write_all(request.as_bytes()).map_err(|e| {
@@ -2033,7 +2466,8 @@ fn fetch_one_native(
             col,
         )
     })?;
-    read_response(&mut stream, deadline, line, col)
+    let outcome = read_response(&mut stream, deadline, line, col, &mut *sink)?;
+    Ok((outcome, sink))
 }
 
 // ----------------------------------------------------------------
@@ -2090,7 +2524,8 @@ fn fetch_https_h2(
     deadline: std::time::Instant,
     line: usize,
     col: usize,
-) -> RioResult<FetchOutcome> {
+    sink: Box<dyn BodySink + Send>,
+) -> RioResult<(FetchOutcome, Box<dyn BodySink + Send>)> {
     use std::io::Write;
     let host = url.host.clone();
     let host_async = host.clone();
@@ -2099,12 +2534,12 @@ fn fetch_https_h2(
     let path = path.to_string();
     let host_header = host_header.to_string();
     let outcome = run_on_runtime(async move {
-        fetch_https_h2_async(stream, &host_async, &path, &host_header, deadline, line, col).await
+        fetch_https_h2_async(stream, &host_async, &path, &host_header, deadline, line, col, sink).await
     })
     .map_err(|_| RioError::runtime("تعذر تنفيذ طلب الشبكة", line, col))?;
     match outcome {
-        Ok(HttpsOutcome::H2(outcome)) => Ok(outcome),
-        Ok(HttpsOutcome::Http1(std_stream, conn)) => {
+        Ok((HttpsOutcome::H2(outcome), sink)) => Ok((outcome, sink)),
+        Ok((HttpsOutcome::Http1(std_stream, conn), mut sink)) => {
             // Back to blocking mode with the fetch timeouts:
             // from_std required non-blocking; the sync
             // StreamOwned path needs blocking + SO_RCVTIMEO.
@@ -2121,7 +2556,8 @@ fn fetch_https_h2(
                     col,
                 )
             })?;
-            read_response(&mut tls, deadline, line, col)
+            let outcome = read_response(&mut tls, deadline, line, col, &mut *sink)?;
+            Ok((outcome, sink))
         }
         Err(e) => Err(e),
     }
@@ -2153,7 +2589,8 @@ async fn fetch_https_h2_async(
     deadline: std::time::Instant,
     line: usize,
     col: usize,
-) -> RioResult<HttpsOutcome> {
+    sink: Box<dyn BodySink + Send>,
+) -> RioResult<(HttpsOutcome, Box<dyn BodySink + Send>)> {
     // tokio needs a non-blocking socket; the sync caller set
     // SO_RCVTIMEO timeouts on the fd, which stay set.
     let _ = stream.set_nonblocking(true);
@@ -2168,27 +2605,96 @@ async fn fetch_https_h2_async(
     let left = time_left_async(deadline).ok_or_else(|| {
         RioError::runtime("انتهت المهلة الإجمالية (30 ثانية)", line, col)
     })?;
-    let tls = tokio::time::timeout(left, connector.connect(server_name, tcp))
-        .await
-        .map_err(|_| RioError::runtime("انتهت مهلة الاتصال (30 ثانية)", line, col))?
-        .map_err(|e| {
-            io_timeout_or(
-                e,
-                "انتهت مهلة الاتصال (30 ثانية)",
-                "تعذر إنشاء اتصال HTTPS آمن",
+    // المهمة 22: المصافحة قابلة للإلغاء أيضا —
+    // انتظارها مع استطلاع العلم (لا انتظار مهلة
+    // كاملة بلا مخرج).
+    let tls = match await_cancellable(tokio::time::timeout(
+        left,
+        connector.connect(server_name, tcp),
+    ))
+    .await
+    {
+        Ok(Some(r)) => r
+            .map_err(|_| RioError::runtime("انتهت مهلة الاتصال (30 ثانية)", line, col))?
+            .map_err(|e| {
+                io_timeout_or(
+                    e,
+                    "انتهت مهلة الاتصال (30 ثانية)",
+                    "تعذر إنشاء اتصال HTTPS آمن",
+                    line,
+                    col,
+                )
+            })?,
+        Ok(None) => return Err(cancel_error(line, col)),
+        Err(()) => {
+            return Err(RioError::runtime(
+                "تعذر تنفيذ طلب الشبكة",
                 line,
                 col,
-            )
-        })?;
+            ))
+        }
+    };
     if tls.get_ref().1.alpn_protocol() == Some(b"h2".as_slice()) {
-        let outcome = fetch_h2(tls, path, host_header, deadline, line, col).await?;
-        Ok(HttpsOutcome::H2(outcome))
+        // المهمة 22: التبادل قابل للإلغاء — انتظاره
+        // مع استطلاع العلم؛ وعند الإلغاء تُجهض
+        // المهمة (ووقت التشغيل يُسقط معها).
+        let path = path.to_string();
+        let host_header = host_header.to_string();
+        let (outcome, sink) = match await_cancellable(fetch_h2(
+            tls,
+            path,
+            host_header,
+            deadline,
+            line,
+            col,
+            sink,
+        ))
+        .await
+        {
+            Ok(Some(r)) => r?,
+            Ok(None) => return Err(cancel_error(line, col)),
+            Err(()) => {
+                return Err(RioError::runtime(
+                    "تعذر تنفيذ طلب الشبكة",
+                    line,
+                    col,
+                ))
+            }
+        };
+        Ok((HttpsOutcome::H2(outcome), sink))
     } else {
         let (tcp, conn) = tls.into_inner();
         let std_stream = tcp
             .into_std()
             .map_err(|_| RioError::runtime("تعذر بدء اتصال HTTPS", line, col))?;
-        Ok(HttpsOutcome::Http1(std_stream, conn))
+        Ok((HttpsOutcome::Http1(std_stream, conn), sink))
+    }
+}
+
+/// انتظار مستقبل مع استطلاع علم الإلغاء كل 100ms
+/// (بديل `tokio::select!` — فخاصية macros في tokio
+/// غير مفعّلة في الشجرة، فلا صندوق جديد): عند
+/// الإلغاء تُجهض المهمة ويُرجع `Ok(None)`؛ وعند
+/// انتهاء المهمة نتيجتها؛ وعند ذعرها `Err(())`
+/// (كما `run_on_runtime` — «تعذر تنفيذ طلب الشبكة»).
+#[cfg(all(not(target_arch = "wasm32"), feature = "http2"))]
+async fn await_cancellable<T: Send + 'static>(
+    fut: impl std::future::Future<Output = T> + Send + 'static,
+) -> Result<Option<T>, ()> {
+    let handle = tokio::spawn(fut);
+    loop {
+        if handle.is_finished() {
+            return match handle.await {
+                Ok(v) => Ok(Some(v)),
+                Err(e) if e.is_cancelled() => Ok(None),
+                Err(_) => Err(()),
+            };
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if cancel_requested() {
+            handle.abort();
+            return Ok(None);
+        }
     }
 }
 
@@ -2202,12 +2708,13 @@ async fn fetch_https_h2_async(
 #[cfg(all(not(target_arch = "wasm32"), feature = "http2"))]
 async fn fetch_h2(
     tls: tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
-    path: &str,
-    host_header: &str,
+    path: String,
+    host_header: String,
     deadline: std::time::Instant,
     line: usize,
     col: usize,
-) -> RioResult<FetchOutcome> {
+    mut sink: Box<dyn BodySink + Send>,
+) -> RioResult<(FetchOutcome, Box<dyn BodySink + Send>)> {
     let (send, conn) = h2::client::handshake(tls)
         .await
         .map_err(|_| RioError::runtime("تعذر بدء اتصال HTTP/2", line, col))?;
@@ -2223,11 +2730,13 @@ async fn fetch_h2(
         .map_err(|_| RioError::runtime("تعذر بدء اتصال HTTP/2", line, col))?;
     // Absolute-form URI so h2 sends :scheme=https (a
     // path-only URI would default :scheme to http).
+    // (المهمة 22: المسار والترويسة مملوكان هنا —
+    // فالمستقبل يُنقَل إلى مهمة tokio فيستلزم 'static.)
     let uri = format!("https://{}{}", host_header, path);
     let req = http::Request::builder()
         .method("GET")
         .uri(uri)
-        .header("host", host_header)
+        .header("host", host_header.as_str())
         .header("user-agent", "Niva/1.0")
         .header("accept", "*/*")
         .body(())
@@ -2249,8 +2758,9 @@ async fn fetch_h2(
         .get("location")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-    let mut body: Vec<u8> = Vec::new();
-    let cap = MAX_RESPONSE_BYTES + 1;
+    // المهمة 22: القطع تُدفع إلى المصرف (الذاكرة
+    // تسقف 5MB، والملف يسقف الحصة) — فلا جسم كامل
+    // في الذاكرة عند التنزيل.
     while let Some(chunk) = {
         let left = match time_left_async(deadline) {
             Some(l) => l,
@@ -2271,22 +2781,13 @@ async fn fetch_h2(
         // Release the flow-control window as the body is
         // consumed, so a 5 MB body never stalls the peer.
         let _ = body_stream.flow_control().release_capacity(chunk.len());
-        body.extend_from_slice(&chunk);
-        if body.len() > cap {
-            return Err(RioError::runtime(
-                "الرد أكبر من الحد الأقصى (5 ميغابايت)",
-                line,
-                col,
-            ));
-        }
+        sink.push(&chunk, line, col)?;
     }
     if (200..300).contains(&status) {
-        Ok(FetchOutcome::Body(
-            String::from_utf8_lossy(&body).into_owned(),
-        ))
+        Ok((FetchOutcome::Body, sink))
     } else if (300..400).contains(&status) {
         match location {
-            Some(loc) => Ok(FetchOutcome::Redirect(loc)),
+            Some(loc) => Ok((FetchOutcome::Redirect(loc), sink)),
             None => Err(RioError::runtime(
                 format!("الخادم رد برمز الحالة {} بلا عنوان إعادة توجيه", status),
                 line,
@@ -2457,21 +2958,38 @@ fn read_response(
     deadline: std::time::Instant,
     line: usize,
     col: usize,
+    sink: &mut dyn BodySink,
 ) -> RioResult<FetchOutcome> {
     const HEADER_CAP: usize = 64 * 1024;
     let mut head: Vec<u8> = Vec::new();
     let mut byte = [0u8; 1];
     let mut header_end = None;
     while head.len() < HEADER_CAP {
-        let _ = stream.set_read_timeout(Some(time_left(deadline, line, col)?));
+        let _ = stream.set_read_timeout(Some(read_timeout(deadline, line, col)?));
         match stream.read(&mut byte) {
             Ok(0) => break,
             Ok(_) => {
                 head.push(byte[0]);
+                // المهمة 22: فحص الإلغاء بعد كل بايت
+                // ناجح أيضا — فخادم يرسل بايت كل 300ms
+                // لا يصل إلى WouldBlock أبدا، وبلا هذا
+                // الفحص لا يُلاحظ الإلغاء حتى النهاية.
+                check_cancelled(line, col)?;
                 if head.len() >= 4 && &head[head.len() - 4..] == b"\r\n\r\n" {
                     header_end = Some(head.len());
                     break;
                 }
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::TimedOut
+                    || e.kind() == std::io::ErrorKind::WouldBlock =>
+            {
+                // المهمة 22: مهلة القراءة مسقوفة (500ms)
+                // فالتوقف يعيد هنا — فحص الإلغاء ثم
+                // المهلة ثم إعادة المحاولة (لا خطأ مهلة
+                // بعد نصف ثانية).
+                on_read_would_block(deadline, line, col)?;
+                continue;
             }
             Err(e) => {
                 return Err(io_timeout_or(
@@ -2533,10 +3051,9 @@ fn read_response(
         }
     }
     // The body: Content-Length, then chunked, then until EOF.
-    // Always capped at 5 MB + 1 byte (the extra byte proves an
-    // overflow instead of silently truncating).
-    let mut body: Vec<u8> = Vec::new();
-    let cap = MAX_RESPONSE_BYTES + 1;
+    // القطع تُدفع إلى المصرف (الذاكرة تسقف 5MB،
+    // والملف يسقف الحصة) — فلا جسم كامل في الذاكرة
+    // عند التنزيل.
     if chunked {
         loop {
             let size_line = read_line_capped(stream, deadline, 1024, line, col)?;
@@ -2558,7 +3075,7 @@ fn read_response(
             let mut buf = [0u8; 8192];
             while remaining > 0 {
                 let want = remaining.min(buf.len());
-                let _ = stream.set_read_timeout(Some(time_left(deadline, line, col)?));
+                let _ = stream.set_read_timeout(Some(read_timeout(deadline, line, col)?));
                 match stream.read(&mut buf[..want]) {
                     Ok(0) => {
                         return Err(RioError::runtime(
@@ -2568,15 +3085,16 @@ fn read_response(
                         ))
                     }
                     Ok(n) => {
-                        body.extend_from_slice(&buf[..n]);
-                        if body.len() > cap {
-                            return Err(RioError::runtime(
-                                "الرد أكبر من الحد الأقصى (5 ميغابايت)",
-                                line,
-                                col,
-                            ));
-                        }
+                        sink.push(&buf[..n], line, col)?;
+                        check_cancelled(line, col)?;
                         remaining -= n;
+                    }
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::TimedOut
+                            || e.kind() == std::io::ErrorKind::WouldBlock =>
+                    {
+                        on_read_would_block(deadline, line, col)?;
+                        continue;
                     }
                     Err(e) => {
                         return Err(io_timeout_or(
@@ -2598,19 +3116,20 @@ fn read_response(
         let mut buf = [0u8; 8192];
         while remaining > 0 {
             let want = remaining.min(buf.len());
-            let _ = stream.set_read_timeout(Some(time_left(deadline, line, col)?));
+            let _ = stream.set_read_timeout(Some(read_timeout(deadline, line, col)?));
             match stream.read(&mut buf[..want]) {
                 Ok(0) => break,
                 Ok(n) => {
-                    body.extend_from_slice(&buf[..n]);
-                    if body.len() > cap {
-                        return Err(RioError::runtime(
-                            "الرد أكبر من الحد الأقصى (5 ميغابايت)",
-                            line,
-                            col,
-                        ));
-                    }
+                    sink.push(&buf[..n], line, col)?;
+                    check_cancelled(line, col)?;
                     remaining -= n;
+                }
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::TimedOut
+                        || e.kind() == std::io::ErrorKind::WouldBlock =>
+                {
+                    on_read_would_block(deadline, line, col)?;
+                    continue;
                 }
                 Err(e) => {
                     return Err(io_timeout_or(
@@ -2626,18 +3145,19 @@ fn read_response(
     } else {
         let mut buf = [0u8; 8192];
         loop {
-            let _ = stream.set_read_timeout(Some(time_left(deadline, line, col)?));
+            let _ = stream.set_read_timeout(Some(read_timeout(deadline, line, col)?));
             match stream.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    body.extend_from_slice(&buf[..n]);
-                    if body.len() > cap {
-                        return Err(RioError::runtime(
-                            "الرد أكبر من الحد الأقصى (5 ميغابايت)",
-                            line,
-                            col,
-                        ));
-                    }
+                    sink.push(&buf[..n], line, col)?;
+                    check_cancelled(line, col)?;
+                }
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::TimedOut
+                        || e.kind() == std::io::ErrorKind::WouldBlock =>
+                {
+                    on_read_would_block(deadline, line, col)?;
+                    continue;
                 }
                 Err(e) => {
                     return Err(io_timeout_or(
@@ -2652,9 +3172,7 @@ fn read_response(
         }
     }
     if (200..300).contains(&status) {
-        Ok(FetchOutcome::Body(
-            String::from_utf8_lossy(&body).into_owned(),
-        ))
+        Ok(FetchOutcome::Body)
     } else if (300..400).contains(&status) {
         match location {
             Some(loc) => Ok(FetchOutcome::Redirect(loc)),
@@ -2685,14 +3203,27 @@ fn read_line_capped(
     let mut out: Vec<u8> = Vec::new();
     let mut byte = [0u8; 1];
     while out.len() < cap {
-        let _ = stream.set_read_timeout(Some(time_left(deadline, line, col)?));
+        let _ = stream.set_read_timeout(Some(read_timeout(deadline, line, col)?));
         match stream.read(&mut byte) {
             Ok(0) => break,
             Ok(_) => {
                 out.push(byte[0]);
+                // المهمة 22: فحص الإلغاء بعد كل بايت
+                // (كما في read_response — فالتقطير البطيء
+                // لا يصل إلى WouldBlock).
+                check_cancelled(line, col)?;
                 if out.len() >= 2 && &out[out.len() - 2..] == b"\r\n" {
                     break;
                 }
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::TimedOut
+                    || e.kind() == std::io::ErrorKind::WouldBlock =>
+            {
+                // المهمة 22: كما في read_response — فحص
+                // الإلغاء ثم المهلة ثم إعادة المحاولة.
+                on_read_would_block(deadline, line, col)?;
+                continue;
             }
             Err(e) => {
                 return Err(io_timeout_or(
@@ -2980,6 +3511,36 @@ mod tests {
                     .nth(1)
                     .unwrap_or("/")
                     .to_string();
+                // المهمة 22: نقطتا نهاية متدفقتان —
+                // لا تُبنيان دفعة واحدة؛ تُكتب الترويسات
+                // أولا ثم يتدفق الجسم ببطء (لاختبار
+                // الإلغاء أثناء الجسم).
+                if path == "/drip" {
+                    // 10 بايت، بايت كل 300ms — جلبها
+                    // كاملا يستغرق ~3s؛ الإلغاء في
+                    // المنتصف يقطعه.
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n",
+                    );
+                    for i in 0..10u8 {
+                        let _ = stream.write_all(&[b'a' + i]);
+                        let _ = stream.flush();
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                    }
+                    continue;
+                }
+                if path == "/slow-body" {
+                    // الترويسات فورا، والجسم بعد 5s —
+                    // الإلغاء أثناء انتظار الجسم (قراءة
+                    // WouldBlock).
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+                    );
+                    let _ = stream.flush();
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    let _ = stream.write_all(b"ok");
+                    continue;
+                }
                 let (status, mut headers, body): (&str, Vec<String>, Vec<u8>) =
                     match path.as_str() {
                         "/hello" => {
@@ -3061,6 +3622,19 @@ mod tests {
                                 "200 OK",
                                 vec!["Content-Length: 2".to_string()],
                                 b"ok".to_vec(),
+                            )
+                        }
+                        "/bytes" => {
+                            // المهمة 22: 2048 بايت ثنائية
+                            // حتمية — تحوي 0x00 وبايتات عالية
+                            // (لا UTF-8 صالح) فيثبت التنزيل
+                            // أنه ثنائي آمن.
+                            let b: Vec<u8> =
+                                (0..2048u32).map(|i| (i % 251) as u8).collect();
+                            (
+                                "200 OK",
+                                vec![format!("Content-Length: {}", b.len())],
+                                b,
                             )
                         }
                         _ => (
@@ -3268,6 +3842,351 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("مهلة"), "got: {}", err);
         set_network_allowed(false);
+    }
+
+    // --- المهمة 22: شبكة.نزّل + إلغاء أمر معلق ---
+
+    fn download_test_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "niva-download-test-{}-{}",
+            std::process::id(),
+            name
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn expected_bytes() -> Vec<u8> {
+        (0..2048u32).map(|i| (i % 251) as u8).collect()
+    }
+
+    #[test]
+    fn download_ok_binary_safe() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = test_server();
+        let dir = download_test_dir("ok");
+        let policy = crate::permissions::FilePolicy::restricted(dir.clone());
+        let v = download(
+            &format!("http://127.0.0.1:{}/bytes", port),
+            &policy,
+            &dir,
+            "ملف.بن",
+            1,
+            1,
+        )
+        .unwrap();
+        assert!(matches!(v, Value::Number(n) if n == 2048.0), "got: {:?}", v);
+        let got = std::fs::read(dir.join("ملف.بن")).unwrap();
+        assert_eq!(got, expected_bytes());
+        // غير UTF-8 صالح: أول بايت 0x00 موجود حرفيا.
+        assert_eq!(got[0], 0u8);
+        let _ = std::fs::remove_dir_all(&dir);
+        set_network_allowed(false);
+    }
+
+    #[test]
+    fn download_redirect_followed() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = test_server();
+        let dir = download_test_dir("redirect");
+        let policy = crate::permissions::FilePolicy::restricted(dir.clone());
+        download(
+            &format!("http://127.0.0.1:{}/redirect", port),
+            &policy,
+            &dir,
+            "معاد.بن",
+            1,
+            1,
+        )
+        .unwrap();
+        let got = std::fs::read(dir.join("معاد.بن")).unwrap();
+        assert_eq!(got, "مرحبا من الخادم".as_bytes());
+        let _ = std::fs::remove_dir_all(&dir);
+        set_network_allowed(false);
+    }
+
+    #[test]
+    fn download_replaces_existing_file() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = test_server();
+        let dir = download_test_dir("replace");
+        std::fs::write(dir.join("قديم.بن"), "محتوى قديم طويل".as_bytes()).unwrap();
+        let policy = crate::permissions::FilePolicy::restricted(dir.clone());
+        let v = download(
+            &format!("http://127.0.0.1:{}/hello", port),
+            &policy,
+            &dir,
+            "قديم.بن",
+            1,
+            1,
+        )
+        .unwrap();
+        assert!(matches!(v, Value::Number(_)), "got: {:?}", v);
+        let got = std::fs::read(dir.join("قديم.بن")).unwrap();
+        assert_eq!(got, "مرحبا من الخادم".as_bytes());
+        let _ = std::fs::remove_dir_all(&dir);
+        set_network_allowed(false);
+    }
+
+    #[test]
+    fn download_http_error_leaves_no_file() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = test_server();
+        let dir = download_test_dir("error");
+        let policy = crate::permissions::FilePolicy::restricted(dir.clone());
+        let err = download(
+            &format!("http://127.0.0.1:{}/status500", port),
+            &policy,
+            &dir,
+            "فشل.بن",
+            1,
+            1,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("500"), "got: {}", err);
+        assert!(!dir.join("فشل.بن").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+        set_network_allowed(false);
+    }
+
+    #[test]
+    fn download_refused_without_network_flag() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(false);
+        let dir = download_test_dir("gate");
+        let policy = crate::permissions::FilePolicy::restricted(dir.clone());
+        let err = download(
+            "http://127.0.0.1:9/hello",
+            &policy,
+            &dir,
+            "مغلق.بن",
+            1,
+            1,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("الشبكة مغلقة"),
+            "got: {}",
+            err
+        );
+        assert!(!dir.join("مغلق.بن").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn download_outside_policy_refused_before_network() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let dir = download_test_dir("policy");
+        let policy = crate::permissions::FilePolicy::restricted(dir.clone());
+        let err = download(
+            "http://127.0.0.1:9/hello",
+            &policy,
+            &dir,
+            "../خارج.بن",
+            1,
+            1,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("خارج مجلد"),
+            "got: {}",
+            err
+        );
+        set_network_allowed(false);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn download_cancelled_by_flag_deletes_partial() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = test_server();
+        let dir = download_test_dir("cancel");
+        let policy = crate::permissions::FilePolicy::restricted(dir.clone());
+        clear_fetch_cancel();
+        let setter = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            request_fetch_cancel();
+        });
+        let start = std::time::Instant::now();
+        let err = download(
+            &format!("http://127.0.0.1:{}/drip", port),
+            &policy,
+            &dir,
+            "جزئي.بن",
+            1,
+            1,
+        )
+        .unwrap_err();
+        let elapsed = start.elapsed();
+        let _ = setter.join();
+        assert!(err.to_string().contains("أُلغي الأمر"), "got: {}", err);
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "cancel took {:?}",
+            elapsed
+        );
+        assert!(!dir.join("جزئي.بن").exists());
+        clear_fetch_cancel();
+        let _ = std::fs::remove_dir_all(&dir);
+        set_network_allowed(false);
+    }
+
+    #[test]
+    fn fetch_cancelled_by_flag_mid_body() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = test_server();
+        clear_fetch_cancel();
+        let setter = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            request_fetch_cancel();
+        });
+        let start = std::time::Instant::now();
+        let err = fetch_text_native(
+            &format!("http://127.0.0.1:{}/drip", port),
+            30,
+            1,
+            1,
+        )
+        .unwrap_err();
+        let elapsed = start.elapsed();
+        let _ = setter.join();
+        assert!(err.to_string().contains("أُلغي الأمر"), "got: {}", err);
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "cancel took {:?}",
+            elapsed
+        );
+        clear_fetch_cancel();
+        set_network_allowed(false);
+    }
+
+    #[test]
+    fn fetch_cancelled_while_waiting_for_body() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = test_server();
+        clear_fetch_cancel();
+        let setter = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            request_fetch_cancel();
+        });
+        let start = std::time::Instant::now();
+        let err = fetch_text_native(
+            &format!("http://127.0.0.1:{}/slow-body", port),
+            30,
+            1,
+            1,
+        )
+        .unwrap_err();
+        let elapsed = start.elapsed();
+        let _ = setter.join();
+        assert!(err.to_string().contains("أُلغي الأمر"), "got: {}", err);
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "cancel took {:?}",
+            elapsed
+        );
+        clear_fetch_cancel();
+        set_network_allowed(false);
+    }
+
+    #[test]
+    fn cancellable_cancel_line_returns_cancel_error() {
+        let _guard = crate::stdin_pump::pump_test_lock();
+        let injector = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            crate::stdin_pump::inject_stdin_line(
+                crate::stdin_pump::CANCEL_LINE.to_string() + "\n",
+            );
+        });
+        let start = std::time::Instant::now();
+        let r: RioResult<u64> = run_cancellable(
+            || {
+                loop {
+                    if cancel_requested() {
+                        return Ok(7);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            },
+            1,
+            1,
+        );
+        let elapsed = start.elapsed();
+        let _ = injector.join();
+        let err = r.unwrap_err();
+        assert!(err.to_string().contains("أُلغي الأمر"), "got: {}", err);
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "cancel took {:?}",
+            elapsed
+        );
+        clear_fetch_cancel();
+    }
+
+    #[test]
+    fn cancellable_pending_line_preserved() {
+        let _guard = crate::stdin_pump::pump_test_lock();
+        let injector = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            crate::stdin_pump::inject_stdin_line("سطر أثناء الجلب\n".to_string());
+        });
+        let r: RioResult<u64> = run_cancellable(
+            || {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                Ok(9)
+            },
+            1,
+            1,
+        );
+        let _ = injector.join();
+        assert_eq!(r.unwrap(), 9);
+        assert_eq!(
+            crate::stdin_pump::stdin_line().as_deref(),
+            Some("سطر أثناء الجلب\n")
+        );
+    }
+
+    #[test]
+    fn cancellable_stale_cancel_discarded() {
+        let _guard = crate::stdin_pump::pump_test_lock();
+        crate::stdin_pump::inject_stdin_line(
+            crate::stdin_pump::CANCEL_LINE.to_string() + "\n",
+        );
+        let r: RioResult<u64> = run_cancellable(|| Ok(5), 1, 1);
+        assert_eq!(r.unwrap(), 5);
+    }
+
+    #[test]
+    fn file_sink_quota_limit() {
+        let dir = download_test_dir("quota");
+        let file = std::fs::File::create(dir.join("حصة.بن")).unwrap();
+        let mut sink = FileSink {
+            file,
+            written: 0,
+            limit: 10,
+            display: "حصة.بن".to_string(),
+        };
+        sink.push(b"12345", 1, 1).unwrap();
+        let err = sink.push(b"123456", 1, 1).unwrap_err();
+        assert!(err.to_string().contains("حصة التخزين"), "got: {}", err);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // --- TLS tests (Meeting 26) ---

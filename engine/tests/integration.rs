@@ -2292,6 +2292,19 @@ fn net_test_server() -> u16 {
                 .nth(1)
                 .unwrap_or("/")
                 .to_string();
+            // المهمة 22: /drip يتدفق ببطء (بايت كل
+            // 300ms) لاختبار إلغاء جلب طويل.
+            if path == "/drip" {
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n",
+                );
+                for i in 0..10u8 {
+                    let _ = stream.write_all(&[b'a' + i]);
+                    let _ = stream.flush();
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                }
+                continue;
+            }
             let (status, body): (&str, Vec<u8>) = match path.as_str() {
                 "/hello" => ("200 OK", "مرحبا من الخادم".as_bytes().to_vec()),
                 // إصلاح ترميز المسار في اجلب: الخادم يرى
@@ -2475,9 +2488,172 @@ fn network_unknown_flag_is_arabic_error() {
     assert!(err.contains("خيار غير معروف"), "stderr: {}", err);
 }
 
+// المهمة 22: شبكة.نزّل في الوضعين — ينزل ملف
+// /hello إلى مجلد البرنامج، ويطبع عدد بايتاته
+// ثم يقرأه بنفسه (فالمجلد المؤقت يُحذف بعد
+// التشغيل، فيتحقق البرنامج من الملف لا الاختبار).
 #[test]
-fn network_fetch_parity_in_vm() {
-    // Meeting 25 task 4 (ك-1.3): شبكة.اجلب يعمل الآن في VM
+fn network_download_both_modes() {
+    let port = net_test_server();
+    let src = format!(
+        "استورد شبكة\nاطبع شبكة.نزّل(\"http://127.0.0.1:{}/hello\", \"نزل.بن\")\nاطبع اقرأ_ملف(\"نزل.بن\")\n",
+        port
+    );
+    let (out_i, err_i, code_i) = run_src_flags(
+        &src,
+        &["--مفسر", "--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"],
+    );
+    let (out_v, err_v, code_v) = run_src_flags(
+        &src,
+        &["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"],
+    );
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    // «مرحبا من الخادم» = 28 بايت UTF-8، فيطبع ٢٨.
+    assert_eq!(out_v, "٢٨\nمرحبا من الخادم\n", "stdout={}", out_v);
+}
+
+#[test]
+fn network_download_refused_without_flag() {
+    let port = net_test_server();
+    let src = format!(
+        "استورد شبكة\nاطبع شبكة.نزّل(\"http://127.0.0.1:{}/hello\", \"نزل.بن\")\n",
+        port
+    );
+    let (_out, err, code) = run_src_flags(&src, &[]);
+    assert_ne!(code, 0);
+    assert!(err.contains("الشبكة مغلقة افتراضيا"), "stderr: {}", err);
+}
+
+// المهمة 22: وسائط نزّل الخاطئة في الوضعين —
+// عدد معاملات صفر (بصيغة الأقواس)، ونوع خاطئ،
+// ورابط فارغ، ومسار فارغ.
+#[test]
+fn network_download_args_both_modes() {
+    let flags_i = ["--مفسر", "--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"];
+    let flags_v = ["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"];
+    let cases = [
+        ("استورد شبكة\nاطبع شبكة.نزّل()\n", "معاملات"),
+        (
+            "استورد شبكة\nاطبع شبكة.نزّل ١ \"ملف.بن\"\n",
+            "نص",
+        ),
+        (
+            "استورد شبكة\nاطبع شبكة.نزّل \"\" \"ملف.بن\"\n",
+            "رابطا غير فارغ",
+        ),
+        (
+            "استورد شبكة\nاطبع شبكة.نزّل \"http://127.0.0.1:9/x\" \"\"\n",
+            "مسارا غير فارغ",
+        ),
+    ];
+    for (src, needle) in cases {
+        let (_o, err_i, c_i) = run_src_flags(src, &flags_i);
+        let (_o2, err_v, c_v) = run_src_flags(src, &flags_v);
+        assert_ne!(c_i, 0, "interpreter accepted: {}", src);
+        assert_ne!(c_v, 0, "VM accepted: {}", src);
+        assert!(err_i.contains(needle), "interpreter stderr: {}", err_i);
+        assert!(err_v.contains(needle), "VM stderr: {}", err_v);
+    }
+}
+
+// المهمة 22: خطأ HTTP لا يترك ملفا جزئيا —
+// البرنامج نفسه يتحقق: قراءة الملف الغائب
+// خطأ، فيطبع «لا ملف».
+#[test]
+fn network_download_http_error_no_partial_both_modes() {
+    let port = net_test_server();
+    let src = format!(
+        "استورد شبكة\nحاول:\n    شبكة.نزّل(\"http://127.0.0.1:{}/missing\", \"فشل.بن\")\n    اطبع \"نجح؟\"\nماعدا:\n    اطبع \"فشل كما يجب\"\nحاول:\n    اطبع اقرأ_ملف(\"فشل.بن\")\nماعدا:\n    اطبع \"لا ملف\"\n",
+        port
+    );
+    let (out_i, err_i, code_i) = run_src_flags(
+        &src,
+        &["--مفسر", "--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"],
+    );
+    let (out_v, err_v, code_v) = run_src_flags(
+        &src,
+        &["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"],
+    );
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(out_v, "فشل كما يجب\nلا ملف\n", "stdout={}", out_v);
+}
+
+// المهمة 22: إلغاء جلب طويل من stdin — يكتب
+// الاختبار سطر الإلغاء في stdin الطفل بعد 800ms
+// (والجلب المتدفق يستغرق ~3s)، فيمسك البرنامج
+// الخطأ بـحاول/ماعدا ويطبع «أُلغي» ويخرج 0.
+fn run_src_stdin(src: &str, flags: &[&str], stdin_line: &str, delay_ms: u64) -> (String, String, i32) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!(
+        "rio4140-engine-cancel-{}-{}",
+        std::process::id(),
+        n
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("prog.نيفا");
+    fs::write(&path, src).unwrap();
+    let mut cmd = Command::new(bin());
+    cmd.arg(&path);
+    for f in flags {
+        cmd.arg(f);
+    }
+    let mut child = cmd
+        .current_dir(&dir)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run نيفا");
+    let mut stdin = child.stdin.take().unwrap();
+    let line = stdin_line.to_string();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        use std::io::Write;
+        let _ = stdin.write_all(line.as_bytes());
+        let _ = stdin.flush();
+    });
+    let result = child.wait_with_output().expect("wait نيفا");
+    let _ = fs::remove_dir_all(&dir);
+    (
+        String::from_utf8_lossy(&result.stdout).to_string(),
+        String::from_utf8_lossy(&result.stderr).to_string(),
+        result.status.code().unwrap_or(-1),
+    )
+}
+
+#[test]
+fn network_fetch_cancelled_from_stdin_both_modes() {
+    let port = net_test_server();
+    let src = format!(
+        "استورد شبكة\nحاول:\n    اطبع شبكة.اجلب(\"http://127.0.0.1:{}/drip\")\nماعدا:\n    اطبع \"أُلغي\"\n",
+        port
+    );
+    let (out_i, err_i, code_i) = run_src_stdin(
+        &src,
+        &["--مفسر", "--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"],
+        "\u{0001}نيفا-إلغاء\n",
+        800,
+    );
+    let (out_v, err_v, code_v) = run_src_stdin(
+        &src,
+        &["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"],
+        "\u{0001}نيفا-إلغاء\n",
+        800,
+    );
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(out_v, "أُلغي\n", "stdout={}", out_v);
+}
+
+#[test]
+fn network_fetch_parity_in_vm() {    // Meeting 25 task 4 (ك-1.3): شبكة.اجلب يعمل الآن في VM
     // عبر جلب المحرك نفسه وبوابته العملية-الواسعة —
     // الجسم نفسه، وخطأ البوابة المغلقة نفسه، وخطأ HTTPS
     // نفسه، في الوضعين.

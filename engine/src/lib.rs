@@ -29,6 +29,7 @@ pub mod permissions;
 pub mod processes;
 pub mod repl;
 pub mod security;
+pub mod stdin_pump;
 pub mod semantic;
 pub mod sockets;
 pub mod stdlib;

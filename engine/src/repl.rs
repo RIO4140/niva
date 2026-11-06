@@ -63,7 +63,7 @@ use crate::parser::Parser;
 use crate::semantic::SemanticAnalyzer;
 use crate::value::Value;
 use crate::vm::VmSession;
-use std::io::{BufRead, Write};
+use std::io::Write;
 use std::process::ExitCode;
 
 /// Parser errors that mean "this input is incomplete, read more".
@@ -1166,7 +1166,6 @@ pub fn run_repl(
         repl.allow_local_network_host(host);
     }
     println!("{}", banner());
-    let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     loop {
@@ -1174,28 +1173,23 @@ pub fn run_repl(
         if out.flush().is_err() {
             return ExitCode::FAILURE;
         }
-        let mut line = String::new();
-        // مهمة 20 (جهاز.حوار): قفل stdin لكل قراءة على
-        // حدة لا لكل الحلقة — وإلا علق `ادخل` (وكل قراءة
-        // stdin داخل feed، ومنها انتظار `جهاز.حوار`) على
-        // القفل نفسه من الخيط نفسه (مثبَت تجريبيا: ادخل
-        // في REPL علق إلى الأبد قبل هذا الإصلاح). المخزن
-        // المؤقت يعيش في Stdin العام لا في الحارس، فلا
-        // يُفقد سطر مخزّن بين التكرارات.
-        let read = {
-            let mut input = stdin.lock();
-            input.read_line(&mut line)
-        };
-        match read {
-            Ok(0) => {
+        // مهمة 22 (شبكة.نزّل): القراءة عبر مضخة stdin
+        // لا مباشرة — خيط المضخة وحده يملك stdin،
+        // والمستهلكون (ومنهم `ادخل` داخل feed وانتظار
+        // الجلب) يأخذون الأسطر من قناتها. قفل المهمة 20
+        // (لكل قراءة لا لكل الحلقة) صار غير ذي موضوع
+        // هنا: لا قفل إطلاقا على هذا الخيط بعد اليوم.
+        // وسطور الإلغاء تُتخطى هنا بصمت (بلا جلب جارٍ
+        // لا أثر لها)؛ وEOF يخرج نظيفا كما كان.
+        let line = match crate::stdin_pump::stdin_line() {
+            Some(l) => l,
+            None => {
                 // EOF (Ctrl-D): exit cleanly.
                 let result = repl.eof();
                 print!("{}", result.output);
                 return ExitCode::SUCCESS;
             }
-            Ok(_) => {}
-            Err(_) => return ExitCode::FAILURE,
-        }
+        };
         let result = repl.feed(&line);
         // Audit م-6: structured control signals on stderr,
         // only when the host opts in (NIVA_CONTROL_CHANNEL

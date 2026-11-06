@@ -624,20 +624,21 @@ fn request_and_wait(req: &DialogRequest, line: usize, col: usize) -> RioResult<V
 /// من `request_and_wait` بلا تغيير سلوك).
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 fn wait_for_result(line: usize, col: usize) -> RioResult<Value> {
-    let stdin = std::io::stdin();
-    let mut buf = String::new();
+    // مهمة 22: القراءة عبر مضخة stdin (لا مباشرة) —
+    // خيط المضخة وحده يملك stdin. سطور الإلغاء هنا
+    // سطور غير نتيجة فتُتجاهل كغيرها (الإلغاء أثناء
+    // حوار لا أثر له — والمخرج زر «تحكم»).
     loop {
-        buf.clear();
-        let n = stdin
-            .read_line(&mut buf)
-            .map_err(|_| RioError::runtime("تعذر قراءة نتيجة التحكم", line, col))?;
-        if n == 0 {
-            return Err(RioError::runtime(
-                "انتهى الإدخال أثناء انتظار نتيجة التحكم",
-                line,
-                col,
-            ));
-        }
+        let buf = match crate::stdin_pump::next_raw_line() {
+            Some(b) => b,
+            None => {
+                return Err(RioError::runtime(
+                    "انتهى الإدخال أثناء انتظار نتيجة التحكم",
+                    line,
+                    col,
+                ));
+            }
+        };
         let text = buf.trim_end_matches(['\n', '\r']);
         if let Some(payload) = text.strip_prefix(RESULT_PREFIX) {
             return parse_control_result(payload, line, col);
