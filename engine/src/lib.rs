@@ -26,6 +26,7 @@ pub mod parser;
 pub mod permissions;
 pub mod processes;
 pub mod repl;
+pub mod security;
 pub mod semantic;
 pub mod sockets;
 pub mod stdlib;

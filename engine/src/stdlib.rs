@@ -121,6 +121,17 @@ pub fn native_module(name: &str) -> Option<Value> {
         // OS — /dev/urandom on Unix, honest refusal on
         // Windows and in the browser).
         "تشفير" => crypto_entries(),
+        // Catalog task 18 (أمن, from security/): read-only
+        // Linux security queries — the current process's
+        // capability sets, the active LSMs, and an
+        // access(2)-style permission check for a file
+        // inside the program folder. Permission design
+        // first — see CATALOG-10-SECURITY.md §1
+        // (read-only only: no capability is ever dropped
+        // — أسقط_قدرة is deferred; Linux + Android only,
+        // honest refusal elsewhere; in the browser
+        // refused with the flat builtins' own message).
+        "أمن" => security_entries(),
         _ => return None,
     };
     let mut exports: HashMap<String, Value> = HashMap::new();
@@ -762,6 +773,34 @@ fn crypto_secure_random(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usiz
     Ok(Value::List(
         bytes.into_iter().map(|b| Value::Number(b as f64)).collect(),
     ))
+}
+
+// --- أمن (catalog task 18, from security/) ---
+
+fn security_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("قدرات_العملية", native("قدرات_العملية", sec_caps)),
+        ("الوضع", native("الوضع", sec_mode)),
+        ("تحقق", native("تحقق", sec_check)),
+    ]
+}
+
+fn sec_caps(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("أمن.قدرات_العملية", args, 0, line, col)?;
+    crate::security::process_capabilities(line, col)
+}
+
+fn sec_mode(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("أمن.الوضع", args, 0, line, col)?;
+    crate::security::security_mode(line, col)
+}
+
+fn sec_check(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("أمن.تحقق", args, 1, line, col)?;
+    let path = need_string("أمن.تحقق", &args[0], line, col)?;
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    crate::security::check_access(&policy, &cwd, &path, line, col)
 }
 
 // --- ذاكرة (catalog task 11, from mm/) ---
