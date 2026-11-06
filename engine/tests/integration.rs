@@ -134,6 +134,10 @@ fn examples_pass() {
             "21-ذاكرة.نيفا",
             "صحيح\nغير معروفة كما يجب\n",
         ),
+        (
+            "22-ملفات.نيفا",
+            "صحيح\nمرحبا من وحدة ملفات\nنص جديد\nغير معروف كما يجب\n",
+        ),
     ];
     for (name, expected) in cases {
         let path = example_path(name);
@@ -315,6 +319,79 @@ fn memory_queries_refused_both_modes() {
     assert_eq!(out_v, out_i);
     assert_eq!(err_v, err_i);
     assert_eq!(out_v, "غير مدعوم كما يجب\nغير مدعوم كما يجب\n");
+}
+
+/// مهمة 12 (ملفات): فتح وقراءة وكتابة في الوضعين — المخرج
+/// والخطأ والخروج متطابقة حرفيا؛ والمعرف غير المعروف
+/// والخروج عن المجلد والمجلد والمجلد الأب الغائب والوسائط
+/// الخاطئة أخطاء عربية تُمسكها ماعدا، متطابقة في الوضعين.
+#[test]
+fn files_open_read_write_both_modes() {
+    let files: &[(&str, &str)] = &[(
+        "برنامج.نيفا",
+        "استورد ملفات\nم = ملفات.افتح(\"أ.txt\")\nاطبع م > ٠\nملفات.اكتب(م، \"مرحبا\")\nاطبع ملفات.اقرأ(م)\nملفات.اكتب(م، \"جديد\")\nاطبع ملفات.اقرأ(م)\nحاول:\n    ملفات.اقرأ(٩٩٩٩٩٩)\nماعدا:\n    اطبع \"غير معروف كما يجب\"\nحاول:\n    ملفات.افتح(\"../خارج.txt\")\nماعدا:\n    اطبع \"خارج كما يجب\"\nحاول:\n    ملفات.افتح(\".\")\nماعدا:\n    اطبع \"ليس ملفا كما يجب\"\nحاول:\n    ملفات.افتح(\"فرعي/غائب.txt\")\nماعدا:\n    اطبع \"تعذر كما يجب\"\nحاول:\n    ملفات.افتح(٥)\nماعدا:\n    اطبع \"نص كما يجب\"\nحاول:\n    ملفات.اقرأ(م، \"زيادة\")\nماعدا:\n    اطبع \"وسائط كما يجب\"\n",
+    )];
+    let (out_i, err_i, code_i) =
+        run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v,
+        "صحيح\nمرحبا\nجديد\nغير معروف كما يجب\nخارج كما يجب\nليس ملفا كما يجب\nتعذر كما يجب\nنص كما يجب\nوسائط كما يجب\n"
+    );
+}
+
+/// مهمة 12 (ملفات): خطأ الخروج عن المجلد هو الخطأ نفسه
+/// حرفيا كـ `اقرأ_ملف` — لا نصان مختلفان لنفس الرفض.
+/// (الرسالة نفسها حرفيا؛ والعمود وحده يختلف بصيغة
+/// الاستدعاء — الاستدعاء المنقّط يبلّغ عن موضع العضو،
+/// والمدمج المسطح عن موضع القوس — فيُقارن النص بلا
+/// لاحقة الموضع.)
+#[test]
+fn files_policy_error_matches_flat_builtin() {
+    fn strip_pos(s: &str) -> String {
+        match s.rfind(" (السطر ") {
+            Some(i) => s[..i].to_string(),
+            None => s.to_string(),
+        }
+    }
+    let prog_a: &[(&str, &str)] = &[(
+        "برنامج.نيفا",
+        "استورد ملفات\nملفات.افتح(\"../خارج.txt\")\n",
+    )];
+    // Program B has no import line: pad it so the failing
+    // call sits on line 2, exactly like program A.
+    let prog_b: &[(&str, &str)] = &[(
+        "برنامج.نيفا",
+        "# سطر\nاقرأ_ملف(\"../خارج.txt\")\n",
+    )];
+    let (out_ai, err_ai, code_ai) =
+        run_with_modules_flags(prog_a, "برنامج.نيفا", &["--مفسر"]);
+    let (out_av, err_av, code_av) = run_with_modules(prog_a, "برنامج.نيفا");
+    let (out_bi, err_bi, code_bi) =
+        run_with_modules_flags(prog_b, "برنامج.نيفا", &["--مفسر"]);
+    let (out_bv, err_bv, code_bv) = run_with_modules(prog_b, "برنامج.نيفا");
+    for (label, code) in [
+        ("A-interp", code_ai),
+        ("A-vm", code_av),
+        ("B-interp", code_bi),
+        ("B-vm", code_bv),
+    ] {
+        assert_ne!(code, 0, "{} must fail", label);
+    }
+    assert_eq!(err_av, err_ai, "A differs across engines");
+    assert_eq!(err_bv, err_bi, "B differs across engines");
+    assert_eq!(
+        strip_pos(&err_av),
+        strip_pos(&err_bv),
+        "policy error differs between ملفات.افتح and اقرأ_ملف:\n--- A: {}\n--- B: {}",
+        err_av, err_bv
+    );
+    assert!(err_av.contains("خارج مجلد البرنامج"), "stderr: {}", err_av);
+    let _ = (out_ai, out_av, out_bi, out_bv);
 }
 
 #[test]

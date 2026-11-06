@@ -81,6 +81,16 @@ pub fn native_module(name: &str) -> Option<Value> {
         // live in total; the two queries are Linux-native and
         // refuse honestly elsewhere).
         "ذاكرة" => memory_entries(),
+        // Catalog task 12 (ملفات, from fs/): open a file by
+        // handle, read it whole, write (replace) it whole.
+        // Permission design first — see CATALOG-03-FILES.md §1
+        // (the policy check happens once, at افتح, through the
+        // session's own FilePolicy, so the outside-folder error
+        // is identical to `اقرأ_ملف`'s; اقرأ/اكتب take a
+        // numeric handle only; same 5 MiB read cap and 100 MiB
+        // program-dir quota as the flat builtins; WASM refuses
+        // with the flat builtins' own message).
+        "ملفات" => files_entries(),
         _ => return None,
     };
     let mut exports: HashMap<String, Value> = HashMap::new();
@@ -509,6 +519,41 @@ fn mem_page_size(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col:
     Ok(Value::Number(
         crate::memory::page_size(line, col)? as f64,
     ))
+}
+
+// --- ملفات (catalog task 12, from fs/) ---
+
+fn files_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("افتح", native("افتح", file_open)),
+        ("اقرأ", native("اقرأ", file_read)),
+        ("اكتب", native("اكتب", file_write)),
+    ]
+}
+
+fn file_open(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("ملفات.افتح", args, 1, line, col)?;
+    let path = need_string("ملفات.افتح", &args[0], line, col)?;
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    Ok(Value::Number(
+        crate::files::open_file(&policy, &cwd, &path, line, col)? as f64,
+    ))
+}
+
+fn file_read(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("ملفات.اقرأ", args, 1, line, col)?;
+    let id = need_integer("ملفات.اقرأ", &args[0], line, col)?;
+    Ok(Value::Str(crate::files::read_file(id, line, col)?))
+}
+
+fn file_write(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("ملفات.اكتب", args, 2, line, col)?;
+    let id = need_integer("ملفات.اكتب", &args[0], line, col)?;
+    let content = need_string("ملفات.اكتب", &args[1], line, col)?;
+    let policy = ctx.server_file_policy();
+    crate::files::write_file(&policy, id, &content, line, col)?;
+    Ok(Value::Nil)
 }
 
 // --- وقت ---
