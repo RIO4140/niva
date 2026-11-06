@@ -2,9 +2,11 @@
 
 صنع بواسطة محمود عبد النبي.
 
-تطبيق الترمنال للأندرويد: [نزّل نيفا ١٫٠٫٠ (APK)](https://github.com/RIO4140/niva/releases/download/v1.0.0/niva-terminal.apk) — أو من [صفحة التنزيل](https://rio4140.github.io/niva/download.html).
+## التثبيت
 
-## التثبيت (Linux)
+نيفا محرك Rust محمول — يعمل على Linux وmacOS وWindows وAndroid، والملعب يعمل في المتصفح بلا تثبيت.
+
+### Linux وmacOS
 
 بأمر واحد:
 
@@ -20,6 +22,21 @@ curl -fsSL https://raw.githubusercontent.com/RIO4140/niva/main/install.sh | bash
 
 المثبّت يبني المحرك من المصدر ويثبّت الأمر `نيفا` في `~/.local/bin`، وكل رسائله بالعربي.
 
+### Windows
+
+نزّل الثنائي الجاهز `niva-windows-x86_64.exe` من [صفحة الإصدارات](https://github.com/RIO4140/niva/releases)، أو ابنِ من المصدر:
+
+```powershell
+cd engine
+cargo build --release
+```
+
+والملف التنفيذي `target\release\niva.exe` يعمل لوحده.
+
+### بلا تثبيت
+
+جرّب اللغة في المتصفح من [الملعب](https://rio4140.github.io/niva/playground/) — اكتب كودا بالعربي وشغّله فورا.
+
 ## المحرك المستقل (Rust)
 
 محرك تنفيذ مكتوب بـ Rust:
@@ -27,9 +44,9 @@ Lexer + Parser + AST + Semantic Analyzer +
 Tree-Walking Interpreter، بملفات `.نيفا`، وبدون
 Compiler إلى لغة آلة في v1.
 
-الكود std فقط ومحمول، فيمكن بناؤه لـ Windows وLinux
-وAndroid، والنسخة المبنية هنا Linux، وبناء Windows
-وAndroid خطوة إصدار لاحقة.
+الكود std فقط ومحمول، ويُبنى لـ Windows وmacOS وLinux
+وAndroid — وثنائيات جاهزة لكل الأنظمة في صفحة الإصدارات،
+والمحرك نفسه يعمل داخل تطبيق ترمنال الأندرويد.
 
 ## التشغيل
 

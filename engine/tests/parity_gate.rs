@@ -1,0 +1,654 @@
+//! بوابة التكافؤ ك-1.5 — مهمة 6 من خطة الاجتماع 25.
+//! كل برنامج في هذه البوابة يعمل مرتين: مرة بالمفسر
+//! (--مفسر) ومرة بالآلة الافتراضية (الافتراضي منذ ك-2،
+//! مهمة 7 — بلا علم)، ويجب أن يتطابق
+//! مخرجه القياسي وخطأه ورمز خروجه حرفيا. أي اختلاف
+//! واحد — نص رسالة أو عمود أو سلوك — يفشل البوابة،
+//! فلا انتقال إلى ك-2 قبل أن تخضر كلها.
+//!
+//! القاعدة: المفسر هو المرجع؛ والآلة الافتراضية هي
+//! ما يُصلَح. لا يُضعَّف المقارن أبدا (لا استثناءات
+//! ولا تطبيع إلا لمسار مجلد الاختبار المؤقت نفسه،
+//! لأن رسالة الوحدة الغائبة تذكر مجلد البحث، ولكل
+//! وضع مجلده الخاص).
+//!
+//! التشغيل: cargo test --test parity_gate
+//! (متسلسلا في CI: cargo test -- --test-threads=1)
+
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
+
+fn bin() -> String {
+    env!("CARGO_BIN_EXE_niva").to_string()
+}
+
+static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+/// مجلد مؤقت فريد لكل تشغيل (الاختبارات المتوازية
+/// لا تتشارك مجلدا أبدا).
+fn fresh_dir() -> PathBuf {
+    let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dir = std::env::temp_dir().join(format!(
+        "niva-parity-gate-{}-{}",
+        std::process::id(),
+        n
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// سطور برنامج نيفا إلى مصدر واحد (سطر أخير فارغ).
+fn src(lines: &[&str]) -> String {
+    let mut s = lines.join("\n");
+    s.push('\n');
+    s
+}
+
+/// شغّل مصدرا في وضع واحد داخل مجلد مؤقت؛ `files`
+/// ملفات إضافية توضع بجانب البرنامج (مثل حساب.نيفا).
+/// يعيد (المخرج، الخطأ، رمز الخروج) بعد تطبيع مسار
+/// المجلد المؤقت نفسه في الخطأ إلى `<مجلد>`.
+/// `interpreter` صحيحا = المفسر (--مفسر)؛ خطأ = الآلة
+/// الافتراضية (الافتراضي، بلا علم).
+fn run_one(
+    source: &str,
+    files: &[(&str, &str)],
+    interpreter: bool,
+) -> (String, String, i32) {
+    let dir = fresh_dir();
+    fs::write(dir.join("prog.نيفا"), source).unwrap();
+    for (name, content) in files {
+        fs::write(dir.join(name), content).unwrap();
+    }
+    let mut cmd = Command::new(bin());
+    if interpreter {
+        cmd.arg("--مفسر");
+    }
+    let out = cmd
+        .arg(dir.join("prog.نيفا"))
+        .current_dir(&dir)
+        .output()
+        .expect("run نيفا");
+    let dir_str = dir.to_string_lossy().to_string();
+    let _ = fs::remove_dir_all(&dir);
+    (
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr)
+            .to_string()
+            .replace(&dir_str, "<مجلد>"),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+/// شغّل البرنامج في الوضعين وقارن حرفيا. أي اختلاف
+/// يفشل الاختبار برسالة تعرض الطرفين كاملين.
+fn assert_same(name: &str, source: &str, files: &[(&str, &str)]) {
+    let (out_i, err_i, code_i) = run_one(source, files, true);
+    let (out_v, err_v, code_v) = run_one(source, files, false);
+    assert_eq!(
+        (out_i.clone(), err_i.clone(), code_i),
+        (out_v.clone(), err_v.clone(), code_v),
+        "اختلاف تكافؤ في «{}»:\n--- المفسر (خروج {}):\nمخرج:\n{}\nخطأ:\n{}\n--- الافتراضي (خروج {}):\nمخرج:\n{}\nخطأ:\n{}",
+        name, code_i, out_i, err_i, code_v, out_v, err_v
+    );
+}
+
+fn assert_same_src(name: &str, lines: &[&str]) {
+    assert_same(name, &src(lines), &[]);
+}
+
+/// شغّل ملف مثال في الوضعين من نسختين مؤقتتين
+/// متطابقتين من مجلد الأمثلة كاملا (بعض الأمثلة
+/// يستورد وحدات أو يكتب ملفات بجانبه).
+fn assert_example_same(name: &str) {
+    let exdir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples");
+    let mut pair = Vec::new();
+    for interpreter in [true, false] {
+        let dir = fresh_dir();
+        // نسخ مجلد الأمثلة كاملا (ملفات فقط).
+        for entry in fs::read_dir(&exdir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_file() {
+                let file_name = path.file_name().unwrap();
+                fs::copy(&path, dir.join(file_name)).unwrap();
+            }
+        }
+        let mut cmd = Command::new(bin());
+        if interpreter {
+            cmd.arg("--مفسر");
+        }
+        let out = cmd
+            .arg(dir.join(name))
+            .current_dir(&dir)
+            .output()
+            .expect("run نيفا");
+        let dir_str = dir.to_string_lossy().to_string();
+        let _ = fs::remove_dir_all(&dir);
+        pair.push((
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr)
+                .to_string()
+                .replace(&dir_str, "<مجلد>"),
+            out.status.code().unwrap_or(-1),
+        ));
+    }
+    assert_eq!(
+        pair[0], pair[1],
+        "اختلاف تكافؤ في المثال «{}»:\n--- المفسر: {:?}\n--- الافتراضي: {:?}",
+        name, pair[0], pair[1]
+    );
+}
+
+#[test]
+fn parity_examples() {
+    for name in [
+        "01-hello.نيفا",
+        "02-variables.نيفا",
+        "03-conditions.نيفا",
+        "04-loops.نيفا",
+        "05-functions.نيفا",
+        "06-lists-dicts.نيفا",
+        "07-try-files.نيفا",
+        "08-full-program.نيفا",
+        "09-modules.نيفا",
+        "10-types.نيفا",
+        "11-classes.نيفا",
+        "12-inheritance-interfaces.نيفا",
+        "13-closures.نيفا",
+        "14-lambdas.نيفا",
+        "15-methods.نيفا",
+        "16-stdlib.نيفا",
+        "17-word-operators.نيفا",
+    ] {
+        assert_example_same(name);
+    }
+}
+
+/// حساب.نيفا وحدة (تصدّر اجمع وضعف)؛ البوابة
+/// تشغّل برنامج سائقا يستوردها بقيم غير قيم
+/// المثال 09، في الوضعين.
+#[test]
+fn parity_hesab_module() {
+    let hesab = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("examples")
+            .join("حساب.نيفا"),
+    )
+    .unwrap();
+    assert_same(
+        "حساب-وحدة",
+        &src(&[
+            "استورد حساب",
+            "اطبع حساب.اجمع(١٠، ٢٠)",
+            "اطبع حساب.ضعف(٢١)",
+            "من حساب استورد اجمع",
+            "اطبع اجمع(ضعف(٣)، ٤)",
+            "اطبع حساب.ضعف(حساب.اجمع(١، ٢))",
+        ]),
+        &[("حساب.نيفا", &hesab)],
+    );
+}
+
+/// كل سيناريوهات اختبارات التكامل، في الوضعين.
+/// (الأسماء هي أسماء الاختبارات الأصلية حيث وُجدت.)
+#[test]
+fn parity_integration_scenarios() {
+    let cases: &[(&str, &[&str])] = &[
+        ("scope-local", &[
+            "دالة جمع(أ، ب):",
+            "    نتيجة = أ + ب",
+            "    ارجع نتيجة",
+            "اطبع جمع(٢، ٣)",
+            "اطبع نتيجة",
+        ]),
+        ("loop-var-after", &[
+            "لكل رقم في مدى(٣):",
+            "    اطبع رقم",
+            "اطبع رقم",
+        ]),
+        ("type-error", &[r#"اطبع "أ" + ١"#]),
+        ("div-zero", &["اطبع ١٠ / ٠"]),
+        ("recursion-shallow", &[
+            "دالة عد(ن):",
+            "    إذا ن == ٠:",
+            "        ارجع ٠",
+            "    وإلا:",
+            "        ارجع عد(ن - ١) + ١",
+            "اطبع عد(١٠٠)",
+            "اطبع عد(١٠)",
+        ]),
+        ("semantic-undefined", &[r#"اطبع "قبل""#, "اطبع غير_معرف"]),
+        ("semantic-return", &["ارجع ١"]),
+        ("semantic-break", &["اكسر"]),
+        ("semantic-arity", &[
+            "دالة جمع(أ، ب):",
+            "    ارجع أ + ب",
+            "اطبع جمع(١)",
+        ]),
+        ("semantic-arity-builtin", &["اطبع طول(١، ٢)"]),
+        ("forward-call", &[
+            "اطبع جمع(١، ٢)",
+            "دالة جمع(أ، ب):",
+            "    ارجع أ + ب",
+        ]),
+        ("forward-recursion-ok", &[
+            "دالة عد(ن):",
+            "    إذا ن == ٠:",
+            "        ارجع ٠",
+            "    وإلا:",
+            "        ارجع عد(ن - ١)",
+            "اطبع عد(٣)",
+        ]),
+        ("dot-non-module", &["س = ٥", "اطبع س.شيء"]),
+        ("not-looser", &[
+            "س = ١٠",
+            "إذا ليس س == ٩٩:",
+            r#"    اطبع "صح""#,
+        ]),
+        ("type-annotated-ok", &[
+            "س: عدد = ٥",
+            "اطبع س",
+            "دالة جمع(أ: عدد، ب: عدد): عدد:",
+            "    ارجع أ + ب",
+            "اطبع جمع(٣، ٤)",
+            r#"ص: نص = "مرحبا""#,
+            "اطبع ص",
+        ]),
+        ("type-static-mismatch-1", &[r#"اطبع "قبل""#, r#"س: عدد = "نص""#]),
+        ("type-static-mismatch-2", &[
+            "دالة جمع(أ: عدد، ب: عدد): عدد:",
+            "    ارجع أ + ب",
+            r#"اطبع جمع(١، "نص")"#,
+        ]),
+        ("type-static-mismatch-3", &[
+            "دالة احصل(): عدد:",
+            r#"    ارجع "نص""#,
+            "اطبع احصل()",
+        ]),
+        ("type-static-mismatch-4", &["س: عدد = ٥", r#"س = "نص""#]),
+        ("type-gradual-runtime", &[
+            r#"اطبع "قبل""#,
+            r#"س = "نص""#,
+            "ص: عدد = س",
+        ]),
+        ("type-any", &[
+            "س: أي = ٥",
+            r#"س = "نص""#,
+            "اطبع س",
+            "دالة نقل(ق: أي): أي:",
+            "    ارجع ق",
+            "اطبع نقل(٧)",
+            r#"اطبع نقل("أ")"#,
+        ]),
+        ("type-unknown", &["س: غيرمعروف = ٥"]),
+        ("class-simple", &[
+            "فئة نقطة:",
+            "    دالة أنشئ(س، ص):",
+            "        نفس.س = س",
+            "        نفس.ص = ص",
+            "    دالة مجموع():",
+            "        ارجع نفس.س + نفس.ص",
+            "    دالة زد(مقدار):",
+            "        نفس.س = نفس.س + مقدار",
+            "        ارجع نفس.س",
+            "ك = أنشئ نقطة(٣، ٤)",
+            "اطبع ك.س",
+            "اطبع ك.مجموع()",
+            "اطبع ك.زد(١٠)",
+            "اطبع ك.س",
+        ]),
+        ("class-err-unknown", &["ك = أنشئ غيرموجود()"]),
+        ("class-err-call", &["فئة س:", "    مرر", "ك = س(١)"]),
+        ("class-err-field", &[
+            "فئة س:",
+            "    مرر",
+            "ك = أنشئ س()",
+            "اطبع ك.غيرموجود",
+        ]),
+        ("class-inheritance", &[
+            "فئة شخص:",
+            "    دالة أنشئ(اسم):",
+            "        نفس.اسم = اسم",
+            "    دالة عرّف():",
+            "        ارجع نفس.اسم",
+            "فئة طالب ورث شخص:",
+            "    دالة عرّف():",
+            r#"        ارجع "طالب: " + نفس.اسم"#,
+            r#"ط = أنشئ طالب("محمود")"#,
+            "اطبع ط.عرّف()",
+            "اطبع ط.اسم",
+        ]),
+        ("interface-missing", &[
+            "واجهة قابل:",
+            "    دالة م():",
+            "        مرر",
+            "فئة س واجهة قابل:",
+            "    مرر",
+        ]),
+        ("interface-arity", &[
+            "واجهة قابل:",
+            "    دالة م(أ، ب):",
+            "        مرر",
+            "فئة س واجهة قابل:",
+            "    دالة م(أ):",
+            "        مرر",
+        ]),
+        ("methods-unknown", &[r#"اطبع "نص".غير_موجود()"#]),
+        ("stdlib-unknown-module", &["استورد وحدة_وهمية"]),
+        ("file-policy-inside", &[
+            r#"اكتب_ملف("out.txt"، "أهلا")"#,
+            r#"اطبع اقرأ_ملف("out.txt")"#,
+        ]),
+        ("word-ops", &[
+            "اطبع ٥ يساوي ٥",
+            "اطبع ٥ لا يساوي ٦",
+            "اطبع ٧ أكبر من ٥",
+            "اطبع ٣ أصغر من ٥",
+            "اطبع ٥ أكبر من أو يساوي ٥",
+            "اطبع ٥ أصغر من أو يساوي ٦",
+            "اطبع ٥ أكبر من أو يساوي ٦",
+            "اطبع ٥ أكبر من ٧ أو ٥ يساوي ٥",
+        ]),
+        ("word-ops-not-or", &[
+            "س = ١٠",
+            "إذا ليس س يساوي ٩٩:",
+            r#"    اطبع "ليس ٩٩""#,
+            "اطبع ١ أكبر من ٢ أو ٣ أصغر من ٤",
+        ]),
+    ];
+    for (name, lines) in cases {
+        assert_same_src(name, lines);
+    }
+}
+
+/// مسابر أخطاء وحدود إضافية — ليست كلها في اختبارات
+/// التكامل، لكن البوابة تغطيها كلها في الوضعين.
+/// (هنا وُلدت معظم فروق مهمة 6: رسائل الشروط،
+/// ومواضع الفهرسة والاستدعاء، وجمع القوائم، وفحص
+/// التعيين المعلن، ورسالة حد العمق.)
+#[test]
+fn parity_extra_probes() {
+    let cases: &[(&str, &[&str])] = &[
+        ("probe-if-nonbool", &["إذا ٥:", "    اطبع ١"]),
+        ("probe-while-nonbool", &["بينما ٥:", "    اطبع ١"]),
+        ("probe-and-nonbool", &["اطبع صحيح و ٥"]),
+        ("probe-or-nonbool", &["اطبع خطأ أو ٥"]),
+        ("probe-not-nonbool", &["اطبع ليس ٥"]),
+        ("probe-and-left-nonbool", &["اطبع ٥ و صحيح"]),
+        ("probe-or-left-nonbool", &["اطبع ٥ أو خطأ"]),
+        ("probe-elif-nonbool", &[
+            "إذا خطأ:",
+            "    اطبع ١",
+            "وإلا إذا ٥:",
+            "    اطبع ٢",
+        ]),
+        ("probe-if-var-nonbool", &["س = ٥", "إذا س:", "    اطبع ١"]),
+        ("probe-index-oob", &["قائمة = [١، ٢]", "اطبع قائمة[٥]"]),
+        ("probe-dict-missing", &[
+            r#"قاموس = {"أ": ١}"#,
+            r#"اطبع قاموس["ب"]"#,
+        ]),
+        ("probe-list-pop-empty", &["قائمة = []", "اطبع قائمة.أزل()"]),
+        ("probe-call-nonfunc", &["س = ٥", "اطبع س()"]),
+        ("probe-callvalue-nonfunc", &[r#"اطبع (٥)()"#]),
+        ("probe-callvalue-call-result", &[
+            "دالة اصنع():",
+            "    ارجع ٥",
+            "اطبع اصنع()()",
+        ]),
+        ("probe-unknown-var", &["اطبع غير_معرف"]),
+        ("probe-unknown-builtin", &[r#"اطبع دالة_وهمية(١)"#]),
+        ("probe-str-index", &[r#"اطبع "أبجد"[١]"#]),
+        ("probe-str-index-oob", &[r#"اطبع "أبجد"[٩]"#]),
+        ("probe-str-index-badtype", &[r#"اطبع "أبجد"["أ"]"#]),
+        ("probe-div-float-zero", &["اطبع ١٫٥ / ٠"]),
+        ("probe-mod-zero", &["اطبع ٥ % ٠"]),
+        ("probe-assign-index-oob", &["قائمة = [١]", "قائمة[٥] = ٩"]),
+        ("probe-storeindex-noncoll", &["س = ٥", "س[٠] = ٩"]),
+        ("probe-storeindex-badtype", &[
+            "قائمة = [١]",
+            r#"قائمة["أ"] = ٩"#,
+        ]),
+        ("probe-storeindex-dict-upsert", &[
+            r#"قاموس = {"أ": ١}"#,
+            r#"قاموس["ب"] = ٢"#,
+            r#"اطبع قاموس["ب"]"#,
+        ]),
+        ("probe-while-true-break", &[
+            "س = ٠",
+            "بينما صحيح:",
+            "    س = س + ١",
+            "    إذا س == ٣:",
+            "        اكسر",
+            "اطبع س",
+        ]),
+        ("probe-nested-loops-break", &[
+            "مجموع = ٠",
+            "لكل أ في مدى(٣):",
+            "    لكل ب في مدى(٣):",
+            "        إذا ب == ١:",
+            "            اكسر",
+            "        مجموع = مجموع + ١",
+            "اطبع مجموع",
+        ]),
+        ("probe-try-finally-err", &[
+            "حاول:",
+            "    س = ١ / ٠",
+            "ماعدا:",
+            r#"    اطبع "مسكت""#,
+            "أخيرا:",
+            r#"    اطبع "أخيرا""#,
+            r#"اطبع "بعد""#,
+        ]),
+        ("probe-try-finally-ok", &[
+            "حاول:",
+            r#"    اطبع "حاول""#,
+            "أخيرا:",
+            r#"    اطبع "أخيرا""#,
+        ]),
+        ("probe-try-return-finally", &[
+            "دالة جرب():",
+            "    حاول:",
+            "        ارجع ٧",
+            "    أخيرا:",
+            r#"        اطبع "أخيرا""#,
+            "اطبع جرب()",
+        ]),
+        ("probe-closure-counter", &[
+            "دالة اصنع():",
+            "    س = ٠",
+            "    دالة زد():",
+            "        س = س + ١",
+            "        ارجع س",
+            "    ارجع زد",
+            "ع = اصنع()",
+            "اطبع ع()",
+            "اطبع ع()",
+            "اطبع ع()",
+        ]),
+        ("probe-lambda-map", &[
+            "مضاعف = دالة_مجهولة(س): س * ٢",
+            "اطبع مضاعف(٢١)",
+            "اطبع مضاعف(٥)",
+        ]),
+        ("probe-method-capture", &[
+            "س = ٥",
+            "فئة عداد:",
+            "    دالة اقرأ():",
+            "        ارجع س",
+            "ع = أنشئ عداد()",
+            "اطبع ع.اقرأ()",
+        ]),
+        ("probe-bound-stored", &[
+            "فئة ص:",
+            "    دالة قيمة():",
+            "        ارجع ٧",
+            "ص = أنشئ ص()",
+            "م = ص.قيمة",
+            "اطبع م()",
+        ]),
+        ("probe-field-shadows-method", &[
+            "فئة ص:",
+            "    دالة قيمة():",
+            "        ارجع ٧",
+            "ع = أنشئ ص()",
+            "ع.قيمة = ٩",
+            "اطبع ع.قيمة",
+        ]),
+        ("probe-return-type-wrong", &[
+            "دالة احصل(): عدد:",
+            r#"    س = "نص""#,
+            "    ارجع س",
+            "اطبع احصل()",
+        ]),
+        ("probe-return-type-noreturn", &[
+            "دالة احصل(): عدد:",
+            "    مرر",
+            "اطبع احصل()",
+        ]),
+        ("probe-param-type-wrong", &[
+            "فئة ص:",
+            "    دالة خذ(س: عدد):",
+            "        ارجع س",
+            "ع = أنشئ ص()",
+            r#"ق = "نص""#,
+            "اطبع ع.خذ(ق)",
+        ]),
+        ("probe-str-methods", &[
+            r#"اطبع "مرحبا".كبير()"#,
+            r#"اطبع "مرحبا".صغير()"#,
+            r#"اطبع "أبجد".قص(١، ٣)"#,
+            r#"اطبع "أبجد".استبدل("ب"، "س")"#,
+            r#"اطبع "أ،ب،ج".قسم("،")"#,
+            r#"اطبع "أبجد".يحتوي("ب")"#,
+            r#"اطبع "أبجد".طول()"#,
+        ]),
+        ("probe-list-methods", &[
+            "قائمة = [١، ٢]",
+            "قائمة.أضف(٣)",
+            "اطبع قائمة",
+            "اطبع قائمة.أزل()",
+            "اطبع قائمة",
+            "اطبع قائمة.يحتوي(١)",
+            "اطبع قائمة.طول()",
+        ]),
+        ("probe-deep-nesting", &[
+            "دالة أ(ن):",
+            "    إذا ن == ٠:",
+            "        ارجع ٠",
+            "    ارجع أ(ن - ١) + ١",
+            "دالة ب(ن):",
+            "    ارجع أ(ن) + أ(ن)",
+            "اطبع ب(١٠)",
+        ]),
+        ("probe-string-concat-num", &[r#"اطبع "عدد: " + ٥"#]),
+        ("probe-bool-arith", &["اطبع صحيح + ١"]),
+        ("probe-none-print", &[
+            "دالة لا_شيء():",
+            "    مرر",
+            "اطبع لا_شيء()",
+        ]),
+        ("list-concat", &["اطبع [١، ٢] + [٣]"]),
+        ("index-fallback", &["اطبع ٥[٠]"]),
+        ("neg-nonnum", &[r#"اطبع -"أ""#]),
+        ("div-str", &[r#"اطبع "أ" / ٢"#]),
+        ("mod-str", &[r#"اطبع "أ" % ٢"#]),
+        ("sub-str", &[r#"اطبع "أ" - "ب""#]),
+        ("cmp-mixed", &[r#"اطبع ٥ < "أ""#]),
+        ("builtin-shadow-class", &[
+            "فئة طول:",
+            "    مرر",
+            "اطبع طول(١)",
+        ]),
+        ("builtin-shadow-number", &["طول = ٥", "اطبع طول(١)"]),
+    ];
+    for (name, lines) in cases {
+        assert_same_src(name, lines);
+    }
+}
+
+/// حد العمق: 500 إطارا تكتمل، والإطار 501 خطأ
+/// عربي نظيف — في الوضعين حرفيا.
+/// (عد(499) = 500 استدعاء متداخلا؛ وعد(500) =
+/// 501، فيرفضه الحد.)
+#[test]
+fn parity_depth_limit() {
+    assert_same_src("depth-500-completes", &[
+        "دالة عد(ن):",
+        "    إذا ن == ٠:",
+        "        ارجع ٠",
+        "    وإلا:",
+        "        ارجع عد(ن - ١) + ١",
+        "اطبع عد(٤٩٩)",
+    ]);
+    assert_same_src("depth-501-errors", &[
+        "دالة عد(ن):",
+        "    إذا ن == ٠:",
+        "        ارجع ٠",
+        "    وإلا:",
+        "        ارجع عد(ن - ١) + ١",
+        "اطبع عد(٥٠٠)",
+    ]);
+}
+
+/// مليون تكرار تكتمل في الوضعين (النتيجة ١٠٠٠٠٠٠)،
+/// مع قياس زمن كل وضع وطباعته.
+#[test]
+fn parity_million_iterations() {
+    let source = src(&[
+        "س = ٠",
+        "كرر ١٠٠٠٠٠٠ مرات:",
+        "    س = س + ١",
+        "اطبع س",
+    ]);
+    let t_i = Instant::now();
+    let (out_i, err_i, code_i) = run_one(&source, &[], true);
+    let d_i = t_i.elapsed();
+    let t_v = Instant::now();
+    let (out_v, err_v, code_v) = run_one(&source, &[], false);
+    let d_v = t_v.elapsed();
+    eprintln!(
+        "مليون تكرار: المفسر {:?} — الافتراضي {:?}",
+        d_i, d_v
+    );
+    assert_eq!(code_i, 0, "المفسر لم يكمل المليون: {}", err_i);
+    assert_eq!(
+        (out_i, err_i, code_i),
+        (out_v, err_v, code_v),
+        "اختلاف تكافؤ في المليون تكرار"
+    );
+}
+
+/// فيبوناتشي 30 = 832040 في الوضعين، مع قياس
+/// زمن كل وضع وطباعته. (بطيء في بناء التصحيح —
+/// عشرات الثواني لكل وضع — وهذا مقصود: البوابة
+/// تقيس الأداء الحقيقي، لا نسخة مصغرة منه.)
+#[test]
+fn parity_fib30() {
+    let source = src(&[
+        "دالة ليف(ن):",
+        "    إذا ن < ٢:",
+        "        ارجع ن",
+        "    وإلا:",
+        "        ارجع ليف(ن - ١) + ليف(ن - ٢)",
+        "اطبع ليف(٣٠)",
+    ]);
+    let t_i = Instant::now();
+    let (out_i, err_i, code_i) = run_one(&source, &[], true);
+    let d_i = t_i.elapsed();
+    let t_v = Instant::now();
+    let (out_v, err_v, code_v) = run_one(&source, &[], false);
+    let d_v = t_v.elapsed();
+    eprintln!("ليف(٣٠): المفسر {:?} — الافتراضي {:?}", d_i, d_v);
+    assert_eq!(code_i, 0, "المفسر لم يكمل ليف(٣٠): {}", err_i);
+    assert_eq!(out_i.trim(), "٨٣٢٠٤٠", "المفسر: ليف(٣٠) ≠ 832040: {}", out_i);
+    assert_eq!(
+        (out_i, err_i, code_i),
+        (out_v, err_v, code_v),
+        "اختلاف تكافؤ في ليف(٣٠)"
+    );
+}

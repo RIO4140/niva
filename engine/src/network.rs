@@ -451,6 +451,7 @@ fn time_left(
     Ok(left)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn fetch_one_native(
     url: &ParsedUrl,
     deadline: std::time::Instant,

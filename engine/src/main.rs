@@ -1,14 +1,17 @@
 //! Niva engine CLI: `نيفا برنامج.نيفا`
-//! Tree-walking interpreter written in Rust. No Python, no transpilation,
-//! no machine-code compiler in v1. The produced binary runs alone:
+//! Compiler (bytecode VM) by default since phase ك-2
+//! (Meeting 25, task 7): the source compiles once to bytecode
+//! and runs on the VM; the tree-walking interpreter is only a
+//! hidden diagnostic mode (`--مفسر`), never documented as a
+//! way to run programs. The produced binary runs alone:
 //! it needs no Python installation and no runtime other than itself.
 //!
 //! Usage (all Arabic, no exceptions — the installed command is نيفا;
 //! cargo still builds the binary as `niva` internally, because cargo
 //! bin names are ASCII-only; install.sh copies it to نيفا):
-//!   نيفا                      enter the interactive REPL
+//!   نيفا                      enter the interactive REPL (on the VM)
 //!   نيفا --تفاعلي            enter the interactive REPL
-//!   نيفا برنامج.نيفا          run a .نيفا program
+//!   نيفا برنامج.نيفا          run a .نيفا program (on the VM)
 //!   نيفا برنامج.نيفا --شجرة   print the AST, then run
 //!   نيفا --مساعدة             usage
 //!   نيفا --نسخة               version
@@ -32,13 +35,12 @@ use std::process::ExitCode;
 const STACK_SIZE_BYTES: usize = 256 * 1024 * 1024;
 
 fn usage() -> String {
-    "استخدام: نيفا [برنامج.نيفا] [--شجرة] [--افتراضي] [--اسمح-بالكل] [--اسمح-بالشبكة] [--مضيف-محلي مضيف]\n\
+    "استخدام: نيفا [برنامج.نيفا] [--شجرة] [--اسمح-بالكل] [--اسمح-بالشبكة] [--مضيف-محلي مضيف]\n\
      نيفا                  دخول الوضع التفاعلي\n\
      نيفا --تفاعلي        دخول الوضع التفاعلي\n\
      نيفا --مساعدة         عرض هذه المساعدة\n\
      نيفا --نسخة           عرض الإصدار\n\
      --شجرة                عرض الشجرة النحوية ثم التشغيل\n\
-     --افتراضي             التشغيل بالآلة الافتراضية التجريبية\n\
      --اسمح-بالكل         السماح بملفات خارج مجلد البرنامج (للموثوقة فقط)\n\
      --اسمح-بالشبكة       السماح بالشبكة (شبكة.اجلب) — مغلقة افتراضيا\n\
      --مضيف-محلي مضيف       السماح بمضيف محلي صراحة (مثل 127.0.0.1) — وحده لا يفتح الشبكة\n"
@@ -71,16 +73,26 @@ fn main() -> ExitCode {
     }
     // خيار غير معروف: خطأ عربي واضح بدلا من تجاهله بصمت.
     // Arabic flags only — a Latin flag is rejected here.
+    // --مفسر is a HIDDEN diagnostic flag (DESIGN §39.3):
+    // known to the parser, but never shown in --مساعدة.
     const KNOWN_FLAGS: [&str; 8] = [
         "--مساعدة",
         "--نسخة",
         "--تفاعلي",
-        "--افتراضي",
+        "--مفسر",
         "--شجرة",
         "--اسمح-بالكل",
         "--اسمح-بالشبكة",
         "--مضيف-محلي",
     ];
+    // ك-2 (مهمة 7): --افتراضي أُزيل — الآلة الافتراضية هي
+    // المحرك الافتراضي الآن، فلا معنى للعلم. خطأ عربي واضح
+    // يقول ذلك، بدلا من «خيار غير معروف» المضللة.
+    if args.iter().any(|a| a == "--افتراضي") {
+        eprintln!("الآلة الافتراضية هي المحرك الافتراضي الآن — لا حاجة إلى --افتراضي");
+        eprint!("{}", usage());
+        return ExitCode::FAILURE;
+    }
     if let Some(unknown) = args
         .iter()
         .skip(1)
@@ -115,15 +127,18 @@ fn main() -> ExitCode {
     }
     let file_arg = file_args.first().cloned();
     // No file path given (no args, or only flags) -> interactive REPL.
-    // --تفاعلي is explicit; --افتراضي is ignored by the REPL,
-    // which always uses the tree-walking interpreter (Meeting 7).
+    // --تفاعلي is explicit; the REPL runs on the compiler (VM) by
+    // default, or on the interpreter with --مفسر (diagnostic only).
     let allow_all = args.iter().any(|a| a == "--اسمح-بالكل");
+    // ك-2 (مهمة 7): --مفسر علم تشخيص خفي — مفسر الشجرة
+    // للمقارنة والتشخيص فقط، ولا يظهر في --مساعدة.
+    let use_interpreter = args.iter().any(|a| a == "--مفسر");
     if file_arg.is_none() {
         // Same 256 MB stack thread as file mode, so the depth-500
         // recursion limit is a Niva error, not a Rust stack overflow.
         let handle = std::thread::Builder::new()
             .stack_size(STACK_SIZE_BYTES)
-            .spawn(move || repl::run_repl(allow_all, allow_network, &local_hosts));
+            .spawn(move || repl::run_repl(allow_all, allow_network, &local_hosts, use_interpreter));
         return match handle {
             Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),
             Err(_) => ExitCode::FAILURE,
@@ -131,9 +146,6 @@ fn main() -> ExitCode {
     }
     let path = file_arg.unwrap();
     let show_ast = args.iter().any(|a| a == "--شجرة");
-    // Phase 1B slice 1: experimental VM, --افتراضي flag only.
-    // Default remains the tree-walking interpreter.
-    let use_vm = args.iter().any(|a| a == "--افتراضي");
     // Meeting 4: trusted file mode, explicit flag only.
     // Default is restricted to the program directory.
     // (allow_all was already read above, before the REPL branch.)
@@ -197,47 +209,63 @@ fn main() -> ExitCode {
                 eprintln!("{}", e);
                 return ExitCode::FAILURE;
             }
-            // Phase 1B VM path, --افتراضي only.
-            if use_vm {
-                let compiled = match vm::Compiler::compile_program(&program) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("{}", e);
-                        return ExitCode::FAILURE;
-                    }
-                };
-                let mut vm_inst = vm::Vm::new(compiled.code, compiled.functions);
-                return match vm_inst.run() {
+            // ك-2 (مهمة 7): --مفسر فقط يشغّل مفسر الشجرة
+            // (تشخيص ومقارنة)؛ الافتراضي هو المترجم (VM).
+            if use_interpreter {
+                // Phase 1A Step 2: modules are resolved relative to the main
+                // program's directory, not the current working directory.
+                let mut interp = Interpreter::with_program_dir(program_dir);
+                // Meeting 4: trusted mode is opt-in only.
+                interp.set_trusted(allow_all);
+                // Meeting 22: network is opt-in only, independent
+                // of file trust (--اسمح-بالكل does not open it).
+                interp.set_network_allowed(allow_network);
+                for host in &local_hosts {
+                    interp.allow_local_network_host(host);
+                }
+                return match interp.run(&program) {
                     Ok(()) => {
-                        print!("{}", vm_inst.output);
+                        print!("{}", interp.output);
                         ExitCode::SUCCESS
                     }
                     Err(e) => {
-                        print!("{}", vm_inst.output);
+                        // Partial output first, then the Arabic error with line/col.
+                        print!("{}", interp.output);
                         eprintln!("{}", e);
                         ExitCode::FAILURE
                     }
                 };
             }
-            // Phase 1A Step 2: modules are resolved relative to the main
-            // program's directory, not the current working directory.
-            let mut interp = Interpreter::with_program_dir(program_dir);
-            // Meeting 4: trusted mode is opt-in only.
-            interp.set_trusted(allow_all);
-            // Meeting 22: network is opt-in only, independent
-            // of file trust (--اسمح-بالكل does not open it).
-            interp.set_network_allowed(allow_network);
+            // Default engine: the compiler (VM). The source
+            // compiles once to bytecode, then runs.
+            // مهمة 4 (ك-1.3): بوابة الشبكة عملية-واسعة؛
+            // مسار VM يضبطها كما يضبطها مسار المفسر
+            // تماما، فيتصرف شبكة.اجلب في الوضعين
+            // بالطريقة نفسها (مغلقة افتراضيا، وتُفتح
+            // بـ --اسمح-بالشبكة، مع --مضيف-محلي).
+            niva_engine::network::set_network_allowed(allow_network);
             for host in &local_hosts {
-                interp.allow_local_network_host(host);
+                niva_engine::network::allow_local_host(host);
             }
-            match interp.run(&program) {
+            let compiled = match vm::Compiler::compile_program(&program) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{}", e);
+                    return ExitCode::FAILURE;
+                }
+            };
+            let mut vm_inst = vm::Vm::new(compiled, program_dir.clone());
+            // مهمة 5 (ك-1.4): تمرير --اسمح-بالكل إلى VM
+            // كما يُمرَّر إلى المفسر، فتنطبق سياسة
+            // الملفات نفسها (مقيّدة افتراضيا بمجلد البرنامج).
+            vm_inst.set_trusted(allow_all);
+            match vm_inst.run() {
                 Ok(()) => {
-                    print!("{}", interp.output);
+                    print!("{}", vm_inst.output);
                     ExitCode::SUCCESS
                 }
                 Err(e) => {
-                    // Partial output first, then the Arabic error with line/col.
-                    print!("{}", interp.output);
+                    print!("{}", vm_inst.output);
                     eprintln!("{}", e);
                     ExitCode::FAILURE
                 }

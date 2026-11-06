@@ -151,7 +151,7 @@ impl Interpreter {
 
     /// Parse a line-count argument: a whole number, or a text
     /// of (Arabic or Western) digits, like the عدد builtin.
-    fn count_arg(v: &Value, line: usize, col: usize) -> RioResult<usize> {
+    pub(crate) fn count_arg(v: &Value, line: usize, col: usize) -> RioResult<usize> {
         match v {
             Value::Number(n) if *n >= 0.0 && n.fract() == 0.0 => Ok(*n as usize),
             Value::Str(s) => {
@@ -179,7 +179,7 @@ impl Interpreter {
     /// on the entry name, depth at most 4, at most 100 hits.
     /// Symlinked directories are not followed (DirEntry
     /// file_type does not follow links), so no cycles.
-    fn find_files(dir: &std::path::Path, base: &std::path::Path, query: &str, depth: usize, out: &mut Vec<String>) {
+    pub(crate) fn find_files(dir: &std::path::Path, base: &std::path::Path, query: &str, depth: usize, out: &mut Vec<String>) {
         if out.len() >= 100 || depth > 4 {
             return;
         }
@@ -210,7 +210,7 @@ impl Interpreter {
 
     /// Recursive tree listing (اعرض_الشجرة): indented names,
     /// depth at most 3, at most 200 lines.
-    fn tree_lines(dir: &std::path::Path, prefix: &str, depth: usize, out: &mut Vec<String>) {
+    pub(crate) fn tree_lines(dir: &std::path::Path, prefix: &str, depth: usize, out: &mut Vec<String>) {
         if out.len() >= 200 || depth > 3 {
             return;
         }
@@ -239,7 +239,7 @@ impl Interpreter {
     /// Recursive size in bytes (حجم_المسار): `budget` caps the
     /// walked entries at 10000 so a huge tree cannot hang the
     /// REPL. Symlinks are not followed (symlink_metadata).
-    fn dir_size(path: &std::path::Path, budget: &mut usize) -> u64 {
+    pub(crate) fn dir_size(path: &std::path::Path, budget: &mut usize) -> u64 {
         if *budget == 0 {
             return 0;
         }
@@ -264,7 +264,7 @@ impl Interpreter {
 
     /// Unix seconds -> "YYYY-MM-DD HH:MM:SS" in UTC
     /// (Howard Hinnant's civil-from-days algorithm).
-    fn format_unix_utc(secs: u64) -> String {
+    pub(crate) fn format_unix_utc(secs: u64) -> String {
         let days = (secs / 86400) as i64;
         let secs_of_day = secs % 86400;
         let (h, m, s) = (secs_of_day / 3600, (secs_of_day % 3600) / 60, secs_of_day % 60);
@@ -284,7 +284,7 @@ impl Interpreter {
     /// Lexical normalization (no filesystem access): resolve
     /// "." and ".." in a path, for storing a clean cwd after
     /// انتقل. Same walk as the policy's normalize().
-    fn normalize_lexical(path: &std::path::Path) -> PathBuf {
+    pub(crate) fn normalize_lexical(path: &std::path::Path) -> PathBuf {
         let mut out = PathBuf::new();
         for c in path.components() {
             match c {
@@ -380,8 +380,7 @@ impl Interpreter {
     /// Arabic errors, never a crash.
     pub const MAX_READ_BYTES: usize = 5 * 1024 * 1024;
 
-    fn read_file_capped(
-        &self,
+    pub(crate) fn read_file_capped(
         path: &std::path::Path,
         display: &str,
         line: usize,
@@ -667,6 +666,7 @@ impl Interpreter {
                     param_types: param_types.clone(),
                     return_type: return_type.clone(),
                     captured: Some(self.scopes.clone()),
+                    vm_id: None,
                 };
                 self.define_local(name, func);
                 Ok(Flow::Normal)
@@ -713,6 +713,7 @@ impl Interpreter {
                             param_types: param_types.clone(),
                             return_type: return_type.clone(),
                             captured: Some(captured.clone()),
+                            vm_id: None,
                         });
                     }
                 }
@@ -880,7 +881,7 @@ impl Interpreter {
                 col,
             ));
         }
-        let source = self.read_file_capped(&path, module, line, col)?;
+        let source = Self::read_file_capped(&path, module, line, col)?;
         let tokens = lexer::tokenize(&source).map_err(|e| {
             RioError::new(
                 e.kind,
@@ -1411,6 +1412,7 @@ impl Interpreter {
                     param_types: param_types.clone(),
                     return_type: None,
                     captured: Some(self.scopes.clone()),
+                    vm_id: None,
                 };
                 Ok(func)
             }
@@ -1636,7 +1638,7 @@ impl Interpreter {
         col: usize,
     ) -> RioResult<Value> {
         let (name, params, body, module, param_types, return_type, captured) = match func {
-            Value::Function { name, params, body, module, param_types, return_type, captured } => {
+            Value::Function { name, params, body, module, param_types, return_type, captured, vm_id: _ } => {
                 (name, params, body, module, param_types, return_type, captured)
             }
             _ => unreachable!(),
@@ -1773,7 +1775,7 @@ impl Interpreter {
         col: usize,
     ) -> RioResult<Value> {
         let (name, params, body, module, param_types, return_type, captured) = match func {
-            Value::Function { name, params, body, module, param_types, return_type, captured } => {
+            Value::Function { name, params, body, module, param_types, return_type, captured, vm_id: _ } => {
                 (name, params, body, module, param_types, return_type, captured)
             }
             _ => unreachable!(),
@@ -2311,7 +2313,7 @@ impl Interpreter {
                     Value::Str(path) => {
                         let resolved = self.resolve_cwd(path, line, col)?;
                         let display = self.file_policy.display_str(path);
-                        self.read_file_capped(&resolved, &display, line, col)
+                        Self::read_file_capped(&resolved, &display, line, col)
                             .map(Value::Str)
                     }
                     other => Err(RioError::typ(
@@ -2674,7 +2676,7 @@ impl Interpreter {
                 };
                 let resolved = self.resolve_cwd(&path, line, col)?;
                 let display = self.file_policy.display_str(&path);
-                let content = self.read_file_capped(&resolved, &display, line, col)?;
+                let content = Self::read_file_capped(&resolved, &display, line, col)?;
                 let lines: Vec<&str> = content.lines().collect();
                 let out = if name == "اعرض_البداية" {
                     lines.iter().take(count).cloned().collect::<Vec<_>>().join("\n")
@@ -2690,7 +2692,7 @@ impl Interpreter {
                     Value::Str(path) => {
                         let resolved = self.resolve_cwd(path, line, col)?;
                         let display = self.file_policy.display_str(path);
-                        let content = self.read_file_capped(&resolved, &display, line, col)?;
+                        let content = Self::read_file_capped(&resolved, &display, line, col)?;
                         Ok(Value::Number(content.lines().count() as f64))
                     }
                     other => Err(RioError::typ(
@@ -2706,7 +2708,7 @@ impl Interpreter {
                     Value::Str(path) => {
                         let resolved = self.resolve_cwd(path, line, col)?;
                         let display = self.file_policy.display_str(path);
-                        let content = self.read_file_capped(&resolved, &display, line, col)?;
+                        let content = Self::read_file_capped(&resolved, &display, line, col)?;
                         Ok(Value::Number(content.split_whitespace().count() as f64))
                     }
                     other => Err(RioError::typ(
@@ -2722,7 +2724,7 @@ impl Interpreter {
                     (Value::Str(pattern), Value::Str(path)) => {
                         let resolved = self.resolve_cwd(path, line, col)?;
                         let display = self.file_policy.display_str(path);
-                        let content = self.read_file_capped(&resolved, &display, line, col)?;
+                        let content = Self::read_file_capped(&resolved, &display, line, col)?;
                         let hits: Vec<Value> = content
                             .lines()
                             .filter(|l| l.contains(pattern.as_str()))

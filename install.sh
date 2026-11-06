@@ -7,11 +7,14 @@
 #   curl -fsSL https://raw.githubusercontent.com/RIO4140/niva/main/install.sh | bash
 #
 # ما الذي يفعله:
-#   1. يتأكد أن النظام Linux وأن أدوات البناء موجودة (أو يعرض تثبيت Rust)
+#   1. يتأكد أن النظام Linux أو macOS وأن أدوات البناء موجودة (أو يعرض تثبيت Rust)
 #   2. يبني المحرك من المصدر (cargo build --release)
 #   3. يثبّت الأمر نيفا في ‎~/.local/bin
 #   4. يتأكد أن ‎~/.local/bin في PATH (ويعرض إضافته)
 #   5. يتحقق من التثبيت بتشغيل مثال
+#
+# على Windows: نزّل الثنائي الجاهز من صفحة الإصدارات،
+# أو ابنِ من المصدر بـ cargo build --release.
 #
 # ملاحظة: أسماء المتغيرات والدوال في السكربت لاتينية لأن bash
 # لا يقبل معرفات عربية؛ أما كل ما يراه المستخدم فبالعربي.
@@ -38,13 +41,15 @@ echo "  تثبيت لغة البرمجة نيفا"
 echo "=============================="
 echo ""
 
-# 1. النظام
-if [ "$(uname -s)" != "Linux" ]; then
-    echo "خطأ: المثبّت الحالي يدعم Linux فقط."
-    echo "بناء Windows وmacOS خطوة إصدار لاحقة."
+# 1. النظام: Linux أو macOS (خطوات يونكس واحدة)
+OS="$(uname -s)"
+if [ "$OS" != "Linux" ] && [ "$OS" != "Darwin" ]; then
+    echo "خطأ: المثبّت الحالي يدعم Linux وmacOS فقط."
+    echo "على Windows: نزّل الثنائي الجاهز من صفحة الإصدارات"
+    echo "أو ابنِ من المصدر بـ cargo build --release."
     exit 1
 fi
-echo "النظام: Linux — حسن."
+echo "النظام: $OS — حسن."
 
 # 2. مصدر الكود: المستودع المحلي إن وجد، وإلا استنساخه
 SRC=""
@@ -109,15 +114,21 @@ cp "$SRC/engine/target/release/niva" "$HOME/.local/bin/نيفا"
 chmod +x "$HOME/.local/bin/نيفا"
 echo "ثبّت الأمر نيفا في: $HOME/.local/bin/نيفا"
 
-# 6. PATH
+# 6. PATH — ملف الإعداد حسب النظام والقشرة (zsh افتراضي macOS)
+RC="$HOME/.bashrc"
+if [ "$OS" = "Darwin" ]; then
+    case "$SHELL" in
+        *zsh*) RC="$HOME/.zshrc" ;;
+    esac
+fi
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$HOME/.local/bin"; then
     echo ""
     echo "المجلد ‎~/.local/bin غير موجود في PATH، فلن يعمل الأمر نيفا من أي مكان."
-    if ask_yes "هل أضيفه تلقائيا إلى ‎~/.bashrc؟"; then
-        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
-        echo "أضفته إلى ‎~/.bashrc — افتح طرفية جديدة أو نفذ: source ~/.bashrc"
+    if ask_yes "هل أضيفه تلقائيا إلى $RC؟"; then
+        echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$RC"
+        echo "أضفته إلى $RC — افتح طرفية جديدة أو نفذ: source $RC"
     else
-        echo "أضف هذا السطر بنفسك إلى ‎~/.bashrc:"
+        echo "أضف هذا السطر بنفسك إلى $RC:"
         echo '  export PATH="$HOME/.local/bin:$PATH"'
     fi
     export PATH="$HOME/.local/bin:$PATH"

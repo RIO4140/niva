@@ -86,6 +86,12 @@ pub enum Value {
         // which keep the Step 2 module-scope push instead, and
         // for synthetic VM function carriers.
         captured: Option<Vec<Rc<RefCell<HashMap<String, Value>>>>>,
+        // Phase ك-1 (Meeting 24): VM closures. The interpreter
+        // never sets this (None); the VM sets Some(id) when it
+        // creates a closure value, where id keys the compiled
+        // bytecode in the VM's closure registry. A plain id
+        // (not the code itself) keeps value.rs free of VM types.
+        vm_id: Option<u64>,
     },
     // Module: exports are the only names accessible from outside;
     // scope is the full top-level scope after module execution,
@@ -144,10 +150,10 @@ impl PartialEq for Value {
             (Value::Dict(a), Value::Dict(b)) => a == b,
             (Value::Nil, Value::Nil) => true,
             (
-                Value::Function { name: n1, params: p1, body: b1, module: m1, param_types: pt1, return_type: r1, captured: c1 },
-                Value::Function { name: n2, params: p2, body: b2, module: m2, param_types: pt2, return_type: r2, captured: c2 },
+                Value::Function { name: n1, params: p1, body: b1, module: m1, param_types: pt1, return_type: r1, captured: c1, vm_id: v1 },
+                Value::Function { name: n2, params: p2, body: b2, module: m2, param_types: pt2, return_type: r2, captured: c2, vm_id: v2 },
             ) => n1 == n2 && p1 == p2 && b1 == b2 && m1 == m2 && pt1 == pt2 && r1 == r2
-                && captured_eq(c1, c2),
+                && captured_eq(c1, c2) && v1 == v2,
             (
                 Value::Module { name: n1, exports: e1, scope: s1 },
                 Value::Module { name: n2, exports: e2, scope: s2 },

@@ -5,9 +5,9 @@
 //! constants). `load_module` consults `native_module` BEFORE
 //! reading a `.نيفا` file, so `استورد رياضيات` works anywhere with
 //! no file needed, and a same-named file in the program directory
-//! never shadows a native module. Interpreter-only in v1: the VM
-//! has no modules at all yet, so stdlib under `--افتراضي` fails with
-//! the VM's existing module error.
+//! never shadows a native module. The VM loads the same native
+//! modules (task 4, ك-1.3), so stdlib works identically on both
+//! engines.
 //!
 //! All angles are radians. The random module is a SplitMix64
 //! generator seeded from system time + process id: fine for

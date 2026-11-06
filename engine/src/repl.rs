@@ -1,10 +1,17 @@
 //! Niva REPL (interactive terminal), Meeting 7.
 //!
-//! A REPL with RTL display, built on the tree-walking interpreter
-//! (the stable default path), never on the experimental VM.
+//! A REPL with RTL display, built on the compiler (VM) by
+//! default since phase ك-2 (Meeting 25, task 7): every block
+//! compiles to bytecode and runs on one persistent VM session
+//! whose globals table survives across `feed()` calls
+//! (DESIGN §39.3). The tree-walking interpreter stays only
+//! as a hidden diagnostic mode (`Repl::new_interpreter`,
+//! CLI `--مفسر`) — same session behavior, for comparison
+//! and diagnosis, never documented as a way to run programs.
 //!
 //! Design:
-//! - One Interpreter + one SemanticAnalyzer persist across lines,
+//! - One engine (VM session or interpreter) + one
+//!   SemanticAnalyzer persist across lines,
 //!   so variables and functions defined earlier stay defined.
 //!   The analyzer defines a name only after its value analyzes
 //!   cleanly, so a failed line does not pollute later lines.
@@ -28,8 +35,11 @@
 //!   so the interactive behavior is identical everywhere.
 //! - File policy is the same as file mode: restricted to the
 //!   current working directory, unless --اسمح-بالكل was given.
-//! - Commands (top-level only): :مساعدة :اعرض :مسح :خروج
-//!   (and plain خروج). Arabic only — no Latin aliases.
+//! - Commands (top-level only): :مساعدة :اعرض :امسح-المحفوظات
+//!   :مسح :خروج (and plain خروج). Arabic only — no Latin
+//!   aliases. :امسح-المحفوظات (task 2 of the Meeting 25 plan)
+//!   clears only the :اعرض history lines — variables and
+//!   functions stay — while :مسح resets the whole interpreter.
 //! - Short terminal commands (owner's order 2026-11-05 ~22:02,
 //!   corrected ~22:05): two-letter codes typed bare — like the
 //!   :commands but WITHOUT the colon — with space-separated
@@ -45,12 +55,14 @@
 //!   `نيفا> ` mirrored to `نيفا<` in RTL display (bidi), and the
 //!   continuation `.... ` was Latin dots; it is now `أكمل: `.
 
-use crate::ast::StmtKind;
+use crate::ast::{Expr, Stmt, StmtKind};
+use crate::error::RioResult;
 use crate::interpreter::Interpreter;
 use crate::lexer::tokenize;
 use crate::parser::Parser;
 use crate::semantic::SemanticAnalyzer;
 use crate::value::Value;
+use crate::vm::VmSession;
 use std::io::{BufRead, Write};
 use std::process::ExitCode;
 
@@ -108,8 +120,98 @@ pub enum ReplEval {
     Incomplete,
 }
 
+/// ك-2 (مهمة 7): محرك الجلسة — VM افتراضيا، والمفسر وضع
+/// تشخيص خفيا فقط. الواجهة مرآة واجهة المفسر التي يستخدمها
+/// REPL، فيبقى منطق الجلسة واحدا في الوضعين.
+enum Engine {
+    Vm(VmSession),
+    Interp(Interpreter),
+}
+
+impl Engine {
+    fn run(&mut self, program: &[Stmt]) -> RioResult<()> {
+        match self {
+            Engine::Vm(s) => s.run(program),
+            Engine::Interp(i) => i.run(program),
+        }
+    }
+
+    fn eval_one(&mut self, expr: &Expr) -> RioResult<Value> {
+        match self {
+            Engine::Vm(s) => s.eval_one(expr),
+            Engine::Interp(i) => i.eval_one(expr),
+        }
+    }
+
+    fn call_builtin(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        line: usize,
+        col: usize,
+    ) -> RioResult<Value> {
+        match self {
+            Engine::Vm(s) => s.call_builtin(name, args, line, col),
+            Engine::Interp(i) => i.call_builtin(name, args, line, col),
+        }
+    }
+
+    fn current_dir_display(&self) -> String {
+        match self {
+            Engine::Vm(s) => s.current_dir_display(),
+            Engine::Interp(i) => i.current_dir_display(),
+        }
+    }
+
+    fn take_output(&mut self) -> String {
+        match self {
+            Engine::Vm(s) => s.take_output(),
+            Engine::Interp(i) => std::mem::take(&mut i.output),
+        }
+    }
+
+    fn set_trusted(&mut self, trusted: bool) {
+        match self {
+            Engine::Vm(s) => s.set_trusted(trusted),
+            Engine::Interp(i) => i.set_trusted(trusted),
+        }
+    }
+
+    fn set_network_allowed(&mut self, allowed: bool) {
+        match self {
+            Engine::Vm(s) => s.set_network_allowed(allowed),
+            Engine::Interp(i) => i.set_network_allowed(allowed),
+        }
+    }
+
+    fn network_allowed(&self) -> bool {
+        match self {
+            Engine::Vm(s) => s.network_allowed(),
+            Engine::Interp(i) => i.network_allowed(),
+        }
+    }
+
+    fn allow_local_network_host(&mut self, host: &str) {
+        match self {
+            Engine::Vm(s) => s.allow_local_network_host(host),
+            Engine::Interp(i) => i.allow_local_network_host(host),
+        }
+    }
+
+    fn reset(&mut self, trusted: bool, network_allowed: bool) {
+        match self {
+            Engine::Vm(s) => s.reset(),
+            Engine::Interp(i) => {
+                *i = Interpreter::new();
+                i.set_trusted(trusted);
+                i.set_network_allowed(network_allowed);
+            }
+        }
+    }
+}
+
 pub struct Repl {
-    interp: Interpreter,
+    engine: Engine,
     analyzer: SemanticAnalyzer,
     history: Vec<String>,
     // Accumulated lines of a multi-line block still being typed.
@@ -129,9 +231,26 @@ pub struct Repl {
 }
 
 impl Repl {
+    /// الجلسة الافتراضية: على المترجم (VM).
     pub fn new() -> Self {
         Self {
-            interp: Interpreter::new(),
+            engine: Engine::Vm(VmSession::new(
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            )),
+            analyzer: SemanticAnalyzer::new(),
+            history: Vec::new(),
+            pending: String::new(),
+            trusted: false,
+            network_allowed: false,
+            last_control: ReplControl::None,
+        }
+    }
+
+    /// وضع التشخيص الخفي: الجلسة نفسها على مفسر الشجرة
+    /// (CLI `--مفسر`) — للمقارنة والتشخيص فقط.
+    pub fn new_interpreter() -> Self {
+        Self {
+            engine: Engine::Interp(Interpreter::new()),
             analyzer: SemanticAnalyzer::new(),
             history: Vec::new(),
             pending: String::new(),
@@ -143,30 +262,37 @@ impl Repl {
 
     pub fn set_trusted(&mut self, trusted: bool) {
         self.trusted = trusted;
-        self.interp.set_trusted(trusted);
+        self.engine.set_trusted(trusted);
     }
 
     /// REPL rooted at a given directory (tests; the app and the
     /// CLI use the process working directory via new()).
     pub fn with_program_dir(program_dir: std::path::PathBuf) -> Self {
         let mut r = Self::new();
-        r.interp = Interpreter::with_program_dir(program_dir);
+        r.engine = Engine::Vm(VmSession::new(program_dir));
+        r
+    }
+
+    /// Like with_program_dir, on the interpreter (diagnostic).
+    pub fn with_program_dir_interpreter(program_dir: std::path::PathBuf) -> Self {
+        let mut r = Self::new_interpreter();
+        r.engine = Engine::Interp(Interpreter::with_program_dir(program_dir));
         r
     }
 
     pub fn set_network_allowed(&mut self, allowed: bool) {
         self.network_allowed = allowed;
-        self.interp.set_network_allowed(allowed);
+        self.engine.set_network_allowed(allowed);
     }
 
     /// This session's own network permission (per-instance:
     /// one console's approval never leaks into another).
     pub fn network_allowed(&self) -> bool {
-        self.network_allowed
+        self.engine.network_allowed()
     }
 
     pub fn allow_local_network_host(&mut self, host: &str) {
-        self.interp.allow_local_network_host(host);
+        self.engine.allow_local_network_host(host);
     }
 
     pub fn history(&self) -> &[String] {
@@ -185,7 +311,7 @@ impl Repl {
     /// after the path, RTL display).
     pub fn prompt(&self) -> String {
         if self.pending.is_empty() {
-            format!("{} $ ", self.interp.current_dir_display())
+            format!("{} $ ", self.engine.current_dir_display())
         } else {
             CONT_PROMPT.to_string()
         }
@@ -219,6 +345,21 @@ impl Repl {
                 ended: false,
                 needs_network: false,
             },
+            Some(ReplCommand::ClearHistory) => {
+                // Task 2 (Meeting 25 plan): clear ONLY the
+                // :اعرض lines. The interpreter, the analyzer
+                // and the variables all stay — unlike :مسح,
+                // which resets the whole session. No control
+                // signal: the app intercepts this command
+                // itself and clears its own arrow history.
+                self.history.clear();
+                ReplOutput {
+                    output: "مسحت محفوظات الجلسة.\n".to_string(),
+                    prompt: self.prompt(),
+                    ended: false,
+                    needs_network: false,
+                }
+            }
             Some(ReplCommand::Clear) => {
                 self.reset();
                 // Audit م-6: the host clears its arrow history.
@@ -397,7 +538,7 @@ impl Repl {
                 } else {
                     nums
                 };
-                match self.interp.call_builtin(def.key, values, 1, 1) {
+                match self.engine.call_builtin(def.key, values, 1, 1) {
                     Ok(value) => Some(ReplOutput {
                         output: format_shortcut_output(&value),
                         prompt: self.prompt(),
@@ -417,7 +558,7 @@ impl Repl {
                     Value::Str(args[0].clone()),
                     Value::Str(args[1..].join(" ")),
                 ];
-                match self.interp.call_builtin(def.key, values, 1, 1) {
+                match self.engine.call_builtin(def.key, values, 1, 1) {
                     Ok(value) => Some(ReplOutput {
                         output: format_shortcut_output(&value),
                         prompt: self.prompt(),
@@ -434,7 +575,7 @@ impl Repl {
             }
             ShortcutKind::StrArgs => {
                 let values: Vec<Value> = args.into_iter().map(Value::Str).collect();
-                match self.interp.call_builtin(def.key, values, 1, 1) {
+                match self.engine.call_builtin(def.key, values, 1, 1) {
                     Ok(value) => Some(ReplOutput {
                         output: format_shortcut_output(&value),
                         prompt: self.prompt(),
@@ -662,14 +803,14 @@ impl Repl {
         // expression once and print it.
         if let Some(StmtKind::ExprStmt { expr }) = program.last().map(|s| &s.kind) {
             let (head, _) = program.split_at(program.len() - 1);
-            if let Err(e) = self.interp.run(head) {
+            if let Err(e) = self.engine.run(head) {
                 return ReplEval::Failed {
-                    output: std::mem::take(&mut self.interp.output),
+                    output: self.engine.take_output(),
                     error: e.to_string(),
                 };
             }
-            let printed = std::mem::take(&mut self.interp.output);
-            return match self.interp.eval_one(expr) {
+            let printed = self.engine.take_output();
+            return match self.engine.eval_one(expr) {
                 Ok(v) => ReplEval::Done {
                     output: format!("{}{}\n", printed, v.fmt_value()),
                 },
@@ -679,12 +820,12 @@ impl Repl {
                 },
             };
         }
-        match self.interp.run(&program) {
+        match self.engine.run(&program) {
             Ok(()) => ReplEval::Done {
-                output: std::mem::take(&mut self.interp.output),
+                output: self.engine.take_output(),
             },
             Err(e) => ReplEval::Failed {
-                output: std::mem::take(&mut self.interp.output),
+                output: self.engine.take_output(),
                 error: e.to_string(),
             },
         }
@@ -708,9 +849,7 @@ impl Repl {
     pub fn reset(&mut self) {
         let trusted = self.trusted;
         let network_allowed = self.network_allowed;
-        self.interp = Interpreter::new();
-        self.interp.set_trusted(trusted);
-        self.interp.set_network_allowed(network_allowed);
+        self.engine.reset(trusted, network_allowed);
         self.analyzer = SemanticAnalyzer::new();
         self.history.clear();
         self.pending.clear();
@@ -728,12 +867,18 @@ pub fn banner() -> &'static str {
 /// `:مساعدة` output: a BARE command list — terminal convention,
 /// not teaching. No explanations, no examples, no notes.
 pub fn help_text() -> &'static str {
-    ":مساعدة\n:اعرض\n:مسح\n:اسمح-بالشبكة\n:خروج\n"
+    ":مساعدة\n:اعرض\n:امسح-المحفوظات\n:مسح\n:اسمح-بالشبكة\n:خروج\n"
 }
 
 pub enum ReplCommand {
     Help,
     Show,
+    /// Task 2 (Meeting 25 plan): clear only the :اعرض
+    /// history lines — variables and functions stay. The
+    /// app's own :امسح-المحفوظات (v1.1.6) clears the app's
+    /// arrow-key history; the engine honors the same name
+    /// here for its own history (desktop / Termux / WASM).
+    ClearHistory,
     Clear,
     /// Audit م-2: allow the network inside the running
     /// process (no restart). Sent by the host app on approval.
@@ -873,6 +1018,7 @@ pub fn parse_command(line: &str) -> Option<ReplCommand> {
     match line.trim() {
         ":مساعدة" => Some(ReplCommand::Help),
         ":اعرض" => Some(ReplCommand::Show),
+        ":امسح-المحفوظات" => Some(ReplCommand::ClearHistory),
         ":مسح" => Some(ReplCommand::Clear),
         ":اسمح-بالشبكة" => Some(ReplCommand::AllowNetwork),
         ":خروج" | "خروج" => Some(ReplCommand::Quit),
@@ -882,9 +1028,20 @@ pub fn parse_command(line: &str) -> Option<ReplCommand> {
 
 /// The interactive loop: read lines from stdin, feed them to
 /// the stateful `Repl`, print what it returns. Returns SUCCESS
-/// on :خروج or EOF.
-pub fn run_repl(trusted: bool, network_allowed: bool, local_hosts: &[String]) -> ExitCode {
-    let mut repl = Repl::new();
+/// on :خروج or EOF. The session runs on the compiler (VM) by
+/// default; `use_interpreter` (CLI `--مفسر`) runs it on the
+/// tree-walking interpreter instead, for diagnosis only.
+pub fn run_repl(
+    trusted: bool,
+    network_allowed: bool,
+    local_hosts: &[String],
+    use_interpreter: bool,
+) -> ExitCode {
+    let mut repl = if use_interpreter {
+        Repl::new_interpreter()
+    } else {
+        Repl::new()
+    };
     repl.set_trusted(trusted);
     repl.set_network_allowed(network_allowed);
     for host in local_hosts {
@@ -1113,6 +1270,10 @@ mod tests {
     fn repl_commands_parse() {
         assert!(matches!(parse_command(":مساعدة"), Some(ReplCommand::Help)));
         assert!(matches!(parse_command(":اعرض"), Some(ReplCommand::Show)));
+        assert!(matches!(
+            parse_command(":امسح-المحفوظات"),
+            Some(ReplCommand::ClearHistory)
+        ));
         assert!(matches!(parse_command(":مسح"), Some(ReplCommand::Clear)));
         assert!(matches!(parse_command(":خروج"), Some(ReplCommand::Quit)));
         assert!(matches!(parse_command("خروج"), Some(ReplCommand::Quit)));
@@ -1120,6 +1281,44 @@ mod tests {
         assert!(parse_command(":help").is_none());
         assert!(parse_command("exit").is_none());
         assert!(parse_command("س = ٥").is_none());
+    }
+
+    // Task 2 (Meeting 25 plan): :امسح-المحفوظات clears
+    // only the :اعرض history lines — variables and functions
+    // survive it, unlike :مسح which resets the interpreter.
+    #[test]
+    fn repl_clear_history_keeps_variables() {
+        let mut r = Repl::new();
+        assert_eq!(r.feed("س = ٥").output, "");
+        assert_eq!(r.feed("س * ٢").output, "١٠\n");
+        assert_eq!(
+            done_out(r.eval("دالة جمع(أ، ب):\n    ارجع أ + ب")),
+            ""
+        );
+        assert_eq!(done_out(r.eval("جمع(٢، ٣)")), "٥\n");
+        // :اعرض shows the session lines.
+        let o = r.feed(":اعرض");
+        assert!(o.output.contains("س = ٥"), "got: {}", o.output);
+        assert!(o.output.contains("س * ٢"), "got: {}", o.output);
+        // The new command clears the history only.
+        let o = r.feed(":امسح-المحفوظات");
+        assert_eq!(o.output, "مسحت محفوظات الجلسة.\n");
+        assert!(!o.ended);
+        assert!(r.history().is_empty());
+        // :اعرض is now just the header — the old lines are gone.
+        let o = r.feed(":اعرض");
+        assert!(!o.output.contains("س = ٥"), "got: {}", o.output);
+        assert!(!o.output.contains("س * ٢"), "got: {}", o.output);
+        // Variables and functions survived the clear.
+        assert_eq!(r.feed("اطبع س").output, "٥\n");
+        assert_eq!(r.feed("س").output, "٥\n");
+        assert_eq!(r.feed("جمع(٢، ٣)").output, "٥\n");
+        // The command line itself is never recorded: a new
+        // line appears in :اعرض, the command does not.
+        assert_eq!(r.feed("ص = ٧").output, "");
+        let o = r.feed(":اعرض");
+        assert!(o.output.contains("ص = ٧"), "got: {}", o.output);
+        assert!(!o.output.contains("امسح-المحفوظات"), "got: {}", o.output);
     }
 
     // The stateful feed API (console): the prototype session,
@@ -1202,7 +1401,7 @@ mod tests {
         let o = r.feed(":مساعدة");
         assert_eq!(
             o.output,
-            "ألغيت الكتلة غير المكتملة.\n:مساعدة\n:اعرض\n:مسح\n:اسمح-بالشبكة\n:خروج\n"
+            "ألغيت الكتلة غير المكتملة.\n:مساعدة\n:اعرض\n:امسح-المحفوظات\n:مسح\n:اسمح-بالشبكة\n:خروج\n"
         );
         assert_eq!(o.prompt, "~ $ ");
         assert!(!o.ended);
@@ -1740,5 +1939,50 @@ mod tests {
         assert!(o.output.contains("60 ثانية"), "got: {}", o.output);
         let o = r.feed("نو ٠");
         assert_eq!(o.output, "");
+    }
+
+    // ك-2 (مهمة 7): وضع التشخيص الخفي — الجلسة نفسها على
+    // مفسر الشجرة (Repl::new_interpreter): المتغيرات تبقى،
+    // والتعبير الأخير يُطبع، والشبكة تُفتح من داخل الجلسة.
+    #[test]
+    fn repl_interpreter_mode_session_works() {
+        let mut r = Repl::new_interpreter();
+        assert_eq!(done_out(r.eval("س = ٥")), "");
+        assert_eq!(done_out(r.eval("س * ٢")), "١٠\n");
+        assert_eq!(
+            done_out(r.eval("دالة جمع(أ، ب):\n    ارجع أ + ب")),
+            ""
+        );
+        assert_eq!(done_out(r.eval("جمع(٢، ٣)")), "٥\n");
+        assert!(!r.network_allowed());
+        let _ = r.feed(":اسمح-بالشبكة");
+        assert!(r.network_allowed());
+        r.reset();
+        assert!(is_failed(r.eval("س")));
+    }
+
+    // ك-2 (مهمة 7): الاختصارات تعمل على محرك VM — طن
+    // (طول) يمر عبر VmSession::call_builtin مباشرة.
+    #[test]
+    fn repl_vm_shortcut_calls_builtin() {
+        let mut r = Repl::new();
+        assert_eq!(r.feed("طن ٥").output, "١\n");
+        assert_eq!(r.feed("مع ١ ٢ ٣").output, "٦\n");
+        assert_eq!(r.feed("مح").output, "~\n");
+    }
+
+    // ك-2 (مهمة 7): إغلاق معرّف في سطر يبقى قابلا للاستدعاء
+    // في سطر لاحق — الجلسة الدائمة على VM تحتفظ بالبيئة
+    // وسجل الإغلاقات عبر التحميلات.
+    #[test]
+    fn repl_vm_closure_persists_across_feeds() {
+        let mut r = Repl::new();
+        assert_eq!(
+            done_out(r.eval("دالة اصنع_عداد():\n    ع = ٠\n    دالة زد():\n        ع = ع + ١\n        ارجع ع\n    ارجع زد")),
+            ""
+        );
+        assert_eq!(done_out(r.eval("أ = اصنع_عداد()")), "");
+        assert_eq!(done_out(r.eval("أ()")), "١\n");
+        assert_eq!(done_out(r.eval("أ()")), "٢\n");
     }
 }
