@@ -1167,7 +1167,6 @@ pub fn run_repl(
     }
     println!("{}", banner());
     let stdin = std::io::stdin();
-    let mut input = stdin.lock();
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     loop {
@@ -1176,7 +1175,18 @@ pub fn run_repl(
             return ExitCode::FAILURE;
         }
         let mut line = String::new();
-        match input.read_line(&mut line) {
+        // مهمة 20 (جهاز.حوار): قفل stdin لكل قراءة على
+        // حدة لا لكل الحلقة — وإلا علق `ادخل` (وكل قراءة
+        // stdin داخل feed، ومنها انتظار `جهاز.حوار`) على
+        // القفل نفسه من الخيط نفسه (مثبَت تجريبيا: ادخل
+        // في REPL علق إلى الأبد قبل هذا الإصلاح). المخزن
+        // المؤقت يعيش في Stdin العام لا في الحارس، فلا
+        // يُفقد سطر مخزّن بين التكرارات.
+        let read = {
+            let mut input = stdin.lock();
+            input.read_line(&mut line)
+        };
+        match read {
             Ok(0) => {
                 // EOF (Ctrl-D): exit cleanly.
                 let result = repl.eof();

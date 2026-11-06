@@ -15,6 +15,7 @@ pub mod artifact;
 pub mod async_io;
 pub mod ast;
 pub mod crypto;
+pub mod device;
 pub mod error;
 pub mod files;
 pub mod install;

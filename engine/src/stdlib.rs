@@ -147,6 +147,17 @@ pub fn native_module(name: &str) -> Option<Value> {
         // browser refused with the flat builtins' own
         // message).
         "غير_متزامن" => async_entries(),
+        // Catalog task 20 (جهاز.حوار, Dialog): the first
+        // device capability (Stage 4) — an interactive
+        // dialog that asks the user and returns the value.
+        // Permission design first — see
+        // CATALOG-12-DEVICE-DIALOG.md §1 (the engine only
+        // requests over the stderr control channel and waits
+        // for a structured stdin line; the app displays and
+        // answers; Android only, honest refusal elsewhere;
+        // the dialog itself is the permission gate — every
+        // dialog has an explicit cancel button).
+        "جهاز" => device_entries(),
         _ => return None,
     };
     let mut exports: HashMap<String, Value> = HashMap::new();
@@ -1311,4 +1322,14 @@ fn time_sleep(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: us
     #[cfg(not(target_arch = "wasm32"))]
     std::thread::sleep(Duration::from_secs_f64(secs));
     Ok(Value::Nil)
+}
+
+// --- جهاز (catalog task 20, Dialog — أول قدرات المرحلة 4) ---
+
+fn device_entries() -> Vec<(&'static str, Value)> {
+    vec![("حوار", native("حوار", device_dialog))]
+}
+
+fn device_dialog(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::show_dialog(args, line, col)
 }
