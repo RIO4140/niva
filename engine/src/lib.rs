@@ -13,6 +13,7 @@
 
 pub mod artifact;
 pub mod ast;
+pub mod crypto;
 pub mod error;
 pub mod files;
 pub mod install;

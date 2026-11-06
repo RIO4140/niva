@@ -111,6 +111,16 @@ pub fn native_module(name: &str) -> Option<Value> {
         // KiB; WASM refuses with the flat builtins' own
         // message; Android refuses spawning like عمليات).
         "تواصل" => ipc_entries(),
+        // Catalog task 17 (تشفير, from crypto/): hashing
+        // only in v1 — SHA-256 in pure Rust (no crate) plus
+        // system randomness. Permission design first — see
+        // CATALOG-09-CRYPTO.md §1 (no encryption, no
+        // signing — task 18; no key or secret ever passes
+        // through the module; جزّئ returns the hex
+        // fingerprint; عشوائي_آمن returns bytes from the
+        // OS — /dev/urandom on Unix, honest refusal on
+        // Windows and in the browser).
+        "تشفير" => crypto_entries(),
         _ => return None,
     };
     let mut exports: HashMap<String, Value> = HashMap::new();
@@ -716,6 +726,42 @@ fn ipc_stop(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usiz
     let id = need_channel_id("تواصل.أوقف", args, 0, line, col)?;
     crate::ipc::stop(id, line, col)?;
     Ok(Value::Nil)
+}
+
+// --- تشفير (catalog task 17, from crypto/) ---
+//
+// The stored keys are the spellings the user writes
+// (hamza kept, like شبكة.أرسل): جزئ (the shadda is
+// stripped at parse, like حرّر/حرر in ذاكرة — the user
+// may write جزّئ or جزئ), عشوائي_آمن.
+
+fn crypto_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("جزئ", native("جزئ", crypto_hash)),
+        ("عشوائي_آمن", native("عشوائي_آمن", crypto_secure_random)),
+    ]
+}
+
+fn crypto_hash(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("تشفير.جزّئ", args, 1, line, col)?;
+    let text = need_string("تشفير.جزّئ", &args[0], line, col)?;
+    Ok(Value::Str(crate::crypto::sha256_hex(text.as_bytes())))
+}
+
+fn crypto_secure_random(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("تشفير.عشوائي_آمن", args, 1, line, col)?;
+    let n = need_integer("تشفير.عشوائي_آمن", &args[0], line, col)?;
+    if n < 0 {
+        return Err(RioError::typ(
+            "الدالة تشفير.عشوائي_آمن تتوقع عددا غير سالب",
+            line,
+            col,
+        ));
+    }
+    let bytes = crate::crypto::secure_random(n as usize, line, col)?;
+    Ok(Value::List(
+        bytes.into_iter().map(|b| Value::Number(b as f64)).collect(),
+    ))
 }
 
 // --- ذاكرة (catalog task 11, from mm/) ---

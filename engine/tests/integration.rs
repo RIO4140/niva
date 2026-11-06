@@ -138,6 +138,10 @@ fn examples_pass() {
             "22-ملفات.نيفا",
             "صحيح\nمرحبا من وحدة ملفات\nنص جديد\nغير معروف كما يجب\n",
         ),
+        (
+            "23-تشفير.نيفا",
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n7a975f75dfe67b4da5d69269c602a827f2c1efeadee4bf1de4029b8b3c91accb\n",
+        ),
     ];
     for (name, expected) in cases {
         let path = example_path(name);
@@ -510,6 +514,78 @@ fn ipc_unknown_id_both_modes() {
     assert_eq!(
         out_v,
         "قناة كما يجب\nقناة كما يجب\nقناة كما يجب\nقناة كما يجب\nفارغ كما يجب\n"
+    );
+}
+
+/// مهمة 17 (تشفير): التجزئة في الوضعين — بصمتا
+/// «abc» والفارغ تطابقان متجهات NIST حرفيا، وطول
+/// بصمة نص عربي ٦٤ حرفا؛ والنوع والوسائط الخاطئة
+/// أخطاء عربية تُمسكها ماعدا، متطابقة في الوضعين.
+#[test]
+fn crypto_hash_both_modes() {
+    let files: &[(&str, &str)] = &[(
+        "برنامج.نيفا",
+        "استورد تشفير\nاطبع تشفير.جزّئ(\"abc\")\nاطبع تشفير.جزّئ(\"\")\nاطبع طول(تشفير.جزّئ(\"محمود\"))\nحاول:\n    تشفير.جزّئ(٥)\nماعدا:\n    اطبع \"نص كما يجب\"\nحاول:\n    تشفير.جزّئ()\nماعدا:\n    اطبع \"وسائط كما يجب\"\nحاول:\n    تشفير.جزّئ(\"أ\", \"ب\")\nماعدا:\n    اطبع \"وسائط كما يجب\"\n",
+    )];
+    let (out_i, err_i, code_i) =
+        run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n٦٤\nنص كما يجب\nوسائط كما يجب\nوسائط كما يجب\n"
+    );
+}
+
+/// مهمة 17 (تشفير): العشوائية الآمنة على يونكس
+/// (لينكس/macOS/أندرويد) في الوضعين — الطول
+/// والمدى صحيحان، والصفر قائمة فارغة، والسالب
+/// وتجاوز الحد أخطاء عربية تُمسكها ماعدا.
+/// (القيم نفسها عشوائية — لا تُقارن أبدا.)
+#[test]
+#[cfg(unix)]
+fn crypto_random_unix_both_modes() {
+    let files: &[(&str, &str)] = &[(
+        "برنامج.نيفا",
+        "استورد تشفير\nب = تشفير.عشوائي_آمن(١٦)\nاطبع طول(ب) == ١٦\nاطبع ب[٠] >= ٠\nاطبع ب[٠] <= ٢٥٥\nاطبع طول(تشفير.عشوائي_آمن(٠)) == ٠\nحاول:\n    تشفير.عشوائي_آمن(٠ - ١)\nماعدا:\n    اطبع \"سالب كما يجب\"\nحاول:\n    تشفير.عشوائي_آمن(١٠٤٨٥٧٧)\nماعدا:\n    اطبع \"تجاوز كما يجب\"\n",
+    )];
+    let (out_i, err_i, code_i) =
+        run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v,
+        "صحيح\nصحيح\nصحيح\nصحيح\nسالب كما يجب\nتجاوز كما يجب\n"
+    );
+}
+
+/// مهمة 17 (تشفير): العشوائية الآمنة على غير يونكس
+/// (Windows) — رفض صادق بخطأ عربي، متطابق في
+/// الوضعين؛ والسالب وتجاوز الحد يُرفضان بالتحقق
+/// قبل فحص المنصة، فهما كما يجب على كل المنصات.
+#[test]
+#[cfg(not(unix))]
+fn crypto_random_refused_both_modes() {
+    let files: &[(&str, &str)] = &[(
+        "برنامج.نيفا",
+        "استورد تشفير\nحاول:\n    تشفير.عشوائي_آمن(١٦)\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    تشفير.عشوائي_آمن(٠ - ١)\nماعدا:\n    اطبع \"سالب كما يجب\"\nحاول:\n    تشفير.عشوائي_آمن(١٠٤٨٥٧٧)\nماعدا:\n    اطبع \"تجاوز كما يجب\"\n",
+    )];
+    let (out_i, err_i, code_i) =
+        run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v,
+        "غير مدعوم كما يجب\nسالب كما يجب\nتجاوز كما يجب\n"
     );
 }
 
