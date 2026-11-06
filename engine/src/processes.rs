@@ -93,7 +93,10 @@ static REGISTRY: LazyLock<Mutex<HashMap<u64, Child>>> =
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Test-only: the OS pid of a live spawned process, if any.
-#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "android"))))]
+/// Linux only: its only caller is the /proc proof in
+/// kill_really_kills (a wider gate warns dead-code on the
+/// Windows target check, where no test calls it).
+#[cfg(all(test, target_os = "linux"))]
 pub(crate) fn test_pid(id: u64) -> Option<u32> {
     REGISTRY.lock().ok()?.get(&id).map(|c| c.id())
 }
@@ -103,7 +106,10 @@ fn err_spawn_not_found(display: &str, line: usize, col: usize) -> RioError {
     RioError::runtime(format!("البرنامج غير موجود: {}", display), line, col)
 }
 
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+/// Unix only (like its only caller, the unix
+/// check_executable): a wider gate warns dead-code on the
+/// Windows target check, where the call site is compiled out.
+#[cfg(all(unix, not(target_arch = "wasm32"), not(target_os = "android")))]
 fn err_not_executable(display: &str, line: usize, col: usize) -> RioError {
     RioError::runtime(
         format!("الملف ليس برنامجا قابلا للتشغيل: {}", display),
@@ -117,7 +123,7 @@ fn err_not_executable(display: &str, line: usize, col: usize) -> RioError {
 /// file builtins' Arabic errors, but without their known
 /// English leak — task 5's follow-up).
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-fn err_spawn_failed(e: &std::io::Error, display: &str, line: usize, col: usize) -> RioError {
+pub(crate) fn err_spawn_failed(e: &std::io::Error, display: &str, line: usize, col: usize) -> RioError {
     use std::io::ErrorKind;
     match e.kind() {
         ErrorKind::NotFound => err_spawn_not_found(display, line, col),
@@ -208,8 +214,24 @@ pub fn spawn_process(command: &str, line: usize, col: usize) -> RioResult<u64> {
     }
 }
 
+/// Build the OS command for `عمليات.أنشئ` and `تواصل.أنبوب`
+/// (shared — catalog task 16): the policy snapshot, the
+/// empty-directory and empty-command guards, and the three
+/// program-resolution branches (a `.نيفا` first token runs
+/// as a Niva subprogram via the current niva binary; a path
+/// token is resolved under the file rules, canonicalized and
+/// checked executable; a bare name is a PATH search when
+/// trusted, else a file in the session cwd). Stdio is NOT
+/// set here — the caller sets it (inherit + null for
+/// عمليات, piped for تواصل), so the two modules can never
+/// drift apart on the spawn rules. Also returns the display
+/// of the program token, for the spawn-failure error.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-fn spawn_process_native(command: &str, line: usize, col: usize) -> RioResult<u64> {
+pub(crate) fn build_spawn_command(
+    command: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(Command, String)> {
     let (program_dir, trusted, cwd) = policy_snapshot();
     if program_dir.as_os_str().is_empty() {
         return Err(RioError::runtime(
@@ -237,15 +259,7 @@ fn spawn_process_native(command: &str, line: usize, col: usize) -> RioResult<u64
         }
     };
     let args: Vec<&str> = parts.collect();
-
-    // Live-process cap (fast path): refuse before forking.
-    if REGISTRY.lock().map(|r| r.len()).unwrap_or(0) >= MAX_LIVE_PROCESSES {
-        return Err(RioError::runtime(
-            "عدد العمليات المفتوحة تجاوز الحد (٢٥٦) — انتظر بعضها أو أوقفها",
-            line,
-            col,
-        ));
-    }
+    let program_display = display(program);
 
     let mut cmd: Command;
     if program.ends_with(".نيفا") {
@@ -295,12 +309,40 @@ fn spawn_process_native(command: &str, line: usize, col: usize) -> RioResult<u64
         cmd = Command::new(path);
         cmd.args(&args);
     }
+    Ok((cmd, program_display))
+}
+
+/// Spawn a program: `عمليات.أنشئ "أمر وسائط"` — returns the
+/// process id. The command is built by the shared builder
+/// (same rules as `تواصل.أنبوب`); only the stdio differs
+/// here (stdin null, stdout/stderr inherited).
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn spawn_process_native(command: &str, line: usize, col: usize) -> RioResult<u64> {
+    // The empty-command guard runs before the cap check, as
+    // before the split (an empty command reports itself,
+    // not the cap).
+    if command.split_whitespace().next().is_none() {
+        return Err(RioError::runtime(
+            "الأمر فارغ — اكتب اسم برنامج",
+            line,
+            col,
+        ));
+    }
+    // Live-process cap (fast path): refuse before forking.
+    if REGISTRY.lock().map(|r| r.len()).unwrap_or(0) >= MAX_LIVE_PROCESSES {
+        return Err(RioError::runtime(
+            "عدد العمليات المفتوحة تجاوز الحد (٢٥٦) — انتظر بعضها أو أوقفها",
+            line,
+            col,
+        ));
+    }
+    let (mut cmd, program_display) = build_spawn_command(command, line, col)?;
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
     let child = cmd
         .spawn()
-        .map_err(|e| err_spawn_failed(&e, &display(program), line, col))?;
+        .map_err(|e| err_spawn_failed(&e, &program_display, line, col))?;
 
     // Strict cap at insert time (two threads may both have
     // passed the fast path): kill the extra child at once.

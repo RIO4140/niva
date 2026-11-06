@@ -100,6 +100,17 @@ pub fn native_module(name: &str) -> Option<Value> {
         // data, the queries read /proc on Linux; everywhere
         // else they refuse honestly).
         "نظام" => system_entries(),
+        // Catalog task 16 (تواصل, from ipc/): pipes between
+        // two processes — open a channel to a subprogram,
+        // send a line, receive a line, close (wait for the
+        // exit code) or stop (kill). Permission design first
+        // — see CATALOG-08-IPC.md §1 (the spawn policy is
+        // عمليات.أنشئ's own policy through the shared
+        // builder; numeric ids only; at most 64 live
+        // channels; one message is one line of at most 64
+        // KiB; WASM refuses with the flat builtins' own
+        // message; Android refuses spawning like عمليات).
+        "تواصل" => ipc_entries(),
         _ => return None,
     };
     let mut exports: HashMap<String, Value> = HashMap::new();
@@ -636,6 +647,75 @@ fn proc_current(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: 
     Ok(Value::Number(
         crate::processes::current_process_id(line, col)? as f64,
     ))
+}
+
+// --- تواصل (catalog task 16, from ipc/) ---
+
+// Thin wrappers over crate::ipc: arity and types here,
+// the gate and the work in the shared core. A channel id
+// is a non-negative integer; anything else is an Arabic
+// type error naming the dotted function. The stored keys
+// are the spellings the user writes (hamza kept, like
+// شبكة.أرسل): أنبوب، أرسل، استقبل، أغلق، أوقف.
+
+fn ipc_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("أنبوب", native("أنبوب", ipc_open)),
+        ("أرسل", native("أرسل", ipc_send)),
+        ("استقبل", native("استقبل", ipc_recv)),
+        ("أغلق", native("أغلق", ipc_close)),
+        ("أوقف", native("أوقف", ipc_stop)),
+    ]
+}
+
+fn need_channel_id(display: &str, args: &[Value], at: usize, line: usize, col: usize) -> RioResult<u64> {
+    let id = need_integer(display, &args[at], line, col)?;
+    if id < 0 {
+        return Err(RioError::typ(
+            format!("الدالة {} تتوقع معرف قناة غير سالب", display),
+            line,
+            col,
+        ));
+    }
+    Ok(id as u64)
+}
+
+fn ipc_open(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("تواصل.أنبوب", args, 1, line, col)?;
+    let cmd = need_string("تواصل.أنبوب", &args[0], line, col)?;
+    Ok(Value::Number(
+        crate::ipc::open_pipe(&cmd, line, col)? as f64,
+    ))
+}
+
+fn ipc_send(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("تواصل.أرسل", args, 2, line, col)?;
+    let id = need_channel_id("تواصل.أرسل", args, 0, line, col)?;
+    let text = need_string("تواصل.أرسل", &args[1], line, col)?;
+    Ok(Value::Number(
+        crate::ipc::send(id, &text, line, col)? as f64,
+    ))
+}
+
+fn ipc_recv(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("تواصل.استقبل", args, 1, line, col)?;
+    let id = need_channel_id("تواصل.استقبل", args, 0, line, col)?;
+    Ok(Value::Str(crate::ipc::recv(id, line, col)?))
+}
+
+fn ipc_close(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("تواصل.أغلق", args, 1, line, col)?;
+    let id = need_channel_id("تواصل.أغلق", args, 0, line, col)?;
+    Ok(Value::Number(
+        crate::ipc::close(id, line, col)? as f64,
+    ))
+}
+
+fn ipc_stop(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("تواصل.أوقف", args, 1, line, col)?;
+    let id = need_channel_id("تواصل.أوقف", args, 0, line, col)?;
+    crate::ipc::stop(id, line, col)?;
+    Ok(Value::Nil)
 }
 
 // --- ذاكرة (catalog task 11, from mm/) ---

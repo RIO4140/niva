@@ -17,6 +17,7 @@ pub mod error;
 pub mod files;
 pub mod install;
 pub mod interpreter;
+pub mod ipc;
 pub mod lexer;
 pub mod memory;
 pub mod network;
