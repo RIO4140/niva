@@ -29,7 +29,21 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+// lstat غير موجودة في MinGW؛ والبديل stat يتبع الروابط
+// الرمزية، وهو سلوك المحرك نفسه على ويندوز — والعمق
+// محدود في كل مواضع الاستخدام (بحث ≤ 4، شجرة ≤ 3،
+// حجم بميزانية مدخلات).
+#ifdef _WIN32
+#define nv_lstat(path, st) stat((path), (st))
+#else
+#define nv_lstat(path, st) lstat((path), (st))
+#endif
+#ifndef _WIN32
+// sys/wait.h غير موجود في MinGW (ويندوز): دوال
+// العمليات التي تحتاجه معطلة هناك برفض عربي
+// (اجتماع 35 §50)؛ فلا يُضمَّن أصلا على ويندوز.
 #include <sys/wait.h>
+#endif
 #include <signal.h>
 #include <pthread.h>
 

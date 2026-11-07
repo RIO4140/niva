@@ -542,6 +542,7 @@ void nv_std_crypto_fill(NvDict *d) {
 // وفحص صلاحيات الوصول إلى ملف داخل مجلد البرنامج.
 // أسماء القدرات معرّفات نواة لاتينية كما في المحرك.
 
+#if defined(__linux__) || defined(__ANDROID__)
 static const char *nv_std_sec_cap_names[41] = {
     "CHOWN", "DAC_OVERRIDE", "DAC_READ_SEARCH", "FOWNER", "FSETID",
     "KILL", "SETGID", "SETUID", "SETPCAP", "LINUX_IMMUTABLE",
@@ -582,8 +583,6 @@ static void nv_std_sec_dict_set_list(NvDict *d, const char *key, NvValue list) {
     nv_dict_set_raw(d, key, list);
     nv_root_pop();
 }
-
-#if defined(__linux__) || defined(__ANDROID__)
 
 // تحليل قيمة سداسية عشرية بعد بادئة سطر (أو 0 عند الغياب).
 static int nv_std_sec_parse_hex(const char *line, const char *prefix, uint64_t *out) {
@@ -911,6 +910,7 @@ static NvValue nv_std_sec_check(NvValue *args, int nargs, int line, int col) {
     free(disp_owned);
     return out;
 #else
+    (void)path;
     nv_error(NV_ERR_RUNTIME, "أمن.تحقق غير مدعوم على هذه المنصة", line, col);
 #endif
     return nv_nil();
@@ -1007,6 +1007,7 @@ static long nv_std_time_days_in_month(long long y, long m) {
 
 /* ---------- وقت: المنطقة الزمنية المحلية (ملف TZif) ---------- */
 
+#if defined(__linux__) || defined(__ANDROID__)
 static unsigned int nv_std_time_be_u32(const unsigned char *d, size_t off, size_t len) {
     if (off + 4 > len) {
         return 0;
@@ -1227,6 +1228,8 @@ static char *nv_std_time_local_zone_path(void) {
     return strdup("/etc/localtime");
 }
 
+#endif // defined(__linux__) || defined(__ANDROID__)
+
 /* الإزاحة المحلية (بالثواني) عند secs. خارج لينكس/أندرويد تُرفض بصدق. */
 static long long nv_std_time_local_offset_at(long long secs, const char *display, int line, int col) {
 #if defined(__linux__) || defined(__ANDROID__)
@@ -1241,6 +1244,7 @@ static long long nv_std_time_local_offset_at(long long secs, const char *display
     free(path);
     return off;
 #else
+    (void)secs;
     nv_error_fmt(NV_ERR_RUNTIME, line, col, "%s غير مدعوم على هذه المنصة", display);
     return 0;
 #endif
@@ -1612,7 +1616,7 @@ void nv_std_time_fill(NvDict *d) {
 /* جدول النداءات — مولّد آليا من system.rs (لا يُكتب يدويا). */
 typedef struct { unsigned int num; const char *name; } NvStdSysEntry;
 
-#if defined(__x86_64__) || defined(_M_X64)
+#if (defined(__x86_64__) || defined(_M_X64)) && (defined(__linux__) || defined(__ANDROID__))
 static const NvStdSysEntry nv_std_sys_table[] = {
     { 0u, "read" },
     { 1u, "write" },
@@ -2001,7 +2005,7 @@ static const NvStdSysEntry nv_std_sys_table[] = {
     { 471u, "rseq_slice_yield" },
     { 472u, "fchroot" },
 };
-#elif defined(__aarch64__) || defined(_M_ARM64)
+#elif (defined(__aarch64__) || defined(_M_ARM64)) && (defined(__linux__) || defined(__ANDROID__))
 static const NvStdSysEntry nv_std_sys_table[] = {
     { 0u, "io_setup" },
     { 1u, "io_destroy" },
@@ -2330,12 +2334,13 @@ static const NvStdSysEntry nv_std_sys_table[] = {
 };
 #endif
 
-#if defined(__x86_64__) || defined(__aarch64__) || defined(_M_X64) || defined(_M_ARM64)
+#if (defined(__x86_64__) || defined(__aarch64__) || defined(_M_X64) || defined(_M_ARM64)) && (defined(__linux__) || defined(__ANDROID__))
 static const size_t nv_std_sys_table_len = sizeof(nv_std_sys_table) / sizeof(nv_std_sys_table[0]);
 #endif
 
 /* ---------- نظام: قراءات /proc ---------- */
 
+#if defined(__linux__) || defined(__ANDROID__)
 /* قيمة واحدة من /proc/sys/kernel/<name> بلا فراغات حولها.
    تطلق «تعذّر قراءة معلومات النظام» عند فشل القراءة.
    ملاحظة: ملفات /proc حجمها 0 عند ftell، فلا يصح
@@ -2399,6 +2404,8 @@ static char *nv_std_sys_proc_kernel(const char *name, int line, int col) {
     return text;
 }
 
+#endif // defined(__linux__) || defined(__ANDROID__)
+
 /* ---------- نظام: الدوال الأصلية ---------- */
 
 static NvValue nv_std_sys_name(NvValue *args, int nargs, int line, int col) {
@@ -2454,10 +2461,10 @@ static NvValue nv_std_sys_count(NvValue *args, int nargs, int line, int col) {
 }
 
 static NvValue nv_std_sys_kernel(NvValue *args, int nargs, int line, int col) {
-    char *v = NULL;
-    NvValue out;
     nv_std_need_args("نظام.نسخة_النواة", args, nargs, 0, line, col);
 #if defined(__linux__) || defined(__ANDROID__)
+    char *v = NULL;
+    NvValue out;
     v = nv_std_sys_proc_kernel("osrelease", line, col);
     out = nv_str_cstr(v);
     free(v);
@@ -2469,10 +2476,10 @@ static NvValue nv_std_sys_kernel(NvValue *args, int nargs, int line, int col) {
 }
 
 static NvValue nv_std_sys_os(NvValue *args, int nargs, int line, int col) {
-    char *v = NULL;
-    NvValue out;
     nv_std_need_args("نظام.اسم_النظام", args, nargs, 0, line, col);
 #if defined(__linux__) || defined(__ANDROID__)
+    char *v = NULL;
+    NvValue out;
     v = nv_std_sys_proc_kernel("ostype", line, col);
     out = nv_str_cstr(v);
     free(v);
@@ -2529,6 +2536,26 @@ void nv_std_system_fill(NvDict *d) {
 #define NV_STD_FILE_MAX_READ (5u * 1024 * 1024)
 
 // ---------- عمليات ----------
+
+// كل تنفيذ هذا القسم POSIX خالص (fork/waitpid/
+// pipe2) — يُستبعد كاملا على ويندوز (فرع #else
+// أدناه: رفض عربي)؛ والحالية والتعبئة بعده باقيتان.
+#ifndef _WIN32
+
+// pipe2 غير موجود على ماك أصلا: غلاف بأنبوب +
+// fcntl على Apple فقط؛ وفي غيرها تمرير إلى pipe2.
+static int nv_std_pipe2(int pipefd[2], int flags) {
+#ifdef __APPLE__
+    if (pipe(pipefd) != 0) return -1;
+    if (flags & O_CLOEXEC) {
+        if (fcntl(pipefd[0], F_SETFD, FD_CLOEXEC) != 0) return -1;
+        if (fcntl(pipefd[1], F_SETFD, FD_CLOEXEC) != 0) return -1;
+    }
+    return 0;
+#else
+    return pipe2(pipefd, flags);
+#endif
+}
 
 static int nv_std_proc_next_id = 1;
 static int nv_std_proc_live = 0;
@@ -2804,7 +2831,7 @@ static NvValue nv_std_proc_spawn(NvValue *args, int nargs, int line, int col) {
         nv_error(NV_ERR_RUNTIME, "تعذّر تسجيل العملية الجديدة", line, col);
     }
     int pipefd[2];
-    if (pipe2(pipefd, O_CLOEXEC) != 0) {
+    if (nv_std_pipe2(pipefd, O_CLOEXEC) != 0) {
         int e = errno;
         nv_std_proc_free_argv(exec_argv, 1 + (exec_second ? 1 : 0) + (ntok - 1));
         nv_std_proc_spawn_failed(e, display, line, col);
@@ -2921,6 +2948,33 @@ static NvValue nv_std_proc_kill(NvValue *args, int nargs, int line, int col) {
     return nv_nil();
 }
 
+#else // _WIN32
+
+// ---------- ويندوز: عمليات مرفوضة بالعربي ----------
+// اجتماع 35 §50: fork/waitpid/pipe2 غير موجودة في
+// MinGW؛ فالإنشاء والانتظار والإيقاف ترفض بالرسالة
+// نفسها المستعملة لباقي الوحدات المقيّدة بالمنصة.
+// والحالية أدناه تبقى عاملة (getpid موجود في MinGW).
+static NvValue nv_std_proc_spawn(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("عمليات.أنشئ", args, nargs, 1, line, col);
+    nv_error(NV_ERR_RUNTIME, "عمليات.أنشئ غير مدعوم على هذه المنصة", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_std_proc_wait(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("عمليات.انتظر", args, nargs, 1, line, col);
+    nv_error(NV_ERR_RUNTIME, "عمليات.انتظر غير مدعوم على هذه المنصة", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_std_proc_kill(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("عمليات.أوقف", args, nargs, 1, line, col);
+    nv_error(NV_ERR_RUNTIME, "عمليات.أوقف غير مدعوم على هذه المنصة", line, col);
+    return nv_nil();
+}
+
+#endif // _WIN32
+
 static NvValue nv_std_proc_current(NvValue *args, int nargs, int line, int col) {
     nv_std_need_args("عمليات.الحالية", args, nargs, 0, line, col);
     return nv_num((double)getpid());
@@ -2990,6 +3044,7 @@ static NvValue nv_std_mem_free(NvValue *args, int nargs, int line, int col) {
 
 static NvValue nv_std_mem_available(NvValue *args, int nargs, int line, int col) {
     nv_std_need_args("ذاكرة.المتاح", args, nargs, 0, line, col);
+#if defined(__linux__) || defined(__ANDROID__)
     FILE *f = fopen("/proc/meminfo", "r");
     if (!f) {
         nv_error(NV_ERR_RUNTIME, "تعذّر قراءة ذاكرة النظام", line, col);
@@ -3023,15 +3078,29 @@ static NvValue nv_std_mem_available(NvValue *args, int nargs, int line, int col)
         nv_error(NV_ERR_RUNTIME, "تعذّر قراءة ذاكرة النظام", line, col);
     }
     return nv_num((double)(kb * 1024ull));
+#else
+    // المتاح لينكس/أندرويد فقط في المحرك — الرفض بنصه الحرفي
+    // (بلا قيمة مختلقة)؛ وmacOS/ويندوز يصلان هنا.
+    nv_error(NV_ERR_RUNTIME, "ذاكرة.المتاح غير مدعوم على هذه المنصة", line, col);
+    return nv_nil();
+#endif
 }
 
 static NvValue nv_std_mem_page_size(NvValue *args, int nargs, int line, int col) {
     nv_std_need_args("ذاكرة.حجم_الصفحة", args, nargs, 0, line, col);
+#if defined(__linux__) || defined(__ANDROID__)
     long ps = sysconf(_SC_PAGESIZE);
     if (ps <= 0) {
         nv_error(NV_ERR_RUNTIME, "تعذّر قراءة ذاكرة النظام", line, col);
     }
     return nv_num((double)ps);
+#else
+    // حجم_الصفحة لينكس/أندرويد فقط في المحرك — الرفض بنصه
+    // الحرفي؛ وعلى ماك كان sysconf ينجح بقيمة بينما المحرك
+    // يرفض، فكانت حالة «ذاكرة-استعلامات» ستفشل هناك.
+    nv_error(NV_ERR_RUNTIME, "ذاكرة.حجم_الصفحة غير مدعوم على هذه المنصة", line, col);
+    return nv_nil();
+#endif
 }
 
 void nv_std_memory_fill(NvDict *d) {
@@ -3380,6 +3449,11 @@ void nv_std_files_fill(NvDict *d) {
 // العملية (نهاية الملف) وينتظر خروجها 30 ثانية ثم يقتل؛
 // وأوقف يقتل فورا ويجمعها فلا يبقى يتيم. والمعرفات من 1
 // ولا تتكرر في التشغيل الواحد، وبحد 64 قناة حية.
+
+// كل تنفيذ هذا القسم POSIX خالص (fork/pipe/
+// waitpid/kill) — يُستبعد كاملا على ويندوز (فرع
+// #else أدناه: رفض عربي)؛ والتعبئة بعده باقية.
+#ifndef _WIN32
 
 struct NvStdIpcQueue {
     char **lines; // سطور بانتظار القراءة (بترتيب الوصول)
@@ -4086,8 +4160,49 @@ static NvValue nv_std_ipc_stop(NvValue *args, int nargs, int line, int col) {
     return nv_nil();
 }
 
+#else // _WIN32
+
+// ---------- ويندوز: تواصل مرفوض بالعربي ----------
+// اجتماع 35 §50: fork/pipe/waitpid/kill غير موجودة
+// في MinGW؛ ففتح القناة وكل عملياتها ترفض بالرسالة
+// نفسها المستعملة لباقي الوحدات المقيّدة بالمنصة.
+static NvValue nv_std_ipc_open(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("تواصل.أنبوب", args, nargs, 1, line, col);
+    nv_error(NV_ERR_RUNTIME, "تواصل.أنبوب غير مدعوم على هذه المنصة", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_std_ipc_send(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("تواصل.أرسل", args, nargs, 2, line, col);
+    nv_error(NV_ERR_RUNTIME, "تواصل.أرسل غير مدعوم على هذه المنصة", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_std_ipc_recv(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("تواصل.استقبل", args, nargs, 1, line, col);
+    nv_error(NV_ERR_RUNTIME, "تواصل.استقبل غير مدعوم على هذه المنصة", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_std_ipc_close(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("تواصل.أغلق", args, nargs, 1, line, col);
+    nv_error(NV_ERR_RUNTIME, "تواصل.أغلق غير مدعوم على هذه المنصة", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_std_ipc_stop(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("تواصل.أوقف", args, nargs, 1, line, col);
+    nv_error(NV_ERR_RUNTIME, "تواصل.أوقف غير مدعوم على هذه المنصة", line, col);
+    return nv_nil();
+}
+
+#endif // _WIN32
+
 void nv_std_comm_fill(NvDict *d) {
+#ifndef _WIN32
+    // SIGPIPE غير موجود في MinGW (ويندوز).
     signal(SIGPIPE, SIG_IGN);
+#endif
     nv_std_add_fn(d, "أنبوب", nv_std_ipc_open);
     nv_std_add_fn(d, "أرسل", nv_std_ipc_send);
     nv_std_add_fn(d, "استقبل", nv_std_ipc_recv);
@@ -4250,7 +4365,7 @@ static unsigned long long nv_std_async_dir_size(const char *path, int *budget) {
     if (!path || *budget <= 0) return 0;
     (*budget)--;
     struct stat st;
-    if (lstat(path, &st) != 0) return 0;
+    if (nv_lstat(path, &st) != 0) return 0;
     if (S_ISDIR(st.st_mode)) {
         unsigned long long total = 0;
         DIR *d = opendir(path);
@@ -4725,7 +4840,10 @@ static NvValue nv_std_async_wait(NvValue *args, int nargs, int line, int col) {
 }
 
 void nv_std_async_fill(NvDict *d) {
+#ifndef _WIN32
+    // SIGPIPE غير موجود في MinGW (ويندوز).
     signal(SIGPIPE, SIG_IGN);
+#endif
     nv_std_add_fn(d, "أنشئ_حلقة", nv_std_async_create_loop);
     nv_std_add_fn(d, "اقرأ", nv_std_async_read);
     nv_std_add_fn(d, "اكتب", nv_std_async_write);

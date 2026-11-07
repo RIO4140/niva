@@ -4,6 +4,18 @@
 
 #include "niva_rt.h"
 #include <stdarg.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h> // _NSGetExecutablePath — بلا هذا
+// التضمين تبقى الدالة غير معلنة في clang الحديث
+// (خطأ خامس مخفي على ماك خلف أول 30 سطرا من سجل cc).
+#endif
+#ifdef _WIN32
+// على ويندوز لا توجد getline وrealpath وlstat وmemmem وsymlink،
+// فحزمة التوافقيات الصغيرة أدناه تغطيها دون تغيير المنطق.
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h> // CreateSymbolicLinkA وGetFinalPathNameByHandleA
+#endif
 
 // ---------- الحالة العامة ----------
 NvFlow nv_flow = NV_FLOW_NORMAL;
@@ -1897,6 +1909,91 @@ void nv_print_args(NvValue *args, int nargs) {
     fflush(stdout);
 }
 
+#ifdef _WIN32
+// قراءة سطر من stdin بديلا عن getline غير الموجودة في MinGW؛
+// السلوك نفسه: يعيد عدد البايتات المقروءة أو -1 عند EOF/خطأ.
+static ssize_t nv_getline(char **lineptr, size_t *n, FILE *stream) {
+    size_t len = 0;
+    size_t cap = 0;
+    char *buf = NULL;
+    int c;
+    if (!lineptr || !n || !stream) return -1;
+    if (*lineptr) { buf = *lineptr; cap = *n; }
+    while ((c = fgetc(stream)) != EOF) {
+        if (len + 2 > cap) {
+            size_t ncap = cap ? cap * 2 : 128;
+            char *nb = realloc(buf, ncap);
+            if (!nb) { free(buf); return -1; }
+            buf = nb; cap = ncap;
+        }
+        buf[len++] = (char)c;
+        if (c == '\n') break;
+    }
+    if (len == 0 && c == EOF) { *lineptr = buf; *n = cap; return -1; }
+    if (len + 1 > cap) {
+        char *nb = realloc(buf, len + 1);
+        if (!nb) { free(buf); return -1; }
+        buf = nb; cap = len + 1;
+    }
+    buf[len] = '\0';
+    *lineptr = buf; *n = cap;
+    return (ssize_t)len;
+}
+
+// المسار المقنّن بديلا عن realpath غير الموجودة في MinGW؛
+// تحل الروابط الرمزية عبر GetFinalPathNameByHandleA، ثم
+// تُزال بادئة \\?\ وتُحوَّل \ إلى / ليبقى العرض بشرطات
+// مائلة كما في المحرك — ففحص بادئة مجلد البرنامج سليم.
+static char *nv_win32_realpath(const char *path) {
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    char *out = NULL;
+    DWORD len;
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    len = GetFinalPathNameByHandleA(h, NULL, 0, FILE_NAME_NORMALIZED);
+    if (len > 0) {
+        char *buf = malloc(len + 1);
+        if (buf && GetFinalPathNameByHandleA(h, buf, len + 1, FILE_NAME_NORMALIZED) > 0) {
+            size_t i;
+            if (strncmp(buf, "\\\\?\\UNC\\", 8) == 0) {
+                memmove(buf + 2, buf + 8, strlen(buf + 8) + 1);
+                buf[0] = '\\'; buf[1] = '\\';
+            } else if (strncmp(buf, "\\\\?\\", 4) == 0) {
+                memmove(buf, buf + 4, strlen(buf + 4) + 1);
+            }
+            for (i = 0; buf[i]; i++) if (buf[i] == '\\') buf[i] = '/';
+            out = nv_strdup(buf);
+        }
+        free(buf);
+    }
+    CloseHandle(h);
+    return out;
+}
+
+// نص خطأ ويندوز (Win32) بديلا عن strerror — رسائل Win32
+// لا تصل إلى errno، فتُقرأ عبر GetLastError وFormatMessageA.
+static char *nv_win32_error_str(void) {
+    DWORD code = GetLastError();
+    char buf[512];
+    DWORD n = FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, code, 0, buf, sizeof(buf), NULL);
+    if (n == 0) return nv_strdup("خطأ ويندوز غير معروف");
+    while (n > 0 && (buf[n - 1] == '\n' || buf[n - 1] == '\r' || buf[n - 1] == ' ')) buf[--n] = '\0';
+    return nv_strdup(buf);
+}
+
+// البحث عن بايتات داخل بايتات بديلا عن memmem غير المعلنة في MinGW.
+static const void *nv_memmem(const void *haystack, size_t haystack_len, const void *needle, size_t needle_len) {
+    const unsigned char *h = haystack;
+    const unsigned char *nd = needle;
+    size_t i;
+    if (needle_len == 0) return haystack;
+    if (haystack_len < needle_len) return NULL;
+    for (i = 0; i + needle_len <= haystack_len; i++) {
+        if (h[i] == nd[0] && memcmp(h + i, nd, needle_len) == 0) return h + i;
+    }
+    return NULL;
+}
+#endif // _WIN32 — نهاية التوافقيات (lstat في niva_rt.h)
+
 NvValue nv_input(NvValue *args, int nargs, int line, int col) {
     if (nargs > 1) {
         nv_error(NV_ERR_RUNTIME, "ادخل تتوقع 0 أو 1 معاملات", line, col);
@@ -1911,7 +2008,11 @@ NvValue nv_input(NvValue *args, int nargs, int line, int col) {
     }
     char *line_buf = NULL;
     size_t cap = 0;
+#ifdef _WIN32
+    ssize_t n = nv_getline(&line_buf, &cap, stdin);
+#else
     ssize_t n = getline(&line_buf, &cap, stdin);
+#endif
     if (n < 0) {
         free(line_buf);
         return nv_str_cstr("");
@@ -2006,7 +2107,11 @@ static char *nv_canonical_with_suffix(const char *path) {
             break;
         }
     }
+#ifdef _WIN32
+    char *canon = nv_win32_realpath(work);
+#else
     char *canon = realpath(work, NULL);
+#endif
     if (!canon) canon = nv_strdup(work);
     free(work);
     // أعد اللاحقة بترتيبها.
@@ -2129,7 +2234,7 @@ static unsigned long long nv_dir_size_rec(const char *path, int *budget) {
     if (*budget <= 0) return 0;
     (*budget)--;
     struct stat st;
-    if (lstat(path, &st) != 0) return 0;
+    if (nv_lstat(path, &st) != 0) return 0;
     if (S_ISDIR(st.st_mode)) {
         unsigned long long total = 0;
         DIR *d = opendir(path);
@@ -2613,7 +2718,7 @@ static void nv_find_files(const char *dir, const char *base, const char *query, 
         char *child = (char *)malloc(n);
         snprintf(child, n, "%s/%s", dir, e->d_name);
         struct stat st;
-        if (lstat(child, &st) == 0 && S_ISDIR(st.st_mode)) {
+        if (nv_lstat(child, &st) == 0 && S_ISDIR(st.st_mode)) {
             nv_find_files(child, base, query, depth + 1, out_list);
         }
         free(child);
@@ -2650,7 +2755,7 @@ static void nv_tree_lines(const char *dir, const char *prefix, int depth, NvValu
         char *child = (char *)malloc(n);
         snprintf(child, n, "%s/%s", dir, names[i]);
         struct stat st;
-        int is_dir = (lstat(child, &st) == 0 && S_ISDIR(st.st_mode));
+        int is_dir = (nv_lstat(child, &st) == 0 && S_ISDIR(st.st_mode));
         size_t ln = strlen(prefix) + strlen(names[i]) + 2;
         char *line = (char *)malloc(ln);
         if (is_dir) snprintf(line, ln, "%s%s/", prefix, names[i]);
@@ -2919,7 +3024,7 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
                 char *child = (char *)malloc(n);
                 snprintf(child, n, "%s/%s", nv_cwd, e->d_name);
                 struct stat st;
-                int is_dir = (lstat(child, &st) == 0 && S_ISDIR(st.st_mode));
+                int is_dir = (nv_lstat(child, &st) == 0 && S_ISDIR(st.st_mode));
                 free(child);
                 size_t ln = strlen(e->d_name) + 2;
                 char *entry = (char *)malloc(ln);
@@ -2978,7 +3083,11 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
             nv_error_fmt(NV_ERR_TYPE, line, col, "أنشئ_مجلد يتطلب مسارا نصيا، وليس %s", nv_type_name(args[0]));
         }
         char *resolved = nv_resolve_path(args[0].u.str->data, line, col);
+#ifdef _WIN32
+        if (mkdir(resolved) != 0) {
+#else
         if (mkdir(resolved, 0777) != 0) {
+#endif
             int e = errno;
             char osb[256];
             nv_os_error_str(e, osb, sizeof(osb));
@@ -3251,7 +3360,11 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
             size_t ll = llen;
             if (ll > 0 && p[ll - 1] == '\r') ll--;
             // يحتوي النمط؟ (بحث بايتات؛ والنمط نص UTF-8).
+#ifdef _WIN32
+            if (args[0].u.str->len == 0 || nv_memmem(p, ll, pat, args[0].u.str->len)) {
+#else
             if (args[0].u.str->len == 0 || memmem(p, ll, pat, args[0].u.str->len)) {
+#endif
                 nv_list_push_raw(out.u.list, nv_str_new(p, ll));
             }
             p = nl ? nl + 1 : end;
@@ -3317,6 +3430,21 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
         }
         char *target_path = nv_resolve_path(args[0].u.str->data, line, col);
         char *link_path = nv_resolve_path(args[1].u.str->data, line, col);
+#ifdef _WIN32
+        // الرابط الرمزي مدعوم على ويندوز عبر CreateSymbolicLinkA
+        // (المحرك يدعمه أيضا)؛ وعلم الدليل من فحص الهدف، وعلم
+        // ALLOW_UNPRIVILEGED_CREATE يسمح به بلا صلاحيات إدارية.
+        {
+            struct stat stt;
+            DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+            if (stat(target_path, &stt) == 0 && S_ISDIR(stt.st_mode)) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+            if (!CreateSymbolicLinkA(link_path, target_path, flags)) {
+                char *werr = nv_win32_error_str();
+                char *disp = nv_display_str(args[1].u.str->data);
+                nv_error_fmt(NV_ERR_IO, line, col, "تعذر إنشاء الرابط %s: %s", disp, werr);
+            }
+        }
+#else
         if (symlink(target_path, link_path) != 0) {
             int e = errno;
             char osb[256];
@@ -3324,6 +3452,7 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
             char *disp = nv_display_str(args[1].u.str->data);
             nv_error_fmt(NV_ERR_IO, line, col, "تعذر إنشاء الرابط %s: %s", disp, osb);
         }
+#endif
         free(target_path);
         free(link_path);
         return nv_nil();
@@ -3493,7 +3622,9 @@ static const char *nv_standalone_usage =
 
 // مجلد الملف التنفيذي الحالي (مجلد البرنامج للثنائي الأصلي).
 static char *nv_exe_dir(void) {
+#if defined(__linux__) || defined(__APPLE__)
     char buf[4096];
+#endif
 #if defined(__linux__)
     ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
     if (n > 0) {

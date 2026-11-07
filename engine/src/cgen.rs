@@ -1976,7 +1976,11 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
     let out_arg = out_path.to_string_lossy().to_string();
     let output = std::process::Command::new("cc")
         .arg("-O2")
-        .arg("-std=c11")
+        // gnu11 لا c11 الصارم (اجتماع 35 §50): يفتح
+        // إعلانات memmem وstrcasestr على ماك (clang
+        // يخفيها تحت __STRICT_ANSI__ مع c11)؛ ولينكس
+        // أخضر كما كان (_GNU_SOURCE معرّف أصلا).
+        .arg("-std=gnu11")
         .arg("-o")
         .arg(&out_arg)
         .arg(&prog_c)

@@ -24,6 +24,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install MinGW (Windows)
+        # اجتماع 34 §49 والاجتماع 35 §50: البناء الأصلي
+        # (نيفا ابن --أصلي) يستدعي cc؛ فعلى ويندوز
+        # يُثبَّت MinGW لضمان وجوده.
+        if: runner.os == 'Windows'
+        run: choco install mingw -y
       - name: Add engine build dir to PATH
         # The native backend runs .نيفا subprograms by looking for an
         # installed Niva engine (niva_std.c fallback: ~/.local/bin/نيفا
@@ -34,8 +40,22 @@ jobs:
         run: echo "$GITHUB_WORKSPACE/engine/target/debug" >> $GITHUB_PATH
       - name: Test
         working-directory: engine
+        shell: bash
         # الاختبارات المتوازية تتصارع على مجلد العمل المشترك — التشغيل التسلسلي إلزامي
-        run: cargo test -- --test-threads=1
+        # ويندوز: اختبارا c_parity_examples (المثال 18:
+        # عمليات.أنشئ تنجح في المفسر وترفض في الأصلي)
+        # وc_parity_server_http (الخادم الأصلي يرفض اخدم)
+        # متخطيان — فالتعطيل الموثق (شبكة وعمليات على
+        # ويندوز، اجتماع 34 §49 والاجتماع 35 §50) يجعل
+        # نجاحهما مستحيلا هناك؛ وباقي بوابة C يعمل على
+        # ويندوز (ومنها كل حالات التكامل: أخطاؤها تُمسك
+        # فتطابق رفض الأصلي حرفيا).
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cargo test -- --test-threads=1 --skip c_parity_examples --skip c_parity_server_http
+          else
+            cargo test -- --test-threads=1
+          fi
 
   release:
     name: release (${{ matrix.os }})

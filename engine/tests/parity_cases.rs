@@ -39,10 +39,22 @@ pub fn src(lines: &[&str]) -> String {
 }
 
 /// استبدل مسار المجلد المؤقت في نص بـ`<مجلد>`.
+/// (اجتماع 35 §50: الصيغة المقنّنة أيضا — فـ
+/// build_native يطبع المسار بعد canonicalize،
+/// فيختلف عن الخام: ماك ‎/tmp ← /private/tmp‎،
+/// وويندوز بادئة ‎//?/‎. والصيغة المقنّنة أولا:
+/// فالخام لاحقة لها على ويندوز، واستبداله أولا
+/// يفسدها ويترك ‎//?/‎.)
 pub fn normalize_temp_dir(text: String, dir: &PathBuf) -> String {
     let native = dir.to_string_lossy().to_string();
     let slashed = native.replace('\\', "/");
-    text.replace(&native, "<مجلد>").replace(&slashed, "<مجلد>")
+    let mut out = text;
+    if let Ok(canon) = std::fs::canonicalize(dir) {
+        let canon_native = canon.to_string_lossy().to_string();
+        let canon_slashed = canon_native.replace('\\', "/");
+        out = out.replace(&canon_native, "<مجلد>").replace(&canon_slashed, "<مجلد>");
+    }
+    out.replace(&native, "<مجلد>").replace(&slashed, "<مجلد>")
 }
 
 /// شغّل مصدرا في وضع واحد داخل مجلد مؤقت؛ `files`

@@ -3,17 +3,26 @@
 // عربية (يحتاج قرار TLS منفصلا). قواعد التحويل كما
 // في الاجتماعات 26 و28 و29 و30 (network.rs).
 #include "niva_rt.h"
+#ifndef _WIN32
+// ترويسات مقابس POSIX — غير موجودة في MinGW
+// (ويندوز): كل دوال شبكة معطلة هناك برفض عربي
+// (اجتماع 34 §49 والاجتماع 35 §50)، فلا تُضمَّن
+// أصلا على ويندوز. وnetinet/in.h صراحة لأن
+// INADDR_LOOPBACK غير معلن بدونه على ماك
+// (arpa/inet.h وحده لا يكفي هناك).
 #include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <strings.h>
+#include <sys/socket.h>
+#endif
 #include <errno.h>
 #include <fcntl.h>
-#include <netdb.h>
-#include <poll.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
@@ -24,6 +33,10 @@
 #define NV_NET_MAX_REQUEST (5 * 1024 * 1024)
 #define NV_NET_MAX_REDIRECTS 5
 #define NV_NET_HEADER_CAP (64 * 1024)
+
+// كل تنفيذ الشبكة أدناه POSIX خالص — يُستبعد
+// كاملا على ويندوز (فرع #else أدناه: رفض عربي).
+#ifndef _WIN32
 
 // ---------- ساعة رتيبة ومهلة ----------
 static long long nv_net_now_ms(void) {
@@ -1900,6 +1913,117 @@ static NvValue nv_net_send_dispatch(NvValue *args, int nargs, int line, int col)
 static NvValue nv_net_serve_native(NvValue *args, int nargs, int line, int col) {
     return nv_net_serve(args[3], args, nargs, line, col);
 }
+
+#else // _WIN32
+
+// ---------- ويندوز: شبكة مرفوضة بالعربي ----------
+// اجتماع 34 §49 والاجتماع 35 §50: لا مقابس ولا
+// HTTP في البناء الأصلي على ويندوز حتى نقل winsock
+// الكامل (مرشح لاحق بقرار مستقل)؛ فكل دالة شبكة
+// ترفض بالرسالة نفسها المستعملة لباقي الوحدات
+// المقيّدة بالمنصة («… غير مدعوم على هذه المنصة»).
+static void nv_net_win32_refuse(const char *display, int line, int col) __attribute__((noreturn));
+static void nv_net_win32_refuse(const char *display, int line, int col) {
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "%s غير مدعوم على هذه المنصة", display);
+}
+
+NvValue nv_net_fetch(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.اجلب", line, col);
+    return nv_nil();
+}
+
+NvValue nv_net_post(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.أرسل", line, col);
+    return nv_nil();
+}
+
+NvValue nv_net_download(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.نزل", line, col);
+    return nv_nil();
+}
+
+NvValue nv_net_serve(NvValue handler, NvValue *args, int nargs, int line, int col) {
+    (void)handler; (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.اخدم", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_net_connect_dispatch(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.اتصل", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_net_send_dispatch(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.أرسل", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_net_serve_native(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.اخدم", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_sock_create(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.مقبس", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_sock_listen(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.استمع", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_sock_accept(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.أقبل", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_sock_bind_udp(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.اربط", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_sock_recv(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.استقبل", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_sock_send_to(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.أرسل_إلى", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_sock_recv_from(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.استقبل_من", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_sock_close(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.أغلق", line, col);
+    return nv_nil();
+}
+
+static NvValue nv_sock_local_port(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.المنفذ", line, col);
+    return nv_nil();
+}
+
+#endif // _WIN32
 
 // ---------- تعبئة وحدة شبكة ----------
 void nv_std_network_fill(NvDict *d) {
