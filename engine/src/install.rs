@@ -35,12 +35,13 @@
 //! أخرى (للاختبار المحلي بخادم محاكٍ). وقيمة بلا مخطط
 //! http/https مرفوضة صراحة.
 //!
-//! حد معروف (صادق): تنزيل أصل إصدار يمر عبر إعادة توجيه
-//! من github.com إلى مضيف التنزيل (release-assets)؛ وسياسة
-//! الشبكة ترفض إعادة التوجيه إلى مضيف مختلف — فتثبيت
-//! أصول الإصدارات من جيت هاب الحقيقي متوقف على قرار
-//! سياسة منفصل (اجتماع)؛ والمساران البديلان يعملان
-//! اليوم: رابط المستودع والرابط المباشر للملف.
+//! تنزيل أصل إصدار يمر عبر إعادة توجيه من github.com
+//! إلى مضيف التنزيل (release-assets)؛ وسياسة الشبكة
+//! تسمح بهذا التحويل وحده بقائمة سماح اجتماع 28
+//! (§43): المخطط https والمضيف مطابق حرفيا والمنفذ
+//! 443 — وما عداه من تحويل إلى مضيف مختلف مرفوض كما
+//! كان. والمساران البديلان يعملان أيضا: رابط المستودع
+//! والرابط المباشر للملف.
 //!
 //! القواعد المطبقة هنا:
 //! - المصدر رابط http/https: يُنزَّل عبر `شبكة.اجلب`
@@ -1162,6 +1163,18 @@ mod tests {
                     );
                     continue;
                 }
+                // إعادة توجيه إلى المضيف نفسه — كرابط أصل
+                // إصدار يعيد توجيها داخل شبكة التوصيل نفسها.
+                if path == "/redirect-same" {
+                    let _ = stream.write_all(
+                        format!(
+                            "HTTP/1.1 302 Found\r\nLocation: {}/files/tool.نيفا\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            base
+                        )
+                        .as_bytes(),
+                    );
+                    continue;
+                }
                 let (status, body): (&str, String) = match path.as_str() {
                     // قائمة الجذر: ملف .نيفا واحد + نص + مجلد.
                     "/repos/owner/repo/contents" => (
@@ -1231,6 +1244,17 @@ mod tests {
                         "200 OK",
                         format!(
                             "{{\"assets\":[{{\"name\":\"tool.نيفا\",\"browser_download_url\":\"{}/redirect-cross\"}}]}}",
+                            base
+                        ),
+                    ),
+                    // إصدار أصله يعيد توجيها إلى المضيف نفسه
+                    // — فيُتَّبَع ويثبَّت (اجتماع 28: التحويل
+                    // إلى المضيف نفسه مسموح كما كان، وإلى
+                    // مضيف التنزيل المسموح مسموح بشروطه).
+                    "/repos/owner/repo/releases/tags/v5" => (
+                        "200 OK",
+                        format!(
+                            "{{\"assets\":[{{\"name\":\"tool.نيفا\",\"browser_download_url\":\"{}/redirect-same\"}}]}}",
                             base
                         ),
                     ),
@@ -1465,10 +1489,11 @@ mod tests {
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn install_github_release_cross_host_redirect_refused() {
-        // حد موثق: رابط أصل الإصدار الحقيقي يعيد توجيها
-        // إلى مضيف مختلف (release-assets) فيرفضه `اجلب`
-        // بسياسة إعادة التوجيه — وهذا الاختبار يثبت أن
-        // الرفض هو السياسة نفسها لا عيب في مسار الإصدار.
+        // حد موثق: رابط أصل الإصدار يعيد توجيها إلى مضيف
+        // مختلف (localhost هنا — وقائمة سماح اجتماع 28
+        // تغطي مضيف التنزيل وحده) فيرفضه `اجلب` بسياسة
+        // إعادة التوجيه — وهذا الاختبار يثبت أن الرفض
+        // هو السياسة نفسها لا عيب في مسار الإصدار.
         let _guard = install_test_lock();
         let (base, _src_dir) = test_dirs("gh-rel4");
         let policy = test_policy(&base);
@@ -1489,6 +1514,36 @@ mod tests {
             err
         );
         assert!(!base.join("tool.نيفا").exists());
+        crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_github_release_redirect_same_host_followed() {
+        // اجتماع 28: أصل إصدار يعيد توجيها إلى المضيف
+        // نفسه يُتَّبَع ويثبَّت — فمسار الإصدار يكمل عبر
+        // التحويل، كما يكمل عبر التحويل إلى المضيف
+        // المسموح في الشبكة الحقيقية.
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("gh-rel5");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        let got = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/releases/tag/v5",
+        )
+        .unwrap();
+        assert_eq!(got, Value::Str("ثُبّتت الوحدة tool".to_string()));
+        assert_eq!(
+            std::fs::read_to_string(base.join("tool.نيفا")).unwrap(),
+            "صدر قيمة\nقيمة = ٤٢\n"
+        );
         crate::network::set_network_allowed(false);
         cleanup(&base);
     }

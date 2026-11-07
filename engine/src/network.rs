@@ -1936,6 +1936,33 @@ fn fetch_native_with_timeout(
 /// اجلب يمرّر مصرف ذاكرة، ونزّل مصرف ملف. والجسم
 /// نفسه لا يعبر هنا أبدا — المصرف يُرجع مع النتيجة
 /// (أو يُسقَط عند الخطأ فيُغلق ملفه).
+///
+/// اجتماع 28 (§43): قائمة سماح التحويل — مضيف واحد
+/// فقط. يُسمح بالتحويل إليه حين تتحقق كل الشروط
+/// معا: المخطط https، والمضيف مطابق حرفيا (بلا نطاق
+/// فرعي ولا لاحقة)، والمنفذ 443 (الافتراضي لـ https —
+/// فمنفذ غير قياسي على المضيف نفسه يُعامَل مضيفا
+/// مختلفا)، والطريقة GET. والطريقة GET بالبناء: كل
+/// مسارات الجلب هنا تصدر GET فقط (سطر الطلب في
+/// HTTP/1.1 وطلب h2 كلاهما GET) فلا تحويل POST موجود
+/// أصلا. ولا ترويسة اعتماد أو كوكيز تُرسل أصلا
+/// (الترويسات: Host وUser-Agent وAccept فقط) فلا
+/// شيء يُمرَّر إلى المضيف المحوَّل إليه. وبعد السماح
+/// تسري كل الحدود القائمة على المحاولة الجديدة
+/// (المهلة الإجمالية، وسقف الجسم، والتحقق الكامل
+/// من سلسلة TLS، وفحص IP قبل المصافحة) لأن الحلقة
+/// تستدعي `fetch_one_native` نفسه من جديد. وأي مضيف
+/// إضافي يحتاج اجتماعا جديدا — القائمة مضيف واحد.
+#[cfg(not(target_arch = "wasm32"))]
+const REDIRECT_ALLOWLIST_HOST: &str = "release-assets.githubusercontent.com";
+
+#[cfg(not(target_arch = "wasm32"))]
+fn redirect_allowlisted(next: &ParsedUrl) -> bool {
+    next.scheme == "https"
+        && next.host.to_ascii_lowercase() == REDIRECT_ALLOWLIST_HOST
+        && next.port == 443
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch_loop(
     url: &str,
@@ -1984,14 +2011,20 @@ fn fetch_loop(
                 if next.host.to_ascii_lowercase() != current.host.to_ascii_lowercase()
                     || next.port != current.port
                 {
-                    return Err(RioError::runtime(
-                        format!(
-                            "إعادة التوجيه إلى مضيف مختلف ({}) مرفوضة",
-                            next.host
-                        ),
-                        line,
-                        col,
-                    ));
+                    // اجتماع 28: الاستثناء الوحيد لقائمة
+                    // السماح — المضيف المسموح حرفيا عبر
+                    // https؛ وما عداه يرفض كما قرر الاجتماع
+                    // 26 حرفيا (والرسالة نفسها بلا تغيير).
+                    if !redirect_allowlisted(&next) {
+                        return Err(RioError::runtime(
+                            format!(
+                                "إعادة التوجيه إلى مضيف مختلف ({}) مرفوضة",
+                                next.host
+                            ),
+                            line,
+                            col,
+                        ));
+                    }
                 }
                 // جسم 3xx — إن وُجد — لا يلوث الجسم
                 // النهائي: المصرف يُعاد إلى الصفر.
@@ -3457,6 +3490,48 @@ mod tests {
         assert!(resolve_redirect(&cur, "", 1, 1).is_err());
     }
 
+    // اجتماع 28: قائمة سماح التحويل — مضيف واحد فقط،
+    // والمطابقة حرفية بعد تصغير حالة الأحرف.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn redirect_allowlist_matches_exact_host_only() {
+        let yes = |u: &str| {
+            redirect_allowlisted(&parse_url(u, 1, 1).unwrap())
+        };
+        // يقبل: المضيف حرفيا عبر https بالمنفذ الافتراضي.
+        assert!(yes(
+            "https://release-assets.githubusercontent.com/أداة.نيفا"
+        ));
+        // يقبل: المنفذ 443 صريحا (هو الافتراضي نفسه).
+        assert!(yes(
+            "https://release-assets.githubusercontent.com:443/أداة.نيفا"
+        ));
+        // يقبل: حالة الأحرف في المضيف لا تفرق (DNS).
+        assert!(yes(
+            "https://RELEASE-ASSETS.GITHUBUSERCONTENT.COM/أداة.نيفا"
+        ));
+        // يرفض: http لا https.
+        assert!(!yes(
+            "http://release-assets.githubusercontent.com/أداة.نيفا"
+        ));
+        // يرفض: نطاق فرعي.
+        assert!(!yes(
+            "https://sub.release-assets.githubusercontent.com/أداة.نيفا"
+        ));
+        // يرفض: لاحقة (مضيف آخر ينتهي بالاسم نفسه).
+        assert!(!yes(
+            "https://release-assets.githubusercontent.com.evil.com/أداة.نيفا"
+        ));
+        // يرفض: منفذ غير قياسي على المضيف نفسه.
+        assert!(!yes(
+            "https://release-assets.githubusercontent.com:8443/أداة.نيفا"
+        ));
+        // يرفض: مضيف آخر (ومنها مضيف الواجهة نفسه).
+        assert!(!yes("https://example.com/أداة.نيفا"));
+        assert!(!yes("https://github.com/مالك/مستودع"));
+        assert!(!yes("https://api.github.com/repos/مالك/مستودع"));
+    }
+
 
     #[test]
     fn permission_gate_default_off() {
@@ -3589,6 +3664,18 @@ mod tests {
                             "302 Found",
                             vec![
                                 format!("Location: http://localhost:{}/hello", port),
+                                "Content-Length: 0".to_string(),
+                            ],
+                            Vec::new(),
+                        ),
+                        // اجتماع 28: تحويل إلى المضيف المسموح
+                        // حرفيا — البوابة تفتحه، والفشل بعده
+                        // (DNS/اتصال/404) من الشبكة لا من البوابة.
+                        "/redirect-allowlisted" => (
+                            "302 Found",
+                            vec![
+                                "Location: https://release-assets.githubusercontent.com/12345678/niva-terminal-1.2.10.apk"
+                                    .to_string(),
                                 "Content-Length: 0".to_string(),
                             ],
                             Vec::new(),
@@ -3738,6 +3825,38 @@ mod tests {
             "got: {}",
             err
         );
+        set_network_allowed(false);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn fetch_allowlisted_redirect_passes_gate() {
+        // اجتماع 28: التحويل إلى المضيف المسموح يمر
+        // البوابة — فالخطأ بعده ليس «مضيف مختلف» أبدا.
+        // الفشل اللاحق يختلف بالبيئة (لا DNS حقيقي هنا):
+        // على هذه الآلة مهلة اتصال (مهلة 2 ثانية في
+        // الاختبار لا 30)؛ وبلا إنترنت «تعذر حل اسم
+        // المضيف»؛ ومع إنترنت 404 من شبكة التوصيل
+        // نفسها. والتأكيد الوحيد الحتمي هو أن البوابة
+        // لم ترفض — فكل تلك الأخطاء من الشبكة لا منها.
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = test_server();
+        let err = fetch_native_with_timeout(
+            &format!("http://127.0.0.1:{}/redirect-allowlisted", port),
+            2,
+            1,
+            1,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("مضيف مختلف"),
+            "البوابة رفضت المضيف المسموح — got: {}",
+            msg
+        );
+        assert!(!msg.is_empty(), "got empty error");
         set_network_allowed(false);
     }
 
