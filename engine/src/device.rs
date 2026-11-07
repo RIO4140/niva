@@ -1,6 +1,6 @@
 //! جهاز — حوار تفاعلي + تنبيه + نطق + صوت + حساس
-//! (المهام 20 و21 و23 و24 و25 من خطة البناء، أول
-//! قدرات واجهات الجهاز — المرحلة 4).
+//! + اسمع + بطارية (المهام 20 و21 و23 و24 و25 و26
+//! من خطة البناء، قدرات واجهات الجهاز — المرحلة 4).
 //!
 //! المبدأ: المحرك عملية فرعية في التطبيق، فيطلب
 //! الحوار أو التنبيه عبر قناة التحكم المنظمة على
@@ -60,6 +60,14 @@ const STOP_AUDIO_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:أوقف_صو
 /// — أندرويد فقط.
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 const SENSOR_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:حساس:";
+/// بادئة سطر طلب استماع على stderr (المهمة 26) —
+/// أندرويد فقط.
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const LISTEN_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:اسمع:";
+/// بادئة سطر طلب قراءة بطارية على stderr (المهمة 26)
+/// — أندرويد فقط.
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const BATTERY_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:بطارية:";
 /// بادئة سطر نتيجة التحكم على stdin — أندرويد فقط.
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 const RESULT_PREFIX: &str = "\u{0001}نيفا-نتيجة:";
@@ -713,6 +721,54 @@ pub fn serialize_sensor_request(name: &str) -> String {
     out
 }
 
+/// التحقق الخالص من وسائط `جهاز.اسمع` —
+/// بلا معاملات (المهمة 26).
+pub fn validate_listen_args(args: &[Value], line: usize, col: usize) -> RioResult<()> {
+    const DISPLAY: &str = "جهاز.اسمع";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 0 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+/// التحقق الخالص من وسائط `جهاز.بطارية` —
+/// بلا معاملات (المهمة 26).
+pub fn validate_battery_args(args: &[Value], line: usize, col: usize) -> RioResult<()> {
+    const DISPLAY: &str = "جهاز.بطارية";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 0 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+/// تسلسل طلب استماع إلى JSON — كائن فارغ
+/// (بلا معاملات).
+pub fn serialize_listen_request() -> String {
+    "{}".to_string()
+}
+
+/// تسلسل طلب قراءة بطارية إلى JSON — كائن فارغ
+/// (بلا معاملات).
+pub fn serialize_battery_request() -> String {
+    "{}".to_string()
+}
+
 /// نقطة الدخول: `جهاز.انطق(...)` — التحقق أولا (كل
 /// المنصات)، ثم بوابة المنصة، ثم القناة، ثم الإرسال
 /// والانتظار حتى ينتهي النطق؛ وترجع `صحيح` عند
@@ -979,6 +1035,107 @@ fn read_sensor_native(name: &str, line: usize, col: usize) -> RioResult<Value> {
             }
         } else {
             Err(RioError::runtime("الحساس متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.اسمع(...)` — التحقق أولا (كل
+/// المنصات)، ثم بوابة المنصة، ثم القناة، ثم الإرسال
+/// والانتظار حتى يصل النص المسموع؛ وترجع نصا
+/// (المهمة 26). الاستماع حاجب في المحرك (كالحوار
+/// والنطق والحساس) — والتطبيق يجيب دائما بنتيجة
+/// واحدة (نص أو خطأ عربي: إلغاء إفصاح / رفض إذن /
+/// بلا خدمة / بلا كلام واضح).
+pub fn listen_speech(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_listen_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        listen_speech_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn listen_speech_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.اسمع غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                LISTEN_CONTROL_PREFIX,
+                serialize_listen_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Str(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("الاستماع متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.بطارية(...)` — التحقق أولا
+/// (كل المنصات)، ثم بوابة المنصة، ثم القناة، ثم
+/// الإرسال والانتظار حتى يصل القاموس؛ وترجع قاموس
+/// {مستوى، حالة، صحة، حرارة، جهد، مصدر} (المهمة
+/// 26). القراءة لحظية عمليا (بث لاصق جاهز) لكنها
+/// عبر القناة نفسها كالكل — فلا استثناء بروتوكولي.
+pub fn read_battery(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_battery_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        read_battery_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_battery_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.بطارية غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                BATTERY_CONTROL_PREFIX,
+                serialize_battery_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Dict(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("البطارية متاحة داخل التطبيق فقط", line, col))
         }
     }
 }
@@ -2399,5 +2556,117 @@ mod tests {
         assert!(err.contains("تتوقع نصا لاسم الحساس"), "got: {}", err);
         let err = read_sensor(&[], 1, 1).unwrap_err().to_string();
         assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+    }
+
+    #[test]
+    fn validate_listen_args_ok_and_bad() {
+        // بلا معاملات صحيحة.
+        assert!(validate_listen_args(&[], 1, 1).is_ok());
+        // معامل واحد / معاملان.
+        let err = validate_listen_args(&[str_val("زائد")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+        let err = validate_listen_args(&[num_val(1.0), num_val(2.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+    }
+
+    #[test]
+    fn validate_battery_args_ok_and_bad() {
+        // بلا معاملات صحيحة.
+        assert!(validate_battery_args(&[], 1, 1).is_ok());
+        // معامل واحد.
+        let err = validate_battery_args(&[str_val("زائد")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+    }
+
+    #[test]
+    fn serialize_listen_request_round_trip() {
+        // الطلب كائن فارغ.
+        let text = serialize_listen_request();
+        let parsed = parse_json(&text).unwrap();
+        assert_eq!(parsed, Json::Obj(vec![]));
+    }
+
+    #[test]
+    fn serialize_battery_request_round_trip() {
+        // الطلب كائن فارغ.
+        let text = serialize_battery_request();
+        let parsed = parse_json(&text).unwrap();
+        assert_eq!(parsed, Json::Obj(vec![]));
+    }
+
+    #[test]
+    fn parse_listen_result_text() {
+        // نتيجة نص الكلام المسموع.
+        let value = parse_control_result("{\"قيمة\": \"مرحبا يا نيفا\"}", 1, 1).unwrap();
+        assert_eq!(
+            value,
+            Value::Str("مرحبا يا نيفا".to_string())
+        );
+        // (قيمة ليست نصا يرفضها `listen_speech_native`
+        // لا المحلل المشترك — فهي خارج هذا الاختبار.)
+    }
+
+    #[test]
+    fn parse_battery_result_dict() {
+        // نتيجة قاموس البطارية بستة مفاتيح.
+        let value = parse_control_result(
+            "{\"قيمة\": {\"مستوى\": 87, \"حالة\": \"يشحن\", \"صحة\": \"جيدة\", \"حرارة\": 31.5, \"جهد\": 4200, \"مصدر\": \"تيار متردد\"}}",
+            1,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            value,
+            Value::Dict(vec![
+                ("مستوى".to_string(), num_val(87.0)),
+                ("حالة".to_string(), Value::Str("يشحن".to_string())),
+                ("صحة".to_string(), Value::Str("جيدة".to_string())),
+                ("حرارة".to_string(), num_val(31.5)),
+                ("جهد".to_string(), num_val(4200.0)),
+                ("مصدر".to_string(), Value::Str("تيار متردد".to_string())),
+            ])
+        );
+        // (قيمة ليست قاموسا يرفضها `read_battery_native`
+        // لا المحلل المشترك — فهي خارج هذا الاختبار.)
+    }
+
+    #[test]
+    fn listen_refuses_off_android() {
+        // على هذه الآلة (لينكس): الوسائط الصحيحة تصل
+        // إلى بوابة المنصة وترفض بالعربية.
+        let err = listen_speech(&[], 1, 1).unwrap_err().to_string();
+        assert!(
+            err.contains("جهاز.اسمع غير مدعوم على هذه المنصة"),
+            "got: {}",
+            err
+        );
+        // والوسائط الخاطئة ترفض قبل المنصة.
+        let err = listen_speech(&[str_val("زائد")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+    }
+
+    #[test]
+    fn battery_refuses_off_android() {
+        // على هذه الآلة (لينكس): الوسائط الصحيحة تصل
+        // إلى بوابة المنصة وترفض بالعربية.
+        let err = read_battery(&[], 1, 1).unwrap_err().to_string();
+        assert!(
+            err.contains("جهاز.بطارية غير مدعوم على هذه المنصة"),
+            "got: {}",
+            err
+        );
+        // والوسائط الخاطئة ترفض قبل المنصة.
+        let err = read_battery(&[num_val(1.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
     }
 }

@@ -1387,6 +1387,10 @@ fn device_entries() -> Vec<(&'static str, Value)> {
         // المهمة 25 (حساس): المفتاح «حساس» بلا شدة
         // ولا همزة — فلا فخ تهجئة (درس المهمة 24).
         ("حساس", native("حساس", device_sensor)),
+        // المهمة 26 (اسمع + بطارية): المفتاحان بلا
+        // شدة ولا همزة — فلا فخ تهجئة (درس المهمة 24).
+        ("اسمع", native("اسمع", device_listen)),
+        ("بطارية", native("بطارية", device_battery)),
     ]
 }
 
@@ -1422,4 +1426,12 @@ fn device_stop_audio(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, 
 
 fn device_sensor(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     crate::device::read_sensor(args, line, col)
+}
+
+fn device_listen(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::listen_speech(args, line, col)
+}
+
+fn device_battery(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::read_battery(args, line, col)
 }

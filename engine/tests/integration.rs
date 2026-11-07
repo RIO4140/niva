@@ -938,6 +938,84 @@ fn device_sensor_name_resolves_both_modes() {
     assert_eq!(err_v, err_i);
 }
 
+/// المهمة 26 (جهاز.اسمع): خارج أندرويد الرفض
+/// العربي الواضح، متطابقا في الوضعين؛ وأخطاء
+/// الوسائط قبل فحص المنصة تُمسكها ماعدا.
+#[test]
+#[cfg(not(target_os = "android"))]
+fn device_listen_refused_both_modes() {
+    let src = "استورد جهاز\nحاول:\n    جهاز.اسمع()\nماعدا:\n    اطبع \"رفض كما يجب\"\nحاول:\n    جهاز.اسمع \"زائد\"\nماعدا:\n    اطبع \"وسائط كما يجب\"\nحاول:\n    جهاز.اسمع(١)\nماعدا:\n    اطبع \"وسائط كما يجب\"\nاطبع \"تم\"\n";
+    let ((out_i, err_i, code_i), (out_v, err_v, code_v)) = run_both_src(src);
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v,
+        "رفض كما يجب\nوسائط كما يجب\nوسائط كما يجب\nتم\n"
+    );
+}
+
+/// المهمة 26 — انحدار اسم `جهاز.اسمع` (درس المهمة
+/// 24): الاستدعاء بلا `حاول/ماعدا` في الوضعين يفشل
+/// حتما خارج أندرويد، لكن بخطأ المنصة («غير مدعوم
+/// على هذه المنصة») لا بخطأ الاسم («غير مصدر»).
+/// هذا الاختبار غير فراغي عمدا — فنسخة
+/// `حاول/ماعدا` تطبع النتيجة نفسها عند أي خطأ.
+#[test]
+#[cfg(not(target_os = "android"))]
+fn device_listen_name_resolves_both_modes() {
+    let src = "استورد جهاز\nجهاز.اسمع()\n";
+    let ((out_i, err_i, code_i), (out_v, err_v, code_v)) = run_both_src(src);
+    assert_ne!(code_i, 0, "interpreter unexpectedly succeeded");
+    assert_ne!(code_v, 0, "VM unexpectedly succeeded");
+    assert!(err_i.contains("جهاز.اسمع غير مدعوم على هذه المنصة"), "stderr: {}", err_i);
+    assert!(err_v.contains("جهاز.اسمع غير مدعوم على هذه المنصة"), "stderr: {}", err_v);
+    assert!(!err_i.contains("غير مصدر"), "name did not resolve: {}", err_i);
+    assert!(!err_v.contains("غير مصدر"), "name did not resolve: {}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+}
+
+/// المهمة 26 (جهاز.بطارية): خارج أندرويد الرفض
+/// العربي الواضح، متطابقا في الوضعين؛ وأخطاء
+/// الوسائط قبل فحص المنصة تُمسكها ماعدا.
+#[test]
+#[cfg(not(target_os = "android"))]
+fn device_battery_refused_both_modes() {
+    let src = "استورد جهاز\nحاول:\n    جهاز.بطارية()\nماعدا:\n    اطبع \"رفض كما يجب\"\nحاول:\n    جهاز.بطارية \"زائد\"\nماعدا:\n    اطبع \"وسائط كما يجب\"\nحاول:\n    جهاز.بطارية(١)\nماعدا:\n    اطبع \"وسائط كما يجب\"\nاطبع \"تم\"\n";
+    let ((out_i, err_i, code_i), (out_v, err_v, code_v)) = run_both_src(src);
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v,
+        "رفض كما يجب\nوسائط كما يجب\nوسائط كما يجب\nتم\n"
+    );
+}
+
+/// المهمة 26 — انحدار اسم `جهاز.بطارية` (درس المهمة
+/// 24): الاستدعاء بلا `حاول/ماعدا` في الوضعين يفشل
+/// حتما خارج أندرويد، لكن بخطأ المنصة («غير مدعوم
+/// على هذه المنصة») لا بخطأ الاسم («غير مصدر»).
+/// هذا الاختبار غير فراغي عمدا — فنسخة
+/// `حاول/ماعدا` تطبع النتيجة نفسها عند أي خطأ.
+#[test]
+#[cfg(not(target_os = "android"))]
+fn device_battery_name_resolves_both_modes() {
+    let src = "استورد جهاز\nجهاز.بطارية()\n";
+    let ((out_i, err_i, code_i), (out_v, err_v, code_v)) = run_both_src(src);
+    assert_ne!(code_i, 0, "interpreter unexpectedly succeeded");
+    assert_ne!(code_v, 0, "VM unexpectedly succeeded");
+    assert!(err_i.contains("جهاز.بطارية غير مدعوم على هذه المنصة"), "stderr: {}", err_i);
+    assert!(err_v.contains("جهاز.بطارية غير مدعوم على هذه المنصة"), "stderr: {}", err_v);
+    assert!(!err_i.contains("غير مصدر"), "name did not resolve: {}", err_i);
+    assert!(!err_v.contains("غير مصدر"), "name did not resolve: {}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+}
+
 /// مهمة 12 (ملفات): فتح وقراءة وكتابة في الوضعين — المخرج
 /// والخطأ والخروج متطابقة حرفيا؛ والمعرف غير المعروف
 /// والخروج عن المجلد والمجلد والمجلد الأب الغائب والوسائط
