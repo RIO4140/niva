@@ -101,6 +101,27 @@ else
     echo "أدوات Rust موجودة: $(cargo --version)"
 fi
 
+# 3.5 مترجم C (cc) — مطلوب فقط للبناء الأصلي (نيفا ابن --أصلي).
+# غيابه لا يوقف التثبيت: الوضع الافتراضي (المصنوع) يعمل بدونه،
+# وأمر البناء الأصلي نفسه يشرح التثبيت بالعربي عند الحاجة.
+if command -v cc > /dev/null 2>&1; then
+    echo "مترجم C موجود: $(cc --version | head -1)"
+else
+    echo ""
+    echo "تنبيه: مترجم C (cc) غير موجود — البناء الأصلي (نيفا ابن --أصلي) لن يعمل حتى تثبّته."
+    if [ -n "$PREFIX" ] && case "$PREFIX" in *com.termux*) true;; *) false;; esac; then
+        echo "في Termux ثبّته بالأمر: pkg install clang"
+    elif [ "$OS" = "Darwin" ]; then
+        echo "على macOS ثبّته بالأمر: xcode-select --install"
+    elif command -v apt > /dev/null 2>&1; then
+        echo "على Debian/Ubuntu ثبّته بالأمر: apt install gcc"
+    else
+        echo "ثبّت مترجم C (gcc أو clang) من مدير حزم نظامك."
+        echo "على Windows: ثبّت MinGW."
+    fi
+    echo "التثبيت مستمر — الوضع الافتراضي يعمل بلا مترجم C."
+fi
+
 # 4. البناء
 echo ""
 echo "أبني المحرك (قد يستغرق هذا دقيقة في أول مرة)..."

@@ -23,7 +23,7 @@ use niva_engine::interpreter::Interpreter;
 use niva_engine::semantic::SemanticAnalyzer;
 use niva_engine::lexer::{normalize_cli_word, tokenize};
 use niva_engine::parser::Parser;
-use niva_engine::{artifact, repl, vm};
+use niva_engine::{artifact, cgen, repl, vm};
 use std::env;
 use std::fs;
 use std::process::ExitCode;
@@ -42,13 +42,15 @@ fn usage() -> String {
      نيفا --نسخة           عرض الإصدار\n\
      نيفا ابن برنامج.نيفا  بناء مصنوع بايت كود محمول (.نيفاب)\n\
      نيفا ابن --مستقل برنامج.نيفا   بناء ملف تنفيذي مستقل يعمل وحده\n\
+     نيفا ابن --أصلي برنامج.نيفا    بناء ثنائي أصلي عبر مترجم C النظام\n\
      نيفا شغل مصنوع.نيفاب  تشغيل مصنوع بايت كود\n\
      --شجرة                عرض الشجرة النحوية ثم التشغيل\n\
      --اسمح-بالكل         السماح بملفات خارج مجلد البرنامج (للموثوقة فقط)\n\
      --اسمح-بالشبكة       السماح بالشبكة (شبكة.اجلب) — مغلقة افتراضيا\n\
      --اسمح-بالخادم       السماح بالخادم (شبكة.اخدم) — مغلق افتراضيا، وعلم الشبكة وحده لا يكفي\n\
      --مضيف-محلي مضيف       السماح بمضيف محلي صراحة (مثل 127.0.0.1) — وحده لا يفتح الشبكة\n\
-     --مستقل               مع ابن: ملف تنفيذي مستقل بدلا من المصنوع\n"
+     --مستقل               مع ابن: ملف تنفيذي مستقل بدلا من المصنوع\n\
+     --أصلي                مع ابن: ثنائي أصلي (C) بدلا من المصنوع\n"
         .to_string()
 }
 
@@ -109,7 +111,7 @@ fn main() -> ExitCode {
     // Arabic flags only — a Latin flag is rejected here.
     // --مفسر is a HIDDEN diagnostic flag (DESIGN §39.3):
     // known to the parser, but never shown in --مساعدة.
-    const KNOWN_FLAGS: [&str; 10] = [
+    const KNOWN_FLAGS: [&str; 11] = [
         "--مساعده",
         "--نسخه",
         "--تفاعلي",
@@ -120,6 +122,7 @@ fn main() -> ExitCode {
         "--اسمح-بالخادم",
         "--مضيف-محلي",
         "--مستقل",
+        "--اصلي",
     ];
     // ك-2 (مهمة 7): --افتراضي أُزيل — الآلة الافتراضية هي
     // المحرك الافتراضي الآن، فلا معنى للعلم. خطأ عربي واضح
@@ -188,6 +191,12 @@ fn main() -> ExitCode {
     // --مستقل بلا ابن لا معنى له.
     if nargs.iter().any(|a| a == "--مستقل") {
         eprintln!("خطأ: العلم --مستقل يناسب أمر ابن فقط — مثال: نيفا ابن --مستقل برنامج.نيفا");
+        eprint!("{}", usage());
+        return ExitCode::FAILURE;
+    }
+    // --أصلي بلا ابن لا معنى له.
+    if nargs.iter().any(|a| a == "--اصلي") {
+        eprintln!("خطأ: العلم --أصلي يناسب أمر ابن فقط — مثال: نيفا ابن --أصلي برنامج.نيفا");
         eprint!("{}", usage());
         return ExitCode::FAILURE;
     }
@@ -499,6 +508,35 @@ fn do_build(args: &[String], file_args: &[String]) -> ExitCode {
     let standalone = args
         .iter()
         .any(|a| normalize_cli_word(a) == "--مستقل");
+    let native = args
+        .iter()
+        .any(|a| normalize_cli_word(a) == "--اصلي");
+    if standalone && native {
+        eprintln!("خطأ: لا تجمع --مستقل و--أصلي — اختر أحدهما");
+        eprint!("{}", usage());
+        return ExitCode::FAILURE;
+    }
+    if native {
+        // الثنائي الأصلي: المولد يحلل المصدر بنفسه.
+        let out_path = {
+            let p = std::path::Path::new(&src_path);
+            let mut o = p.with_extension("");
+            if cfg!(windows) {
+                o.set_extension("exe");
+            }
+            o
+        };
+        return match cgen::build_native(std::path::Path::new(&src_path), &out_path) {
+            Ok(()) => {
+                println!("بُني الثنائي الأصلي: {}", out_path.display());
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("{}", e);
+                ExitCode::FAILURE
+            }
+        };
+    }
     let source = match fs::read_to_string(&src_path) {
         Ok(s) => s,
         Err(e) => {

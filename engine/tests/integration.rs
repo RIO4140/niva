@@ -1730,7 +1730,12 @@ fn module_private_and_missing_and_cycle_vm_parity() {
     assert_ne!(code_i, 0);
     assert_ne!(code_v, 0);
     assert!(err_i.contains("استيراد دائري"), "stderr: {}", err_i);
-    assert_eq!(err_v, err_i, "VM error differs from interpreter");
+    assert!(err_i.contains("أ ← ب ← أ"), "stderr: {}", err_i);
+    assert!(err_v.contains("استيراد دائري"), "stderr: {}", err_v);
+    assert!(err_v.contains("أ ← ب ← أ"), "stderr: {}", err_v);
+    // (المساواة الكاملة مستحيلة هنا أيضا: كل تشغيل
+    // بمجلد مؤقت مختلف، ورسالة الدورة تسمي الملف —
+    // فالمقارنة على المحتوى كما في حالة «غير موجودة».)
 }
 
 #[test]
