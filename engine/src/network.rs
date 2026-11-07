@@ -1,8 +1,12 @@
 //! Network for Niva v1 (Meeting 22, DESIGN §16; server:
-//! Meeting 27, DESIGN §42): two stdlib functions,
-//! `شبكة.اجلب(url)` — HTTP GET only, returns the response
-//! body as text — and `شبكة.اخدم منفذ شهادة مفتاح معالج
-//! [مضيف]` — a ready HTTPS server with one Niva handler.
+//! Meeting 27, DESIGN §42; POST: Meeting 29, DESIGN
+//! §44): three stdlib functions, `شبكة.اجلب(url)` —
+//! HTTP GET only, returns the response body as text —,
+//! `شبكة.أرسل(رابط، جسم[، نوع_المحتوى])` — HTTP POST
+//! only, same gates and limits as اجلب, returns the
+//! response body as text — and `شبكة.اخدم منفذ شهادة
+//! مفتاح معالج [مضيف]` — a ready HTTPS server with one
+//! Niva handler.
 //!
 //! Permission: network is OFF by default. The gate lives here
 //! (`set_network_allowed` / `network_allowed`); the interpreter
@@ -39,8 +43,8 @@
 //! HTTP/2 (Meeting 27, DESIGN §42), native only, behind the
 //! `http2` feature (which implies `https` — HTTP/2 in Niva
 //! is HTTPS-only, negotiated by ALPN; there is no cleartext
-//! h2c). No new Niva API: `اجلب` and `اخدم` negotiate h2
-//! vs HTTP/1.1 transparently — the client offers
+//! h2c). No new Niva API: `اجلب` and `أرسل` and `اخدم`
+//! negotiate h2 vs HTTP/1.1 transparently — the client offers
 //! ["h2", "http/1.1"], the server answers with what it
 //! supports, and each side falls back to the existing
 //! HTTP/1.1 code when the peer offers no ALPN or only
@@ -76,12 +80,18 @@
 //! - No redirect to a different host (host + port must match),
 //!   same-host redirects at most 5, HTTPS→HTTP downgrades
 //!   refused, HTTP→HTTPS upgrades allowed (same host only).
+//!   After a POST, 301/302/303 re-issue as GET first and
+//!   then follow the same redirect rules (including the
+//!   §43 one-host allowlist), while 307/308 repeat the POST
+//!   with the same body to the same host only — any other
+//!   host is refused (Meeting 29, DESIGN §44).
 //!   The IP check runs before the TLS handshake, so a
 //!   certificate is never even offered to a refused address.
 //!
 //! Resource limits (§9): 30 second timeout, 5 MB maximum
-//! response body. Errors are Arabic, in the engine's existing
-//! style (kind + message, no stack traces to the user).
+//! response body, 5 MB maximum POST request body. Errors are
+//! Arabic, in the engine's existing style (kind + message, no
+//! stack traces to the user).
 
 use crate::error::{RioError, RioResult};
 use crate::value::Value;
@@ -96,6 +106,9 @@ pub const PERMISSION_ERROR_MARKER: &str = "الشبكة مغلقة افتراض�
 pub const TIMEOUT_SECS: u64 = 30;
 /// 5 MB, the adopted maximum response body (§9).
 pub const MAX_RESPONSE_BYTES: usize = 5 * 1024 * 1024;
+/// 5 MB, the adopted maximum POST request body (Meeting 29,
+/// DESIGN §44 — the same cap as the response body).
+pub const MAX_REQUEST_BYTES: usize = 5 * 1024 * 1024;
 /// At most 5 same-host redirects (§7).
 pub const MAX_REDIRECTS: usize = 5;
 
@@ -302,6 +315,61 @@ pub fn fetch(url: &str, line: usize, col: usize) -> RioResult<Value> {
         let url = url.to_string();
         let text = run_cancellable(
             move || fetch_text_native(&url, TIMEOUT_SECS, line, col),
+            line,
+            col,
+        )?;
+        Ok(Value::Str(text))
+    }
+}
+
+/// الإرسال (اجتماع 29، DESIGN §44): `شبكة.أرسل(رابط،
+/// جسم[، نوع_المحتوى])` — HTTP POST، يرجع نص جسم الرد
+/// كما في `اجلب`. النوع الافتراضي `application/json`؛
+/// والوسيط الثالث يبدّله (لتدفق الجهاز:
+/// `application/x-www-form-urlencoded`). والبوابات
+/// والحدود حرفيا كما في `اجلب`: بوابة الشبكة نفسها بلا
+/// إذن جديد؛ ومهلة 30 ثانية إجمالية؛ وسقف الرد 5
+/// ميغابايت؛ وسقف جسم الطلب 5 ميغابايت (يُفحص قبل أي
+/// شبكة)؛ والتحقق الكامل من سلسلة TLS؛ وفحص IP قبل
+/// المصافحة. والمحرك لا يضيف أي ترويسة اعتماد من
+/// نفسه. وغير-2xx خطأ عربي يسمّي الحالة كما في `اجلب`.
+/// WASM: جلب المتصفح نفسه بطريقة POST.
+pub fn post(
+    url: &str,
+    body: &str,
+    content_type: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    if !network_allowed() {
+        return Err(RioError::runtime(
+            "الشبكة مغلقة افتراضيا — استخدم --اسمح-بالشبكة للسماح بالشبكة، أو وافق عند أول استخدام في الكونسول",
+            line,
+            col,
+        ));
+    }
+    if body.len() > MAX_REQUEST_BYTES {
+        return Err(RioError::runtime(
+            "جسم الطلب أكبر من الحد الأقصى (5 ميغابايت)",
+            line,
+            col,
+        ));
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        post_wasm(url, body, content_type, line, col)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // المهمة 22: كما في اجلب — العمل على خيط عامل
+        // والانتظار يقرأ stdin أثناءه (سطر الإلغاء).
+        let url = url.to_string();
+        let body = body.to_string();
+        let content_type = content_type.to_string();
+        let text = run_cancellable(
+            move || {
+                post_text_native(&url, &body, &content_type, TIMEOUT_SECS, line, col)
+            },
             line,
             col,
         )?;
@@ -1902,6 +1970,59 @@ pub(crate) fn ip_class(ip: &std::net::IpAddr) -> Option<&'static str> {
 // Native fetch: hand-rolled HTTP/1.1 over std TcpStream.
 // ----------------------------------------------------------------
 
+/// طريقة الطلب في نقطة التنفيذ الواحدة (اجتماع 29):
+/// GET (اجلب/نزّل) أو POST (شبكة.أرسل).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FetchMethod {
+    Get,
+    Post,
+}
+
+/// ما يصدره `fetch_one_native` في محاولة واحدة: الطريقة
+/// + جسم الطلب (فارغ في GET) + نوع المحتوى (فارغ في
+/// GET). الحلقة تحمل نسخة قابلة للتعديل — فبعد POST
+/// يتحول الطلب إلى GET عند 301/302/303، ويبقى POST
+/// بالجسم نفسه عند 307/308.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone)]
+struct FetchRequest {
+    method: FetchMethod,
+    body: Vec<u8>,
+    content_type: String,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl FetchRequest {
+    fn get() -> Self {
+        FetchRequest {
+            method: FetchMethod::Get,
+            body: Vec::new(),
+            content_type: String::new(),
+        }
+    }
+
+    fn post(body: &[u8], content_type: &str) -> Self {
+        FetchRequest {
+            method: FetchMethod::Post,
+            body: body.to_vec(),
+            content_type: content_type.to_string(),
+        }
+    }
+
+    /// بعد POST: 301/302/303 تُعاد GET (بلا جسم وبلا
+    /// نوع محتوى) — كما في المتصفحات.
+    fn to_get(&mut self) {
+        self.method = FetchMethod::Get;
+        self.body.clear();
+        self.content_type.clear();
+    }
+
+    fn is_post(&self) -> bool {
+        self.method == FetchMethod::Post
+    }
+}
+
 /// النص الكامل للرد (اجلب): المصرف ذاكرة، والتحويل
 /// إلى Value على المتصل (فالعامل يرجع String يعبر
 /// الخيوط — والقيم Rc لا تعبرها).
@@ -1913,7 +2034,25 @@ fn fetch_text_native(
     col: usize,
 ) -> RioResult<String> {
     let sink: Box<dyn BodySink + Send> = Box::new(MemorySink::new());
-    let sink = fetch_loop(url, timeout_secs, line, col, sink)?;
+    let sink = fetch_loop(url, &FetchRequest::get(), timeout_secs, line, col, sink)?;
+    Ok(sink.finish_string().unwrap_or_default())
+}
+
+/// النص الكامل للرد (شبكة.أرسل): كـ`fetch_text_native`
+/// لكن بطلب POST — الجسم ونوع المحتوى يمران في الطلب
+/// عبر الحلقة (فيعيد التوجيه إصدارهما كما يقرر §44).
+#[cfg(not(target_arch = "wasm32"))]
+fn post_text_native(
+    url: &str,
+    body: &str,
+    content_type: &str,
+    timeout_secs: u64,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    let sink: Box<dyn BodySink + Send> = Box::new(MemorySink::new());
+    let req = FetchRequest::post(body.as_bytes(), content_type);
+    let sink = fetch_loop(url, &req, timeout_secs, line, col, sink)?;
     Ok(sink.finish_string().unwrap_or_default())
 }
 
@@ -1942,17 +2081,22 @@ fn fetch_native_with_timeout(
 /// معا: المخطط https، والمضيف مطابق حرفيا (بلا نطاق
 /// فرعي ولا لاحقة)، والمنفذ 443 (الافتراضي لـ https —
 /// فمنفذ غير قياسي على المضيف نفسه يُعامَل مضيفا
-/// مختلفا)، والطريقة GET. والطريقة GET بالبناء: كل
-/// مسارات الجلب هنا تصدر GET فقط (سطر الطلب في
-/// HTTP/1.1 وطلب h2 كلاهما GET) فلا تحويل POST موجود
-/// أصلا. ولا ترويسة اعتماد أو كوكيز تُرسل أصلا
-/// (الترويسات: Host وUser-Agent وAccept فقط) فلا
-/// شيء يُمرَّر إلى المضيف المحوَّل إليه. وبعد السماح
-/// تسري كل الحدود القائمة على المحاولة الجديدة
+/// مختلفا)، والطريقة GET. ولا ترويسة اعتماد أو كوكيز
+/// تُرسل أصلا (الترويسات: Host وUser-Agent وAccept
+/// فقط — وفي POST يضاف Content-Type وContent-Length)
+/// فلا شيء يُمرَّر إلى المضيف المحوَّل إليه. وبعد
+/// السماح تسري كل الحدود القائمة على المحاولة الجديدة
 /// (المهلة الإجمالية، وسقف الجسم، والتحقق الكامل
 /// من سلسلة TLS، وفحص IP قبل المصافحة) لأن الحلقة
 /// تستدعي `fetch_one_native` نفسه من جديد. وأي مضيف
 /// إضافي يحتاج اجتماعا جديدا — القائمة مضيف واحد.
+///
+/// اجتماع 29 (§44): التحويلات بعد POST — 301/302/303
+/// (وأي 3xx آخر بحامل عنوان) تُعاد GET أولا ثم تسري
+/// قواعد التحويل نفسها (الاجتماعان 26 و28 حرفيا،
+/// ومنها قائمة السماح)؛ و307/308 يعيد POST بالجسم
+/// نفسه للمضيف نفسه فقط — وأي مضيف مختلف يرفض
+/// (قائمة السماح لا تسري على 307/308).
 #[cfg(not(target_arch = "wasm32"))]
 const REDIRECT_ALLOWLIST_HOST: &str = "release-assets.githubusercontent.com";
 
@@ -1966,12 +2110,16 @@ fn redirect_allowlisted(next: &ParsedUrl) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch_loop(
     url: &str,
+    req: &FetchRequest,
     timeout_secs: u64,
     line: usize,
     col: usize,
     mut sink: Box<dyn BodySink + Send>,
 ) -> RioResult<Box<dyn BodySink + Send>> {
     let mut current = parse_url(url, line, col)?;
+    // نسخة قابلة للتعديل: بعد POST قد يتحول الطلب
+    // إلى GET (301/302/303) أو يبقى POST (307/308).
+    let mut req = req.clone();
     let mut redirects = 0usize;
     // Audit م-15: one total deadline for the whole fetch
     // (connect + headers + body + redirects) — a slow server
@@ -1981,11 +2129,11 @@ fn fetch_loop(
         std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
     loop {
         check_cancelled(line, col)?;
-        let (outcome, s) = fetch_one_native(&current, deadline, line, col, sink)?;
+        let (outcome, s) = fetch_one_native(&current, &req, deadline, line, col, sink)?;
         sink = s;
         match outcome {
             FetchOutcome::Body => return Ok(sink),
-            FetchOutcome::Redirect(location) => {
+            FetchOutcome::Redirect(status, location) => {
                 if redirects >= MAX_REDIRECTS {
                     return Err(RioError::runtime(
                         "عدد إعادات التوجيه تجاوز الحد (5)",
@@ -2008,14 +2156,30 @@ fn fetch_loop(
                         col,
                     ));
                 }
-                if next.host.to_ascii_lowercase() != current.host.to_ascii_lowercase()
-                    || next.port != current.port
-                {
-                    // اجتماع 28: الاستثناء الوحيد لقائمة
-                    // السماح — المضيف المسموح حرفيا عبر
-                    // https؛ وما عداه يرفض كما قرر الاجتماع
-                    // 26 حرفيا (والرسالة نفسها بلا تغيير).
-                    if !redirect_allowlisted(&next) {
+                let cross_host = next.host.to_ascii_lowercase()
+                    != current.host.to_ascii_lowercase()
+                    || next.port != current.port;
+                // اجتماع 29: بعد POST — 307/308 يعيد POST
+                // بالجسم نفسه للمضيف نفسه فقط (قائمة
+                // السماح لا تسري هنا)؛ وكل 3xx آخر (ومنها
+                // 301/302/303) يُعاد GET أولا ثم تسري
+                // قواعد التحويل نفسها (الاجتماعان 26 و28).
+                if req.is_post() && (status == 307 || status == 308) {
+                    if cross_host {
+                        return Err(RioError::runtime(
+                            format!(
+                                "إعادة التوجيه إلى مضيف مختلف ({}) مرفوضة",
+                                next.host
+                            ),
+                            line,
+                            col,
+                        ));
+                    }
+                } else {
+                    if req.is_post() {
+                        req.to_get();
+                    }
+                    if cross_host && !redirect_allowlisted(&next) {
                         return Err(RioError::runtime(
                             format!(
                                 "إعادة التوجيه إلى مضيف مختلف ({}) مرفوضة",
@@ -2079,7 +2243,7 @@ fn download_native_with_timeout(
         limit,
         display: display.to_string(),
     });
-    match fetch_loop(url, timeout_secs, line, col, sink) {
+    match fetch_loop(url, &FetchRequest::get(), timeout_secs, line, col, sink) {
         Ok(sink) => Ok(sink.finish_bytes()),
         Err(e) => {
             // الجزئي يُحذف (المقبض أُغلق بسقوط
@@ -2226,7 +2390,10 @@ enum FetchOutcome {
     /// الجسم كاملا في المصرف (النص عند اجلب، والملف
     /// عند نزّل — لا يعبر هنا أبدا).
     Body,
-    Redirect(String),
+    /// إعادة توجيه: رمز الحالة + العنوان. الرمز لازم
+    /// للحلقة (اجتماع 29): 301/302/303 تُعاد GET،
+    /// و307/308 يعيد POST للمضيف نفسه فقط.
+    Redirect(u16, String),
 }
 
 /// Resolve a Location value against the current URL: absolute
@@ -2383,6 +2550,7 @@ fn is_target_safe(b: u8) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn fetch_one_native(
     url: &ParsedUrl,
+    req: &FetchRequest,
     deadline: std::time::Instant,
     line: usize,
     col: usize,
@@ -2459,10 +2627,24 @@ fn fetch_one_native(
     // يرفضه المحلل الصارم (llhttp) برمز 400. والهدف
     // المرمّز نفسه يمر إلى HTTP/2 أدناه.
     let target = encode_request_target(&url.path);
-    let request = format!(
-        "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Niva/1.0\r\nAccept: */*\r\nConnection: close\r\n\r\n",
-        target, host_header
+    // اجتماع 29: الطريقة من الطلب (GET أو POST)؛ وفي
+    // POST يضاف نوع المحتوى وطول الجسم، والجسم نفسه
+    // بايتات بعد سطر فارغ (لا ترويسة اعتماد أبدا).
+    let method = if req.is_post() { "POST" } else { "GET" };
+    let mut head = format!(
+        "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Niva/1.0\r\nAccept: */*\r\n",
+        method, target, host_header
     );
+    if req.is_post() {
+        head.push_str(&format!(
+            "Content-Type: {}\r\nContent-Length: {}\r\n",
+            req.content_type,
+            req.body.len()
+        ));
+    }
+    head.push_str("Connection: close\r\n\r\n");
+    let mut request: Vec<u8> = head.into_bytes();
+    request.extend_from_slice(&req.body);
     // Meeting 26: HTTPS wraps the connected TcpStream in TLS
     // (after the §7 IP check above, before the handshake).
     // Meeting 27 §42: with the `http2` feature the handshake
@@ -2472,12 +2654,12 @@ fn fetch_one_native(
     if url.scheme == "https" {
         #[cfg(feature = "http2")]
         {
-            return fetch_https_h2(stream, url, &request, &target, &host_header, deadline, line, col, sink);
+            return fetch_https_h2(stream, url, &request, req, &target, &host_header, deadline, line, col, sink);
         }
         #[cfg(not(feature = "http2"))]
         {
             let mut tls = tls_wrap(stream, &url.host, line, col)?;
-            tls.write_all(request.as_bytes()).map_err(|e| {
+            tls.write_all(&request).map_err(|e| {
                 io_timeout_or(
                     e,
                     "انتهت مهلة إرسال الطلب",
@@ -2490,7 +2672,7 @@ fn fetch_one_native(
             return Ok((outcome, sink));
         }
     }
-    stream.write_all(request.as_bytes()).map_err(|e| {
+    stream.write_all(&request).map_err(|e| {
         io_timeout_or(
             e,
             "انتهت مهلة إرسال الطلب",
@@ -2551,7 +2733,8 @@ enum HttpsOutcome {
 fn fetch_https_h2(
     stream: std::net::TcpStream,
     url: &ParsedUrl,
-    request: &str,
+    request: &[u8],
+    req: &FetchRequest,
     path: &str,
     host_header: &str,
     deadline: std::time::Instant,
@@ -2566,8 +2749,13 @@ fn fetch_https_h2(
     // مكتبة http ترفض الـ URI غير ASCII أصلا).
     let path = path.to_string();
     let host_header = host_header.to_string();
+    // الطلب الكامل (ترويسات + جسم) والطلب المنطقي
+    // ينتقلان مملوكين إلى خيط وقت التشغيل (async move
+    // ينقل القيم نفسها فيُستعار منها داخل المستقبل).
+    let request = request.to_vec();
+    let req = req.clone();
     let outcome = run_on_runtime(async move {
-        fetch_https_h2_async(stream, &host_async, &path, &host_header, deadline, line, col, sink).await
+        fetch_https_h2_async(stream, &host_async, &path, &host_header, &req, deadline, line, col, sink).await
     })
     .map_err(|_| RioError::runtime("تعذر تنفيذ طلب الشبكة", line, col))?;
     match outcome {
@@ -2580,7 +2768,7 @@ fn fetch_https_h2(
             let _ = std_stream.set_read_timeout(Some(time_left(deadline, line, col)?));
             let _ = std_stream.set_write_timeout(Some(time_left(deadline, line, col)?));
             let mut tls = rustls::StreamOwned::new(conn, std_stream);
-            tls.write_all(request.as_bytes()).map_err(|e| {
+            tls.write_all(&request).map_err(|e| {
                 io_timeout_or(
                     e,
                     "انتهت مهلة إرسال الطلب",
@@ -2619,6 +2807,7 @@ async fn fetch_https_h2_async(
     host: &str,
     path: &str,
     host_header: &str,
+    req: &FetchRequest,
     deadline: std::time::Instant,
     line: usize,
     col: usize,
@@ -2673,10 +2862,12 @@ async fn fetch_https_h2_async(
         // المهمة (ووقت التشغيل يُسقط معها).
         let path = path.to_string();
         let host_header = host_header.to_string();
+        let req = req.clone();
         let (outcome, sink) = match await_cancellable(fetch_h2(
             tls,
             path,
             host_header,
+            req,
             deadline,
             line,
             col,
@@ -2732,7 +2923,7 @@ async fn await_cancellable<T: Send + 'static>(
 }
 
 /// One h2 request over an established TLS stream: handshake,
-/// send GET, read the response. The h2 connection future is
+/// send GET or POST, read the response. The h2 connection future is
 /// driven on a spawned task (the canonical h2 pattern); the
 /// request runs on this task. Same result mapping as
 /// read_response (2xx → Body, 3xx + Location → Redirect,
@@ -2743,11 +2934,15 @@ async fn fetch_h2(
     tls: tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
     path: String,
     host_header: String,
+    req: FetchRequest,
     deadline: std::time::Instant,
     line: usize,
     col: usize,
     mut sink: Box<dyn BodySink + Send>,
 ) -> RioResult<(FetchOutcome, Box<dyn BodySink + Send>)> {
+    // لاستطلاع مستقبل الرد بلا انتظار (رد مبكر أثناء
+    // إرسال الجسم): Future::poll.
+    use std::future::Future;
     let (send, conn) = h2::client::handshake(tls)
         .await
         .map_err(|_| RioError::runtime("تعذر بدء اتصال HTTP/2", line, col))?;
@@ -2766,17 +2961,91 @@ async fn fetch_h2(
     // (المهمة 22: المسار والترويسة مملوكان هنا —
     // فالمستقبل يُنقَل إلى مهمة tokio فيستلزم 'static.)
     let uri = format!("https://{}{}", host_header, path);
-    let req = http::Request::builder()
-        .method("GET")
+    // اجتماع 29: الطريقة من الطلب؛ وفي POST يضاف نوع
+    // المحتوى (بلا ترويسة اعتماد أبدا — كما في HTTP/1.1).
+    let mut builder = http::Request::builder()
+        .method(if req.is_post() {
+            http::Method::POST
+        } else {
+            http::Method::GET
+        })
         .uri(uri)
         .header("host", host_header.as_str())
         .header("user-agent", "Niva/1.0")
-        .header("accept", "*/*")
+        .header("accept", "*/*");
+    if req.is_post() {
+        builder = builder.header("content-type", req.content_type.as_str());
+    }
+    let http_req = builder
         .body(())
         .map_err(|_| RioError::runtime("تعذر بناء طلب HTTP/2", line, col))?;
-    let (resp_fut, _send_stream) = send
-        .send_request(req, true)
+    // جسم فارغ (GET أو POST بلا جسم) يغلق الإرسال مع
+    // الترويسات؛ وغيره يُرسل عبر دفق الإرسال أدناه.
+    let end_of_stream = !req.is_post() || req.body.is_empty();
+    let (resp_fut, mut send_stream) = send
+        .send_request(http_req, end_of_stream)
         .map_err(|_| RioError::runtime("تعذر إرسال طلب HTTP/2", line, col))?;
+    let mut resp_fut = std::pin::pin!(resp_fut);
+    if req.is_post() && !req.body.is_empty() {
+        // إرسال الجسم في قطع 16KB تناسب نافذة التدفق
+        // الأولية (65,535 بايت) — على نمط اختبار 413
+        // في هذا الملف: حجز سعة، انتظارها بالمهلة،
+        // ثم إرسال القطعة. والجسم مسقوف أصلا بـ5MB.
+        let mut offset = 0usize;
+        while offset < req.body.len() {
+            // رد مبكر من الخادم (خطأ بلا قراءة الجسم):
+            // نتوقف عن الإرسال ونأخذ الرد نفسه بدلا
+            // من خطأ إرسال مضلل.
+            let mut answered = false;
+            std::future::poll_fn(|cx| {
+                match resp_fut.as_mut().poll(cx) {
+                    std::task::Poll::Ready(_) => {
+                        answered = true;
+                        std::task::Poll::Ready(())
+                    }
+                    std::task::Poll::Pending => std::task::Poll::Ready(()),
+                }
+            })
+            .await;
+            if answered {
+                break;
+            }
+            let n = (req.body.len() - offset).min(16 * 1024);
+            send_stream.reserve_capacity(n);
+            loop {
+                if send_stream.capacity() >= n {
+                    break;
+                }
+                let left = time_left_async(deadline).ok_or_else(|| {
+                    RioError::runtime("انتهت المهلة الإجمالية (30 ثانية)", line, col)
+                })?;
+                match tokio::time::timeout(
+                    left,
+                    std::future::poll_fn(|cx| send_stream.poll_capacity(cx)),
+                )
+                .await
+                {
+                    Ok(Some(Ok(_))) => continue,
+                    _ => break,
+                }
+            }
+            if send_stream.capacity() < n {
+                return Err(RioError::runtime(
+                    "انتهت مهلة إرسال الطلب",
+                    line,
+                    col,
+                ));
+            }
+            let last = offset + n >= req.body.len();
+            send_stream
+                .send_data(
+                    bytes::Bytes::copy_from_slice(&req.body[offset..offset + n]),
+                    last,
+                )
+                .map_err(|_| RioError::runtime("تعذر إرسال طلب HTTP/2", line, col))?;
+            offset += n;
+        }
+    }
     let left = time_left_async(deadline).ok_or_else(|| {
         RioError::runtime("انتهت المهلة الإجمالية (30 ثانية)", line, col)
     })?;
@@ -2820,7 +3089,7 @@ async fn fetch_h2(
         Ok((FetchOutcome::Body, sink))
     } else if (300..400).contains(&status) {
         match location {
-            Some(loc) => Ok((FetchOutcome::Redirect(loc), sink)),
+            Some(loc) => Ok((FetchOutcome::Redirect(status, loc), sink)),
             None => Err(RioError::runtime(
                 format!("الخادم رد برمز الحالة {} بلا عنوان إعادة توجيه", status),
                 line,
@@ -3208,7 +3477,7 @@ fn read_response(
         Ok(FetchOutcome::Body)
     } else if (300..400).contains(&status) {
         match location {
-            Some(loc) => Ok(FetchOutcome::Redirect(loc)),
+            Some(loc) => Ok(FetchOutcome::Redirect(status, loc)),
             None => Err(RioError::runtime(
                 format!("الخادم رد برمز الحالة {} بلا عنوان إعادة توجيه", status),
                 line,
@@ -3280,6 +3549,44 @@ fn read_line_capped(
 
 #[cfg(target_arch = "wasm32")]
 fn fetch_wasm(url: &str, line: usize, col: usize) -> RioResult<Value> {
+    Ok(Value::Str(wasm_request("GET", url, None, None, line, col)?))
+}
+
+/// POST في المتصفح (اجتماع 29): كـ`fetch_wasm` لكن
+/// بطريقة POST وجسم ونوع محتوى — والمتصفح نفسه
+/// يحوّل 301/302/303 إلى GET ويحفظ الطريقة في
+/// 307/308؛ وفحص الرابط النهائي والترويسات كما في GET.
+#[cfg(target_arch = "wasm32")]
+fn post_wasm(
+    url: &str,
+    body: &str,
+    content_type: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    Ok(Value::Str(wasm_request(
+        "POST",
+        url,
+        Some(body),
+        Some(content_type),
+        line,
+        col,
+    )?))
+}
+
+/// طلب واحد عبر XMLHttpRequest المتزامن (WASM فقط):
+/// الطريقة والجسم ونوع المحتوى من المتصل؛ والباقي
+/// (فحص الرابط النهائي، والحالة، وسقف الرد) واحد
+/// في GET وPOST.
+#[cfg(target_arch = "wasm32")]
+fn wasm_request(
+    method: &str,
+    url: &str,
+    body: Option<&str>,
+    content_type: Option<&str>,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
     let parsed = parse_url(url, line, col)?;
     // HTTPS works here (browser TLS); plain HTTP from an https
     // page is blocked by the browser's mixed-content policy,
@@ -3289,11 +3596,20 @@ fn fetch_wasm(url: &str, line: usize, col: usize) -> RioResult<Value> {
         RioError::runtime("تعذر إنشاء طلب الشبكة في المتصفح", line, col)
     })?;
     // Synchronous: the interpreter cannot await a Promise.
-    xhr.open_with_async("GET", url, false).map_err(|_| {
+    xhr.open_with_async(method, url, false).map_err(|_| {
         RioError::runtime(format!("رابط غير صالح: {}", url), line, col)
     })?;
+    if let Some(ct) = content_type {
+        xhr.set_request_header("Content-Type", ct).map_err(|_| {
+            RioError::runtime("تعذر ضبط نوع محتوى الطلب", line, col)
+        })?;
+    }
     xhr.set_timeout(TIMEOUT_SECS as u32 * 1000);
-    xhr.send().map_err(|_| {
+    match body {
+        Some(b) => xhr.send_with_opt_str(Some(b)),
+        None => xhr.send(),
+    }
+    .map_err(|_| {
         RioError::runtime(
             "تعذر الوصول إلى الرابط (تحقق من الرابط ومن اتصال الشبكة)",
             line,
@@ -3346,7 +3662,7 @@ fn fetch_wasm(url: &str, line: usize, col: usize) -> RioResult<Value> {
             col,
         ));
     }
-    Ok(Value::Str(text))
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -3752,6 +4068,190 @@ mod tests {
         }
     }
 
+    // اجتماع 29: خادم POST محاكٍ — يقرأ الطريقة
+    // والترويسات والجسم (حتى Content-Length تماما)،
+    // ويرد بحسب المسار والطريقة. منفصل عن test_server
+    // (الذي لا يقرأ جسما) فلا يمس اختبارات GET القائمة.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_test_server() -> u16 {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = match stream {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                // قراءة الترويسات (حتى \r\n\r\n أينما
+                // وقع — فالجسم قد يصل في القطعة نفسها).
+                let mut req: Vec<u8> = Vec::new();
+                let mut buf = [0u8; 1024];
+                let head_end = loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break None,
+                        Ok(n) => {
+                            req.extend_from_slice(&buf[..n]);
+                            if let Some(p) =
+                                req.windows(4).position(|w| w == b"\r\n\r\n")
+                            {
+                                break Some(p);
+                            }
+                            if req.len() > 16384 {
+                                break None;
+                            }
+                        }
+                        Err(_) => break None,
+                    }
+                };
+                let Some(head_end) = head_end else {
+                    continue;
+                };
+                let head =
+                    String::from_utf8_lossy(&req[..head_end]).into_owned();
+                let mut body: Vec<u8> = req[head_end + 4..].to_vec();
+                let mut lines = head.lines();
+                let request_line = lines.next().unwrap_or("");
+                let mut parts = request_line.split_whitespace();
+                let method = parts.next().unwrap_or("").to_string();
+                let path = parts.next().unwrap_or("/").to_string();
+                let mut content_length = 0usize;
+                let mut content_type = String::new();
+                for l in lines {
+                    if let Some((name, value)) = l.split_once(':') {
+                        match name.trim().to_ascii_lowercase().as_str() {
+                            "content-length" => {
+                                content_length =
+                                    value.trim().parse().unwrap_or(0)
+                            }
+                            "content-type" => {
+                                content_type = value.trim().to_string()
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                while body.len() < content_length {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => body.extend_from_slice(&buf[..n]),
+                        Err(_) => break,
+                    }
+                }
+                body.truncate(content_length);
+                let body_text = String::from_utf8_lossy(&body).into_owned();
+                let (status, mut headers, resp_body): (
+                    &str,
+                    Vec<String>,
+                    Vec<u8>,
+                ) = match (method.as_str(), path.as_str()) {
+                    ("POST", "/echo") => (
+                        "200 OK",
+                        vec![],
+                        format!(
+                            "طريقة:POST نوع:{} جسم:{}",
+                            content_type, body_text
+                        )
+                        .into_bytes(),
+                    ),
+                    ("GET", "/echo-get") => {
+                        ("200 OK", vec![], "وصل GET".as_bytes().to_vec())
+                    }
+                    ("POST", "/echo-get") => {
+                        ("200 OK", vec![], "وصل POST".as_bytes().to_vec())
+                    }
+                    ("POST", "/post-redirect-302") => (
+                        "302 Found",
+                        vec![
+                            "Location: /echo-get".to_string(),
+                            "Content-Length: 0".to_string(),
+                        ],
+                        Vec::new(),
+                    ),
+                    ("POST", "/post-redirect-307") => (
+                        "307 Temporary Redirect",
+                        vec![
+                            "Location: /echo".to_string(),
+                            "Content-Length: 0".to_string(),
+                        ],
+                        Vec::new(),
+                    ),
+                    ("POST", "/post-cross-307") => (
+                        "307 Temporary Redirect",
+                        vec![
+                            format!("Location: http://localhost:{}/echo", port),
+                            "Content-Length: 0".to_string(),
+                        ],
+                        Vec::new(),
+                    ),
+                    // اجتماع 28: تحويل إلى المضيف المسموح
+                    // حرفيا — البوابة تفتحه، والفشل بعده
+                    // (DNS/اتصال/404) من الشبكة لا من البوابة.
+                    ("POST", "/post-redirect-allowlisted") => (
+                        "302 Found",
+                        vec![
+                            "Location: https://release-assets.githubusercontent.com/12345678/niva-terminal-1.2.10.apk"
+                                .to_string(),
+                            "Content-Length: 0".to_string(),
+                        ],
+                        Vec::new(),
+                    ),
+                    ("POST", "/missing") => (
+                        "404 Not Found",
+                        vec!["Content-Length: 0".to_string()],
+                        Vec::new(),
+                    ),
+                    _ => (
+                        "404 Not Found",
+                        vec!["Content-Length: 0".to_string()],
+                        Vec::new(),
+                    ),
+                };
+                if !headers.iter().any(|h| h.starts_with("Content-Length")) {
+                    headers.push(format!("Content-Length: {}", resp_body.len()));
+                }
+                headers.push("Connection: close".to_string());
+                let mut resp = format!("HTTP/1.1 {}\r\n", status).into_bytes();
+                for h in &headers {
+                    resp.extend_from_slice(h.as_bytes());
+                    resp.extend_from_slice(b"\r\n");
+                }
+                resp.extend_from_slice(b"\r\n");
+                resp.extend_from_slice(&resp_body);
+                let _ = stream.write_all(&resp);
+            }
+        });
+        port
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_ok(url: &str, body: &str, ct: &str) -> String {
+        match post(url, body, ct, 1, 1).unwrap() {
+            Value::Str(s) => s,
+            other => panic!("expected text, got {:?}", other),
+        }
+    }
+
+    #[cfg(test)]
+    fn post_native_with_timeout(
+        url: &str,
+        body: &str,
+        ct: &str,
+        timeout_secs: u64,
+        line: usize,
+        col: usize,
+    ) -> RioResult<Value> {
+        Ok(Value::Str(post_text_native(
+            url,
+            body,
+            ct,
+            timeout_secs,
+            line,
+            col,
+        )?))
+    }
+
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn fetch_get_success_plain_and_chunked() {
@@ -3886,6 +4386,220 @@ mod tests {
         let err = fetch(&format!("http://127.0.0.1:{}/status500", port), 1, 1).unwrap_err();
         assert!(err.to_string().contains("500"), "got: {}", err);
         let err = fetch(&format!("http://127.0.0.1:{}/missing", port), 1, 1).unwrap_err();
+        assert!(err.to_string().contains("404"), "got: {}", err);
+        set_network_allowed(false);
+    }
+
+    // اجتماع 29: شبكة.أرسل — POST كامل: الطريقة
+    // والنوع الافتراضي والجسم في الرد.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_sends_method_and_default_content_type() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = post_test_server();
+        let out = post_ok(
+            &format!("http://127.0.0.1:{}/echo", port),
+            "{\"مفتاح\":1}",
+            "application/json",
+        );
+        assert_eq!(
+            out,
+            "طريقة:POST نوع:application/json جسم:{\"مفتاح\":1}",
+            "got: {}",
+            out
+        );
+        set_network_allowed(false);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_custom_content_type() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = post_test_server();
+        let out = post_ok(
+            &format!("http://127.0.0.1:{}/echo", port),
+            "a=1&b=2",
+            "application/x-www-form-urlencoded",
+        );
+        assert_eq!(
+            out,
+            "طريقة:POST نوع:application/x-www-form-urlencoded جسم:a=1&b=2",
+            "got: {}",
+            out
+        );
+        set_network_allowed(false);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_empty_body_ok() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = post_test_server();
+        let out = post_ok(
+            &format!("http://127.0.0.1:{}/echo", port),
+            "",
+            "application/json",
+        );
+        assert_eq!(
+            out,
+            "طريقة:POST نوع:application/json جسم:",
+            "got: {}",
+            out
+        );
+        set_network_allowed(false);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_gate_refused() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(false);
+        let err = post("http://127.0.0.1:9/echo", "{}", "application/json", 1, 1)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains(PERMISSION_ERROR_MARKER),
+            "got: {}",
+            err
+        );
+        set_network_allowed(false);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_body_too_big_refused() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = post_test_server();
+        let big = "x".repeat(MAX_REQUEST_BYTES + 1);
+        let err = post(
+            &format!("http://127.0.0.1:{}/echo", port),
+            &big,
+            "application/json",
+            1,
+            1,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("جسم الطلب"), "got: {}", msg);
+        assert!(msg.contains("5 ميغابايت"), "got: {}", msg);
+        set_network_allowed(false);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_redirect_302_becomes_get() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = post_test_server();
+        let out = post_ok(
+            &format!("http://127.0.0.1:{}/post-redirect-302", port),
+            "{\"مفتاح\":1}",
+            "application/json",
+        );
+        assert_eq!(out, "وصل GET", "got: {}", out);
+        set_network_allowed(false);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_redirect_307_same_host_repeats_post() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = post_test_server();
+        let out = post_ok(
+            &format!("http://127.0.0.1:{}/post-redirect-307", port),
+            "{\"مفتاح\":1}",
+            "application/json",
+        );
+        assert_eq!(
+            out,
+            "طريقة:POST نوع:application/json جسم:{\"مفتاح\":1}",
+            "got: {}",
+            out
+        );
+        set_network_allowed(false);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_redirect_307_cross_host_refused() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = post_test_server();
+        let err = post(
+            &format!("http://127.0.0.1:{}/post-cross-307", port),
+            "{}",
+            "application/json",
+            1,
+            1,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("مضيف مختلف"),
+            "got: {}",
+            err
+        );
+        set_network_allowed(false);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_redirect_302_allowlisted_passes_gate() {
+        // اجتماع 28 + 29: تحويل 302 بعد POST إلى المضيف
+        // المسموح يمر البوابة (كـGET) — فالخطأ بعده
+        // ليس «مضيف مختلف» أبدا؛ والفشل اللاحق من
+        // الشبكة (لا DNS حقيقي هنا) لا من البوابة.
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = post_test_server();
+        let err = post_native_with_timeout(
+            &format!(
+                "http://127.0.0.1:{}/post-redirect-allowlisted",
+                port
+            ),
+            "{}",
+            "application/json",
+            2,
+            1,
+            1,
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("مضيف مختلف"),
+            "البوابة رفضت المضيف المسموح — got: {}",
+            msg
+        );
+        assert!(!msg.is_empty(), "got empty error");
+        set_network_allowed(false);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_non_2xx_names_status() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = post_test_server();
+        let err = post(
+            &format!("http://127.0.0.1:{}/missing", port),
+            "{}",
+            "application/json",
+            1,
+            1,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("404"), "got: {}", err);
         set_network_allowed(false);
     }
@@ -4645,7 +5359,29 @@ mod tests {
                 },
                 _ => String::new(),
             };
+            // اجتماع 29: /echo-post يردّ طريقة الطلب
+            // وجسمه كما وصل إلى المعالج — فيثبت أن
+            // الخادم يستقبل أجسام POST (الحقل «جسم»
+            // في قاموس الطلب) وأن عميل POST يصل إليه.
+            let method = match &arg {
+                Value::Dict(pairs) => match pairs.iter().find(|(k, _)| k == "طريقة") {
+                    Some((_, Value::Str(m))) => m.clone(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            };
+            let body = match &arg {
+                Value::Dict(pairs) => match pairs.iter().find(|(k, _)| k == "جسم") {
+                    Some((_, Value::Str(b))) => b.clone(),
+                    _ => String::new(),
+                },
+                _ => String::new(),
+            };
             match path.as_str() {
+                "/echo-post" => (
+                    Ok(Value::Str(format!("طريقة:{} جسم:{}", method, body))),
+                    String::new(),
+                ),
                 "/dict" => (
                     Ok(Value::Dict(vec![
                         ("حالة".to_string(), Value::Number(201.0)),
@@ -5181,6 +5917,42 @@ mod tests {
             err.to_string().contains("الخادم رد برمز الحالة 500"),
             "got: {}",
             err
+        );
+        clear_test_tls_roots();
+        set_network_allowed(false);
+        stop_test_server(handle, rx);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // اجتماع 29: عميل المحرك يرسل POST عبر HTTP/2 إلى
+    // خادم نيفا نفسه (تفاوض ALPN على h2) — والمعالج
+    // (/echo-post في StubCaller) يردّ الطريقة والجسم،
+    // فيثبت مسار POST في HTTP/2 إرسالا واستقبالا.
+    #[test]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "http2"))]
+    fn h2_engine_client_posts_to_niva_server() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        let dir = server_test_dir("h2-post");
+        let (handle, rx, port) =
+            start_test_server(true, &dir, "server-cert.pem", "server-key.pem");
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        set_test_tls_roots(vec![tls_fixture("tls-ca-cert.der")]);
+        let out = post_ok(
+            &format!("https://127.0.0.1:{}/echo-post", port),
+            "{\"مفتاح\":1}",
+            "application/json",
+        );
+        assert_eq!(out, "طريقة:POST جسم:{\"مفتاح\":1}", "got: {}", out);
+        let form = post_ok(
+            &format!("https://127.0.0.1:{}/echo-post", port),
+            "code=abc&grant_type=device_code",
+            "application/x-www-form-urlencoded",
+        );
+        assert_eq!(
+            form, "طريقة:POST جسم:code=abc&grant_type=device_code",
+            "got: {}",
+            form
         );
         clear_test_tls_roots();
         set_network_allowed(false);

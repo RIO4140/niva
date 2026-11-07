@@ -622,7 +622,63 @@ fn net_bind(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usiz
     Ok(Value::Nil)
 }
 
+// --- إرسال HTTP (اجتماع 29، DESIGN §44) ---
+//
+// `شبكة.أرسل(رابط، جسم[، نوع_المحتوى])` — HTTP POST،
+// يرجع نص جسم الرد كما في `اجلب`. النوع الافتراضي
+// `application/json`، والوسيط الثالث يبدّله (لتدفق
+// الجهاز: `application/x-www-form-urlencoded`).
+// تحت بوابة الشبكة نفسها بلا إذن جديد؛ وسقف جسم
+// الطلب 5 ميغابايت؛ وغير-2xx خطأ عربي يسمّي الحالة.
+// المفتاح المخزّن `أرسل` نفسه لمقابس المهمة 13 —
+// فالدالة الواحدة توزّع على نوع المعامل الأول: عدد
+// (معرف مقبس) يرسل على المقبس كما كان، ونص (رابط)
+// يرسل POST. فلا مفتاح مكرر ولا كسر لواجهة المقابس.
+fn network_post(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    if args.len() != 2 && args.len() != 3 {
+        return Err(RioError::typ(
+            "الدالة شبكة.أرسل تتوقع معاملين (رابط جسم) أو 3 (رابط جسم نوع_المحتوى)",
+            line,
+            col,
+        ));
+    }
+    let url = need_string("شبكة.أرسل", &args[0], line, col)?;
+    let body = need_string("شبكة.أرسل", &args[1], line, col)?;
+    let content_type = if args.len() == 3 {
+        let ct = need_string("شبكة.أرسل", &args[2], line, col)?;
+        if ct.is_empty() {
+            return Err(RioError::typ(
+                "الدالة شبكة.أرسل تتوقع نوع محتوى غير فارغ",
+                line,
+                col,
+            ));
+        }
+        ct
+    } else {
+        "application/json".to_string()
+    };
+    if url.is_empty() {
+        return Err(RioError::typ(
+            "الدالة شبكة.أرسل تتوقع رابطا غير فارغ",
+            line,
+            col,
+        ));
+    }
+    crate::network::post(&url, &body, &content_type, line, col)
+}
+
 fn net_send(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    // اجتماع 29: المفتاح `أرسل` واحد لوجهتين — عدد
+    // أولا يعني مقبسا (المهمة 13 كما كان)، ونص أولا
+    // يعني رابطا فيُرسل POST. وغيرهما خطأ نوع صريح.
+    if let Some(Value::Str(_)) = args.first() {
+        return network_post(_ctx, args, line, col);
+    }
     need_args("شبكة.أرسل", args, 2, line, col)?;
     let id = need_socket_id("شبكة.أرسل", args, 0, line, col)?;
     let text = need_string("شبكة.أرسل", &args[1], line, col)?;

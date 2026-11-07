@@ -3153,6 +3153,186 @@ fn network_download_http_error_no_partial_both_modes() {
     assert_eq!(out_v, "فشل كما يجب\nلا ملف\n", "stdout={}", out_v);
 }
 
+// اجتماع 29: خادم POST محاكٍ لاختبارات التكامل —
+// يقرأ الترويسات ثم الجسم (بطول المحتوى) ويردّ
+// الطريقة ونوع المحتوى والجسم كما وصلته.
+fn net_post_test_server() -> u16 {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let mut req: Vec<u8> = Vec::new();
+            let mut buf = [0u8; 1024];
+            let head_end = loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break None,
+                    Ok(n) => {
+                        req.extend_from_slice(&buf[..n]);
+                        if let Some(p) = req.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break Some(p);
+                        }
+                        if req.len() > 16384 {
+                            break None;
+                        }
+                    }
+                    Err(_) => break None,
+                }
+            };
+            let Some(head_end) = head_end else {
+                continue;
+            };
+            let head = String::from_utf8_lossy(&req[..head_end]).into_owned();
+            let mut body: Vec<u8> = req[head_end + 4..].to_vec();
+            let mut lines = head.lines();
+            let request_line = lines.next().unwrap_or("");
+            let mut parts = request_line.split_whitespace();
+            let method = parts.next().unwrap_or("").to_string();
+            let path = parts.next().unwrap_or("/").to_string();
+            let mut content_length = 0usize;
+            let mut content_type = String::new();
+            for l in lines {
+                if let Some((name, value)) = l.split_once(':') {
+                    match name.trim().to_ascii_lowercase().as_str() {
+                        "content-length" => {
+                            content_length = value.trim().parse().unwrap_or(0)
+                        }
+                        "content-type" => content_type = value.trim().to_string(),
+                        _ => {}
+                    }
+                }
+            }
+            while body.len() < content_length {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => body.extend_from_slice(&buf[..n]),
+                    Err(_) => break,
+                }
+            }
+            body.truncate(content_length);
+            let body_text = String::from_utf8_lossy(&body).into_owned();
+            let (status, resp_body): (&str, Vec<u8>) =
+                match (method.as_str(), path.as_str()) {
+                    ("POST", "/echo") => (
+                        "200 OK",
+                        format!("طريقة:POST نوع:{} جسم:{}", content_type, body_text)
+                            .into_bytes(),
+                    ),
+                    _ => ("404 Not Found", Vec::new()),
+                };
+            let extra = format!("Content-Length: {}\r\n", resp_body.len());
+            let mut resp =
+                format!("HTTP/1.1 {}\r\n{}Connection: close\r\n\r\n", status, extra)
+                    .into_bytes();
+            resp.extend_from_slice(&resp_body);
+            let _ = stream.write_all(&resp);
+        }
+    });
+    port
+}
+
+// اجتماع 29: شبكة.أرسل من برنامج نيفا في الوضعين —
+// النوع الافتراضي application/json والجسم يصل كما هو.
+#[test]
+fn network_post_both_modes() {
+    let port = net_post_test_server();
+    let src = format!(
+        "استورد شبكة\nاطبع شبكة.أرسل(\"http://127.0.0.1:{}/echo\", \"بيانات\")\n",
+        port
+    );
+    let (out_i, err_i, code_i) = run_src_flags(
+        &src,
+        &["--مفسر", "--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"],
+    );
+    let (out_v, err_v, code_v) = run_src_flags(
+        &src,
+        &["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"],
+    );
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v, "طريقة:POST نوع:application/json جسم:بيانات\n",
+        "stdout={}", out_v
+    );
+}
+
+// اجتماع 29: شبكة.أرسل بنوع محتوى مبدَّل (تدفق الجهاز:
+// application/x-www-form-urlencoded) في الوضعين.
+#[test]
+fn network_post_custom_content_type_both_modes() {
+    let port = net_post_test_server();
+    let src = format!(
+        "استورد شبكة\nاطبع شبكة.أرسل(\"http://127.0.0.1:{}/echo\", \"code=abc&grant_type=device_code\", \"application/x-www-form-urlencoded\")\n",
+        port
+    );
+    let (out_i, err_i, code_i) = run_src_flags(
+        &src,
+        &["--مفسر", "--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"],
+    );
+    let (out_v, err_v, code_v) = run_src_flags(
+        &src,
+        &["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"],
+    );
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v,
+        "طريقة:POST نوع:application/x-www-form-urlencoded جسم:code=abc&grant_type=device_code\n",
+        "stdout={}", out_v
+    );
+}
+
+// اجتماع 29: POST إلى مسار غائب خطأ يسمّي 404 في الوضعين.
+#[test]
+fn network_post_non_2xx_both_modes() {
+    let port = net_post_test_server();
+    let src = format!(
+        "استورد شبكة\nاطبع شبكة.أرسل(\"http://127.0.0.1:{}/missing\", \"بيانات\")\n",
+        port
+    );
+    let flags_i = ["--مفسر", "--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"];
+    let flags_v = ["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"];
+    let (_o, err_i, c_i) = run_src_flags(&src, &flags_i);
+    let (_o2, err_v, c_v) = run_src_flags(&src, &flags_v);
+    assert_ne!(c_i, 0, "interpreter accepted a 404 POST");
+    assert_ne!(c_v, 0, "VM accepted a 404 POST");
+    assert!(err_i.contains("404"), "interpreter stderr: {}", err_i);
+    assert!(err_v.contains("404"), "VM stderr: {}", err_v);
+}
+
+// اجتماع 29: POST بلا بوابة شبكة مرفوض في الوضعين.
+#[test]
+fn network_post_gate_refused_both_modes() {
+    let port = net_post_test_server();
+    let src = format!(
+        "استورد شبكة\nاطبع شبكة.أرسل(\"http://127.0.0.1:{}/echo\", \"بيانات\")\n",
+        port
+    );
+    let (_o, err_i, c_i) = run_src_flags(&src, &["--مفسر"]);
+    let (_o2, err_v, c_v) = run_src_flags(&src, &[]);
+    assert_ne!(c_i, 0, "interpreter allowed POST without the flag");
+    assert_ne!(c_v, 0, "VM allowed POST without the flag");
+    assert!(
+        err_i.contains("الشبكة مغلقة افتراضيا"),
+        "interpreter stderr: {}",
+        err_i
+    );
+    assert!(
+        err_v.contains("الشبكة مغلقة افتراضيا"),
+        "VM stderr: {}",
+        err_v
+    );
+}
+
 // المهمة 22: إلغاء جلب طويل من stdin — يكتب
 // الاختبار سطر الإلغاء في stdin الطفل بعد 800ms
 // (والجلب المتدفق يستغرق ~3s)، فيمسك البرنامج
