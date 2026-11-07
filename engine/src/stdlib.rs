@@ -1117,6 +1117,38 @@ fn files_entries() -> Vec<(&'static str, Value)> {
         ("افتح", native("افتح", file_open)),
         ("اقرأ", native("اقرأ", file_read)),
         ("اكتب", native("اكتب", file_write)),
+        // عمليات SAF في شجرة ممنوحة (المهمة 28) —
+        // مفاتيح مخزنة بلا شدة (قاعدة نبّه).
+        (
+            "امنح_مجلد",
+            native("امنح_مجلد", file_saf_grant_tree),
+        ),
+        ("سرد_ممنوح", native("سرد_ممنوح", file_saf_list)),
+        (
+            "اقرأ_ممنوح",
+            native("اقرأ_ممنوح", file_saf_read),
+        ),
+        (
+            "اكتب_ممنوح",
+            native("اكتب_ممنوح", file_saf_write),
+        ),
+        (
+            "أنشئ_ملف_ممنوح",
+            native("أنشئ_ملف_ممنوح", file_saf_create_file),
+        ),
+        (
+            "أنشئ_مجلد_ممنوح",
+            native("أنشئ_مجلد_ممنوح", file_saf_create_dir),
+        ),
+        (
+            "تفاصيل_ممنوح",
+            native("تفاصيل_ممنوح", file_saf_stat),
+        ),
+        (
+            "احذف_ممنوح",
+            native("احذف_ممنوح", file_saf_delete),
+        ),
+        ("الممنوح", native("الممنوح", file_saf_list_trees)),
     ]
 }
 
@@ -1143,6 +1175,46 @@ fn file_write(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usi
     let policy = ctx.server_file_policy();
     crate::files::write_file(&policy, id, &content, line, col)?;
     Ok(Value::Nil)
+}
+
+// --- عمليات SAF في شجرة ممنوحة (المهمة 28) ---
+// تغليف رقيق: الفحص كله في files.rs (عدد ونوع ثم
+// منصة ثم قناة)، والمفاتيح المخزنة بلا شدة.
+
+fn file_saf_grant_tree(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::files::saf_grant_tree(args, line, col)
+}
+
+fn file_saf_list(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::files::saf_list_granted(args, line, col)
+}
+
+fn file_saf_read(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::files::saf_read_granted(args, line, col)
+}
+
+fn file_saf_write(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::files::saf_write_granted(args, line, col)
+}
+
+fn file_saf_create_file(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::files::saf_create_file_granted(args, line, col)
+}
+
+fn file_saf_create_dir(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::files::saf_create_dir_granted(args, line, col)
+}
+
+fn file_saf_stat(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::files::saf_stat_granted(args, line, col)
+}
+
+fn file_saf_delete(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::files::saf_delete_granted(args, line, col)
+}
+
+fn file_saf_list_trees(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::files::saf_list_trees(args, line, col)
 }
 
 // --- نظام (catalog task 14, from arch/*/entry/syscalls) ---

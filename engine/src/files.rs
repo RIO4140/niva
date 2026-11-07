@@ -19,6 +19,7 @@
 
 use crate::error::{ErrorKind, RioError, RioResult};
 use crate::permissions::FilePolicy;
+use crate::value::Value;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -356,6 +357,637 @@ fn write_file_native(
     Ok(())
 }
 
+// ===== عمليات SAF — ملفات في شجرة ممنوحة (المهمة 28، CATALOG-19) =====
+// التسع دوال في وحدة `ملفات` القائمة — لا وحدة جديدة.
+// المبدأ الحاكم: التطبيق ينفذ والمحرك يطلب فقط — شجرة
+// SAF عناوين `content://` لا يفتحها `std::fs` إطلاقا،
+// فكل دالة ترسل طلبا واحدا عبر قناة التحكم وتنتظر
+// النتيجة عبر `wait_for_result` المشترك (نمط قدرات
+// `جهاز` حرفيا). البادئة واحدة لكل المسار
+// (`ملف-ممنوح:`) والتفريع على حقل `عملية` في
+// التطبيق. ترتيب الفحوص: وسائط (عدد ونوع) ← منصة
+// (WASM ← رسالة المتصفح؛ غير أندرويد ← رفض باسم
+// الدالة) ← قناة (أندرويد بلا قناة ← «الملفات
+// الممنوحة متاحة داخل التطبيق فقط») ← إرسال وانتظار.
+// المسارات نسبية إلى جذر الشجرة بفاصل `/`، والمسار
+// الفارغ هو الجذر نفسه؛ وفحص `..` المعجمي في
+// التطبيق قبل أي وصول (CATALOG-19 §2). قراءة SAF
+// نص UTF-8 بسقف 5 ميغابايت (يفرضه التطبيق)؛ وحصة
+// القرص 100 ميغابايت لا تسري على كتابة SAF (§1).
+// العمليات الصامتة (كتابة/إنشاء/حذف) ترجع `صحيح`
+// لا null — لأن `json_to_value` يرفض null (§2).
+
+/// بادئة طلبات SAF على stderr (قناة التحكم —
+/// أندرويد فقط؛ على غيرها لا يرسل المحرك شيئا).
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const SAF_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:ملف-ممنوح:";
+
+/// رفض أندرويد بلا قناة تحكم (CATALOG-19 §2 —
+/// أندرويد فقط).
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const SAF_OUTSIDE_APP: &str = "الملفات الممنوحة متاحة داخل التطبيق فقط";
+
+/// خطأ نوع ببادئة اسم الدالة المنقّط (نمط `جهاز`).
+fn saf_typ_error(display: &str, what: &str, line: usize, col: usize) -> RioError {
+    RioError::typ(format!("الدالة {} {}", display, what), line, col)
+}
+
+/// عدد المعاملات (نمط `need_args` في stdlib).
+fn saf_need_args(
+    display: &str,
+    args: &[Value],
+    expected: usize,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    if args.len() != expected {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع {} معاملات لكن أعطيت {}",
+                display,
+                expected,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+/// معرف شجرة: عدد صحيح موجب (1 فأكثر، دون 9e15 —
+/// نمط معرف التنبيه في `جهاز`).
+fn saf_need_tree_id(display: &str, v: &Value, line: usize, col: usize) -> RioResult<u64> {
+    match v {
+        Value::Number(x) if x.fract() == 0.0 && *x >= 1.0 && x.abs() < 9.0e15 => Ok(*x as u64),
+        Value::Number(_) => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع عددا صحيحا موجبا لمعرف الشجرة",
+                display
+            ),
+            line,
+            col,
+        )),
+        other => Err(saf_typ_error(
+            display,
+            &format!("تتوقع عددا لمعرف الشجرة لكن أعطيت {}", other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+/// مسار نصي (فارغ = جذر الشجرة — CATALOG-19 §2).
+fn saf_need_path(display: &str, v: &Value, line: usize, col: usize) -> RioResult<String> {
+    match v {
+        Value::Str(s) => Ok(s.clone()),
+        other => Err(saf_typ_error(
+            display,
+            &format!("تتوقع نصا للمسار لكن أعطيت {}", other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+/// نص المحتوى (فارغ مسموح — كتابة محتوى فارغ).
+fn saf_need_text(display: &str, v: &Value, line: usize, col: usize) -> RioResult<String> {
+    match v {
+        Value::Str(s) => Ok(s.clone()),
+        other => Err(saf_typ_error(
+            display,
+            &format!("تتوقع نصا للنص لكن أعطيت {}", other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+/// تسلسل طلب بلا وسائط (تهريب يدوي — `json_escape` المشترك).
+/// يبنى على أندرويد فقط، ويبقى في اختبارات الوحدة.
+#[cfg(any(all(target_os = "android", not(target_arch = "wasm32")), test))]
+fn saf_json_no_args(op: &str) -> String {
+    format!("{{\"عملية\":{}}}", crate::device::json_escape(op))
+}
+
+/// تسلسل طلب بمعرف شجرة ومسار.
+#[cfg(any(all(target_os = "android", not(target_arch = "wasm32")), test))]
+fn saf_json_tree_path(op: &str, id: u64, path: &str) -> String {
+    format!(
+        "{{\"عملية\":{},\"معرف\":{},\"مسار\":{}}}",
+        crate::device::json_escape(op),
+        id,
+        crate::device::json_escape(path)
+    )
+}
+
+/// تسلسل طلب كتابة (معرف ومسار ونص).
+#[cfg(any(all(target_os = "android", not(target_arch = "wasm32")), test))]
+fn saf_json_write(id: u64, path: &str, text: &str) -> String {
+    format!(
+        "{{\"عملية\":{},\"معرف\":{},\"مسار\":{},\"نص\":{}}}",
+        crate::device::json_escape("اكتب_ممنوح"),
+        id,
+        crate::device::json_escape(path),
+        crate::device::json_escape(text)
+    )
+}
+
+/// إرسال طلب SAF واحد وانتظار نتيجته (أندرويد فقط —
+/// الانتظار القابل للإلغاء أدناه).
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+fn saf_request(json: &str, line: usize, col: usize) -> RioResult<Value> {
+    eprintln!("{}{}", SAF_CONTROL_PREFIX, json);
+    saf_wait_for_result(line, col)
+}
+
+/// انتظار نتيجة SAF — كـ`wait_for_result` المشترك
+/// لكن سطر الإلغاء يجهض الانتظار («أُلغي الأمر»)
+/// بدلا من تجاهله: قراءة SAF جارية قابلة للإلغاء
+/// بزر «ألغِ الأمر» (CATALOG-19 §9) كما الجلب
+/// (مهمة 22)؛ أما الحوار فيبقى غير قابل للإلغاء
+/// عمدا (قرار مهمة 22 المسجل في `wait_for_result`).
+/// والأسطر الغريبة تُتخطى كما في المشترك. يبقى في
+/// اختبارات الوحدة لاختبار الإلغاء بالحقن.
+#[cfg(any(all(target_os = "android", not(target_arch = "wasm32")), test))]
+fn saf_wait_for_result(line: usize, col: usize) -> RioResult<Value> {
+    loop {
+        let buf = match crate::stdin_pump::next_raw_line() {
+            Some(b) => b,
+            None => {
+                return Err(RioError::runtime(
+                    "انتهى الإدخال أثناء انتظار نتيجة التحكم",
+                    line,
+                    col,
+                ));
+            }
+        };
+        let text = buf.trim_end_matches(['\n', '\r']);
+        if crate::stdin_pump::is_cancel_line(text) {
+            return Err(RioError::runtime("أُلغي الأمر", line, col));
+        }
+        if let Some(payload) = text.strip_prefix(crate::device::RESULT_PREFIX) {
+            return crate::device::parse_control_result(payload, line, col);
+        }
+        // سطر آخر أثناء الانتظار — يُتجاهل (كما المشترك).
+    }
+}
+
+/// `ملفات.امنح_مجلد()` — يفتح منتقي النظام ويعيد
+/// معرف الشجرة (عدد صحيح من 1).
+pub fn saf_grant_tree(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    saf_need_args("ملفات.امنح_مجلد", args, 0, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(
+            crate::device::WASM_REFUSAL,
+            line,
+            col,
+        ))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        saf_grant_tree_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn saf_grant_tree_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "ملفات.امنح_مجلد غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            match saf_request(&saf_json_no_args("امنح_مجلد"), line, col)? {
+                v @ Value::Number(_) => Ok(v),
+                _ => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+            }
+        } else {
+            Err(RioError::runtime(SAF_OUTSIDE_APP, line, col))
+        }
+    }
+}
+
+/// `ملفات.سرد_ممنوح(معرف، مسار)` — قائمة أسماء.
+pub fn saf_list_granted(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.سرد_ممنوح";
+    saf_need_args(DISPLAY, args, 2, line, col)?;
+    let id = saf_need_tree_id(DISPLAY, &args[0], line, col)?;
+    let path = saf_need_path(DISPLAY, &args[1], line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (id, path);
+        Err(RioError::runtime(
+            crate::device::WASM_REFUSAL,
+            line,
+            col,
+        ))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        saf_list_granted_native(id, &path, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn saf_list_granted_native(id: u64, path: &str, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (id, path);
+        Err(RioError::runtime(
+            "ملفات.سرد_ممنوح غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            match saf_request(&saf_json_tree_path("سرد_ممنوح", id, path), line, col)? {
+                v @ Value::List(_) => Ok(v),
+                _ => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+            }
+        } else {
+            Err(RioError::runtime(SAF_OUTSIDE_APP, line, col))
+        }
+    }
+}
+
+/// `ملفات.اقرأ_ممنوح(معرف، مسار)` — نص الملف.
+pub fn saf_read_granted(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.اقرأ_ممنوح";
+    saf_need_args(DISPLAY, args, 2, line, col)?;
+    let id = saf_need_tree_id(DISPLAY, &args[0], line, col)?;
+    let path = saf_need_path(DISPLAY, &args[1], line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (id, path);
+        Err(RioError::runtime(
+            crate::device::WASM_REFUSAL,
+            line,
+            col,
+        ))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        saf_read_granted_native(id, &path, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn saf_read_granted_native(id: u64, path: &str, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (id, path);
+        Err(RioError::runtime(
+            "ملفات.اقرأ_ممنوح غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            match saf_request(&saf_json_tree_path("اقرأ_ممنوح", id, path), line, col)? {
+                v @ Value::Str(_) => Ok(v),
+                _ => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+            }
+        } else {
+            Err(RioError::runtime(SAF_OUTSIDE_APP, line, col))
+        }
+    }
+}
+
+/// `ملفات.اكتب_ممنوح(معرف، مسار، نص)` — استبدال
+/// كامل للمحتوى، وترجع `صحيح` عند النجاح.
+pub fn saf_write_granted(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.اكتب_ممنوح";
+    saf_need_args(DISPLAY, args, 3, line, col)?;
+    let id = saf_need_tree_id(DISPLAY, &args[0], line, col)?;
+    let path = saf_need_path(DISPLAY, &args[1], line, col)?;
+    let text = saf_need_text(DISPLAY, &args[2], line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (id, path, text);
+        Err(RioError::runtime(
+            crate::device::WASM_REFUSAL,
+            line,
+            col,
+        ))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        saf_write_granted_native(id, &path, &text, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn saf_write_granted_native(
+    id: u64,
+    path: &str,
+    text: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (id, path, text);
+        Err(RioError::runtime(
+            "ملفات.اكتب_ممنوح غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            match saf_request(&saf_json_write(id, path, text), line, col)? {
+                v @ Value::Bool(_) => Ok(v),
+                _ => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+            }
+        } else {
+            Err(RioError::runtime(SAF_OUTSIDE_APP, line, col))
+        }
+    }
+}
+
+/// `ملفات.أنشئ_ملف_ممنوح(معرف، مسار)` — ينشئ ملفا
+/// نصيا فارغا، ويرجع `صحيح` عند النجاح.
+pub fn saf_create_file_granted(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.أنشئ_ملف_ممنوح";
+    saf_need_args(DISPLAY, args, 2, line, col)?;
+    let id = saf_need_tree_id(DISPLAY, &args[0], line, col)?;
+    let path = saf_need_path(DISPLAY, &args[1], line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (id, path);
+        Err(RioError::runtime(
+            crate::device::WASM_REFUSAL,
+            line,
+            col,
+        ))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        saf_create_file_granted_native(id, &path, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn saf_create_file_granted_native(
+    id: u64,
+    path: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (id, path);
+        Err(RioError::runtime(
+            "ملفات.أنشئ_ملف_ممنوح غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            match saf_request(
+                &saf_json_tree_path("أنشئ_ملف_ممنوح", id, path),
+                line,
+                col,
+            )? {
+                v @ Value::Bool(_) => Ok(v),
+                _ => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+            }
+        } else {
+            Err(RioError::runtime(SAF_OUTSIDE_APP, line, col))
+        }
+    }
+}
+
+/// `ملفات.أنشئ_مجلد_ممنوح(معرف، مسار)` — ينشئ
+/// مجلدا، ويرجع `صحيح` عند النجاح.
+pub fn saf_create_dir_granted(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.أنشئ_مجلد_ممنوح";
+    saf_need_args(DISPLAY, args, 2, line, col)?;
+    let id = saf_need_tree_id(DISPLAY, &args[0], line, col)?;
+    let path = saf_need_path(DISPLAY, &args[1], line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (id, path);
+        Err(RioError::runtime(
+            crate::device::WASM_REFUSAL,
+            line,
+            col,
+        ))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        saf_create_dir_granted_native(id, &path, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn saf_create_dir_granted_native(
+    id: u64,
+    path: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (id, path);
+        Err(RioError::runtime(
+            "ملفات.أنشئ_مجلد_ممنوح غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            match saf_request(
+                &saf_json_tree_path("أنشئ_مجلد_ممنوح", id, path),
+                line,
+                col,
+            )? {
+                v @ Value::Bool(_) => Ok(v),
+                _ => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+            }
+        } else {
+            Err(RioError::runtime(SAF_OUTSIDE_APP, line, col))
+        }
+    }
+}
+
+/// `ملفات.تفاصيل_ممنوح(معرف، مسار)` — قاموس
+/// {نوع، حجم، تاريخ} (التاريخ نص UTC).
+pub fn saf_stat_granted(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.تفاصيل_ممنوح";
+    saf_need_args(DISPLAY, args, 2, line, col)?;
+    let id = saf_need_tree_id(DISPLAY, &args[0], line, col)?;
+    let path = saf_need_path(DISPLAY, &args[1], line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (id, path);
+        Err(RioError::runtime(
+            crate::device::WASM_REFUSAL,
+            line,
+            col,
+        ))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        saf_stat_granted_native(id, &path, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn saf_stat_granted_native(id: u64, path: &str, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (id, path);
+        Err(RioError::runtime(
+            "ملفات.تفاصيل_ممنوح غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            match saf_request(&saf_json_tree_path("تفاصيل_ممنوح", id, path), line, col)? {
+                v @ Value::Dict(_) => Ok(v),
+                _ => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+            }
+        } else {
+            Err(RioError::runtime(SAF_OUTSIDE_APP, line, col))
+        }
+    }
+}
+
+/// `ملفات.احذف_ممنوح(معرف، مسار)` — يحذف ملفا
+/// (ومجلدا فارغا) بلا حوار — البرنامج هو الطالب —
+/// ويرجع `صحيح` عند النجاح.
+pub fn saf_delete_granted(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.احذف_ممنوح";
+    saf_need_args(DISPLAY, args, 2, line, col)?;
+    let id = saf_need_tree_id(DISPLAY, &args[0], line, col)?;
+    let path = saf_need_path(DISPLAY, &args[1], line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (id, path);
+        Err(RioError::runtime(
+            crate::device::WASM_REFUSAL,
+            line,
+            col,
+        ))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        saf_delete_granted_native(id, &path, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn saf_delete_granted_native(id: u64, path: &str, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (id, path);
+        Err(RioError::runtime(
+            "ملفات.احذف_ممنوح غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            match saf_request(&saf_json_tree_path("احذف_ممنوح", id, path), line, col)? {
+                v @ Value::Bool(_) => Ok(v),
+                _ => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+            }
+        } else {
+            Err(RioError::runtime(SAF_OUTSIDE_APP, line, col))
+        }
+    }
+}
+
+/// `ملفات.الممنوح()` — قائمة قواميس {معرف، اسم}
+/// للشجرات الممنوحة الحية.
+pub fn saf_list_trees(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    saf_need_args("ملفات.الممنوح", args, 0, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(
+            crate::device::WASM_REFUSAL,
+            line,
+            col,
+        ))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        saf_list_trees_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn saf_list_trees_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "ملفات.الممنوح غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            match saf_request(&saf_json_no_args("الممنوح"), line, col)? {
+                v @ Value::List(_) => Ok(v),
+                _ => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+            }
+        } else {
+            Err(RioError::runtime(SAF_OUTSIDE_APP, line, col))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -572,5 +1204,166 @@ mod tests {
                 .to_string();
             assert!(err.contains("غير مدعومة في متصفح الويب"), "got: {}", err);
         }
+    }
+
+    // ===== عمليات SAF (المهمة 28) =====
+    // الفحص قبل المنصة: الوسائط الخاطئة ترفض
+    // برسالتها قبل رفض المنصة (ترتيب CATALOG-19 §2).
+
+    fn saf_num(x: f64) -> Value {
+        Value::Number(x)
+    }
+
+    fn saf_str(s: &str) -> Value {
+        Value::Str(s.to_string())
+    }
+
+    #[test]
+    fn saf_arg_validation_before_platform() {
+        // كل دالة: عدد معاملات خاطئ ← رسالة العدد؛
+        // نوع خاطئ ← رسالة النوع؛ معرف غير موجب ←
+        // رسالة العدد الصحيح الموجب. كلها قبل أي
+        // فحص منصة (على لينكس هنا: لو وصلنا إلى
+        // رفض المنصة لكان الترتيب مكسورا).
+        let err = saf_grant_tree(&[saf_num(1.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+
+        let err = saf_list_trees(&[saf_num(1.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+
+        for bad_id in [saf_num(0.0), saf_num(-1.0), saf_num(1.5), saf_str("١")] {
+            for f in [
+                saf_list_granted as fn(&[Value], usize, usize) -> RioResult<Value>,
+                saf_read_granted,
+                saf_create_file_granted,
+                saf_create_dir_granted,
+                saf_stat_granted,
+                saf_delete_granted,
+            ] {
+                let err = f(&[bad_id.clone(), saf_str("")], 1, 1)
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    err.contains("معرف الشجرة"),
+                    "bad id {:?}: got: {}",
+                    bad_id,
+                    err
+                );
+            }
+        }
+        // مسار غير نصي.
+        let err = saf_list_granted(&[saf_num(1.0), saf_num(2.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا للمسار"), "got: {}", err);
+        // نص غير نصي في الكتابة.
+        let err = saf_write_granted(&[saf_num(1.0), saf_str("أ"), saf_num(3.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا للنص"), "got: {}", err);
+        // الكتابة بمعاملين فقط.
+        let err = saf_write_granted(&[saf_num(1.0), saf_str("أ")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 3 معاملات"), "got: {}", err);
+    }
+
+    #[test]
+    fn saf_platform_refusal_names_function() {
+        // وسائط صحيحة على لينكس (غير أندرويد): رفض
+        // المنصة باسم الدالة حرفيا — لكل دالة من التسع.
+        let cases: [(&str, RioResult<Value>); 9] = [
+            ("امنح_مجلد", saf_grant_tree(&[], 1, 1)),
+            ("سرد_ممنوح", saf_list_granted(&[saf_num(1.0), saf_str("")], 1, 1)),
+            ("اقرأ_ممنوح", saf_read_granted(&[saf_num(1.0), saf_str("أ")], 1, 1)),
+            (
+                "اكتب_ممنوح",
+                saf_write_granted(&[saf_num(1.0), saf_str("أ"), saf_str("نص")], 1, 1),
+            ),
+            (
+                "أنشئ_ملف_ممنوح",
+                saf_create_file_granted(&[saf_num(1.0), saf_str("أ")], 1, 1),
+            ),
+            (
+                "أنشئ_مجلد_ممنوح",
+                saf_create_dir_granted(&[saf_num(1.0), saf_str("أ")], 1, 1),
+            ),
+            (
+                "تفاصيل_ممنوح",
+                saf_stat_granted(&[saf_num(1.0), saf_str("أ")], 1, 1),
+            ),
+            (
+                "احذف_ممنوح",
+                saf_delete_granted(&[saf_num(1.0), saf_str("أ")], 1, 1),
+            ),
+            ("الممنوح", saf_list_trees(&[], 1, 1)),
+        ];
+        for (name, result) in cases {
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains(&format!("ملفات.{} غير مدعوم على هذه المنصة", name)),
+                "{}: got: {}",
+                name,
+                err
+            );
+        }
+    }
+
+    #[test]
+    fn saf_wait_cancel_aborts_and_result_returns() {
+        // انتظار SAF قابل للإلغاء (CATALOG-19 §9):
+        // سطر الإلغاء يجهضه بـ«أُلغي الأمر»، وسطر
+        // النتيجة يعيد القيمة، والسطر الغريب يُتخطى.
+        let _guard = crate::stdin_pump::pump_test_lock();
+        crate::stdin_pump::inject_stdin_line("\u{0001}نيفا-إلغاء\n".to_string());
+        let err = saf_wait_for_result(1, 1).unwrap_err().to_string();
+        assert!(err.contains("أُلغي الأمر"), "got: {}", err);
+        crate::stdin_pump::inject_stdin_line(
+            "\u{0001}نيفا-نتيجة:{\"قيمة\": 3}\n".to_string(),
+        );
+        match saf_wait_for_result(1, 1).unwrap() {
+            Value::Number(n) => assert_eq!(n, 3.0),
+            _ => panic!("unexpected value"),
+        }
+        crate::stdin_pump::inject_stdin_line("سطر غريب\n".to_string());
+        crate::stdin_pump::inject_stdin_line(
+            "\u{0001}نيفا-نتيجة:{\"قيمة\": true}\n".to_string(),
+        );
+        match saf_wait_for_result(1, 1).unwrap() {
+            Value::Bool(true) => {}
+            _ => panic!("unexpected value"),
+        }
+    }
+
+    #[test]
+    fn saf_request_json_serialization() {
+        assert_eq!(
+            saf_json_no_args("امنح_مجلد"),
+            "{\"عملية\":\"امنح_مجلد\"}"
+        );
+        assert_eq!(
+            saf_json_no_args("الممنوح"),
+            "{\"عملية\":\"الممنوح\"}"
+        );
+        assert_eq!(
+            saf_json_tree_path("سرد_ممنوح", 3, "مجلد/ملف"),
+            "{\"عملية\":\"سرد_ممنوح\",\"معرف\":3,\"مسار\":\"مجلد/ملف\"}"
+        );
+        assert_eq!(
+            saf_json_tree_path("اقرأ_ممنوح", 1, ""),
+            "{\"عملية\":\"اقرأ_ممنوح\",\"معرف\":1,\"مسار\":\"\"}"
+        );
+        assert_eq!(
+            saf_json_write(2, "أ.txt", "نص\nجديد"),
+            "{\"عملية\":\"اكتب_ممنوح\",\"معرف\":2,\"مسار\":\"أ.txt\",\"نص\":\"نص\\nجديد\"}"
+        );
+        // علامة تنصيص داخل المسار تُهرب ولا تكسر JSON.
+        let json = saf_json_tree_path("تفاصيل_ممنوح", 1, "م\"لف");
+        assert!(json.contains("م\\\"لف"), "got: {}", json);
+        assert!(json.starts_with("{\"عملية\":\"تفاصيل_ممنوح\""), "got: {}", json);
     }
 }

@@ -25,7 +25,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 #[cfg(target_arch = "wasm32")]
-const WASM_REFUSAL: &str = "هذه الدالة غير مدعومة في متصفح الويب";
+/// رفض المتصفح المشترك (يستخدمه أيضا ملفات SAF
+/// في files.rs — المهمة 28).
+pub(crate) const WASM_REFUSAL: &str = "هذه الدالة غير مدعومة في متصفح الويب";
 
 /// بادئة سطر طلب الحوار على stderr (نمط م-6) —
 /// أندرويد فقط (لا مرسِل لها في غيره).
@@ -68,9 +70,11 @@ const LISTEN_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:اسمع:";
 /// — أندرويد فقط.
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 const BATTERY_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:بطارية:";
-/// بادئة سطر نتيجة التحكم على stdin — أندرويد فقط.
-#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-const RESULT_PREFIX: &str = "\u{0001}نيفا-نتيجة:";
+/// بادئة سطر نتيجة التحكم على stdin — أندرويد فقط،
+/// وتبقى في اختبارات الوحدة (انتظار SAF القابل
+/// للإلغاء في files.rs — المهمة 28).
+#[cfg(any(all(target_os = "android", not(target_arch = "wasm32")), test))]
+pub(crate) const RESULT_PREFIX: &str = "\u{0001}نيفا-نتيجة:";
 
 /// طلب حوار متحقق منه (خالص — يعمل على كل المنصات).
 #[derive(Debug, Clone, PartialEq)]
@@ -1264,8 +1268,10 @@ fn request_and_wait(req: &DialogRequest, line: usize, col: usize) -> RioResult<V
 /// أندرويد فقط: انتظار سطر نتيجة تحكم واحد على stdin
 /// (مشترك بين الحوار والتنبيه — المهمة 21 استخرجته
 /// من `request_and_wait` بلا تغيير سلوك).
+/// انتظار نتيجة تحكم واحدة على stdin (مشترك بين
+/// `جهاز` وملفات SAF في files.rs — المهمة 28).
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
-fn wait_for_result(line: usize, col: usize) -> RioResult<Value> {
+pub(crate) fn wait_for_result(line: usize, col: usize) -> RioResult<Value> {
     // مهمة 22: القراءة عبر مضخة stdin (لا مباشرة) —
     // خيط المضخة وحده يملك stdin. سطور الإلغاء هنا
     // سطور غير نتيجة فتُتجاهل كغيرها (الإلغاء أثناء
