@@ -24,6 +24,7 @@ pub mod ipc;
 pub mod lexer;
 pub mod memory;
 pub mod network;
+pub mod packages;
 pub mod parser;
 pub mod permissions;
 pub mod processes;

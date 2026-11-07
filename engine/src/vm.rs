@@ -1734,11 +1734,11 @@ impl Vm {
 
     /// مهمة 4 (ك-1.3): تحميل وحدة بالاسم، مرة واحدة في
     /// التشغيل — مرآة load_module في المفسر: الوحدات
-    /// الأصلية أولا (لا يظللها ملف أبدا)، ثم ملف
-    /// `.نيفا` في مجلد البرنامج (يُترجَم ويُنفَّذ في
-    /// نسخة فرعية، وتُدمَج إغلاقاته في السجل المشترك
-    /// قبل التنفيذ)، مع كشف الدورات وتصدير فقط،
-    /// وتوسيم دوال المستوى الأعلى باسم الوحدة.
+    /// الأصلية أولا (لا يظللها ملف أبدا)، ثم ترتيب
+    /// الاستيراد في التصميم §8 (`حزم/<اسم>/`، ثم مجلد
+    /// البرنامج، ثم المخزن العام — قفل ثم أحدث)، مع
+    /// كشف الدورات وتصدير فقط، وتوسيم دوال المستوى
+    /// الأعلى باسم الوحدة.
     fn load_module(&mut self, module: &str, line: usize, col: usize) -> RioResult<Value> {
         if let Some(v) = self.loaded_modules.borrow().get(module) {
             return Ok(v.clone());
@@ -1758,19 +1758,31 @@ impl Vm {
                 col,
             ));
         }
-        let path = self.program_dir.join(format!("{}.نيفا", module));
-        if !path.exists() {
-            return Err(RioError::new(
-                crate::error::ErrorKind::Io,
-                format!(
-                    "وحدة غير موجودة: {} (بحثت في {})",
-                    module,
-                    crate::permissions::slash_display(&path)
-                ),
-                line,
-                col,
-            ));
-        }
+        // مهمة الخطوة 4 من «حزم» (التصميم §8): ترتيب
+        // الاستيراد بعد الأصلية — `حزم/<اسم>/`، ثم مجلد
+        // البرنامج، ثم المخزن العام (قفل ثم أحدث).
+        // مرآة المفسر حرفيا (نفس الدالة المشتركة).
+        let found =
+            crate::packages::find_module_file(&self.program_dir, module).map_err(|msg| {
+                RioError::new(crate::error::ErrorKind::Io, msg, line, col)
+            })?;
+        let path = match found.found {
+            Some(p) => p,
+            None => {
+                let searched = found
+                    .searched
+                    .iter()
+                    .map(|p| crate::permissions::slash_display(p))
+                    .collect::<Vec<_>>()
+                    .join("؛ ");
+                return Err(RioError::new(
+                    crate::error::ErrorKind::Io,
+                    format!("وحدة غير موجودة: {} (بحثت في {})", module, searched),
+                    line,
+                    col,
+                ));
+            }
+        };
         let source = self.read_module_file(&path, module, line, col)?;
         let tokens = crate::lexer::tokenize(&source).map_err(|e| {
             RioError::new(

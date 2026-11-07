@@ -894,19 +894,29 @@ impl Interpreter {
                 col,
             ));
         }
-        let path = self.program_dir.join(format!("{}.نيفا", module));
-        if !path.exists() {
-            return Err(RioError::new(
-                ErrorKind::Io,
-                format!(
-                    "وحدة غير موجودة: {} (بحثت في {})",
-                    module,
-                    crate::permissions::slash_display(&path)
-                ),
-                line,
-                col,
-            ));
-        }
+        // مهمة الخطوة 4 من «حزم» (التصميم §8): ترتيب
+        // الاستيراد بعد الأصلية — `حزم/<اسم>/`، ثم مجلد
+        // البرنامج، ثم المخزن العام (قفل ثم أحدث).
+        let found = crate::packages::find_module_file(&self.program_dir, module).map_err(|msg| {
+            RioError::new(ErrorKind::Io, msg, line, col)
+        })?;
+        let path = match found.found {
+            Some(p) => p,
+            None => {
+                let searched = found
+                    .searched
+                    .iter()
+                    .map(|p| crate::permissions::slash_display(p))
+                    .collect::<Vec<_>>()
+                    .join("؛ ");
+                return Err(RioError::new(
+                    ErrorKind::Io,
+                    format!("وحدة غير موجودة: {} (بحثت في {})", module, searched),
+                    line,
+                    col,
+                ));
+            }
+        };
         let source = Self::read_file_capped(&path, module, line, col)?;
         let tokens = lexer::tokenize(&source).map_err(|e| {
             RioError::new(

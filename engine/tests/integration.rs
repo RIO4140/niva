@@ -1472,7 +1472,13 @@ fn run_with_modules_flags(
     ));
     fs::create_dir_all(&dir).unwrap();
     for (name, src) in files {
-        fs::write(dir.join(name), src).unwrap();
+        // ملفات متداخلة (مثل `حزم/أداة/أداة.نيفا`) تحتاج
+        // مجلداتها الأب أولا.
+        let path = dir.join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, src).unwrap();
     }
     let mut cmd = Command::new(bin());
     cmd.arg(dir.join(main));
@@ -1684,6 +1690,192 @@ fn module_load_once_and_mutation_vm_parity() {
     assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
     assert_eq!(out_v, out_i);
     assert_eq!(out_v, "١\n١\n٠\n");
+}
+
+// بدائيتا استيراد «حزم» (التصميم §8): `حزم/<اسم>/`
+// ثم مجلد البرنامج، ثم المخزن العام (قفل ثم أحدث).
+// كل اختبار نجاح يستخدم الاسم المستورد مباشرة بلا
+// `حاول` — فهو إثبات أن الاسم يُحلّ (لا اختبار فراغي).
+
+const PKG_MAIN: &str = "استورد أداة\nاطبع أداة.قيمة\nاطبع أداة.اجمع(١، ٢)\n";
+
+fn pkg_module_value(value: &str) -> String {
+    format!("صدّر قيمة، اجمع\nقيمة = {}\nدالة اجمع(أ، ب):\n    ارجع أ + ب\n", value)
+}
+
+#[test]
+fn package_import_from_project_hazm_dir() {
+    let mod_42 = pkg_module_value("٤٢");
+    let files: &[(&str, &str)] = &[
+        ("حزم/أداة/أداة.نيفا", &mod_42),
+        ("برنامج.نيفا", PKG_MAIN),
+    ];
+    let (out_i, err_i, code_i) = run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(out_v, "٤٢\n٣\n");
+}
+
+#[test]
+fn package_import_project_dir_beats_program_dir() {
+    let mod_42 = pkg_module_value("٤٢");
+    let mod_99 = pkg_module_value("٩٩");
+    let files: &[(&str, &str)] = &[
+        ("حزم/أداة/أداة.نيفا", &mod_42),
+        ("أداة.نيفا", &mod_99),
+        ("برنامج.نيفا", PKG_MAIN),
+    ];
+    let (out_i, err_i, code_i) = run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(out_v, "٤٢\n٣\n");
+}
+
+#[test]
+fn package_import_program_dir_beats_store() {
+    let mod_99 = pkg_module_value("٩٩");
+    let mod_77 = pkg_module_value("٧٧");
+    let files: &[(&str, &str)] = &[
+        ("أداة.نيفا", &mod_99),
+        (".نيفا/حزم/أداة-9.0.0/أداة.نيفا", &mod_77),
+        ("برنامج.نيفا", PKG_MAIN),
+    ];
+    let (out_i, err_i, code_i) = run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(out_v, "٩٩\n٣\n");
+}
+
+#[test]
+fn package_import_store_newest_without_lock() {
+    let mod_1 = pkg_module_value("١");
+    let mod_2 = pkg_module_value("٢");
+    let files: &[(&str, &str)] = &[
+        (".نيفا/حزم/أداة-1.0.0/أداة.نيفا", &mod_1),
+        (".نيفا/حزم/أداة-2.0.0/أداة.نيفا", &mod_2),
+        ("برنامج.نيفا", PKG_MAIN),
+    ];
+    let (out_i, err_i, code_i) = run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(out_v, "٢\n٣\n");
+}
+
+#[test]
+fn package_import_store_lock_pin() {
+    let mod_1 = pkg_module_value("١");
+    let mod_2 = pkg_module_value("٢");
+    let files: &[(&str, &str)] = &[
+        (".نيفا/حزم/أداة-1.0.0/أداة.نيفا", &mod_1),
+        (".نيفا/حزم/أداة-2.0.0/أداة.نيفا", &mod_2),
+        (
+            "قفل.حزمة",
+            "# قفل حزم — يولَّد آليا؛ لا تحرره بيدك\nأداة 1.0.0 github.com/مالك/أداة 9f2c\n",
+        ),
+        ("برنامج.نيفا", PKG_MAIN),
+    ];
+    let (out_i, err_i, code_i) = run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(out_v, "١\n٣\n");
+}
+
+#[test]
+fn package_import_store_lock_pin_missing_fails() {
+    // قفل يثبّت إصدارا غير مثبّت — لا رجوع صامت إلى الأحدث.
+    let mod_1 = pkg_module_value("١");
+    let mod_2 = pkg_module_value("٢");
+    let files: &[(&str, &str)] = &[
+        (".نيفا/حزم/أداة-1.0.0/أداة.نيفا", &mod_1),
+        (".نيفا/حزم/أداة-2.0.0/أداة.نيفا", &mod_2),
+        (
+            "قفل.حزمة",
+            "# قفل حزم\nأداة 3.0.0 github.com/مالك/أداة 9f2c\n",
+        ),
+        ("برنامج.نيفا", PKG_MAIN),
+    ];
+    let (_, err_i, code_i) = run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    assert_ne!(code_i, 0);
+    assert!(err_i.contains("وحدة غير موجودة"), "stderr: {}", err_i);
+    assert!(err_i.contains("أداة-3.0.0"), "stderr: {}", err_i);
+    let (_, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_ne!(code_v, 0);
+    assert!(err_v.contains("وحدة غير موجودة"), "stderr: {}", err_v);
+    assert!(err_v.contains("أداة-3.0.0"), "stderr: {}", err_v);
+}
+
+#[test]
+fn package_import_native_not_shadowed_by_package() {
+    let files: &[(&str, &str)] = &[
+        ("حزم/رياضيات/رياضيات.نيفا", "صدّر س\nس = 999\n"),
+        (
+            "برنامج.نيفا",
+            "استورد رياضيات\nاطبع رياضيات.جذر(16)\n",
+        ),
+    ];
+    let (out_i, err_i, code_i) = run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    let (out_v, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(out_v, "٤\n");
+}
+
+#[test]
+fn package_import_missing_lists_searched_paths() {
+    let files: &[(&str, &str)] = &[("برنامج.نيفا", "استورد لاوجود\n")];
+    let (_, err_i, code_i) = run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    assert_ne!(code_i, 0);
+    assert!(err_i.contains("وحدة غير موجودة"), "stderr: {}", err_i);
+    assert!(err_i.contains("لاوجود"), "stderr: {}", err_i);
+    assert!(
+        err_i.contains("حزم/لاوجود/لاوجود.نيفا"),
+        "stderr: {}",
+        err_i
+    );
+    assert!(err_i.contains(".نيفا/حزم"), "stderr: {}", err_i);
+    let (_, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_ne!(code_v, 0);
+    assert!(err_v.contains("وحدة غير موجودة"), "stderr: {}", err_v);
+    assert!(err_v.contains("حزم/لاوجود/لاوجود.نيفا"), "stderr: {}", err_v);
+}
+
+#[test]
+fn package_import_lock_malformed_version() {
+    let mod_1 = pkg_module_value("١");
+    let files: &[(&str, &str)] = &[
+        (".نيفا/حزم/أداة-1.0.0/أداة.نيفا", &mod_1),
+        (
+            "قفل.حزمة",
+            "# قفل حزم\nأداة 1.2 github.com/مالك/أداة 9f2c\n",
+        ),
+        ("برنامج.نيفا", PKG_MAIN),
+    ];
+    let (_, err_i, code_i) = run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
+    assert_ne!(code_i, 0);
+    assert!(
+        err_i.contains("إصدار غير صالح في القفل"),
+        "stderr: {}",
+        err_i
+    );
+    assert!(err_i.contains("أداة"), "stderr: {}", err_i);
+    let (_, err_v, code_v) = run_with_modules(files, "برنامج.نيفا");
+    assert_ne!(code_v, 0);
+    assert!(
+        err_v.contains("إصدار غير صالح في القفل"),
+        "stderr: {}",
+        err_v
+    );
 }
 
 #[test]
