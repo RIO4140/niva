@@ -858,6 +858,47 @@ fn device_engines_args_both_modes() {
     );
 }
 
+/// مهمة 24 (جهاز.شغّل_صوت + أوقف_صوت): خارج أندرويد
+/// الرفض العربي الواضح، متطابقا في الوضعين؛ وأخطاء
+/// الوسائط قبل فحص المنصة تُمسكها ماعدا.
+#[test]
+#[cfg(not(target_os = "android"))]
+fn device_audio_refused_both_modes() {
+    let src = "استورد جهاز\nحاول:\n    جهاز.شغّل_صوت \"موسيقى.mp3\"\nماعدا:\n    اطبع \"رفض كما يجب\"\nحاول:\n    جهاز.أوقف_صوت()\nماعدا:\n    اطبع \"رفض كما يجب\"\nحاول:\n    جهاز.شغّل_صوت \"\"\nماعدا:\n    اطبع \"مسار كما يجب\"\nحاول:\n    جهاز.شغّل_صوت ٥\nماعدا:\n    اطبع \"نص كما يجب\"\nحاول:\n    جهاز.شغّل_صوت()\nماعدا:\n    اطبع \"وسائط كما يجب\"\nحاول:\n    جهاز.أوقف_صوت \"زائد\"\nماعدا:\n    اطبع \"وسائط كما يجب\"\nاطبع \"تم\"\n";
+    let ((out_i, err_i, code_i), (out_v, err_v, code_v)) = run_both_src(src);
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v,
+        "رفض كما يجب\nرفض كما يجب\nمسار كما يجب\nنص كما يجب\nوسائط كما يجب\nوسائط كما يجب\nتم\n"
+    );
+}
+
+/// المهمة 24 — انحدار اسم `جهاز.نبّه` (إصلاح
+/// المفتاح المشدد): الاستدعاء بلا `حاول/ماعدا` في
+/// الوضعين يفشل حتما خارج أندرويد، لكن بخطأ
+/// المنصة («غير مدعوم على هذه المنصة») لا بخطأ
+/// الاسم («غير مصدر»). هذا الاختبار غير فراغي
+/// عمدا — فنسخة `حاول/ماعدا` تطبع النتيجة نفسها
+/// عند أي خطأ، فمرّت فراغيا على الخلل منذ
+/// المهمة 21.
+#[test]
+#[cfg(not(target_os = "android"))]
+fn device_notify_name_resolves_both_modes() {
+    let src = "استورد جهاز\nجهاز.نبّه \"انتهى\" \"البناء جاهز\"\n";
+    let ((out_i, err_i, code_i), (out_v, err_v, code_v)) = run_both_src(src);
+    assert_ne!(code_i, 0, "interpreter unexpectedly succeeded");
+    assert_ne!(code_v, 0, "VM unexpectedly succeeded");
+    assert!(err_i.contains("جهاز.نبه غير مدعوم على هذه المنصة"), "stderr: {}", err_i);
+    assert!(err_v.contains("جهاز.نبه غير مدعوم على هذه المنصة"), "stderr: {}", err_v);
+    assert!(!err_i.contains("غير مصدر"), "name did not resolve: {}", err_i);
+    assert!(!err_v.contains("غير مصدر"), "name did not resolve: {}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+}
+
 /// مهمة 12 (ملفات): فتح وقراءة وكتابة في الوضعين — المخرج
 /// والخطأ والخروج متطابقة حرفيا؛ والمعرف غير المعروف
 /// والخروج عن المجلد والمجلد والمجلد الأب الغائب والوسائط

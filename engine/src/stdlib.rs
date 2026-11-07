@@ -1371,10 +1371,19 @@ fn time_sleep(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: us
 fn device_entries() -> Vec<(&'static str, Value)> {
     vec![
         ("حوار", native("حوار", device_dialog)),
-        ("نبّه", native("نبّه", device_notify)),
+        // المهمة 24 (إصلاح نبّه): المفتاح المخزن بلا
+        // شدة — فالمحلل يحذف الشدة من المكتوب،
+        // والمفتاح المشدد «نبّه» لم يُحلّ أبدا.
+        ("نبه", native("نبه", device_notify)),
         ("أزل_تنبيه", native("أزل_تنبيه", device_remove_notify)),
         ("انطق", native("انطق", device_speak)),
         ("محركات_النطق", native("محركات_النطق", device_list_engines)),
+        // المهمة 24 (شغّل_صوت + أوقف_صوت): المفتاح
+        // المخزن «شغل_صوت» بلا شدة (المحلل يحذفها
+        // من المكتوب — كما «جزئ» و«حرر» و«نزل»)؛
+        // و«أوقف_صوت» بالهمزة حرفا (كما «أرسل»).
+        ("شغل_صوت", native("شغل_صوت", device_play_audio)),
+        ("أوقف_صوت", native("أوقف_صوت", device_stop_audio)),
     ]
 }
 
@@ -1396,4 +1405,14 @@ fn device_speak(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: 
 
 fn device_list_engines(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     crate::device::list_speech_engines(args, line, col)
+}
+
+fn device_play_audio(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    crate::device::play_audio(args, &policy, &cwd, line, col)
+}
+
+fn device_stop_audio(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::stop_audio(args, line, col)
 }

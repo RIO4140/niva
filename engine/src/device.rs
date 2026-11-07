@@ -48,6 +48,14 @@ const SPEAK_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:انطق:";
 /// (المهمة 23) — أندرويد فقط.
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 const ENGINES_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:محركات_النطق:";
+/// بادئة سطر طلب تشغيل صوت على stderr (المهمة 24)
+/// — أندرويد فقط.
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const PLAY_AUDIO_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:شغّل_صوت:";
+/// بادئة سطر طلب إيقاف صوت على stderr (المهمة 24)
+/// — أندرويد فقط.
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const STOP_AUDIO_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:أوقف_صوت:";
 /// بادئة سطر نتيجة التحكم على stdin — أندرويد فقط.
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 const RESULT_PREFIX: &str = "\u{0001}نيفا-نتيجة:";
@@ -414,7 +422,7 @@ pub fn consume_notify_id(id: u64) -> bool {
 /// التحقق الخالص من وسائط `جهاز.نبّه` — يعمل على كل
 /// المنصات (نمط `تشفير`: أخطاء الوسائط قبل فحص المنصة).
 pub fn validate_notify_args(args: &[Value], line: usize, col: usize) -> RioResult<(String, String)> {
-    const DISPLAY: &str = "جهاز.نبّه";
+    const DISPLAY: &str = "جهاز.نبه";
     if args.len() != 2 {
         return Err(RioError::runtime(
             format!(
@@ -574,6 +582,73 @@ pub fn serialize_engines_request() -> String {
     "{}".to_string()
 }
 
+/// التحقق الخالص من وسائط `جهاز.شغّل_صوت` — معامل
+/// واحد نص (مسار ملف صوتي) غير فارغ (المهمة 24).
+pub fn validate_play_audio_args(args: &[Value], line: usize, col: usize) -> RioResult<String> {
+    const DISPLAY: &str = "جهاز.شغل_صوت";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 معامل لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let path = match &args[0] {
+        Value::Str(s) => s.clone(),
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع نصا لمسار الصوت لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if path.is_empty() {
+        return Err(RioError::runtime("مسار الصوت فارغ", line, col));
+    }
+    Ok(path)
+}
+
+/// التحقق الخالص من وسائط `جهاز.أوقف_صوت` —
+/// بلا معاملات (المهمة 24).
+pub fn validate_stop_audio_args(args: &[Value], line: usize, col: usize) -> RioResult<()> {
+    const DISPLAY: &str = "جهاز.أوقف_صوت";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 0 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+/// تسلسل طلب تشغيل صوت إلى JSON — المسار المطلق
+/// المحلول (تهريب يدوي — يعيد استخدام `json_escape`).
+pub fn serialize_play_audio_request(abs_path: &str) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str("\"مسار\":");
+    out.push_str(&json_escape(abs_path));
+    out.push('}');
+    out
+}
+
+/// تسلسل طلب إيقاف صوت إلى JSON — كائن فارغ
+/// (بلا معاملات).
+pub fn serialize_stop_audio_request() -> String {
+    "{}".to_string()
+}
+
 /// نقطة الدخول: `جهاز.انطق(...)` — التحقق أولا (كل
 /// المنصات)، ثم بوابة المنصة، ثم القناة، ثم الإرسال
 /// والانتظار حتى ينتهي النطق؛ وترجع `صحيح` عند
@@ -664,6 +739,133 @@ fn list_speech_engines_native(line: usize, col: usize) -> RioResult<Value> {
     }
 }
 
+/// نقطة الدخول: `جهاز.شغّل_صوت(...)` — التحقق أولا
+/// (كل المنصات)، ثم بوابة المنصة، ثم القناة، ثم حلّ
+/// المسار وفحص الوجود، ثم الإرسال والانتظار حتى
+/// يبدأ التشغيل؛ وترجع `صحيح` عند البدء (المهمة 24).
+/// التشغيل غير حاجب: يرجع فورا ويكمل الصوت في
+/// الخلفية (عكس انطق) — وإلا ما استطاع البرنامج
+/// استدعاء `أوقف_صوت` أبدا.
+pub fn play_audio(
+    args: &[Value],
+    policy: &crate::permissions::FilePolicy,
+    cwd: &std::path::Path,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let path = validate_play_audio_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (&path, policy, cwd);
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        play_audio_native(&path, policy, cwd, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn play_audio_native(
+    path: &str,
+    policy: &crate::permissions::FilePolicy,
+    cwd: &std::path::Path,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (path, policy, cwd);
+        Err(RioError::runtime(
+            "جهاز.شغل_صوت غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            // حلّ المسار عبر سياسة الملفات نفسها
+            // (كـ نزّل) قبل الإرسال — فالـ JSON يحمل
+            // المسار المطلق الجاهز لـ MediaPlayer،
+            // والتطبيق لا يعرف مجلد البرنامج.
+            let resolved = policy.resolve_in(cwd, path, line, col)?;
+            if !resolved.is_file() {
+                return Err(RioError::runtime(
+                    format!("ملف الصوت غير موجود: {}", policy.display_path(&resolved)),
+                    line,
+                    col,
+                ));
+            }
+            let abs = resolved.to_string_lossy().to_string();
+            eprintln!(
+                "{}{}",
+                PLAY_AUDIO_CONTROL_PREFIX,
+                serialize_play_audio_request(&abs)
+            );
+            match wait_for_result(line, col) {
+                Ok(Value::Bool(true)) => Ok(Value::Bool(true)),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("الصوت متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.أوقف_صوت(...)` — التحقق أولا،
+/// ثم بوابة المنصة، ثم القناة، ثم الإرسال والانتظار؛
+/// وترجع لاشيء. وبلا صوت جارٍ نجاح صامت (لا خطأ) —
+/// فالبرنامج لا يعرف متى انتهى الصوت طبيعيا (بلا
+/// حدث اكتمال في v1)، فإجبار كل إيقاف على
+/// حاول/ماعدا عدائي بلا فائدة (المهمة 24).
+pub fn stop_audio(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_stop_audio_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        stop_audio_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn stop_audio_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.أوقف_صوت غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                STOP_AUDIO_CONTROL_PREFIX,
+                serialize_stop_audio_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(_) => Ok(Value::Nil),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("الصوت متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
 /// نقطة الدخول: `جهاز.نبّه(...)` — التحقق أولا (كل
 /// المنصات)، ثم بوابة المنصة، ثم القناة، ثم السقف
 /// والحجز والإرسال والانتظار؛ وعند خطأ التطبيق
@@ -687,7 +889,7 @@ fn show_notification_native(title: &str, text: &str, line: usize, col: usize) ->
     {
         let _ = (title, text);
         Err(RioError::runtime(
-            "جهاز.نبّه غير مدعوم على هذه المنصة",
+            "جهاز.نبه غير مدعوم على هذه المنصة",
             line,
             col,
         ))
@@ -1720,7 +1922,7 @@ mod tests {
         let err = show_notification(&[str_val("عنوان"), str_val("نص")], 1, 1)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("جهاز.نبّه غير مدعوم على هذه المنصة"), "got: {}", err);
+        assert!(err.contains("جهاز.نبه غير مدعوم على هذه المنصة"), "got: {}", err);
         // والوسائط الخاطئة ترفض قبل المنصة.
         let err = show_notification(&[str_val("عنوان"), str_val("")], 1, 1)
             .unwrap_err()
@@ -1866,6 +2068,102 @@ mod tests {
         );
         // والوسائط الزائدة للسرد ترفض قبل المنصة.
         let err = list_speech_engines(&[str_val("زائد")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+    }
+
+    #[test]
+    fn validate_play_audio_args_ok_and_bad() {
+        // مسار صحيح.
+        assert_eq!(
+            validate_play_audio_args(&[str_val("موسيقى.mp3")], 1, 1).unwrap(),
+            "موسيقى.mp3".to_string()
+        );
+        // بلا معامل / معاملان.
+        let err = validate_play_audio_args(&[], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+        let err = validate_play_audio_args(&[str_val("أ"), str_val("ب")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+        // غير نص.
+        let err = validate_play_audio_args(&[num_val(5.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا لمسار الصوت"), "got: {}", err);
+        // مسار فارغ.
+        let err = validate_play_audio_args(&[str_val("")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("مسار الصوت فارغ"), "got: {}", err);
+    }
+
+    #[test]
+    fn validate_stop_audio_args_ok_and_bad() {
+        // بلا معاملات.
+        assert!(validate_stop_audio_args(&[], 1, 1).is_ok());
+        // معامل واحد زائد.
+        let err = validate_stop_audio_args(&[str_val("زائد")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+    }
+
+    #[test]
+    fn serialize_play_stop_audio_requests_round_trip() {
+        // التشغيل: المسار المطلق يُهرَّب (شرطة مائلة
+        // ومسافة وعربي).
+        let text = serialize_play_audio_request("/data/موسيقى/أغنية 1.mp3");
+        let parsed = parse_json(&text).unwrap();
+        assert_eq!(
+            parsed,
+            Json::Obj(vec![(
+                "مسار".to_string(),
+                Json::Str("/data/موسيقى/أغنية 1.mp3".to_string())
+            )])
+        );
+        // الإيقاف: كائن فارغ.
+        let text = serialize_stop_audio_request();
+        let parsed = parse_json(&text).unwrap();
+        assert_eq!(parsed, Json::Obj(vec![]));
+    }
+
+    #[test]
+    fn play_and_stop_audio_refuse_off_android() {
+        // على هذه الآلة (لينكس): الوسائط الصحيحة تصل
+        // إلى بوابة المنصة وترفض بالعربية — قبل حلّ
+        // المسار أبدا (فمسار خاطئ على لينكس يرفض
+        // بالمنصة لا بالمسار).
+        let policy =
+            crate::permissions::FilePolicy::restricted(std::path::PathBuf::from("/tmp"));
+        let cwd = std::path::PathBuf::from("/tmp");
+        let err = play_audio(&[str_val("موسيقى.mp3")], &policy, &cwd, 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("جهاز.شغل_صوت غير مدعوم على هذه المنصة"),
+            "got: {}",
+            err
+        );
+        // والوسائط الخاطئة ترفض قبل المنصة.
+        let err = play_audio(&[str_val("")], &policy, &cwd, 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("مسار الصوت فارغ"), "got: {}", err);
+        let err = play_audio(&[num_val(3.0)], &policy, &cwd, 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا لمسار الصوت"), "got: {}", err);
+        // الإيقاف: المنصة قبل أي شيء (بلا وسائط أصلا).
+        let err = stop_audio(&[], 1, 1).unwrap_err().to_string();
+        assert!(
+            err.contains("جهاز.أوقف_صوت غير مدعوم على هذه المنصة"),
+            "got: {}",
+            err
+        );
+        // والوسائط الزائدة للإيقاف ترفض قبل المنصة.
+        let err = stop_audio(&[str_val("زائد")], 1, 1)
             .unwrap_err()
             .to_string();
         assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
