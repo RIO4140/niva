@@ -1112,6 +1112,174 @@ fn install_local_both_modes() {
     );
 }
 
+/// خادم جيت هاب محاكى لاختبارات التكامل: يربط 127.0.0.1
+/// على منفذ مؤقت ويرد بـ JSON canned حسب المسار —
+/// نمط net_test_server القائم. الثنائي يوجَّه إليه
+/// بمتغير البيئة NIVA_GITHUB_API_BASE.
+fn github_mock_server() -> u16 {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = match stream {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let mut req: Vec<u8> = Vec::new();
+            let mut buf = [0u8; 1024];
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        req.extend_from_slice(&buf[..n]);
+                        if req.len() >= 4 && &req[req.len() - 4..] == b"\r\n\r\n" {
+                            break;
+                        }
+                        if req.len() > 8192 {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let req_text = String::from_utf8_lossy(&req).into_owned();
+            let target = req_text
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("/")
+                .to_string();
+            let path = target
+                .split('?')
+                .next()
+                .unwrap_or("/")
+                .to_string();
+            let base = format!("http://127.0.0.1:{}", port);
+            let file_body = "صدر قيمة\nقيمة = ٤٢\n";
+            let (status, body): (&str, String) = match path.as_str() {
+                // قائمة الجذر: ملف .نيفا واحد + نص + مجلد.
+                "/repos/owner/repo/contents" => (
+                    "200 OK",
+                    format!(
+                        "[{{\"name\":\"tool.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/tool.نيفا\"}},{{\"name\":\"note.txt\",\"type\":\"file\",\"download_url\":\"{}/files/note.txt\"}},{{\"name\":\"sub\",\"type\":\"dir\",\"download_url\":null}}]",
+                        base, base
+                    ),
+                ),
+                // مسار فيه ملفان — رفض ساردا الأسماء.
+                "/repos/owner/repo/contents/sub" => (
+                    "200 OK",
+                    format!(
+                        "[{{\"name\":\"a.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/a.نيفا\"}},{{\"name\":\"b.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/b.نيفا\"}}]",
+                        base, base
+                    ),
+                ),
+                // إصدار بأصل .نيفا واحد (رابطه على الخادم نفسه).
+                "/repos/owner/repo/releases/tags/v1" => (
+                    "200 OK",
+                    format!(
+                        "{{\"assets\":[{{\"name\":\"tool.نيفا\",\"browser_download_url\":\"{}/files/tool.نيفا\"}}]}}",
+                        base
+                    ),
+                ),
+                _ if path.starts_with("/files/") => {
+                    ("200 OK", file_body.to_string())
+                }
+                _ => (
+                    "404 Not Found",
+                    "{\"message\":\"Not Found\"}".to_string(),
+                ),
+            };
+            let _ = stream.write_all(
+                format!(
+                    "HTTP/1.1 {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    status,
+                    body.len(),
+                    body
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    port
+}
+
+/// تثبيت من رابط مستودع جيت هاب في الوضعين: الخادم
+/// المحاكي يرد بملف `.نيفا` واحد، فيُثبَّت ويُستورد
+/// وتُطبع قيمته — المخرج والخروج متطابقان حرفيا.
+#[test]
+fn install_github_repo_both_modes() {
+    let port = github_mock_server();
+    let api_base = format!("http://127.0.0.1:{}", port);
+    let prog = "اطبع تثبيت(\"https://github.com/owner/repo\")\nاستورد tool\nاطبع tool.قيمة\n";
+    for interpreter in [true, false] {
+        let flags: &[&str] = if interpreter {
+            &[
+                "--مفسر",
+                "--اسمح-بالشبكة",
+                "--مضيف-محلي",
+                "127.0.0.1",
+            ]
+        } else {
+            &["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"]
+        };
+        let (out, err, code) =
+            run_src_flags_env(prog, flags, &[("NIVA_GITHUB_API_BASE", &api_base)]);
+        assert_eq!(code, 0, "failed: stderr={}", err);
+        assert_eq!(out, "ثُبّتت الوحدة tool\n٤٢\n");
+    }
+}
+
+/// تثبيت من رابط مستودع فيه ملفان في الوضعين: الرفض
+/// يُمسك بـ حاول/ماعدا ويُطبع ماركر — بلا ملف مكتوب.
+#[test]
+fn install_github_repo_multiple_refused_both_modes() {
+    let port = github_mock_server();
+    let api_base = format!("http://127.0.0.1:{}", port);
+    let prog = "حاول:\n    تثبيت(\"https://github.com/owner/repo/tree/main/sub\")\nماعدا:\n    اطبع \"أكثر من واحد كما يجب\"\n";
+    for interpreter in [true, false] {
+        let flags: &[&str] = if interpreter {
+            &[
+                "--مفسر",
+                "--اسمح-بالشبكة",
+                "--مضيف-محلي",
+                "127.0.0.1",
+            ]
+        } else {
+            &["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"]
+        };
+        let (out, err, code) =
+            run_src_flags_env(prog, flags, &[("NIVA_GITHUB_API_BASE", &api_base)]);
+        assert_eq!(code, 0, "failed: stderr={}", err);
+        assert_eq!(out, "أكثر من واحد كما يجب\n");
+    }
+}
+
+/// تثبيت من رابط إصدار جيت هاب في الوضعين: أصل `.نيفا`
+/// واحد رابطه على الخادم نفسه، فيُثبَّت ويُستورد.
+#[test]
+fn install_github_release_both_modes() {
+    let port = github_mock_server();
+    let api_base = format!("http://127.0.0.1:{}", port);
+    let prog = "اطبع تثبيت(\"https://github.com/owner/repo/releases/tag/v1\")\nاستورد tool\nاطبع tool.قيمة\n";
+    for interpreter in [true, false] {
+        let flags: &[&str] = if interpreter {
+            &[
+                "--مفسر",
+                "--اسمح-بالشبكة",
+                "--مضيف-محلي",
+                "127.0.0.1",
+            ]
+        } else {
+            &["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"]
+        };
+        let (out, err, code) =
+            run_src_flags_env(prog, flags, &[("NIVA_GITHUB_API_BASE", &api_base)]);
+        assert_eq!(code, 0, "failed: stderr={}", err);
+        assert_eq!(out, "ثُبّتت الوحدة tool\n٤٢\n");
+    }
+}
+
 #[test]
 fn function_scope_is_local() {
     let (_, err, code) = run_src(
@@ -2430,11 +2598,22 @@ fn reversed_assignment_rejected_without_feature() {
 // so the process-wide network policy never leaks between tests.
 
 fn run_src_flags(src: &str, flags: &[&str]) -> (String, String, i32) {
+    run_src_flags_env(src, flags, &[])
+}
+
+/// مثل run_src_flags لكن بمتغيرات بيئة إضافية للعملية
+/// الفرعية (لاختبارات تثبيت جيت هاب: توجيه واجهة جيت
+/// هاب إلى الخادم المحاكي عبر NIVA_GITHUB_API_BASE).
+fn run_src_flags_env(
+    src: &str,
+    flags: &[&str],
+    envs: &[(&str, &str)],
+) -> (String, String, i32) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, Ordering::SeqCst);
     let dir = std::env::temp_dir().join(format!(
-        "rio4140-engine-net-{}-{}",
+        "rio4140-engine-net-env-{}-{}",
         std::process::id(),
         n
     ));
@@ -2445,6 +2624,9 @@ fn run_src_flags(src: &str, flags: &[&str]) -> (String, String, i32) {
     cmd.arg(&path);
     for f in flags {
         cmd.arg(f);
+    }
+    for (k, v) in envs {
+        cmd.env(k, v);
     }
     let result = cmd.current_dir(&dir).output().expect("run نيفا");
     let _ = fs::remove_dir_all(&dir);

@@ -11,6 +11,37 @@
 //! لأدوات نيفا فقط (ملفات `.نيفا` مكتوبة بنيفا).
 //! والتثبيت بالاسم (سجل حزم) خطوة لاحقة — ليست هنا.
 //!
+//! المصادر المقبولة:
+//! - رابط http/https مباشر لملف `.نيفا` (يُنزَّل عبر
+//!   `شبكة.اجلب` نفسها — فتسري بوابة الشبكة وقواعد
+//!   `اجلب` نفسها: لا عناوين خاصة، وسقف 5 ميغابايت).
+//! - مسار محلي (يُقرأ عبر سياسة الملفات نفسها).
+//! - رابط مستودع جيت هاب `github.com/<مالك>/<مستودع>`
+//!   (ومسار فرعي `/tree/<فرع>/<مسار>` إن ورد): يُجلب
+//!   سرد المحتويات من واجهة جيت هاب عبر `اجلب` نفسها؛
+//!   فإن وُجد ملف `.نيفا` واحد فقط ثُبّت، وأكثر من واحد
+//!   يُرفض ساردا الأسماء بلا تخمين، ولا ملف يُرفض صراحة.
+//!   ومسار يشير إلى ملف `.نيفا` مفرد يُثبَّت مباشرة.
+//! - رابط إصدار جيت هاب `github.com/<مالك>/<مستودع>
+//!   /releases/tag/<وسم>`: تُجلب أصول الإصدار من الواجهة؛
+//!   فإن وُجد أصل `.نيفا` واحد نُزّل من رابطه المباشر
+//!   وثُبّت، وأكثر من واحد يُرفض ساردا الأسماء، ولا أصل
+//!   يُرفض صراحة.
+//! - روابط github.com بصيغ أخرى (blob/pull/issues) مرفوضة
+//!   صراحة — فلا يُنزَّل HTML صفحة كملف `.نيفا` أبدا.
+//!
+//! قاعدة واجهة جيت هاب: `https://api.github.com` افتراضيا؛
+//! ومتغير البيئة `NIVA_GITHUB_API_BASE` يوجّهها إلى قاعدة
+//! أخرى (للاختبار المحلي بخادم محاكٍ). وقيمة بلا مخطط
+//! http/https مرفوضة صراحة.
+//!
+//! حد معروف (صادق): تنزيل أصل إصدار يمر عبر إعادة توجيه
+//! من github.com إلى مضيف التنزيل (release-assets)؛ وسياسة
+//! الشبكة ترفض إعادة التوجيه إلى مضيف مختلف — فتثبيت
+//! أصول الإصدارات من جيت هاب الحقيقي متوقف على قرار
+//! سياسة منفصل (اجتماع)؛ والمساران البديلان يعملان
+//! اليوم: رابط المستودع والرابط المباشر للملف.
+//!
 //! القواعد المطبقة هنا:
 //! - المصدر رابط http/https: يُنزَّل عبر `شبكة.اجلب`
 //!   نفسها — فتسري بوابة الشبكة (بلا سماح يرفض
@@ -31,7 +62,12 @@
 //! - الكتابة تحت حصة التخزين نفسها (100 ميغابايت)
 //!   كـ `اكتب_ملف`، وبلا نص خطأ نظام تشغيل إنجليزي
 //!   إطلاقا في أي رسالة من هذه الوحدة.
+//! - الأداة المثبّتة برنامج نيفا عادي في مسار الاستيراد
+//!   فقط — لا مساس بالمكتبة الأصلية ولا بالمحرك، ولا
+//!   أمر تشغيل جديد: يشغّلها المستخدم بأوامرها هي
+//!   (`نيفا <اسم>.نيفا` أو `استورد`).
 
+use crate::device::{parse_json, Json};
 use crate::error::{ErrorKind, RioError, RioResult};
 use crate::permissions::FilePolicy;
 use crate::value::Value;
@@ -150,6 +186,481 @@ fn module_name_from_url(url: &str, line: usize, col: usize) -> RioResult<String>
     }
 }
 
+/// قاعدة واجهة جيت هاب الافتراضية.
+const GITHUB_API_BASE: &str = "https://api.github.com";
+
+/// قاعدة واجهة جيت هاب: متغير البيئة `NIVA_GITHUB_API_BASE`
+/// يوجّهها إلى قاعدة أخرى (للاختبار المحلي بخادم محاكٍ)؛
+/// وإلا الافتراضية. وقيمة بلا مخطط http/https مرفوضة صراحة.
+fn github_api_base(line: usize, col: usize) -> RioResult<String> {
+    match std::env::var("NIVA_GITHUB_API_BASE") {
+        Ok(base) if !base.trim().is_empty() => {
+            let base = base.trim().trim_end_matches('/').to_string();
+            let lower = base.to_ascii_lowercase();
+            if lower.starts_with("http://") || lower.starts_with("https://") {
+                Ok(base)
+            } else {
+                Err(RioError::new(
+                    ErrorKind::Io,
+                    "قاعدة واجهة جيت هاب غير صالحة",
+                    line,
+                    col,
+                ))
+            }
+        }
+        _ => Ok(GITHUB_API_BASE.to_string()),
+    }
+}
+
+/// يرمّز مقطعا واحدا من مسار أو استعلام بالنسب المئوية
+/// (كل بايت غير آمن يصير `%XX` بأحرف كبيرة) — فالمقاطع
+/// العربية في روابط الواجهة تصل سليمة، والشرطات المائلة
+/// في قيمة `ref` تُرمَّز فلا تنكسر بنية المسار.
+fn percent_encode_segment(segment: &str) -> String {
+    let mut out = String::new();
+    for &b in segment.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+/// اسم مالك أو مستودع صالح في جيت هاب (بعد فك الترميز):
+/// أحرف وأرقام و`-` و`_` و`.` فقط، وأوله حرف أو رقم،
+/// وبلا `..` — فلا يخرج الاسم من مسار الواجهة أبدا.
+fn validate_github_name(name: &str, line: usize, col: usize) -> RioResult<String> {
+    let decoded = percent_decode(name);
+    let invalid = decoded.is_empty()
+        || decoded == "."
+        || decoded == ".."
+        || decoded.contains("..")
+        || !decoded
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_alphanumeric())
+            .unwrap_or(false)
+        || !decoded
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
+    if invalid {
+        return Err(RioError::new(
+            ErrorKind::Io,
+            "رابط جيت هاب غير صالح",
+            line,
+            col,
+        ));
+    }
+    Ok(decoded)
+}
+
+/// مصدر جيت هاب بعد تصنيف الرابط.
+#[derive(Debug)]
+enum GithubSource {
+    /// مستودع: مالك، مستودع، فرع (بلا فرع = الافتراضي)،
+    /// مسار (بلا مسار = الجذر). وفرع فيه شرطة مائلة لا
+    /// يُميَّز عن المسار في الرابط — فيُقرأ أول مقطع بعد
+    /// `tree` فرعا والباقي مسارا (حد موثق).
+    Repo {
+        owner: String,
+        repo: String,
+        branch: Option<String>,
+        path: String,
+    },
+    /// إصدار: مالك، مستودع، وسم (وشرطات الوسم المائلة
+    /// تُرمَّز في مسار الواجهة فتصل سليمة).
+    Release {
+        owner: String,
+        repo: String,
+        tag: String,
+    },
+}
+
+/// صنّف رابطا: جيت هاب أم لا؟ يعيد None لغير جيت هاب
+/// (فيسلك مسار الرابط المباشر أو المحلي القديم).
+/// وروابط github.com بصيغ غير معروفة (blob/pull/issues
+/// وغيرها) مرفوضة صراحة — فلا يُنزَّل HTML صفحة كملف
+/// `.نيفا` أبدا.
+fn classify_github_url(
+    source: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<GithubSource>> {
+    let lower = source.to_ascii_lowercase();
+    let after_scheme = if lower.starts_with("https://") {
+        &source["https://".len()..]
+    } else if lower.starts_with("http://") {
+        &source["http://".len()..]
+    } else {
+        return Ok(None);
+    };
+    // افصل المضيف عن المسار (بلا استعلام وبلا جزء)،
+    // واحفظ حالة الأحرف في المقاطع من الأصل.
+    let no_fragment = after_scheme.split('#').next().unwrap_or(after_scheme);
+    let no_query = no_fragment.split('?').next().unwrap_or(no_fragment);
+    let (host, path) = match no_query.find('/') {
+        Some(i) => (&no_query[..i], &no_query[i..]),
+        None => (no_query, ""),
+    };
+    let host = host
+        .strip_prefix("www.")
+        .unwrap_or(host)
+        .to_ascii_lowercase();
+    if host != "github.com" {
+        return Ok(None);
+    }
+    let bad = || {
+        RioError::new(ErrorKind::Io, "رابط جيت هاب غير صالح", line, col)
+    };
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if segments.len() < 2 {
+        return Err(bad());
+    }
+    let owner = validate_github_name(segments[0], line, col)?;
+    let repo = validate_github_name(segments[1], line, col)?;
+    match segments.get(2) {
+        None => Ok(Some(GithubSource::Repo {
+            owner,
+            repo,
+            branch: None,
+            path: String::new(),
+        })),
+        Some(&"tree") => {
+            let branch = match segments.get(3) {
+                Some(b) => percent_decode(b),
+                None => return Err(bad()),
+            };
+            if branch.is_empty() {
+                return Err(bad());
+            }
+            let path = segments[4..]
+                .iter()
+                .map(|s| percent_decode(s))
+                .collect::<Vec<_>>()
+                .join("/");
+            Ok(Some(GithubSource::Repo {
+                owner,
+                repo,
+                branch: Some(branch),
+                path,
+            }))
+        }
+        Some(&"releases") => {
+            if segments.get(3) != Some(&"tag") || segments.len() < 5 {
+                return Err(RioError::new(
+                    ErrorKind::Io,
+                    "رابط جيت هاب غير مدعوم — استخدم رابط مستودع أو إصدار أو رابطا مباشرا لملف .نيفا",
+                    line,
+                    col,
+                ));
+            }
+            let tag = segments[4..]
+                .iter()
+                .map(|s| percent_decode(s))
+                .collect::<Vec<_>>()
+                .join("/");
+            if tag.is_empty() {
+                return Err(bad());
+            }
+            Ok(Some(GithubSource::Release { owner, repo, tag }))
+        }
+        Some(_) => Err(RioError::new(
+            ErrorKind::Io,
+            "رابط جيت هاب غير مدعوم — استخدم رابط مستودع أو إصدار أو رابطا مباشرا لملف .نيفا",
+            line,
+            col,
+        )),
+    }
+}
+
+/// حقل من كائن JSON أو بلا شيء.
+fn json_field<'a>(json: &'a Json, key: &str) -> Option<&'a Json> {
+    match json {
+        Json::Obj(pairs) => pairs
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v),
+        _ => None,
+    }
+}
+
+/// نص قيمة JSON أو بلا شيء.
+fn json_str(json: &Json) -> Option<&str> {
+    match json {
+        Json::Str(s) => Some(s),
+        _ => None,
+    }
+}
+
+/// اجلب رد واجهة جيت هاب وحلّله JSON — عبر `اجلب` نفسها
+/// فتسري بوابة الشبكة وقواعدها (ورمز حالة غير 2xx يرفضه
+/// `اجلب` برسالة عربية قبل أن يصل الرد هنا).
+fn fetch_github_json(
+    api_base: &str,
+    api_path: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Json> {
+    let url = format!("{}{}", api_base, api_path);
+    let body = match crate::network::fetch(&url, line, col)? {
+        Value::Str(text) => text,
+        _ => {
+            return Err(RioError::new(
+                ErrorKind::Io,
+                "رد جيت هاب غير مفهوم",
+                line,
+                col,
+            ))
+        }
+    };
+    parse_json(&body).map_err(|_| {
+        RioError::new(ErrorKind::Io, "رد جيت هاب غير مفهوم", line, col)
+    })
+}
+
+/// ملفات `.نيفا` في رد قائمة محتويات (مصفوفة): الاسم
+/// ورابط التنزيل لكل ملف (المجلدات بلا رابط تُتخطى).
+fn niva_files_in_listing(json: &Json, line: usize, col: usize) -> RioResult<Vec<(String, String)>> {
+    let items = match json {
+        Json::Arr(items) => items,
+        _ => {
+            return Err(RioError::new(
+                ErrorKind::Io,
+                "رد جيت هاب غير مفهوم",
+                line,
+                col,
+            ))
+        }
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let name = json_field(item, "name").and_then(json_str);
+        let kind = json_field(item, "type").and_then(json_str);
+        let url = json_field(item, "download_url").and_then(json_str);
+        if let (Some(name), Some("file"), Some(url)) = (name, kind, url) {
+            if name.ends_with(".نيفا") {
+                out.push((name.to_string(), url.to_string()));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// اختر الملف الواحد من قائمة: صفر يُرفض صراحة، وأكثر
+/// من واحد يُرفض ساردا الأسماء بلا تخمين.
+fn pick_single_file(
+    files: Vec<(String, String)>,
+    where_ar: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(String, String)> {
+    match files.len() {
+        0 => Err(RioError::new(
+            ErrorKind::Io,
+            format!("لا يوجد ملف .نيفا {}", where_ar),
+            line,
+            col,
+        )),
+        1 => Ok(files.into_iter().next().unwrap()),
+        _ => {
+            let names = files
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(" / ");
+            Err(RioError::new(
+                ErrorKind::Io,
+                format!(
+                    "يوجد أكثر من ملف .نيفا {}: {} — ثبّت الملف برابطه المباشر",
+                    where_ar, names
+                ),
+                line,
+                col,
+            ))
+        }
+    }
+}
+
+/// نزّل ملف `.نيفا` من رابطه وثبّته في مسار الاستيراد
+/// (الاسم من القائمة — لا من الرابط — فلا يختلفا).
+fn install_github_file(
+    name: &str,
+    url: &str,
+    program_dir: &Path,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let stem = validate_module_filename(name, line, col)?;
+    let body = match crate::network::fetch(url, line, col)? {
+        Value::Str(text) => text,
+        _ => {
+            return Err(RioError::new(
+                ErrorKind::Io,
+                "الرابط لا يشير إلى ملف .نيفا",
+                line,
+                col,
+            ))
+        }
+    };
+    write_installed_module(program_dir, stem, body, line, col)
+}
+
+/// ثبّت من مصدر جيت هاب (مستودع أو إصدار) بعد تصنيفه.
+fn install_from_github(
+    api_base: &str,
+    program_dir: &Path,
+    gh: GithubSource,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    match gh {
+        GithubSource::Repo {
+            owner,
+            repo,
+            branch,
+            path,
+        } => {
+            let mut api_path = format!(
+                "/repos/{}/{}/contents",
+                percent_encode_segment(&owner),
+                percent_encode_segment(&repo)
+            );
+            if !path.is_empty() {
+                let encoded: Vec<String> =
+                    path.split('/').map(percent_encode_segment).collect();
+                api_path.push('/');
+                api_path.push_str(&encoded.join("/"));
+            }
+            if let Some(branch) = &branch {
+                api_path.push_str("?ref=");
+                api_path.push_str(&percent_encode_segment(branch));
+            }
+            let json = fetch_github_json(api_base, &api_path, line, col)?;
+            let where_ar = if path.is_empty() {
+                "في هذا المستودع"
+            } else {
+                "في هذا المسار من المستودع"
+            };
+            // قائمة مجلد أم ملف مفرد؟ المسار إلى ملف يعيد
+            // كائنا واحدا — فيُثبَّت مباشرة إن كان `.نيفا`.
+            let files = match &json {
+                Json::Arr(_) => niva_files_in_listing(&json, line, col)?,
+                Json::Obj(_) => {
+                    let name = json_field(&json, "name").and_then(json_str);
+                    let kind = json_field(&json, "type").and_then(json_str);
+                    let url = json_field(&json, "download_url").and_then(json_str);
+                    match (name, kind, url) {
+                        (Some(name), Some("file"), Some(url))
+                            if name.ends_with(".نيفا") =>
+                        {
+                            vec![(name.to_string(), url.to_string())]
+                        }
+                        _ => {
+                            return Err(RioError::new(
+                                ErrorKind::Io,
+                                "المسار ليس مجلدا ولا ملف .نيفا",
+                                line,
+                                col,
+                            ))
+                        }
+                    }
+                }
+                _ => {
+                    return Err(RioError::new(
+                        ErrorKind::Io,
+                        "رد جيت هاب غير مفهوم",
+                        line,
+                        col,
+                    ))
+                }
+            };
+            let (name, url) = pick_single_file(files, where_ar, line, col)?;
+            install_github_file(&name, &url, program_dir, line, col)
+        }
+        GithubSource::Release { owner, repo, tag } => {
+            let api_path = format!(
+                "/repos/{}/{}/releases/tags/{}",
+                percent_encode_segment(&owner),
+                percent_encode_segment(&repo),
+                percent_encode_segment(&tag)
+            );
+            let json = fetch_github_json(api_base, &api_path, line, col)?;
+            let assets = match json_field(&json, "assets") {
+                Some(Json::Arr(items)) => items,
+                _ => {
+                    return Err(RioError::new(
+                        ErrorKind::Io,
+                        "رد جيت هاب غير مفهوم",
+                        line,
+                        col,
+                    ))
+                }
+            };
+            let mut files = Vec::new();
+            for item in assets {
+                let name = json_field(item, "name").and_then(json_str);
+                let url = json_field(item, "browser_download_url").and_then(json_str);
+                if let (Some(name), Some(url)) = (name, url) {
+                    if name.ends_with(".نيفا") {
+                        files.push((name.to_string(), url.to_string()));
+                    }
+                }
+            }
+            let (name, url) = pick_single_file(files, "في هذا الإصدار", line, col)?;
+            install_github_file(&name, &url, program_dir, line, col)
+        }
+    }
+}
+
+/// تحقق الاسم الأصلي + بلا كتابة فوق موجود + الحصة +
+/// الكتابة — مشترك بين المسارات كلها (مباشر/محلي/
+/// جيت هاب) فلا ينحرف سلوك عن سلوك.
+fn write_installed_module(
+    program_dir: &Path,
+    stem: String,
+    content: String,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    // اسم وحدة أصلية لا يُثبَّت: `استورد` يقدّم الأصلية
+    // على الملف دائما، فالملف المثبّت بهذا الاسم لا
+    // يُستورد أبدا — رفض صريح خير من تثبيت بلا أثر.
+    if crate::stdlib::native_module(&stem).is_some() {
+        return Err(RioError::new(
+            ErrorKind::Io,
+            format!("{} وحدة أصلية — لا يمكن تثبيت وحدة بهذا الاسم", stem),
+            line,
+            col,
+        ));
+    }
+    // بلا كتابة صامتة فوق موجود — التحديث مهمة لاحقة.
+    let target = program_dir.join(format!("{}.نيفا", stem));
+    if target.exists() {
+        return Err(RioError::new(
+            ErrorKind::Io,
+            format!(
+                "الوحدة {} مثبّتة أصلا — احذف الملف أولا لإعادة تثبيتها",
+                stem
+            ),
+            line,
+            col,
+        ));
+    }
+    check_disk_quota(program_dir, content.len() as u64, line, col)?;
+    std::fs::write(&target, &content).map_err(|_| {
+        RioError::new(
+            ErrorKind::Io,
+            format!("تعذر تثبيت الوحدة {}", stem),
+            line,
+            col,
+        )
+    })?;
+    Ok(Value::Str(format!("ثُبّتت الوحدة {}", stem)))
+}
+
 /// ثبّت أداة نيفا من رابط أو مسار محلي إلى مجلد البرنامج.
 /// يعيد نص تأكيد («ثُبّتت الوحدة {الاسم}») يطبعه الطرفي.
 /// `policy` و`cwd` هما سياسة الجلسة ومجلدها (للمصدر
@@ -159,6 +670,21 @@ pub(crate) fn install_module(
     cwd: &Path,
     program_dir: &Path,
     source: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let api_base = github_api_base(line, col)?;
+    install_module_with_api(policy, cwd, program_dir, source, &api_base, line, col)
+}
+
+/// التنفيذ الداخلي بقاعدة واجهة صريحة (الاختبارات تمرّر
+/// خادمها المحاكي؛ والعام يمرّر القاعدة الحقيقية).
+fn install_module_with_api(
+    policy: &FilePolicy,
+    cwd: &Path,
+    program_dir: &Path,
+    source: &str,
+    api_base: &str,
     line: usize,
     col: usize,
 ) -> RioResult<Value> {
@@ -175,6 +701,12 @@ pub(crate) fn install_module(
             line,
             col,
         ));
+    }
+    // رابط جيت هاب (مستودع أو إصدار) — قبل المباشر.
+    if is_url {
+        if let Some(gh) = classify_github_url(source, line, col)? {
+            return install_from_github(api_base, program_dir, gh, line, col);
+        }
     }
     let (stem, content): (String, String) = if is_url {
         let stem = module_name_from_url(source, line, col)?;
@@ -229,40 +761,7 @@ pub(crate) fn install_module(
         )?;
         (stem, text)
     };
-    // اسم وحدة أصلية لا يُثبَّت: `استورد` يقدّم الأصلية
-    // على الملف دائما، فالملف المثبّت بهذا الاسم لا
-    // يُستورد أبدا — رفض صريح خير من تثبيت بلا أثر.
-    if crate::stdlib::native_module(&stem).is_some() {
-        return Err(RioError::new(
-            ErrorKind::Io,
-            format!("{} وحدة أصلية — لا يمكن تثبيت وحدة بهذا الاسم", stem),
-            line,
-            col,
-        ));
-    }
-    // بلا كتابة صامتة فوق موجود — التحديث مهمة لاحقة.
-    let target = program_dir.join(format!("{}.نيفا", stem));
-    if target.exists() {
-        return Err(RioError::new(
-            ErrorKind::Io,
-            format!(
-                "الوحدة {} مثبّتة أصلا — احذف الملف أولا لإعادة تثبيتها",
-                stem
-            ),
-            line,
-            col,
-        ));
-    }
-    check_disk_quota(program_dir, content.len() as u64, line, col)?;
-    std::fs::write(&target, &content).map_err(|_| {
-        RioError::new(
-            ErrorKind::Io,
-            format!("تعذر تثبيت الوحدة {}", stem),
-            line,
-            col,
-        )
-    })?;
-    Ok(Value::Str(format!("ثُبّتت الوحدة {}", stem)))
+    write_installed_module(program_dir, stem, content, line, col)
 }
 
 #[cfg(test)]
@@ -493,6 +992,504 @@ mod tests {
             err
         );
         assert!(!base.join("أداة.نيفا").exists());
+        cleanup(&base);
+    }
+
+    #[test]
+    fn github_url_classify() {
+        // جذر مستودع.
+        match classify_github_url("https://github.com/owner/repo", 1, 1)
+            .unwrap()
+            .unwrap()
+        {
+            GithubSource::Repo {
+                owner,
+                repo,
+                branch,
+                path,
+            } => {
+                assert_eq!(owner, "owner");
+                assert_eq!(repo, "repo");
+                assert!(branch.is_none());
+                assert!(path.is_empty());
+            }
+            _ => panic!("expected repo"),
+        }
+        // شجرة بفرع ومسار + شرطة أخيرة.
+        match classify_github_url(
+            "https://github.com/owner/repo/tree/main/sub/dir/",
+            1,
+            1,
+        )
+        .unwrap()
+        .unwrap()
+        {
+            GithubSource::Repo { branch, path, .. } => {
+                assert_eq!(branch.as_deref(), Some("main"));
+                assert_eq!(path, "sub/dir");
+            }
+            _ => panic!("expected repo tree"),
+        }
+        // إصدار + www + http.
+        match classify_github_url(
+            "http://www.github.com/owner/repo/releases/tag/v1.2.3",
+            1,
+            1,
+        )
+        .unwrap()
+        .unwrap()
+        {
+            GithubSource::Release { owner, repo, tag } => {
+                assert_eq!(owner, "owner");
+                assert_eq!(repo, "repo");
+                assert_eq!(tag, "v1.2.3");
+            }
+            _ => panic!("expected release"),
+        }
+        // ليس جيت هاب → None (يسلك مسار الرابط المباشر).
+        assert!(classify_github_url("https://example.com/owner/repo", 1, 1)
+            .unwrap()
+            .is_none());
+        assert!(classify_github_url(
+            "https://raw.githubusercontent.com/owner/repo/main/tool.نيفا",
+            1,
+            1
+        )
+        .unwrap()
+        .is_none());
+        // blob مرفوض صراحة — لا HTML صفحة كملف.
+        let err = classify_github_url(
+            "https://github.com/owner/repo/blob/main/tool.نيفا",
+            1,
+            1,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("غير مدعوم"), "got: {}", err);
+        // releases بلا tag مرفوضة.
+        let err =
+            classify_github_url("https://github.com/owner/repo/releases", 1, 1)
+                .unwrap_err();
+        assert!(err.to_string().contains("غير مدعوم"), "got: {}", err);
+        // بلا مستودع.
+        assert!(classify_github_url("https://github.com/owner", 1, 1).is_err());
+        // اسم فيه `..` مرفوض.
+        assert!(classify_github_url("https://github.com/ow..ner/repo", 1, 1).is_err());
+    }
+
+    #[test]
+    fn github_percent_encode_segment() {
+        assert_eq!(percent_encode_segment("main"), "main");
+        assert_eq!(percent_encode_segment("v1.2.3"), "v1.2.3");
+        assert_eq!(percent_encode_segment("a/b"), "a%2Fb");
+        assert_eq!(percent_encode_segment("a b"), "a%20b");
+        assert_eq!(
+            percent_encode_segment("أداة"),
+            "%D8%A3%D8%AF%D8%A7%D8%A9"
+        );
+    }
+
+    #[test]
+    fn github_api_base_env() {
+        let _guard = install_test_lock();
+        std::env::remove_var("NIVA_GITHUB_API_BASE");
+        assert_eq!(
+            github_api_base(1, 1).unwrap(),
+            "https://api.github.com"
+        );
+        std::env::set_var("NIVA_GITHUB_API_BASE", "http://127.0.0.1:9/");
+        assert_eq!(github_api_base(1, 1).unwrap(), "http://127.0.0.1:9");
+        std::env::set_var("NIVA_GITHUB_API_BASE", "ftp://x");
+        assert!(github_api_base(1, 1).is_err());
+        std::env::remove_var("NIVA_GITHUB_API_BASE");
+    }
+
+    /// خادم جيت هاب محاكى (اختبارات فقط): يربط 127.0.0.1
+    /// على منفذ مؤقت ويرد بـ JSON canned حسب المسار —
+    /// نمط خادم اختبارات الشبكة القائم. كل اختبار يأخذ
+    /// خادمه (منفذه) فلا تتشارك الاختبارات حالة.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn github_mock_server() -> u16 {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = match stream {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let mut req: Vec<u8> = Vec::new();
+                let mut buf = [0u8; 1024];
+                loop {
+                    match stream.read(&mut buf) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            req.extend_from_slice(&buf[..n]);
+                            if req.len() >= 4 && &req[req.len() - 4..] == b"\r\n\r\n" {
+                                break;
+                            }
+                            if req.len() > 8192 {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let req_text = String::from_utf8_lossy(&req).into_owned();
+                let target = req_text
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("/")
+                    .to_string();
+                // المسار بلا استعلام (فـ `?ref=` لا يكسر
+                // المطابقة)، ويفك ترميزه (فـ `اجلب`
+                // يرمّز المقاطع العربية على السلك).
+                let path = percent_decode(
+                    target.split('?').next().unwrap_or("/"),
+                );
+                let base = format!("http://127.0.0.1:{}", port);
+                let file_body = "صدر قيمة\nقيمة = ٤٢\n";
+                // إعادة توجيه إلى مضيف مختلف — يحاكي رابط
+                // إصدار جيت هاب الحقيقي (release-assets).
+                if path == "/redirect-cross" {
+                    let _ = stream.write_all(
+                        format!(
+                            "HTTP/1.1 302 Found\r\nLocation: http://localhost:{}/files/tool.نيفا\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                            port
+                        )
+                        .as_bytes(),
+                    );
+                    continue;
+                }
+                let (status, body): (&str, String) = match path.as_str() {
+                    // قائمة الجذر: ملف .نيفا واحد + نص + مجلد.
+                    "/repos/owner/repo/contents" => (
+                        "200 OK",
+                        format!(
+                            "[{{\"name\":\"tool.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/tool.نيفا\"}},{{\"name\":\"note.txt\",\"type\":\"file\",\"download_url\":\"{}/files/note.txt\"}},{{\"name\":\"sub\",\"type\":\"dir\",\"download_url\":null}}]",
+                            base, base
+                        ),
+                    ),
+                    // مسار فيه ملفان — رفض ساردا الأسماء.
+                    "/repos/owner/repo/contents/sub" => (
+                        "200 OK",
+                        format!(
+                            "[{{\"name\":\"a.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/a.نيفا\"}},{{\"name\":\"b.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/b.نيفا\"}}]",
+                            base, base
+                        ),
+                    ),
+                    // مسار بلا ملف .نيفا.
+                    "/repos/owner/repo/contents/empty" => (
+                        "200 OK",
+                        format!(
+                            "[{{\"name\":\"note.txt\",\"type\":\"file\",\"download_url\":\"{}/files/note.txt\"}}]",
+                            base
+                        ),
+                    ),
+                    // مسار ملف مفرد .نيفا — كائن لا مصفوفة.
+                    "/repos/owner/repo/contents/tool.نيفا" => (
+                        "200 OK",
+                        format!(
+                            "{{\"name\":\"tool.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/tool.نيفا\"}}",
+                            base
+                        ),
+                    ),
+                    // مسار ملف مفرد ليس .نيفا.
+                    "/repos/owner/repo/contents/note.txt" => (
+                        "200 OK",
+                        format!(
+                            "{{\"name\":\"note.txt\",\"type\":\"file\",\"download_url\":\"{}/files/note.txt\"}}",
+                            base
+                        ),
+                    ),
+                    // إصدار بأصل .نيفا واحد (رابطه على الخادم
+                    // نفسه — فيُحمَّل فعلا ويثبَّت).
+                    "/repos/owner/repo/releases/tags/v1" => (
+                        "200 OK",
+                        format!(
+                            "{{\"assets\":[{{\"name\":\"tool.نيفا\",\"browser_download_url\":\"{}/files/tool.نيفا\"}}]}}",
+                            base
+                        ),
+                    ),
+                    // إصدار بأصلين.
+                    "/repos/owner/repo/releases/tags/v2" => (
+                        "200 OK",
+                        format!(
+                            "{{\"assets\":[{{\"name\":\"a.نيفا\",\"browser_download_url\":\"{}/files/a.نيفا\"}},{{\"name\":\"b.نيفا\",\"browser_download_url\":\"{}/files/b.نيفا\"}}]}}",
+                            base, base
+                        ),
+                    ),
+                    // إصدار بلا أصل .نيفا.
+                    "/repos/owner/repo/releases/tags/v3" => (
+                        "200 OK",
+                        "{\"assets\":[{\"name\":\"tool.zip\",\"browser_download_url\":\"http://127.0.0.1:1/files/tool.zip\"}]}"
+                            .to_string(),
+                    ),
+                    // إصدار أصله يعيد توجيها إلى مضيف مختلف.
+                    "/repos/owner/repo/releases/tags/v4" => (
+                        "200 OK",
+                        format!(
+                            "{{\"assets\":[{{\"name\":\"tool.نيفا\",\"browser_download_url\":\"{}/redirect-cross\"}}]}}",
+                            base
+                        ),
+                    ),
+                    _ if path.starts_with("/files/") => {
+                        ("200 OK", file_body.to_string())
+                    }
+                    _ => (
+                        "404 Not Found",
+                        "{\"message\":\"Not Found\"}".to_string(),
+                    ),
+                };
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.1 {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        status,
+                        body.len(),
+                        body
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        port
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn github_install(
+        base: &Path,
+        policy: &FilePolicy,
+        api_base: &str,
+        source: &str,
+    ) -> Result<Value, RioError> {
+        install_module_with_api(policy, base, base, source, api_base, 1, 1)
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_github_repo_single_file() {
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("gh-repo");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        let got = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo",
+        )
+        .unwrap();
+        assert_eq!(got, Value::Str("ثُبّتت الوحدة tool".to_string()));
+        assert_eq!(
+            std::fs::read_to_string(base.join("tool.نيفا")).unwrap(),
+            "صدر قيمة\nقيمة = ٤٢\n"
+        );
+        // الثانية مرفوضة: بلا كتابة صامتة فوق موجود.
+        let err = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("مثبّتة أصلا"), "got: {}", err);
+        crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_github_repo_tree_branch_and_file() {
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("gh-tree");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        // مسار ملف مفرد (مع فرع واستعلام ref).
+        let got = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/tree/main/tool.نيفا",
+        )
+        .unwrap();
+        assert_eq!(got, Value::Str("ثُبّتت الوحدة tool".to_string()));
+        crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_github_repo_refusals() {
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("gh-refuse");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        // ملفان — الرفض يسرد الاسمين ولا يكتب شيئا.
+        let err = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/tree/main/sub",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("أكثر من ملف .نيفا"),
+            "got: {}",
+            err
+        );
+        assert!(err.to_string().contains("a.نيفا"), "got: {}", err);
+        assert!(err.to_string().contains("b.نيفا"), "got: {}", err);
+        assert!(!base.join("a.نيفا").exists());
+        assert!(!base.join("b.نيفا").exists());
+        // لا ملف .نيفا.
+        let err = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/tree/main/empty",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("لا يوجد ملف .نيفا"),
+            "got: {}",
+            err
+        );
+        // مسار ملف ليس .نيفا.
+        let err = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/tree/main/note.txt",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("ليس مجلدا ولا ملف .نيفا"),
+            "got: {}",
+            err
+        );
+        // مستودع غائب — 404 من الواجهة برسالة عربية.
+        let err = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/ghost",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("رمز الحالة 404"),
+            "got: {}",
+            err
+        );
+        crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_github_release_single_asset() {
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("gh-rel1");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        let got = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/releases/tag/v1",
+        )
+        .unwrap();
+        assert_eq!(got, Value::Str("ثُبّتت الوحدة tool".to_string()));
+        assert_eq!(
+            std::fs::read_to_string(base.join("tool.نيفا")).unwrap(),
+            "صدر قيمة\nقيمة = ٤٢\n"
+        );
+        crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_github_release_refusals() {
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("gh-relx");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        // أصلان — الرفض يسرد الاسمين.
+        let err = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/releases/tag/v2",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("أكثر من ملف .نيفا"),
+            "got: {}",
+            err
+        );
+        assert!(err.to_string().contains("a.نيفا"), "got: {}", err);
+        assert!(err.to_string().contains("b.نيفا"), "got: {}", err);
+        // بلا أصل .نيفا.
+        let err = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/releases/tag/v3",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("لا يوجد ملف .نيفا"),
+            "got: {}",
+            err
+        );
+        crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_github_release_cross_host_redirect_refused() {
+        // حد موثق: رابط أصل الإصدار الحقيقي يعيد توجيها
+        // إلى مضيف مختلف (release-assets) فيرفضه `اجلب`
+        // بسياسة إعادة التوجيه — وهذا الاختبار يثبت أن
+        // الرفض هو السياسة نفسها لا عيب في مسار الإصدار.
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("gh-rel4");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        let err = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/releases/tag/v4",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("مضيف مختلف"),
+            "got: {}",
+            err
+        );
+        assert!(!base.join("tool.نيفا").exists());
+        crate::network::set_network_allowed(false);
         cleanup(&base);
     }
 }
