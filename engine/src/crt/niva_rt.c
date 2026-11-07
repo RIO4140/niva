@@ -441,6 +441,26 @@ NvValue *nv_root_slot(size_t idx) {
 static NvError nv_last_error;
 static int nv_has_error = 0;
 
+// ملف التنفيذ الجاري (فهرس في جدول nv_source_files
+// الذي يولّده cgen — [0] الملف الرئيسي). يضبطه الكود
+// المولّد عند دخول كل دالة وعند كل جملة؛ ويلتقطه
+// nv_error في الخطأ، فيسمّى الملف كما في المفسر
+// (اجتماع 33: الحكم الخامس يمتد إلى الأصلي حرفيا).
+int nv_cur_file_idx = 0;
+
+// اطبع خطأ نيفا بالصيغة نفسها حرفيا كما في المفسر:
+// «خطأ {نوع}: {رسالة} (الملف {ملف}، السطر {س}، العمود {ع})»
+// حين يكون الملف معلوما، وإلا الصيغة القديمة بلا ملف.
+static void nv_print_error(NvErrKind kind, const char *message, int line, int col, int file_idx) {
+    if (file_idx >= 0 && file_idx < nv_n_source_files && nv_source_files[file_idx]) {
+        fprintf(stderr, "خطأ %s: %s (الملف %s، السطر %d، العمود %d)\n",
+                nv_err_kind_ar(kind), message, nv_source_files[file_idx], line, col);
+    } else {
+        fprintf(stderr, "خطأ %s: %s (السطر %d، العمود %d)\n",
+                nv_err_kind_ar(kind), message, line, col);
+    }
+}
+
 NvError *nv_current_error(void) {
     return nv_has_error ? &nv_last_error : NULL;
 }
@@ -465,6 +485,7 @@ void nv_error(NvErrKind kind, const char *message, int line, int col) {
     nv_last_error.message = nv_strdup(message);
     nv_last_error.line = line;
     nv_last_error.col = col;
+    nv_last_error.file_idx = nv_cur_file_idx;
     nv_has_error = 1;
     if (nv_handlers) {
         NvHandler *h = nv_handlers;
@@ -472,8 +493,7 @@ void nv_error(NvErrKind kind, const char *message, int line, int col) {
         longjmp(h->jb, 1);
     }
     // بلا معالج: اطبع واخرج برمز 1 كما يفعل CLI.
-    fprintf(stderr, "خطأ %s: %s (السطر %d، العمود %d)\n",
-            nv_err_kind_ar(kind), message, line, col);
+    nv_print_error(kind, message, line, col, nv_last_error.file_idx);
     exit(1);
 }
 
@@ -490,9 +510,24 @@ void nv_reraise_current(void) {
         nv_handlers = h->prev;
         longjmp(h->jb, 1);
     }
-    fprintf(stderr, "خطأ %s: %s (السطر %d، العمود %d)\n",
-            nv_err_kind_ar(e.kind), e.message, e.line, e.col);
+    nv_print_error(e.kind, e.message, e.line, e.col, e.file_idx);
     exit(1);
+}
+
+// أضف بادئة إلى رسالة الخطأ الحالي دون تغيير ملفه
+// أو سطره أو عموده — «في وحدة X: » عند عبور حدود
+// وحدة أثناء تحميلها، كما في المفسر (تُستدعى من
+// غلاف استيراد مولّد قبل إعادة الرفع).
+void nv_prefix_error(const char *prefix) {
+    if (!nv_has_error || !nv_last_error.message || !prefix) return;
+    size_t pl = strlen(prefix);
+    size_t ml = strlen(nv_last_error.message);
+    char *nm = (char *)malloc(pl + ml + 1);
+    if (!nm) return;
+    memcpy(nm, prefix, pl);
+    memcpy(nm + pl, nv_last_error.message, ml + 1);
+    free(nv_last_error.message);
+    nv_last_error.message = nm;
 }
 
 void nv_error_fmt(NvErrKind kind, int line, int col, const char *fmt, ...) {
@@ -1647,7 +1682,13 @@ static NvValue nv_call_func_impl(NvFunc *f, NvValue self, int has_self,
     nv_call_depth++;
     NvFlow saved_flow = nv_flow;
     nv_flow = NV_FLOW_NORMAL;
+    // ملف المتصل يُستعاد بعد عودة الدالة: فحوص ما بعد
+    // الاستدعاء (نوع الإرجاع) تُسنَد إلى ملف المتصل
+    // كما في المفسر؛ والخطأ داخل الدالة يحتفظ بملفها
+    // (القفز يتخطى الاستعادة عمدا).
+    int saved_file = nv_cur_file_idx;
     NvValue result = f->cfunc(frame, args, nargs, line, col);
+    nv_cur_file_idx = saved_file;
     NvFlow exit_flow = nv_flow;
     nv_flow = saved_flow;
     nv_call_depth--;
@@ -1849,6 +1890,11 @@ void nv_print_args(NvValue *args, int nargs) {
         free(s);
     }
     fputc('\n', stdout);
+    // اجتماع 33: البث الحي يمتد إلى الأصلي حرفيا —
+    // فرّغ بعد كل طباعة، فيتداخل مخرج العمليات
+    // المساعدة بالترتيب نفسه كما في المفسر، ويزول
+    // الحد الصادق رقم 8 من تقرير المهمة 29.
+    fflush(stdout);
 }
 
 NvValue nv_input(NvValue *args, int nargs, int line, int col) {
@@ -3538,8 +3584,7 @@ int nv_main(int argc, char **argv, void (*body)(NvScope *top)) {
         nv_restore_checkpoint(cp);
         NvError *e = nv_current_error();
         if (e) {
-            fprintf(stderr, "خطأ %s: %s (السطر %d، العمود %d)\n",
-                    nv_err_kind_ar(e->kind), e->message, e->line, e->col);
+            nv_print_error(e->kind, e->message, e->line, e->col, e->file_idx);
         }
         code = 1;
     }

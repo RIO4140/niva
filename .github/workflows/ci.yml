@@ -24,6 +24,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - name: Add engine build dir to PATH
+        # The native backend runs .نيفا subprograms by looking for an
+        # installed Niva engine (niva_std.c fallback: ~/.local/bin/نيفا
+        # then niva/نيفا on PATH); CI installs none, so example 18 fails
+        # there. cargo test builds target/debug/niva — put its directory
+        # on PATH so the fallback finds the engine under test itself.
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/engine/target/debug" >> $GITHUB_PATH
       - name: Test
         working-directory: engine
         # الاختبارات المتوازية تتصارع على مجلد العمل المشترك — التشغيل التسلسلي إلزامي

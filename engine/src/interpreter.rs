@@ -121,6 +121,21 @@ pub struct Interpreter {
     // HandlerCaller context (no process-wide static), because
     // native functions now receive the engine as context.
     server_allowed: bool,
+    // اجتماع 32، السؤال الخامس: الملف الجاري تنفيذه
+    // (الملف الرئيسي، أو ملف الوحدة أثناء تحميلها
+    // وتنفيذ دوالها) — تُسنَد إليه أخطاء التشغيل عند
+    // خروج run(). لا شيء لإدخال REPL ونص بلا ملف.
+    source_file: Option<String>,
+    // اجتماع 32، السؤال الثامن: بث حي — حين يكون صحيحا
+    // يكتب `اطبع` السطر إلى المخرجات القياسية فور إنتاجه
+    // (مع تفريغ) ولا يحتفظ به في output؛ فالمحتوى
+    // النهائي مطابق حرفيا ولا يتضاعف عند طباعة main له.
+    // افتراضيا خطأ: lib والاختبارات تقرأ output كما كانت.
+    live_output: bool,
+    // اجتماع 32، السؤال الخامس: اسم وحدة ← ملفها
+    // (العرض بشرطة مائلة) — لإسناد أخطاء أجسام دوال
+    // الوحدة إلى ملفها عند استدعائها من ملف آخر.
+    module_files: HashMap<String, String>,
 }
 
 impl Interpreter {
@@ -138,6 +153,9 @@ impl Interpreter {
             file_policy: crate::permissions::FilePolicy::restricted(program_dir),
             network_allowed: false,
             server_allowed: false,
+            source_file: None,
+            live_output: false,
+            module_files: HashMap::new(),
         }
     }
 
@@ -341,6 +359,25 @@ impl Interpreter {
         crate::network::allow_local_host(host);
     }
 
+    /// اجتماع 32، السؤال الخامس: ملف المصدر الجاري
+    /// تنفيذه — تُسنَد إليه أخطاء التشغيل. يضبطه المتصل
+    /// العلوي (main.rs) للملف الرئيسي؛ وتحميل الوحدة
+    /// يبدّله مؤقتا أثناء تنفيذها ثم يعيده.
+    pub fn set_source_file(&mut self, file: &str) {
+        self.source_file = Some(file.to_string());
+    }
+
+    /// اجتماع 32، السؤال الثامن: بث حي لمخرجات `اطبع`
+    /// (السطر يصل فور إنتاجه). افتراضيا خطأ.
+    pub fn set_live_output(&mut self, live: bool) {
+        self.live_output = live;
+    }
+
+    /// البث الحي مفعّل؟
+    pub fn live_output(&self) -> bool {
+        self.live_output
+    }
+
     fn define_local(&mut self, name: &str, value: Value) {
         if let Some(scope) = self.scopes.last() {
             scope.borrow_mut().insert(name.to_string(), value);
@@ -489,6 +526,11 @@ impl Interpreter {
     }
 
     pub fn run(&mut self, program: &[Stmt]) -> RioResult<()> {
+        self.run_inner(program)
+            .map_err(|e| e.with_file_if_none(self.source_file.clone()))
+    }
+
+    fn run_inner(&mut self, program: &[Stmt]) -> RioResult<()> {
         // Per-instance network flag (sessions): same sync as
         // eval_one — the gate always reflects the interpreter
         // that is currently evaluating.
@@ -573,8 +615,17 @@ impl Interpreter {
                 for arg in args {
                     parts.push(self.eval_expr(arg)?.fmt_value());
                 }
-                self.output.push_str(&parts.join(" "));
-                self.output.push('\n');
+                let line = format!("{}\n", parts.join(" "));
+                // اجتماع 32، السؤال الثامن: بث حي — السطر
+                // يصل فور إنتاجه ولا يُحتفظ به في output،
+                // فيبقى المحتوى النهائي مطابقا حرفيا.
+                if self.live_output {
+                    use std::io::Write;
+                    print!("{}", line);
+                    let _ = std::io::stdout().flush();
+                } else {
+                    self.output.push_str(&line);
+                }
                 Ok(Flow::Normal)
             }
             StmtKind::If { cond, then_body, elifs, else_body } => {
@@ -864,7 +915,26 @@ impl Interpreter {
                 self.exec_try(try_body, except_body, finally_body)
             }
             StmtKind::ExprStmt { expr } => {
-                let _ = self.eval_expr(expr)?;
+                let v = self.eval_expr(expr)?;
+                // اجتماع 32، السؤال الثاني (2): عبارة
+                // مجردة تنتج قيمة دالة (مرجع دالة، أو
+                // نتيجة استدعاء ترجع دالة) خطأ عربي يسمي
+                // الدالة — فالصمت هنا فخ لا ميزة. الفحص
+                // على القيمة لا على شكل التعبير، ليطابق
+                // VM حرفيا (Pop لا يرى التعبير)؛ أما
+                // الاستدعاء المجرد الذي يرجع غير دالة
+                // فتبقى قيمته الإرجاعية تُتجاهل كما كانت.
+                if let Value::Function { name, .. } | Value::NativeFunction { name, .. } = &v
+                {
+                    return Err(RioError::runtime(
+                        format!(
+                            "دالة بلا استدعاء: {} — استدعها بالأقواس أو أسندها إلى متغير",
+                            name
+                        ),
+                        stmt.line,
+                        stmt.col,
+                    ));
+                }
                 Ok(Flow::Normal)
             }
         }
@@ -918,22 +988,21 @@ impl Interpreter {
             }
         };
         let source = Self::read_file_capped(&path, module, line, col)?;
-        let tokens = lexer::tokenize(&source).map_err(|e| {
-            RioError::new(
-                e.kind,
-                format!("في وحدة {}: {}", module, e.message),
-                e.line,
-                e.col,
-            )
+        // اجتماع 32، السؤال الخامس: ملف الوحدة هو الذي
+        // تُسنَد إليه أخطاؤها — العرض بشرطة مائلة كما
+        // يراه المستخدم؛ والبادئة «في وحدة X: » تبقى
+        // توافقا مع الرسائل القديمة.
+        let display = crate::permissions::slash_display(&path);
+        self.module_files
+            .insert(module.to_string(), display.clone());
+        let tokens = lexer::tokenize_named(&source, &display).map_err(|e| {
+            e.with_prefix(&format!("في وحدة {}: ", module))
+                .with_file_if_none(Some(display.clone()))
         })?;
-        let mut parser = Parser::new(tokens);
+        let mut parser = Parser::named(tokens, &display);
         let program = parser.parse_program().map_err(|e| {
-            RioError::new(
-                e.kind,
-                format!("في وحدة {}: {}", module, e.message),
-                e.line,
-                e.col,
-            )
+            e.with_prefix(&format!("في وحدة {}: ", module))
+                .with_file_if_none(Some(display.clone()))
         })?;
         // Collect export names from top-level Export statements only.
         // Strict rule: only exported names are accessible from outside.
@@ -951,10 +1020,15 @@ impl Interpreter {
         // Execute the module in a fresh global scope, isolated from
         // the caller's scopes. loaded_modules / loading_stack are
         // shared, so nested imports and cycle detection work.
+        // اجتماع 32: أثناء تنفيذ الوحدة source_file هو
+        // ملفها، فتُسنَد أخطاء مستواها الأعلى إليه؛ ثم يُعاد
+        // ملف المتصل (استيراد متداخل يعيد ملف وحدته هو).
         self.loading_stack.push(module.to_string());
         let saved_scopes = std::mem::replace(&mut self.scopes, vec![Rc::new(RefCell::new(HashMap::new()))]);
         let saved_return = self.return_value.take();
+        let saved_file = self.source_file.replace(display.clone());
         let exec_result = self.run(&program);
+        self.source_file = saved_file;
         let module_scope = if self.scopes.is_empty() {
             HashMap::new()
         } else {
@@ -964,12 +1038,8 @@ impl Interpreter {
         self.return_value = saved_return;
         self.loading_stack.pop();
         exec_result.map_err(|e| {
-            RioError::new(
-                e.kind,
-                format!("في وحدة {}: {}", module, e.message),
-                e.line,
-                e.col,
-            )
+            e.with_prefix(&format!("في وحدة {}: ", module))
+                .with_file_if_none(Some(display.clone()))
         })?;
         // Mark top-level functions in the module scope with their
         // module name, so calls to them push this module's scope.
@@ -1753,6 +1823,16 @@ impl Interpreter {
         self.scopes.push(Rc::new(RefCell::new(scope)));
         self.call_depth += 1;
         let result = self.exec_block(&body);
+        // اجتماع 32، السؤال الخامس: خطأ داخل جسم دالة
+        // وحدة يُسنَد إلى ملف الوحدة لا ملف المتصل.
+        // (دالة بلا وحدة — رئيسية أو لامدا — بلا إسناد هنا؛
+        // فيسنَدها run() الجاري إلى ملفه هو.)
+        let result = match &module {
+            Some(m) => {
+                result.map_err(|e| e.with_file_if_none(self.module_files.get(m).cloned()))
+            }
+            None => result,
+        };
         self.scopes.pop();
         if pushed_module_scope {
             self.scopes.pop();
@@ -1884,6 +1964,14 @@ impl Interpreter {
         self.scopes.push(Rc::new(RefCell::new(scope)));
         self.call_depth += 1;
         let result = self.exec_block(&body);
+        // اجتماع 32، السؤال الخامس: كـ call_user — خطأ
+        // داخل جسم طريقة وحدة يُسنَد إلى ملف الوحدة.
+        let result = match &module {
+            Some(m) => {
+                result.map_err(|e| e.with_file_if_none(self.module_files.get(m).cloned()))
+            }
+            None => result,
+        };
         self.scopes.pop();
         if pushed_module_scope {
             self.scopes.pop();
@@ -2893,6 +2981,13 @@ impl Interpreter {
                 arity(0)?;
                 Ok(Value::Str(crate::repl::banner().to_string()))
             }
+            // اجتماع 32، السؤال السادس: النسخة المجردة
+            // وحدها (مثال «١٫٠٫٠»)؛ و`النسخة()` تبقى
+            // اللافتة كما هي بلا كسر لكود «حزم».
+            "إصدار_المحرك" => {
+                arity(0)?;
+                Ok(Value::Str(crate::repl::version().to_string()))
+            }
             "موجود" => {
                 arity(1)?;
                 match &args[0] {
@@ -3380,6 +3475,135 @@ mod tests {
         let (out, res) = run_src("من رياضيات استورد جذر\nاطبع جذر(25)\nاطبع نوع(جذر)\n");
         assert!(res.is_ok());
         assert_eq!(out, "٥\nدالة\n");
+    }
+
+    #[test]
+    fn engine_version_bare_and_banner() {
+        // اجتماع 32، السؤال السادس: إصدار_المحرك()
+        // ترجع النسخة المجردة؛ والنسخة() تبقى اللافتة.
+        let (out, res) = run_src("اطبع إصدار_المحرك()\nاطبع النسخة()\n");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out, "١٫٠٫٠\nمحرك نيفا ١٫٠٫٠\n");
+        // بلا وسائط فقط: وسائط خطأ عدد.
+        let (_, res) = run_src("اطبع إصدار_المحرك(١)\n");
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn bare_function_reference_is_an_error() {
+        // اجتماع 32، السؤال الثاني (2): مرجع دالة
+        // كعبارة مجردة خطأ يسمي الدالة.
+        let (_, res) = run_src("دالة س():\n    ارجع ١\nس\n");
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("دالة بلا استدعاء: س"));
+        // دالة مستوردة مجردة (من وحدة أصلية).
+        let (_, res) = run_src("من رياضيات استورد جذر\nجذر\n");
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("دالة بلا استدعاء: جذر"));
+        // دالة وحدة أصلية مجردة.
+        let (_, res) = run_src("استورد جهاز\nجهاز.أزل_تنبيه\n");
+        assert!(res.is_err());
+        assert!(res
+            .unwrap_err()
+            .to_string()
+            .contains("دالة بلا استدعاء: أزل_تنبيه"));
+        // الإسناد والتمرير والطباعة تبقى صالحة.
+        // (ملاحظة: المدمجات المسطحة مثل `طول` ليست قيما
+        // أصلا — لا تُحل إلا في موضع استدعاء — فسلوكها
+        // «متغير غير معرف» قائم قبل هذا الإصلاح ولا يمسه.)
+        let (out, res) = run_src("من رياضيات استورد جذر\nس = جذر\nاطبع نوع(س)\nاطبع جذر\n");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out, "دالة\n<دالة جذر>\n");
+        // استدعاء مجرد يرجع غير دالة: قيمته تُتجاهل.
+        let (out, res) = run_src("دالة أعط():\n    ارجع ٥\nأعط()\n");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out, "");
+        // استدعاء مجرد يرجع دالة: خطأ أيضا (قيمة دالة
+        // في عبارة مجردة) — اتساقا مع VM.
+        let (_, res) = run_src(
+            "دالة مصنع():\n    ارجع دالة_مجهولة(س): س\nمصنع()\n",
+        );
+        assert!(res.is_err());
+        assert!(res
+            .unwrap_err()
+            .to_string()
+            .contains("دالة بلا استدعاء: مجهولة"));
+    }
+
+    #[test]
+    fn live_output_streams_without_retaining() {
+        // اجتماع 32، السؤال الثامن: مع البث الحي لا
+        // يُحتفظ بالسطر في output (يصل للمخرجات فورا)؛
+        // وبدونه يُحتفظ كما كان.
+        let mut interp = Interpreter::new();
+        interp.set_live_output(true);
+        let (_, res) = run_in(&mut interp, "اطبع ١\nاطبع ٢\n");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(interp.output, "");
+        interp.set_live_output(false);
+        let (out, res) = run_in(&mut interp, "اطبع ١\nاطبع ٢\n");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(out, "١\n٢\n");
+    }
+
+    #[test]
+    fn runtime_error_names_source_file() {
+        // اجتماع 32، السؤال الخامس: خطأ التشغيل يسمي
+        // الملف المضبوط بـ set_source_file.
+        let mut interp = Interpreter::new();
+        interp.set_source_file("برنامج.نيفا");
+        let (_, res) = run_in(&mut interp, "س = ١ / ٠\n");
+        assert!(res.is_err());
+        let e = res.unwrap_err();
+        assert_eq!(e.file.as_deref(), Some("برنامج.نيفا"));
+        assert!(e.to_string().contains("الملف برنامج.نيفا"));
+        assert!(e.to_string().contains("قسمة على صفر"));
+    }
+
+    #[test]
+    fn module_errors_name_module_file() {
+        // اجتماع 32، السؤال الخامس: خطأ في وحدة — في
+        // مستواها الأعلى أو داخل دالة منها تُستدعى من
+        // الرئيسي — يُسنَد إلى ملف الوحدة لا الرئيسي.
+        let dir = shortcuts_dir();
+        std::fs::write(
+            dir.join("م.نيفا"),
+            "صدر اقسم\nدالة اقسم(س):\n    ارجع س / ٠\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("رئيسي.نيفا"), "استورد م\nاطبع م.اقسم(١)\n").unwrap();
+        let mut interp = Interpreter::with_program_dir(dir.clone());
+        interp.set_source_file("رئيسي.نيفا");
+        let (_, res) = run_in(&mut interp, "استورد م\nاطبع م.اقسم(١)\n");
+        assert!(res.is_err());
+        let e = res.unwrap_err();
+        let shown = e.to_string();
+        // البادئة «في وحدة م: » لزمن التحميل وحده؛ أما
+        // خطأ جسم دالة تُستدعى بعد التحميل فيُسنَد
+        // باسمه في العرض — وهذا ما يشترطه الحكم.
+        assert!(shown.contains("قسمة على صفر"), "got: {}", shown);
+        assert!(
+            shown.contains("الملف") && shown.contains("م.نيفا"),
+            "got: {}",
+            shown
+        );
+        assert!(
+            e.file.as_deref().map(|f| f.contains("م.نيفا")).unwrap_or(false),
+            "file: {:?}",
+            e.file
+        );
+        // والخطأ في المستوى الأعلى للوحدة نفسه.
+        std::fs::write(dir.join("ع.نيفا"), "س = ١ / ٠\n").unwrap();
+        let mut interp = Interpreter::with_program_dir(dir.clone());
+        let (_, res) = run_in(&mut interp, "استورد ع\n");
+        assert!(res.is_err());
+        let e = res.unwrap_err();
+        assert!(
+            e.file.as_deref().map(|f| f.contains("ع.نيفا")).unwrap_or(false),
+            "file: {:?}",
+            e.file
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

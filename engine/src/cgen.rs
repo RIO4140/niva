@@ -22,6 +22,13 @@ use std::path::{Path, PathBuf};
 
 /// حرف C: نص عربي إلى حرفي C (ASCII فقط — كل بايت
 /// غير ASCII يخرج \xNN، فالمصدر المولد آمن على أي cc).
+/// هروب بايتات سلسلة نصية إلى حرفي C.
+/// البايتات غير ASCII تُكتب هروبا ثمانيا بثلاثة أرقام
+/// (`\NNN`) لا ست عشريا: هروب `\xNN` في C جشع —
+/// إن تبعه رقم ست عشري ASCII (كـ«1» في «مثال18»)
+/// ابتلعه وصار بايتا خاطئا (أثبتّه: `\xd9\x8418`
+/// تعطي 0x18 لا 0x84 ثم «18»). الثماني بثلاثة
+/// أرقام لا يتجاوزها أبدا، فالحرف التالي سليم دائما.
 pub fn c_escape(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
@@ -32,7 +39,7 @@ pub fn c_escape(s: &str) -> String {
             b'\t' => out.push_str("\\t"),
             b'\r' => out.push_str("\\r"),
             0x20..=0x7E => out.push(b as char),
-            _ => out.push_str(&format!("\\x{:02x}", b)),
+            _ => out.push_str(&format!("\\{:03o}", b)),
         }
     }
     out
@@ -57,6 +64,9 @@ struct ModuleInfo {
     init_fn: String,
     loaded_flag: String,
     val_var: String,
+    // فهرس ملف الوحدة في جدول nv_source_files
+    // (اجتماع 33: أخطاؤها تسمّي ملفها كما في المفسر).
+    file_idx: usize,
 }
 
 // ---------- سياق توليد ----------
@@ -84,6 +94,10 @@ struct Ctx {
     module_scope_var: Option<String>,
     // عمق تداخل الدوال (0 = المستوى الأعلى للوحدة/البرنامج).
     func_depth: usize,
+    // فهرس ملف المصدر الجاري توليده في جدول
+    // nv_source_files ([0] الملف الرئيسي) — يضبطه
+    // الكود المولّد في nv_cur_file_idx عند كل جملة.
+    file_idx: usize,
 }
 
 impl Ctx {
@@ -97,6 +111,7 @@ impl Ctx {
             module_name: None,
             module_scope_var: None,
             func_depth: 0,
+            file_idx: 0,
         }
     }
 }
@@ -112,10 +127,14 @@ pub struct Gen {
     modules: HashMap<String, ModuleInfo>,
     import_stack: Vec<String>,
     program_dir: PathBuf,
+    // ملفات المصدر بترتيب جدول nv_source_files الذي
+    // يولَّد في الكود ([0] الملف الرئيسي ثم كل وحدة
+    // مستوردة) — العرض بشرطة مائلة كما في المفسر.
+    files: Vec<String>,
 }
 
 impl Gen {
-    pub fn new(program_dir: PathBuf) -> Self {
+    pub fn new(program_dir: PathBuf, main_file: String) -> Self {
         Gen {
             funcs: String::new(),
             next_func: 0,
@@ -125,6 +144,7 @@ impl Gen {
             modules: HashMap::new(),
             import_stack: Vec::new(),
             program_dir,
+            files: vec![main_file],
         }
     }
 
@@ -502,11 +522,13 @@ impl Gen {
         ));
         fbody.push_str("(void)args; (void)nargs; (void)line; (void)col;\n");
         fbody.push_str("NvValue _ret = nv_nil();\n");
+        fbody.push_str(&format!("nv_cur_file_idx = {};\n", ctx.file_idx));
         let mut fctx = Ctx::top("frame", "_end");
         fctx.in_function = true;
         fctx.module_name = ctx.module_name.clone();
         fctx.module_scope_var = ctx.module_scope_var.clone();
         fctx.func_depth = ctx.func_depth + 1;
+        fctx.file_idx = ctx.file_idx;
         let saved_live = self.enter_nested_fn();
         let vt = self.eval_into_temp(body, &mut fctx, &mut fbody);
         fbody.push_str(&format!("_ret = {};\n", vt));
@@ -775,6 +797,11 @@ impl Gen {
 
     fn emit_stmt(&mut self, s: &Stmt, ctx: &mut Ctx, out: &mut String) -> RioResult<()> {
         let mark = self.checkpoint_live();
+        // اجتماع 33: كل جملة تضبط ملف التنفيذ الجاري
+        // قبل تنفيذها، فيسمّى الملف الصحيح عند أي خطأ
+        // يقع فيها أو في دالة تستدعيها — حتى بعد التقاط
+        // استثناء (الاستعادة تفوتها القفزة).
+        out.push_str(&format!("nv_cur_file_idx = {};\n", ctx.file_idx));
         match &s.kind {
             StmtKind::ExprStmt { expr } => {
                 let _ = self.eval_into_temp(expr, ctx, out);
@@ -893,11 +920,13 @@ impl Gen {
                 ));
                 fbody.push_str("(void)args; (void)nargs; (void)line; (void)col;\n");
                 fbody.push_str("NvValue _ret = nv_nil();\n");
+        fbody.push_str(&format!("nv_cur_file_idx = {};\n", ctx.file_idx));
                 let mut fctx = Ctx::top("frame", "_end");
                 fctx.in_function = true;
                 fctx.module_name = ctx.module_name.clone();
                 fctx.module_scope_var = ctx.module_scope_var.clone();
                 fctx.func_depth = ctx.func_depth + 1;
+        fctx.file_idx = ctx.file_idx;
                 let saved_live = self.enter_nested_fn();
                 self.emit_stmts(body, &mut fctx, &mut fbody)?;
                 self.exit_nested_fn(saved_live);
@@ -1022,6 +1051,7 @@ impl Gen {
                     module_name: ctx.module_name.clone(),
                     module_scope_var: ctx.module_scope_var.clone(),
                     func_depth: ctx.func_depth,
+                    file_idx: ctx.file_idx,
                 };
                 self.emit_stmts(fin, &mut fctx, out)?;
                 self.restore_live(fmark);
@@ -1292,11 +1322,13 @@ impl Gen {
             ));
             fbody.push_str("(void)args; (void)nargs; (void)line; (void)col;\n");
             fbody.push_str("NvValue _ret = nv_nil();\n");
+        fbody.push_str(&format!("nv_cur_file_idx = {};\n", ctx.file_idx));
             let mut fctx = Ctx::top("frame", "_end");
             fctx.in_function = true;
             fctx.module_name = ctx.module_name.clone();
             fctx.module_scope_var = ctx.module_scope_var.clone();
             fctx.func_depth = ctx.func_depth + 1;
+        fctx.file_idx = ctx.file_idx;
             let saved_live = self.enter_nested_fn();
             self.emit_stmts(mbody, &mut fctx, &mut fbody)?;
             self.exit_nested_fn(saved_live);
@@ -1404,6 +1436,7 @@ impl Gen {
                     module_name: ctx.module_name.clone(),
                     module_scope_var: ctx.module_scope_var.clone(),
                     func_depth: ctx.func_depth,
+                    file_idx: ctx.file_idx,
                 };
                 self.emit_stmts(fin, &mut fctx, out)?;
                 self.restore_live(fmark);
@@ -1426,6 +1459,7 @@ impl Gen {
                     module_name: ctx.module_name.clone(),
                     module_scope_var: ctx.module_scope_var.clone(),
                     func_depth: ctx.func_depth,
+                    file_idx: ctx.file_idx,
                 };
                 self.emit_stmts(fin, &mut fctx, out)?;
                 self.restore_live(fmark);
@@ -1445,6 +1479,7 @@ impl Gen {
                 module_name: ctx.module_name.clone(),
                 module_scope_var: ctx.module_scope_var.clone(),
                 func_depth: ctx.func_depth,
+                file_idx: ctx.file_idx,
             };
             self.emit_stmts(fin, &mut fctx, out)?;
             self.restore_live(fmark);
@@ -1520,11 +1555,26 @@ impl Gen {
             return Ok(());
         }
         // وحدة ملف: حلّ المسار وقت البناء (الترتيب نفسه).
-        let info = self.ensure_module(module, s.line, s.col)?;
+        let info = self.ensure_module(module, s.line, s.col, ctx.file_idx)?;
+        // غلاف معالج حول تهيئة الوحدة: خطأ مستواها الأعلى
+        // يُسبق بـ «في وحدة X: » ثم يُعاد رفعه، كما في
+        // المفسر حرفيا (الاستيراد المتداخل يضاعف البادئة
+        // كما هناك). النمط نفسه في emit_try.
+        let mh = self.fresh_label("mh");
+        let prefix = format!("في وحدة {}: ", module);
+        out.push_str(&format!(
+            "{{ NvHandler {}; {}.prev = nv_handlers; {}.has_except = 0; nv_handlers = &{}; if (setjmp({}.jb) == 0) {{ ",
+            mh, mh, mh, mh, mh
+        ));
         let bind = alias.clone().unwrap_or_else(|| module.to_string());
         out.push_str(&format!(
-            "if (!{}) {{ NvValue _mv = {}(); {} = _mv; {} = 1; }}\n",
+            "if (!{}) {{ NvValue _mv = {}(); {} = _mv; {} = 1; }} ",
             info.loaded_flag, info.init_fn, info.val_var, info.loaded_flag
+        ));
+        out.push_str(&format!(
+            "}} else {{ nv_prefix_error({}); nv_reraise_current(); }} nv_handlers = {}.prev; }}\n",
+            c_str(&prefix),
+            mh
         ));
         match names {
             Some(ns) => {
@@ -1566,12 +1616,21 @@ impl Gen {
     }
 
     /// اضمن توليد دالة تهيئة وحدة ملف؛ يعيد معلوماتها.
-    fn ensure_module(&mut self, module: &str, line: usize, col: usize) -> RioResult<ModuleInfo> {
+    /// cur_file_idx: ملف الجملة المستورِدة (تُسنَد إليه
+    /// أخطاء «غير موجودة» والدائرية والقراءة كما في المفسر).
+    fn ensure_module(
+        &mut self,
+        module: &str,
+        line: usize,
+        col: usize,
+        cur_file_idx: usize,
+    ) -> RioResult<ModuleInfo> {
         if let Some(info) = self.modules.get(module) {
             return Ok(ModuleInfo {
                 init_fn: info.init_fn.clone(),
                 loaded_flag: info.loaded_flag.clone(),
                 val_var: info.val_var.clone(),
+                file_idx: info.file_idx,
             });
         }
         if self.import_stack.contains(&module.to_string()) {
@@ -1581,10 +1640,12 @@ impl Gen {
                 format!("استيراد دائري: {}", cycle.join(" ← ")),
                 line,
                 col,
-            ));
+            )
+            .with_file_if_none(Some(self.files[cur_file_idx].clone())));
         }
         let found = packages::find_module_file(&self.program_dir, module).map_err(|msg| {
             RioError::new(ErrorKind::Io, msg, line, col)
+                .with_file_if_none(Some(self.files[cur_file_idx].clone()))
         })?;
         let path = match found.found {
             Some(p) => p,
@@ -1600,7 +1661,18 @@ impl Gen {
                     format!("وحدة غير موجودة: {} (بحثت في {})", module, searched),
                     line,
                     col,
-                ));
+                )
+                .with_file_if_none(Some(self.files[cur_file_idx].clone())));
+            }
+        };
+        // عرض مسار الوحدة بشرطة مائلة كما في المفسر،
+        // وسجّله في جدول ملفات المصدر (أو أعد فهرسه).
+        let display = crate::permissions::slash_display(&path);
+        let file_idx = match self.files.iter().position(|f| f == &display) {
+            Some(i) => i,
+            None => {
+                self.files.push(display.clone());
+                self.files.len() - 1
             }
         };
         let source = std::fs::read_to_string(&path).map_err(|e| {
@@ -1610,6 +1682,7 @@ impl Gen {
                 line,
                 col,
             )
+            .with_file_if_none(Some(self.files[cur_file_idx].clone()))
         })?;
         let tokens = tokenize(&source).map_err(|e| {
             RioError::new(
@@ -1618,6 +1691,7 @@ impl Gen {
                 e.line,
                 e.col,
             )
+            .with_file(display.clone())
         })?;
         let mut parser = Parser::new(tokens);
         let program = parser.parse_program().map_err(|e| {
@@ -1627,6 +1701,7 @@ impl Gen {
                 e.line,
                 e.col,
             )
+            .with_file(display.clone())
         })?;
         // الصادرات: من جمل صدّر في المستوى الأعلى فقط.
         let mut exports: Vec<String> = Vec::new();
@@ -1645,6 +1720,7 @@ impl Gen {
             init_fn: format!("nv_mod{}", id),
             loaded_flag: format!("nv_mod_loaded_{}", id),
             val_var: format!("nv_mod_val_{}", id),
+            file_idx,
         };
         self.modules.insert(
             module.to_string(),
@@ -1652,6 +1728,7 @@ impl Gen {
                 init_fn: info.init_fn.clone(),
                 loaded_flag: info.loaded_flag.clone(),
                 val_var: info.val_var.clone(),
+                file_idx,
             },
         );
         self.import_stack.push(module.to_string());
@@ -1660,6 +1737,9 @@ impl Gen {
             "static NvValue {}(void) {{\n",
             info.init_fn
         ));
+        // ضبط الملف عند دخول تهيئة الوحدة: أخطاء
+        // مستواها الأعلى تسمّي ملفها كما في المفسر.
+        body.push_str(&format!("nv_cur_file_idx = {};\n", file_idx));
         body.push_str(&format!(
             "nv_add_global_root_ptr(&{});\n",
             info.val_var
@@ -1675,8 +1755,10 @@ impl Gen {
         mctx.module_name = Some(module.to_string());
         mctx.module_scope_var = Some("_scope".to_string());
         mctx.func_depth = 0;
+        mctx.file_idx = file_idx;
         let saved_live = self.enter_nested_fn();
-        self.emit_stmts(&program, &mut mctx, &mut body)?;
+        self.emit_stmts(&program, &mut mctx, &mut body)
+            .map_err(|e| e.with_file_if_none(Some(display.clone())))?;
         // ابنِ قاموس الصادرات (الأسماء الموجودة فقط) — ما
         // زال داخل جسم الوحدة، فالحية فارغة إلا ext.
         let ext = self.new_temp();
@@ -1713,18 +1795,29 @@ impl Gen {
 // ---------- السائق الأعلى ----------
 
 /// ولّد مصدر C كاملا من برنامج نيفا (محلل دلاليا).
-pub fn generate_native_c(source: &str, program_dir: &Path) -> RioResult<String> {
-    let tokens = tokenize(source)?;
+/// main_file: عرض مسار الملف الرئيسي بشرطة مائلة كما
+/// في المفسر — تُسنَد إليه أخطاء الملف الرئيسي، ويصير
+/// [0] في جدول ملفات المصدر المولّد.
+pub fn generate_native_c(source: &str, program_dir: &Path, main_file: &str) -> RioResult<String> {
+    let main_file = main_file.to_string();
+    let tokens =
+        tokenize(source).map_err(|e| e.with_file_if_none(Some(main_file.clone())))?;
     let mut parser = Parser::new(tokens);
-    let program = parser.parse_program()?;
+    let program = parser
+        .parse_program()
+        .map_err(|e| e.with_file_if_none(Some(main_file.clone())))?;
     let mut analyzer = SemanticAnalyzer::new();
-    analyzer.analyze_program(&program)?;
-    let mut gen = Gen::new(program_dir.to_path_buf());
+    analyzer
+        .analyze_program(&program)
+        .map_err(|e| e.with_file_if_none(Some(main_file.clone())))?;
+    let mut gen = Gen::new(program_dir.to_path_buf(), main_file);
     let mut body = String::new();
     body.push_str("static void nv_prog_body(NvScope *top) {\n");
+    body.push_str("nv_cur_file_idx = 0;\n");
     let mut ctx = Ctx::top("top", "_pend");
     let mark = gen.checkpoint_live();
-    gen.emit_stmts(&program, &mut ctx, &mut body)?;
+    gen.emit_stmts(&program, &mut ctx, &mut body)
+        .map_err(|e| e.with_file_if_none(Some(gen.files[0].clone())))?;
     gen.restore_live(mark);
     body.push_str("_pend:;\n}\n");
     // إعلانات أمامية (الدوال المولدة تُستدعى قبل تعريفها
@@ -1732,6 +1825,21 @@ pub fn generate_native_c(source: &str, program_dir: &Path) -> RioResult<String> 
     let mut out = String::new();
     out.push_str("#include \"niva_rt.h\"\n");
     out.push_str("#include <stdio.h>\n");
+    // جدول ملفات المصدر (اجتماع 33: كل خطأ وقت تشغيل
+    // يسمّي ملفه كما في المفسر) — بلا static، يربطه
+    // وقت التشغيل عبر extern؛ و[0] الملف الرئيسي.
+    out.push_str("const char *nv_source_files[] = {");
+    for (i, f) in gen.files.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&c_str(f));
+    }
+    out.push_str("};\n");
+    out.push_str(&format!(
+        "const int nv_n_source_files = {};\n",
+        gen.files.len()
+    ));
     for i in 0..gen.next_func {
         out.push_str(&format!(
             "static NvValue nv_f{}(NvScope *frame, NvValue *args, int nargs, int line, int col);\n",
@@ -1819,7 +1927,8 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
-    let c_source = generate_native_c(&source, &program_dir)?;
+    let main_display = crate::permissions::slash_display(&abs_source);
+    let c_source = generate_native_c(&source, &program_dir, &main_display)?;
     // مجلد مؤقت للبناء.
     let tmp = std::env::temp_dir().join(format!("niva-build-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).map_err(|e| {
@@ -1894,8 +2003,29 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
             msg.push_str(": ");
             msg.push_str(&translated.join("؛ "));
         }
+        // ضمّن أول سطور السجل الخام في الرسالة نفسها:
+        // عدّاء CI بلا cc عامل يفشل بسطر «ملف أو مجلد
+        // غير موجود» بلا أي سبب ظاهر، ومسار ملف مؤقت
+        // يختفي مع المجلد — فالسبب يجب أن يظهر في
+        // سجلات CI نفسها. الترجمة العربية أولا، والسجل
+        // الخام (إنجليزي المترجم) تشخيص فقط بعده.
+        let log_lines: Vec<&str> = stderr.lines().collect();
+        if !log_lines.is_empty() {
+            msg.push_str("\nسجل المترجم:");
+            let shown = log_lines.len().min(30);
+            for l in &log_lines[..shown] {
+                msg.push('\n');
+                msg.push_str(l);
+            }
+            if log_lines.len() > shown {
+                msg.push_str(&format!(
+                    "\n… ({} سطرا أخرى في السجل)",
+                    log_lines.len() - shown
+                ));
+            }
+        }
         msg.push_str(&format!(
-            " (سجل البناء الكامل في {})",
+            "\n(سجل البناء الكامل في {})",
             log_path.display()
         ));
         return Err(RioError::new(ErrorKind::Runtime, msg, 0, 0));

@@ -499,6 +499,13 @@ pub fn current_process_id(line: usize, col: usize) -> RioResult<u64> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// اجتماع 32، السؤال التاسع: عدّاد محلي لأسماء
+    /// مجلدات الاختبار — NEXT_ID معرّف خارج android
+    /// فقط (واستيراد Ordering معه)، فاستخدامه في
+    /// temp_dir كان يكسر اختبارات android.
+    static TEST_DIR_ID: AtomicU64 = AtomicU64::new(1);
 
     fn test_policy(dir: &std::path::Path, trusted: bool) {
         set_process_policy(dir.to_path_buf(), trusted, dir.to_path_buf());
@@ -509,7 +516,7 @@ mod tests {
             "niva-proc-test-{}-{}-{}",
             std::process::id(),
             tag,
-            NEXT_ID.fetch_add(1, Ordering::SeqCst)
+            TEST_DIR_ID.fetch_add(1, Ordering::SeqCst)
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();

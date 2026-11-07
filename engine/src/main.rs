@@ -21,7 +21,7 @@
 
 use niva_engine::interpreter::Interpreter;
 use niva_engine::semantic::SemanticAnalyzer;
-use niva_engine::lexer::{normalize_cli_word, tokenize};
+use niva_engine::lexer::{normalize_cli_word, tokenize_named};
 use niva_engine::parser::Parser;
 use niva_engine::{artifact, cgen, repl, vm};
 use std::env;
@@ -225,14 +225,14 @@ fn main() -> ExitCode {
         }
     };
 
-    let tokens = match tokenize(&source) {
+    let tokens = match tokenize_named(&source, &path) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("{}", e);
             return ExitCode::FAILURE;
         }
     };
-    let program = match Parser::new(tokens).parse_program() {
+    let program = match Parser::named(tokens, &path).parse_program() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{}", e);
@@ -260,7 +260,7 @@ fn main() -> ExitCode {
             // write) happens before the error.
             let mut analyzer = SemanticAnalyzer::new();
             if let Err(e) = analyzer.analyze_program(&program) {
-                eprintln!("{}", e);
+                eprintln!("{}", e.with_file_if_none(Some(path.clone())));
                 return ExitCode::FAILURE;
             }
             // ك-2 (مهمة 7): --مفسر فقط يشغّل مفسر الشجرة
@@ -271,6 +271,8 @@ fn main() -> ExitCode {
                 let mut interp = Interpreter::with_program_dir(program_dir);
                 // Meeting 4: trusted mode is opt-in only.
                 interp.set_trusted(allow_all);
+                interp.set_source_file(&path);
+                interp.set_live_output(true);
                 // Meeting 22: network is opt-in only, independent
                 // of file trust (--اسمح-بالكل does not open it).
                 interp.set_network_allowed(allow_network);
@@ -298,11 +300,11 @@ fn main() -> ExitCode {
             let compiled = match vm::Compiler::compile_program(&program) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("{}", e);
+                    eprintln!("{}", e.with_file_if_none(Some(path.clone())));
                     return ExitCode::FAILURE;
                 }
             };
-            return run_vm(compiled, program_dir, allow_all, allow_network, allow_server, &local_hosts);
+            return run_vm(compiled, program_dir, allow_all, allow_network, allow_server, &local_hosts, &path);
         });
     match handle {
         Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),
@@ -340,6 +342,7 @@ fn run_vm(
     allow_network: bool,
     allow_server: bool,
     local_hosts: &[String],
+    source_file: &str,
 ) -> ExitCode {
     niva_engine::network::set_network_allowed(allow_network);
     for host in local_hosts {
@@ -354,6 +357,8 @@ fn run_vm(
     );
     let mut vm_inst = vm::Vm::new(compiled, program_dir);
     vm_inst.set_trusted(allow_all);
+    vm_inst.set_source_file(source_file);
+    vm_inst.set_live_output(true);
     vm_inst.set_server_allowed(allow_server);
     match vm_inst.run() {
         Ok(()) => {
@@ -455,7 +460,12 @@ fn run_standalone(payload: Vec<u8>) -> ExitCode {
             // المصنوع، فلا يصطدم بها إغلاق وحدة تُترجَم
             // وقت التشغيل.
             vm::reserve_closure_ids_above(artifact::max_closure_id(&prog));
-            run_vm(prog, program_dir, allow_all, allow_network, allow_server, &local_hosts)
+            // المستقل بلا ملف مصدر — الملف الجاري هو
+            // الملف التنفيذي نفسه، فيُسمَّى في الخطأ.
+            let exe_path = std::env::current_exe()
+                .map(|e| e.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            run_vm(prog, program_dir, allow_all, allow_network, allow_server, &local_hosts, &exe_path)
         });
     match handle {
         Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),
@@ -548,14 +558,14 @@ fn do_build(args: &[String], file_args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let tokens = match tokenize(&source) {
+    let tokens = match tokenize_named(&source, &src_path) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("{}", e);
             return ExitCode::FAILURE;
         }
     };
-    let program = match Parser::new(tokens).parse_program() {
+    let program = match Parser::named(tokens, &src_path).parse_program() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{}", e);
@@ -567,13 +577,13 @@ fn do_build(args: &[String], file_args: &[String]) -> ExitCode {
         .spawn(move || {
             let mut analyzer = SemanticAnalyzer::new();
             if let Err(e) = analyzer.analyze_program(&program) {
-                eprintln!("{}", e);
+                eprintln!("{}", e.with_file_if_none(Some(src_path.clone())));
                 return ExitCode::FAILURE;
             }
             let compiled = match vm::Compiler::compile_program(&program) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("{}", e);
+                    eprintln!("{}", e.with_file_if_none(Some(src_path.clone())));
                     return ExitCode::FAILURE;
                 }
             };
@@ -733,7 +743,7 @@ fn do_run_artifact(
             // المصنوع، فلا يصطدم بها إغلاق وحدة تُترجَم
             // وقت التشغيل.
             vm::reserve_closure_ids_above(artifact::max_closure_id(&prog));
-            run_vm(prog, program_dir, allow_all, allow_network, allow_server, &local_hosts)
+            run_vm(prog, program_dir, allow_all, allow_network, allow_server, &local_hosts, &art_path)
         });
     match handle {
         Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),

@@ -10,6 +10,21 @@ use crate::lexer::{Keyword, Token, TokenKind};
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// الملف الذي يُحلَّل (لإسناد أخطاء النحو إليه) —
+    /// اجتماع 32، السؤال الخامس. لا شيء للإدخال بلا ملف.
+    file: Option<String>,
+}
+
+/// هل الرمز التالي قائمة فارغة `[]` على السطر نفسه
+/// (قائمة حرفية كمعامل مجرد، لا فهرسة)؟ اجتماع 32،
+/// السؤال الأول: القائمة الحرفية قائمة حرفية في كل موضع.
+fn empty_list_follows(parser: &Parser, line: usize) -> bool {
+    let tok = parser.peek();
+    if tok.line != line || !matches!(tok.kind, TokenKind::LBracket) {
+        return false;
+    }
+    let next = parser.peek_at(1);
+    next.line == line && matches!(next.kind, TokenKind::RBracket)
 }
 
 /// Does the next token start a bare-call argument on the same
@@ -49,7 +64,14 @@ fn bare_call_follows(tok: &Token, line: usize) -> bool {
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self { tokens, pos: 0, file: None }
+    }
+
+    /// Parser مع اسم ملف يُسنَد إلى أخطاء النحو —
+    /// السباكة داخل المحرك (اجتماع 32)؛ والتوصيل العلوي
+    /// (main.rs) سطران بعد هبوط المهمة 29.
+    pub fn named(tokens: Vec<Token>, file: &str) -> Self {
+        Self { tokens, pos: 0, file: Some(file.to_string()) }
     }
 
     fn peek(&self) -> &Token {
@@ -162,6 +184,11 @@ impl Parser {
     }
 
     pub fn parse_program(&mut self) -> RioResult<Vec<Stmt>> {
+        self.parse_program_inner()
+            .map_err(|e| e.with_file_if_none(self.file.clone()))
+    }
+
+    fn parse_program_inner(&mut self) -> RioResult<Vec<Stmt>> {
         let mut stmts = Vec::new();
         loop {
             self.skip_separators();
@@ -978,6 +1005,15 @@ impl Parser {
                 continue;
             }
             if matches!(self.peek().kind, TokenKind::LBracket) {
+                // اجتماع 32، السؤال الأول: قوسان فارغان
+                // `[]` بعد تعبير مكتمل ليسا فهرسة أبدا
+                // (الفهرسة تحتاج فهرسا) — بل قائمة حرفية
+                // تبدأ تعبيرا جديدا (معاملا مجردا تاليا
+                // في استدعاء منقّط، أو عبارة تالية).
+                // نتركهما دون استهلاك فيخرج التعبير كما هو.
+                if matches!(self.peek_at(1).kind, TokenKind::RBracket) {
+                    break;
+                }
                 let tok = self.advance();
                 let index = self.parse_expr()?;
                 self.expect(&TokenKind::RBracket, "قوس إغلاق ]")?;
@@ -1008,9 +1044,16 @@ impl Parser {
                 // continue the current expression (`س.طول + ١`
                 // is an addition, not a call), and a dotted
                 // name alone on its line stays a plain value.
-                if bare_call_follows(self.peek(), name_line) {
+                // اجتماع 32، السؤال الأول: قائمة فارغة `[]`
+                // على السطر نفسه معامل مجرد أيضا — تبدأ
+                // قائمة حرفية، لا فهرسة للمعامل السابق.
+                if bare_call_follows(self.peek(), name_line)
+                    || empty_list_follows(self, name_line)
+                {
                     let mut args = Vec::new();
-                    while bare_call_follows(self.peek(), name_line) {
+                    while bare_call_follows(self.peek(), name_line)
+                        || empty_list_follows(self, name_line)
+                    {
                         args.push(self.parse_expr()?);
                     }
                     expr = Expr::new(
@@ -1175,6 +1218,82 @@ mod tests {
         let prog = parse("إذا س > ٥:\n    اطبع س\nوإلا إذا س > ١:\n    اطبع ١\nوإلا:\n    اطبع ٠\n");
         assert_eq!(prog.len(), 1);
         assert!(matches!(prog[0].kind, StmtKind::If { .. }));
+    }
+
+    #[test]
+    fn empty_list_as_bare_call_arg() {
+        // اجتماع 32، السؤال الأول: [] معامل مجرد لا فهرسة.
+        let prog = parse("جهاز.حوار \"اختيار واحد\" \"اختر\" []\n");
+        assert_eq!(prog.len(), 1);
+        match &prog[0].kind {
+            StmtKind::ExprStmt { expr } => match &expr.kind {
+                ExprKind::Call { callee, args } => {
+                    assert!(matches!(&callee.kind, ExprKind::Dot { name, .. } if name == "حوار"));
+                    assert_eq!(args.len(), 3);
+                    assert!(matches!(&args[2].kind, ExprKind::List(e) if e.is_empty()));
+                }
+                other => panic!("expected Call, got {:?}", other),
+            },
+            other => panic!("expected ExprStmt, got {:?}", other),
+        }
+        // القائمة الفارغة معاملا أول أيضا.
+        let prog = parse("جهاز.حوار [] \"ب\"\n");
+        match &prog[0].kind {
+            StmtKind::ExprStmt { expr } => match &expr.kind {
+                ExprKind::Call { args, .. } => {
+                    assert_eq!(args.len(), 2);
+                    assert!(matches!(&args[0].kind, ExprKind::List(e) if e.is_empty()));
+                }
+                other => panic!("expected Call, got {:?}", other),
+            },
+            other => panic!("expected ExprStmt, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn index_after_dotted_name_still_indexes() {
+        // الفهرسة بعد اسم منقّط تبقى فهرسة: س.قائمة[٠]
+        // ليست استدعاء، و[٠] داخل معامل مجرد فهرسة أيضا.
+        let prog = parse("س = س.قائمة[٠]\n");
+        match &prog[0].kind {
+            StmtKind::Assign { value, .. } => {
+                assert!(matches!(&value.kind, ExprKind::Index { .. }));
+            }
+            other => panic!("expected Assign, got {:?}", other),
+        }
+        let prog = parse("شبكة.اجلب قائمة[٠]\n");
+        match &prog[0].kind {
+            StmtKind::ExprStmt { expr } => match &expr.kind {
+                ExprKind::Call { args, .. } => {
+                    assert_eq!(args.len(), 1);
+                    assert!(matches!(&args[0].kind, ExprKind::Index { .. }));
+                }
+                other => panic!("expected Call, got {:?}", other),
+            },
+            other => panic!("expected ExprStmt, got {:?}", other),
+        }
+        // الصيغة المقوسة بقائمة فارغة كانت تعمل وتبقى.
+        let prog = parse("اجلب(س، [])\n");
+        match &prog[0].kind {
+            StmtKind::ExprStmt { expr } => match &expr.kind {
+                ExprKind::Call { args, .. } => {
+                    assert_eq!(args.len(), 2);
+                    assert!(matches!(&args[1].kind, ExprKind::List(e) if e.is_empty()));
+                }
+                other => panic!("expected Call, got {:?}", other),
+            },
+            other => panic!("expected ExprStmt, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn named_parser_tags_parse_errors_with_file() {
+        let toks = tokenize("إذا س > ٥:\n").unwrap();
+        let e = Parser::named(toks, "برنامج.نيفا")
+            .parse_program()
+            .unwrap_err();
+        assert_eq!(e.file.as_deref(), Some("برنامج.نيفا"));
+        assert!(e.to_string().contains("الملف برنامج.نيفا"));
     }
 
     #[test]

@@ -51,12 +51,16 @@ typedef enum {
 
 const char *nv_err_kind_ar(NvErrKind k);
 
-// خطأ نيفا حي: الرسالة + السطر + العمود.
+// خطأ نيفا حي: الرسالة + السطر + العمود + ملف المصدر
+// (اجتماع 33: كل خطأ يسمّي الملف كما في المفسر —
+// الفهرس في جدول nv_source_files الذي يولّده cgen،
+// و-1 حين لا ملف معلوم).
 typedef struct {
     NvErrKind kind;
     char *message; // عربي، مملوك لهيكل الخطأ
     int line;
     int col;
+    int file_idx;
 } NvError;
 
 // ---------- جامع القمامة التتبعي (v1.3 §6) ----------
@@ -403,6 +407,17 @@ void nv_clear_error(void);
 // أعد رفع الخطأ الحالي إلى المعالج الأعمق (أو اخرج).
 // بلا خطأ معلق تعود صامتة.
 void nv_reraise_current(void);
+// أضف بادئة إلى رسالة الخطأ الحالي (دون تغيير ملفه
+// أو سطره أو عموده) — «في وحدة X: » عند عبور حدود
+// وحدة أثناء تحميلها، كما في المفسر.
+void nv_prefix_error(const char *prefix);
+// جدول ملفات المصدر (يولّده cgen: [0] الملف الرئيسي
+// ثم كل وحدة مستوردة) — وملف التنفيذ الجاري (فهرسه).
+// الكود المولّد يضبط nv_cur_file_idx عند دخول كل
+// دالة وعند كل جملة؛ وnv_error يلتقطه في الخطأ.
+extern const char *nv_source_files[];
+extern const int nv_n_source_files;
+extern int nv_cur_file_idx;
 // فحص نوع تعيين معلن (رسالة المتغير).
 void nv_check_assign_type(NvValue v, const char *type_name, const char *var_name, int line, int col);
 // بحث اسم في نطاق أو لاشيء (للبدائل التي لها رسائلها).

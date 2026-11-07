@@ -181,6 +181,15 @@ impl Engine {
         }
     }
 
+    /// اجتماع 32، السؤال الثامن: بث حي لمخرجات `اطبع`
+    /// — مرآة set_trusted حرفيا.
+    fn set_live_output(&mut self, live: bool) {
+        match self {
+            Engine::Vm(s) => s.set_live_output(live),
+            Engine::Interp(i) => i.set_live_output(live),
+        }
+    }
+
     fn set_network_allowed(&mut self, allowed: bool) {
         match self {
             Engine::Vm(s) => s.set_network_allowed(allowed),
@@ -216,14 +225,18 @@ impl Engine {
         }
     }
 
-    fn reset(&mut self, trusted: bool, network_allowed: bool, server_allowed: bool) {
+    fn reset(&mut self, trusted: bool, network_allowed: bool, server_allowed: bool, live_output: bool) {
         match self {
-            Engine::Vm(s) => s.reset(),
+            Engine::Vm(s) => {
+                s.reset();
+                s.set_live_output(live_output);
+            }
             Engine::Interp(i) => {
                 *i = Interpreter::new();
                 i.set_trusted(trusted);
                 i.set_network_allowed(network_allowed);
                 i.set_server_allowed(server_allowed);
+                i.set_live_output(live_output);
             }
         }
     }
@@ -246,6 +259,10 @@ pub struct Repl {
     // engine holds it per instance, and reset() must restore
     // the same value (the network flag alone never opens it).
     server_allowed: bool,
+    // اجتماع 32، السؤال الثامن: البث الحي لمخرجات
+    // `اطبع` — النمط نفسه: المحرك يحمله لكل نسخة،
+    // وreset() يعيد القيمة نفسها (وإلا ضاع عند :مسح).
+    live_output: bool,
     // Audit م-6: the control signal of the last fed line
     // (None / NetworkNeeded / SessionCleared), read by
     // `last_control()` — a side channel so run_repl can emit
@@ -266,6 +283,7 @@ impl Repl {
             trusted: false,
             network_allowed: false,
             server_allowed: false,
+            live_output: false,
             last_control: ReplControl::None,
         }
     }
@@ -281,6 +299,7 @@ impl Repl {
             trusted: false,
             network_allowed: false,
             server_allowed: false,
+            live_output: false,
             last_control: ReplControl::None,
         }
     }
@@ -326,6 +345,14 @@ impl Repl {
     /// This session's own server permission (per-instance).
     pub fn server_allowed(&self) -> bool {
         self.engine.server_allowed()
+    }
+
+    /// اجتماع 32، السؤال الثامن: بث حي لمخرجات `اطبع`
+    /// (السطر يصل فور إنتاجه) — النمط نفسه كـ
+    /// set_server_allowed؛ وreset() يعيده.
+    pub fn set_live_output(&mut self, live: bool) {
+        self.live_output = live;
+        self.engine.set_live_output(live);
     }
 
     pub fn allow_local_network_host(&mut self, host: &str) {
@@ -955,19 +982,28 @@ impl Repl {
         let trusted = self.trusted;
         let network_allowed = self.network_allowed;
         let server_allowed = self.server_allowed;
-        self.engine.reset(trusted, network_allowed, server_allowed);
+        let live_output = self.live_output;
+        self.engine
+            .reset(trusted, network_allowed, server_allowed, live_output);
         self.analyzer = SemanticAnalyzer::new();
         self.history.clear();
         self.pending.clear();
     }
 }
 
+/// نص الإصدار المجرد وحده (مثال «١٫٠٫٠») — المصدر
+/// الوحيد لرقم الإصدار؛ واللافتة تُبنى منه، فلا يفترقان
+/// أبدا (اجتماع 32، السؤال السادس: `إصدار_المحرك()`).
+pub fn version() -> &'static str {
+    "١٫٠٫٠"
+}
+
 /// The greeting printed when a REPL session starts — the same
 /// text the WASM console shows on load. Minimal by the owner's
 /// no-explanation rule (2026-11-05): name + version only, like
 /// Termux/Linux — no teaching, no how-to, no docs links.
-pub fn banner() -> &'static str {
-    "محرك نيفا ١٫٠٫٠"
+pub fn banner() -> String {
+    format!("محرك نيفا {}", version())
 }
 
 /// `:مساعدة` output: a BARE command list — terminal convention,
@@ -1162,6 +1198,10 @@ pub fn run_repl(
     repl.set_trusted(trusted);
     repl.set_network_allowed(network_allowed);
     repl.set_server_allowed(server_allowed);
+    // اجتماع 32، السؤال الثامن: REPL التفاعلي يبث
+    // `اطبع` حية — السطر يصل فور إنتاجه لا بعد الخروج.
+    // (WASM لا يفعّله أبدا: يعرض result.output كما كان.)
+    repl.set_live_output(true);
     for host in local_hosts {
         repl.allow_local_network_host(host);
     }
@@ -1238,6 +1278,21 @@ mod tests {
         assert_eq!(done_out(r.eval("١ + ٢")), "٣\n");
         assert_eq!(done_out(r.eval("\"مرحبا\"")), "مرحبا\n");
         assert_eq!(done_out(r.eval("[١، ٢]")), "[١, ٢]\n");
+    }
+
+    #[test]
+    fn repl_live_output_streams_and_survives_reset() {
+        // اجتماع 32، السؤال الثامن: مع البث الحي لا
+        // يُحتفظ بمخرجات `اطبع` في ناتج eval (وصلت
+        // للمخرجات فورا)؛ و:مسح يعيد العلم نفسه.
+        let mut r = Repl::new();
+        r.set_live_output(true);
+        assert_eq!(done_out(r.eval("اطبع ١")), "");
+        r.reset();
+        assert_eq!(done_out(r.eval("اطبع ٢")), "");
+        // وبدونه تعود المخرجات كما كانت.
+        r.set_live_output(false);
+        assert_eq!(done_out(r.eval("اطبع ٣")), "٣\n");
     }
 
     #[test]

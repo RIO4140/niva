@@ -367,12 +367,12 @@ fn is_pure_builtin(name: &str) -> bool {
 /// Op::Builtin for these, like the pure ones; the
 /// runtime env-first check in Op::Builtin still applies
 /// (a bound name wins over the builtin).
-const FILE_BUILTINS: [&str; 29] = [
+const FILE_BUILTINS: [&str; 30] = [
     "اقرأ_ملف", "اكتب_ملف", "اعرض_الملفات", "المجلد_الحالي", "انتقل", "أنشئ_مجلد",
     "احذف", "احذف_مجلد", "احذف_ملف", "انسخ", "انقل", "أنشئ_ملف", "اعرض_البداية",
     "اعرض_النهاية", "عد_الأسطر", "عد_الكلمات", "ابحث_في_ملف", "ابحث_عن",
     "اعرض_الشجرة", "حجم_المسار", "أنشئ_رابط", "التاريخ_الآن", "النسخة", "موجود",
-    "نوع_المسار", "عد_الملفات", "تفاصيل_المسار", "تثبيت", "ادخل",
+    "نوع_المسار", "عد_الملفات", "تفاصيل_المسار", "تثبيت", "ادخل", "إصدار_المحرك",
 ];
 
 fn is_file_builtin(name: &str) -> bool {
@@ -1299,6 +1299,18 @@ pub struct Vm {
     /// function runs; inherited by child VMs so a handler
     /// calling اخدم again sees the same permission.
     pub server_allowed: bool,
+    /// اجتماع 32، السؤال الخامس: الملف الجاري تنفيذه —
+    /// تُسنَد إليه أخطاء التشغيل عند خروج run()؛
+    /// وترثه VM الفرعية (دالة) من أمها، وتستبدله
+    /// وحدة ملف بملفها.
+    pub source_file: Option<String>,
+    /// اجتماع 32، السؤال الثامن: بث حي لمخرجات `اطبع`
+    /// — كالمفسر حرفيا؛ وترثه VM الفرعية من أمها.
+    pub live_output: bool,
+    /// اجتماع 32، السؤال الخامس: اسم وحدة ← ملفها —
+    /// مشتركة (Rc) مع كل VM فرعية كـ loaded_modules،
+    /// لإسناد أخطاء أجسام دوال الوحدة إلى ملفها.
+    pub module_files: Rc<RefCell<HashMap<String, String>>>,
     /// ك-1.2: حالات الحلقات قيد التنفيذ (الأعلى هي الأعمق).
     loop_states: Vec<LoopState>,
     /// ك-1.2: معالجات حاول قيد التنفيذ (الأعلى هي الأعمق).
@@ -1331,6 +1343,9 @@ impl Vm {
             return_value: None,
             call_depth: 0,
             server_allowed: false,
+            source_file: None,
+            live_output: false,
+            module_files: Rc::new(RefCell::new(HashMap::new())),
             loop_states: Vec::new(),
             handlers: Vec::new(),
             finally_stack: Vec::new(),
@@ -1376,6 +1391,25 @@ impl Vm {
     /// This VM's own server permission.
     pub fn server_allowed(&self) -> bool {
         self.server_allowed
+    }
+
+    /// اجتماع 32، السؤال الخامس: ملف المصدر الجاري
+    /// تنفيذه — تُسنَد إليه أخطاء التشغيل. يضبطه المتصل
+    /// العلوي (main.rs) للملف الرئيسي؛ وتحميل الوحدة
+    /// يبدّله في نسختها.
+    pub fn set_source_file(&mut self, file: &str) {
+        self.source_file = Some(file.to_string());
+    }
+
+    /// اجتماع 32، السؤال الثامن: بث حي لمخرجات `اطبع`
+    /// (السطر يصل فور إنتاجه). افتراضيا خطأ.
+    pub fn set_live_output(&mut self, live: bool) {
+        self.live_output = live;
+    }
+
+    /// البث الحي مفعّل؟
+    pub fn live_output(&self) -> bool {
+        self.live_output
     }
 
     /// ك-2 (مهمة 7): حمّل برنامجا مترجما جديدا على نسخة VM
@@ -1526,6 +1560,12 @@ impl Vm {
             return_value: None,
             call_depth: self.call_depth + 1,
             server_allowed: self.server_allowed,
+            // اجتماع 32: الدالة ترث ملف أمها وبثها الحي —
+            // فإن كانت دالة وحدة عيّن مسار الاستدعاء
+            // (call_closure_value) ملف الوحدة بعد الإنشاء.
+            source_file: self.source_file.clone(),
+            live_output: self.live_output,
+            module_files: Rc::clone(&self.module_files),
             // ك-1.2: نسخة الدالة تبدأ بلا حلقات ولا معالجات —
             // اكسر داخل جسم دالة لا يكسر حلقة المتصل أبدا.
             loop_states: Vec::new(),
@@ -1559,6 +1599,11 @@ impl Vm {
             return_value: None,
             call_depth: self.call_depth,
             server_allowed: self.server_allowed,
+            // اجتماع 32: نسخة الوحدة ترث بث الأم الحي؛
+            // وملفها يُعيَّن بعد الإنشاء في load_module.
+            source_file: self.source_file.clone(),
+            live_output: self.live_output,
+            module_files: Rc::clone(&self.module_files),
             loop_states: Vec::new(),
             handlers: Vec::new(),
             finally_stack: Vec::new(),
@@ -1784,22 +1829,20 @@ impl Vm {
             }
         };
         let source = self.read_module_file(&path, module, line, col)?;
-        let tokens = crate::lexer::tokenize(&source).map_err(|e| {
-            RioError::new(
-                e.kind,
-                format!("في وحدة {}: {}", module, e.message),
-                e.line,
-                e.col,
-            )
+        // اجتماع 32، السؤال الخامس: ملف الوحدة هو الذي
+        // تُسنَد إليه أخطاؤها — كالمفسر حرفيا.
+        let display = crate::permissions::slash_display(&path);
+        self.module_files
+            .borrow_mut()
+            .insert(module.to_string(), display.clone());
+        let tokens = crate::lexer::tokenize_named(&source, &display).map_err(|e| {
+            e.with_prefix(&format!("في وحدة {}: ", module))
+                .with_file_if_none(Some(display.clone()))
         })?;
-        let mut parser = crate::parser::Parser::new(tokens);
+        let mut parser = crate::parser::Parser::named(tokens, &display);
         let program = parser.parse_program().map_err(|e| {
-            RioError::new(
-                e.kind,
-                format!("في وحدة {}: {}", module, e.message),
-                e.line,
-                e.col,
-            )
+            e.with_prefix(&format!("في وحدة {}: ", module))
+                .with_file_if_none(Some(display.clone()))
         })?;
         // Collect export names from top-level Export statements
         // only — only exported names are accessible outside.
@@ -1814,12 +1857,8 @@ impl Vm {
             }
         }
         let compiled = Compiler::compile_program(&program).map_err(|e| {
-            RioError::new(
-                e.kind,
-                format!("في وحدة {}: {}", module, e.message),
-                e.line,
-                e.col,
-            )
+            e.with_prefix(&format!("في وحدة {}: ", module))
+                .with_file_if_none(Some(display.clone()))
         })?;
         // Merge the module's closures into the shared registry
         // BEFORE running it, so the module's own code (and any
@@ -1829,6 +1868,9 @@ impl Vm {
             .extend(compiled.closures.clone());
         self.loading_stack.borrow_mut().push(module.to_string());
         let mut child = self.child_module(compiled);
+        // اجتماع 32: نسخة الوحدة تنفذ بملفها، فتُسنَد
+        // أخطاء مستواها الأعلى إليه (البث الحي موروث).
+        child.source_file = Some(display.clone());
         let exec_result = child.run();
         let module_scope = child
             .env
@@ -1840,12 +1882,8 @@ impl Vm {
         self.output.push_str(&child.output);
         self.loading_stack.borrow_mut().pop();
         exec_result.map_err(|e| {
-            RioError::new(
-                e.kind,
-                format!("في وحدة {}: {}", module, e.message),
-                e.line,
-                e.col,
-            )
+            e.with_prefix(&format!("في وحدة {}: ", module))
+                .with_file_if_none(Some(display.clone()))
         })?;
         // Mark top-level functions with the module name, like
         // the interpreter: a Function whose captured chain is
@@ -1955,6 +1993,14 @@ impl Vm {
             None => captured.unwrap_or_default(),
         };
         let mut child_vm = self.child_closure(&def, args, captured);
+        // اجتماع 32، السؤال الخامس: دالة وحدة تُنفَّذ
+        // بملف وحدتها — فإن كانت بلا وحدة ورثت ملف أمها
+        // (child_closure) كما هو.
+        if let Some(m) = &module {
+            if let Some(f) = self.module_files.borrow().get(m).cloned() {
+                child_vm.source_file = Some(f);
+            }
+        }
         match child_vm.run() {
             Ok(()) => {
                 self.output.push_str(&child_vm.output);
@@ -2045,6 +2091,13 @@ impl Vm {
         };
         let mut child_vm = self.child_closure(&def, args, captured);
         child_vm.define("نفس", Value::Instance(instance));
+        // اجتماع 32، السؤال الخامس: كـ call_closure_value —
+        // طريقة وحدة تُنفَّذ بملف وحدتها.
+        if let Some(m) = &module {
+            if let Some(f) = self.module_files.borrow().get(m).cloned() {
+                child_vm.source_file = Some(f);
+            }
+        }
         match child_vm.run() {
             Ok(()) => {
                 self.output.push_str(&child_vm.output);
@@ -3076,6 +3129,13 @@ impl Vm {
                 arity(0)?;
                 Ok(Value::Str(crate::repl::banner().to_string()))
             }
+            // اجتماع 32، السؤال السادس: النسخة المجردة
+            // وحدها (مثال «١٫٠٫٠»)؛ و`النسخة()` تبقى
+            // اللافتة كما هي بلا كسر لكود «حزم».
+            "إصدار_المحرك" => {
+                arity(0)?;
+                Ok(Value::Str(crate::repl::version().to_string()))
+            }
             "موجود" => {
                 arity(1)?;
                 match &args[0] {
@@ -3229,6 +3289,11 @@ impl Vm {
     }
 
     pub fn run(&mut self) -> RioResult<()> {
+        self.run_inner()
+            .map_err(|e| e.with_file_if_none(self.source_file.clone()))
+    }
+
+    fn run_inner(&mut self) -> RioResult<()> {
         while self.pc < self.code.len() {
             let idx = self.pc;
             let instr = self.code[idx].clone();
@@ -3272,7 +3337,24 @@ impl Vm {
                     self.assign(&name, v);
                 }
                 Op::Pop => {
-                    let _ = self.pop(line, col)?;
+                    // اجتماع 32، السؤال الثاني (2): عبارة
+                    // مجردة تنتج قيمة دالة خطأ عربي يسمي
+                    // الدالة — مرآة فحص ExprStmt في المفسر
+                    // حرفيا (نفس الرسالة، نفس الاسم من
+                    // القيمة نفسها)، فيتطابق الوضعان.
+                    let v = self.pop(line, col)?;
+                    if let Value::Function { name, .. } | Value::NativeFunction { name, .. } =
+                        &v
+                    {
+                        return Err(RioError::runtime(
+                            format!(
+                                "دالة بلا استدعاء: {} — استدعها بالأقواس أو أسندها إلى متغير",
+                                name
+                            ),
+                            line,
+                            col,
+                        ));
+                    }
                 }
                 Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod => {
                     let r = self.pop(line, col)?;
@@ -3456,8 +3538,16 @@ impl Vm {
                     let start = self.stack.len() - n;
                     let vals: Vec<Value> = self.stack.drain(start..).collect();
                     let parts: Vec<String> = vals.iter().map(|v| v.fmt_value()).collect();
-                    self.output.push_str(&parts.join(" "));
-                    self.output.push('\n');
+                    let line_out = format!("{}\n", parts.join(" "));
+                    // اجتماع 32، السؤال الثامن: بث حي —
+                    // كالمفسر حرفيا (فور الإنتاج، بلا احتفاظ).
+                    if self.live_output {
+                        use std::io::Write;
+                        print!("{}", line_out);
+                        let _ = std::io::stdout().flush();
+                    } else {
+                        self.output.push_str(&line_out);
+                    }
                 }
                 Op::BuildList(n) => {
                     if self.stack.len() < n {
@@ -4736,6 +4826,18 @@ impl VmSession {
     pub fn set_server_allowed(&mut self, allowed: bool) {
         self.server_allowed = allowed;
         self.vm.set_server_allowed(allowed);
+    }
+
+    /// اجتماع 32، السؤال الخامس: ملف المصدر الجاري —
+    /// يُمرَّر إلى VM الجلسة (load لا يمسه).
+    pub fn set_source_file(&mut self, file: &str) {
+        self.vm.set_source_file(file);
+    }
+
+    /// اجتماع 32، السؤال الثامن: بث حي لمخرجات `اطبع`
+    /// — يُمرَّر إلى VM الجلسة (load لا يمسه).
+    pub fn set_live_output(&mut self, live: bool) {
+        self.vm.set_live_output(live);
     }
 
     /// This session's own server permission.
@@ -6336,5 +6438,122 @@ mod tests {
         assert_eq!(iout, "سرّي\n\n");
         assert_eq!(vout, iout);
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// اجتماع 32: ابنِ VM من مصدر نصي لضبط علميها
+    /// (البث الحي وملف المصدر) قبل التشغيل.
+    fn vm_from_src(src: &str) -> Result<Vm, RioError> {
+        let tokens = tokenize(src)?;
+        let program = Parser::new(tokens).parse_program()?;
+        let compiled = Compiler::compile_program(&program)?;
+        Ok(Vm::new(
+            compiled,
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+        ))
+    }
+
+    #[test]
+    fn vm_engine_version_bare_and_banner() {
+        // اجتماع 32، السؤال السادس — مرآة اختبار المفسر:
+        // إصدار_المحرك() ترجع النسخة المجردة؛ والنسخة()
+        // تبقى اللافتة.
+        let (out, _, ok) = run_vm_src("اطبع إصدار_المحرك()\nاطبع النسخة()\n");
+        assert!(ok);
+        assert_eq!(out, "١٫٠٫٠\nمحرك نيفا ١٫٠٫٠\n");
+        // بلا وسائط فقط: وسائط خطأ عدد.
+        let (_, _, ok) = run_vm_src("اطبع إصدار_المحرك(١)\n");
+        assert!(!ok);
+    }
+
+    #[test]
+    fn vm_bare_function_reference_is_an_error() {
+        // اجتماع 32، السؤال الثاني (2) — مرآة اختبار
+        // المفسر: مرجع دالة كعبارة مجردة خطأ يسمي الدالة.
+        let (_, err, ok) = run_vm_src("دالة س():\n    ارجع ١\nس\n");
+        assert!(!ok);
+        assert!(err.contains("دالة بلا استدعاء: س"), "err: {}", err);
+        // دالة مستوردة مجردة (من وحدة أصلية).
+        let (_, err, ok) = run_vm_src("من رياضيات استورد جذر\nجذر\n");
+        assert!(!ok);
+        assert!(err.contains("دالة بلا استدعاء: جذر"), "err: {}", err);
+        // دالة وحدة أصلية مجردة.
+        let (_, err, ok) = run_vm_src("استورد جهاز\nجهاز.أزل_تنبيه\n");
+        assert!(!ok);
+        assert!(
+            err.contains("دالة بلا استدعاء: أزل_تنبيه"),
+            "err: {}",
+            err
+        );
+        // الإسناد والتمرير والطباعة تبقى صالحة.
+        let (out, _, ok) =
+            run_vm_src("من رياضيات استورد جذر\nس = جذر\nاطبع نوع(س)\nاطبع جذر\n");
+        assert!(ok);
+        assert_eq!(out, "دالة\n<دالة جذر>\n");
+        // استدعاء مجرد يرجع غير دالة: قيمته تُتجاهل.
+        let (out, _, ok) = run_vm_src("دالة أعط():\n    ارجع ٥\nأعط()\n");
+        assert!(ok);
+        assert_eq!(out, "");
+        // استدعاء مجرد يرجع دالة: خطأ أيضا (قيمة دالة
+        // في عبارة مجردة).
+        let (_, err, ok) = run_vm_src(
+            "دالة مصنع():\n    ارجع دالة_مجهولة(س): س\nمصنع()\n",
+        );
+        assert!(!ok);
+        assert!(
+            err.contains("دالة بلا استدعاء: مجهولة"),
+            "err: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn vm_live_output_streams_without_retaining() {
+        // اجتماع 32، السؤال الثامن — مرآة اختبار المفسر:
+        // مع البث الحي لا يُحتفظ بالسطر في output؛
+        // وبدونه يُحتفظ كما كان.
+        let mut vm = vm_from_src("اطبع ١\nاطبع ٢\n").unwrap();
+        vm.set_live_output(true);
+        assert!(vm.run().is_ok());
+        assert_eq!(vm.output, "");
+        let mut vm = vm_from_src("اطبع ١\nاطبع ٢\n").unwrap();
+        vm.set_live_output(false);
+        assert!(vm.run().is_ok());
+        assert_eq!(vm.output, "١\n٢\n");
+    }
+
+    #[test]
+    fn vm_runtime_error_names_source_file() {
+        // اجتماع 32، السؤال الخامس — مرآة اختبار المفسر:
+        // خطأ التشغيل يسمي الملف المضبوط.
+        let mut vm = vm_from_src("س = ١ / ٠\n").unwrap();
+        vm.set_source_file("برنامج.نيفا");
+        let res = vm.run();
+        assert!(res.is_err());
+        let e = res.unwrap_err();
+        assert_eq!(e.file.as_deref(), Some("برنامج.نيفا"));
+        assert!(e.to_string().contains("الملف برنامج.نيفا"));
+        assert!(e.to_string().contains("قسمة على صفر"));
+    }
+
+    #[test]
+    fn vm_module_errors_name_module_file() {
+        // اجتماع 32، السؤال الخامس — مرآة اختبار المفسر:
+        // خطأ في وحدة — في مستواها الأعلى أو داخل دالة
+        // منها تُستدعى من الرئيسي — يُسنَد إلى ملف الوحدة.
+        let (_, err, ok) = run_vm_src_with_files(
+            "استورد م\nاطبع م.اقسم(١)\n",
+            &[("م.نيفا", "صدر اقسم\nدالة اقسم(س):\n    ارجع س / ٠\n")],
+        );
+        assert!(!ok);
+        assert!(err.contains("قسمة على صفر"), "got: {}", err);
+        assert!(err.contains("م.نيفا"), "got: {}", err);
+        // والخطأ في المستوى الأعلى للوحدة نفسه — مع
+        // بادئة زمن التحميل «في وحدة ع: ».
+        let (_, err, ok) =
+            run_vm_src_with_files("استورد ع\n", &[("ع.نيفا", "س = ١ / ٠\n")]);
+        assert!(!ok);
+        assert!(err.contains("قسمة على صفر"), "got: {}", err);
+        assert!(err.contains("في وحدة ع: "), "got: {}", err);
+        assert!(err.contains("ع.نيفا"), "got: {}", err);
     }
 }

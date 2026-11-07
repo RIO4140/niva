@@ -782,8 +782,13 @@ fn processes_entries() -> Vec<(&'static str, Value)> {
     // their spelling exactly (hamza/ة preserved — only
     // diacritics are stripped), so the keys are the spellings
     // the user writes: أوقف، الحالية.
+    // اجتماع 32، السؤال السابع: الاسم المستعار
+    // أنشئ_عملية (معرّف عادي بلا تصادم مع كلمة محجوزة)
+    // يصدّر الدالة نفسها، فيعمل `من عمليات استورد
+    // أنشئ_عملية` مجردا؛ ويبقى عمليات.أنشئ كما هو.
     vec![
         ("انشي", native("انشي", proc_spawn)),
+        ("أنشئ_عملية", native("أنشئ_عملية", proc_spawn)),
         ("انتظر", native("انتظر", proc_wait)),
         ("أوقف", native("أوقف", proc_kill)),
         ("الحالية", native("الحالية", proc_current)),

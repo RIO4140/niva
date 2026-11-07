@@ -22,6 +22,16 @@ fn run_file(path: &str) -> (String, String, i32) {
     )
 }
 
+/// تطبيع مسار مجلد مؤقت في المخرجات قبل المقارنة:
+/// كل تشغيل اختبار يستخدم مجلدا مؤقتا فريدا (رقم مختلف)،
+/// والأخطاء تسمّي الملف الآن (اجتماع 32 Q5) — فيختلف
+/// المسار حرفيا بين تشغيلين مع أن الخطأ نفسه واحد.
+/// يُستبدل مسار المجلد بـ `<مجلد>`، ويبقى اسم الملف
+/// والسطر والعمود كما هما.
+fn norm_dir(s: &str, dir: &std::path::Path) -> String {
+    s.replace(&dir.display().to_string(), "<مجلد>")
+}
+
 fn run_src(src: &str) -> (String, String, i32) {
     // Unique directory per call: cargo runs tests in parallel, so a shared
     // temp file would race and make tests read each other's programs.
@@ -41,12 +51,16 @@ fn run_src(src: &str) -> (String, String, i32) {
         .current_dir(&dir)
         .output()
         .expect("run نيفا");
+    let out = norm_dir(
+        &String::from_utf8_lossy(&result.stdout).to_string(),
+        &dir,
+    );
+    let err = norm_dir(
+        &String::from_utf8_lossy(&result.stderr).to_string(),
+        &dir,
+    );
     let _ = fs::remove_dir_all(&dir);
-    (
-        String::from_utf8_lossy(&result.stdout).to_string(),
-        String::from_utf8_lossy(&result.stderr).to_string(),
-        result.status.code().unwrap_or(-1),
-    )
+    (out, err, result.status.code().unwrap_or(-1))
 }
 
 fn example_path(name: &str) -> PathBuf {
@@ -128,7 +142,7 @@ fn examples_pass() {
         ),
         (
             "18-عمليات.نيفا",
-            "المساعد يعمل\nالفاشل يبدأ\n٠\n١\nصحيح\nمرفوض كما يجب\n",
+            "المساعد يعمل\n٠\nالفاشل يبدأ\n١\nصحيح\nمرفوض كما يجب\n",
         ),
         (
             "21-ذاكرة.نيفا",
@@ -163,8 +177,8 @@ fn examples_pass() {
 
 /// مهمة 10 (عمليات): برنامجا نيفا فرعيان (ناجح وفاشل)
 /// يُشغَّلان ويُنتظَران في الوضعين — المخرج والخطأ
-/// والخروج متطابقة حرفيا (مخرجات الطفلين حية أولا، ثم
-/// مخرجات الأب المجمّعة — انظر مثال 18).
+/// والخروج متطابقة حرفيا؛ وبعد البث الحي (اجتماع 32 Q8)
+/// يتداخل مخرج المساعد مع مخرجات الأب زمنيا (انظر مثال 18).
 #[test]
 fn operations_subprogram_both_modes() {
     let files: &[(&str, &str)] = &[
@@ -184,11 +198,11 @@ fn operations_subprogram_both_modes() {
     assert_eq!(err_v, err_i);
     assert_eq!(
         out_v,
-        "المساعد يعمل\nالفاشل يبدأ\n٠\n١\nصحيح\nمرفوض كما يجب\n"
+        "المساعد يعمل\n٠\nالفاشل يبدأ\n١\nصحيح\nمرفوض كما يجب\n"
     );
     assert_eq!(
         err_v,
-        "خطأ وقت التشغيل: قسمة على صفر (السطر 2، العمود 8)\n"
+        "خطأ وقت التشغيل: قسمة على صفر (الملف <مجلد>/فاشل.نيفا، السطر 2، العمود 8)\n"
     );
 }
 
@@ -1124,10 +1138,17 @@ fn files_open_read_write_both_modes() {
 /// لاحقة الموضع.)
 #[test]
 fn files_policy_error_matches_flat_builtin() {
+    // بعد Q5 (اجتماع 32) الخطأ يسمّي الملف قبل السطر
+    // والعمود: «(الملف …، السطر س، العمود ع)» — فيُجرَّد
+    // من «(الملف» لا من «(السطر»؛ ويبقى القديم احتياطا
+    // لصيغة بلا ملف.
     fn strip_pos(s: &str) -> String {
-        match s.rfind(" (السطر ") {
+        match s.rfind(" (الملف ") {
             Some(i) => s[..i].to_string(),
-            None => s.to_string(),
+            None => match s.rfind(" (السطر ") {
+                Some(j) => s[..j].to_string(),
+                None => s.to_string(),
+            },
         }
     }
     let prog_a: &[(&str, &str)] = &[(
@@ -1563,12 +1584,16 @@ fn run_with_modules_flags(
         cmd.arg(flag);
     }
     let result = cmd.current_dir(&dir).output().expect("run نيفا");
+    let out = norm_dir(
+        &String::from_utf8_lossy(&result.stdout).to_string(),
+        &dir,
+    );
+    let err = norm_dir(
+        &String::from_utf8_lossy(&result.stderr).to_string(),
+        &dir,
+    );
     let _ = fs::remove_dir_all(&dir);
-    (
-        String::from_utf8_lossy(&result.stdout).to_string(),
-        String::from_utf8_lossy(&result.stderr).to_string(),
-        result.status.code().unwrap_or(-1),
-    )
+    (out, err, result.status.code().unwrap_or(-1))
 }
 
 const CALC_MODULE: &str = "صدّر اجمع، الثابت، احصل\nالثابت = ١٠\nدالة مساعد(س):\n    ارجع س * ٢\nدالة اجمع(أ، ب):\n    ارجع مساعد(أ) + ب + الثابت\nدالة احصل():\n    ارجع الثابت\nسر = ٩٩٩\n";
@@ -2283,8 +2308,8 @@ fn run_both_src_two_dirs(
             .output()
             .expect("run نيفا");
         (
-            String::from_utf8_lossy(&out.stdout).to_string(),
-            String::from_utf8_lossy(&out.stderr).to_string(),
+            norm_dir(&String::from_utf8_lossy(&out.stdout).to_string(), dir),
+            norm_dir(&String::from_utf8_lossy(&out.stderr).to_string(), dir),
             out.status.code().unwrap_or(-1),
         )
     };
@@ -2341,8 +2366,8 @@ fn run_both_src_two_dirs_stdin(
             .unwrap();
         let out = child.wait_with_output().expect("run نيفا");
         (
-            String::from_utf8_lossy(&out.stdout).to_string(),
-            String::from_utf8_lossy(&out.stderr).to_string(),
+            norm_dir(&String::from_utf8_lossy(&out.stdout).to_string(), dir),
+            norm_dir(&String::from_utf8_lossy(&out.stderr).to_string(), dir),
             out.status.code().unwrap_or(-1),
         )
     };
@@ -2362,7 +2387,9 @@ fn vm_files_calc_module_and_input_parity() {
         run_both_src_two_dirs_stdin(src, &[("حساب.نيفا", calc)], "محمود\n");
     assert_eq!(code_i, 0);
     assert_eq!(code_v, 0, "vm stderr: {}", err_v);
-    assert_eq!(out_i, "ما اسمك؟ ٧\n٤٢\nمحمود\n١٥\n");
+    // بعد البث الحي (اجتماع 32 Q8) المخرج بترتيب البرنامج
+    // في الوضعين: ٧ و٤٢ قبل سؤال ادخل، لا السؤال أولا.
+    assert_eq!(out_i, "٧\n٤٢\nما اسمك؟ محمود\n١٥\n");
     assert_eq!(out_v, out_i);
 }
 
@@ -2400,8 +2427,8 @@ fn vm_files_outside_dir_refusal_cli_parity() {
             .output()
             .expect("run نيفا");
         (
-            String::from_utf8_lossy(&out.stdout).to_string(),
-            String::from_utf8_lossy(&out.stderr).to_string(),
+            norm_dir(&String::from_utf8_lossy(&out.stdout).to_string(), dir),
+            norm_dir(&String::from_utf8_lossy(&out.stderr).to_string(), dir),
             out.status.code().unwrap_or(-1),
         )
     };
@@ -2903,12 +2930,16 @@ fn run_src_flags_env(
         cmd.env(k, v);
     }
     let result = cmd.current_dir(&dir).output().expect("run نيفا");
+    let out = norm_dir(
+        &String::from_utf8_lossy(&result.stdout).to_string(),
+        &dir,
+    );
+    let err = norm_dir(
+        &String::from_utf8_lossy(&result.stderr).to_string(),
+        &dir,
+    );
     let _ = fs::remove_dir_all(&dir);
-    (
-        String::from_utf8_lossy(&result.stdout).to_string(),
-        String::from_utf8_lossy(&result.stderr).to_string(),
-        result.status.code().unwrap_or(-1),
-    )
+    (out, err, result.status.code().unwrap_or(-1))
 }
 
 fn net_test_server() -> u16 {

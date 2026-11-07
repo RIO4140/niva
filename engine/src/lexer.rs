@@ -224,6 +224,10 @@ fn is_digit(c: char) -> bool {
 }
 
 pub fn tokenize(source: &str) -> RioResult<Vec<Token>> {
+    // اجتماع 32، السؤال الخامس: BOM ‏(U+FEFF)‏ في أول
+    // الملف يُتخطَّى بصمت — إزالته هنا قبل تقسيم الأسطر
+    // فيبقى السطر 1 والعمود 1 للحرف الحقيقي الأول.
+    let source = source.strip_prefix('\u{FEFF}').unwrap_or(source);
     let mut tokens: Vec<Token> = Vec::new();
     let mut indent_stack: Vec<usize> = vec![0];
 
@@ -327,7 +331,13 @@ pub fn tokenize(source: &str) -> RioResult<Vec<Token>> {
                     }
                     i += 1;
                 }
-                if i + 1 < rest.len() && rest[i] == '.' && is_digit(rest[i + 1]) {
+                // اجتماع 32، السؤال الثالث: الفاصلة
+                // العشرية العربية ٫ (U+066B) داخل عدد
+                // فاصلة عشرية كالنقطة تماما — ١٫٥ عدد
+                // واحد، والعرض يستخدم ٫ أصلا فتتسق
+                // الكتابة مع العرض. خارج عدد تبقى حرفا
+                // غير معروف كما كانت.
+                if i + 1 < rest.len() && (rest[i] == '.' || rest[i] == '٫') && is_digit(rest[i + 1]) {
                     num.push('.');
                     i += 1;
                     while i < rest.len() && is_digit(rest[i]) {
@@ -432,6 +442,13 @@ pub fn tokenize(source: &str) -> RioResult<Vec<Token>> {
     Ok(tokens)
 }
 
+/// tokenize مع اسم ملف يُسنَد إلى أي خطأ لغوي —
+/// السباكة داخل المحرك (اجتماع 32)؛ والتوصيل العلوي
+/// (main.rs) سطران بعد هبوط المهمة 29.
+pub fn tokenize_named(source: &str, file: &str) -> RioResult<Vec<Token>> {
+    tokenize(source).map_err(|e| e.with_file(file))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,6 +470,48 @@ mod tests {
     fn diacritic_keyword() {
         let toks = tokenize("اِطبع \"مرحبا\"\n").unwrap();
         assert!(matches!(toks[0].kind, TokenKind::Keyword(Keyword::Print)));
+    }
+
+    #[test]
+    fn arabic_decimal_separator() {
+        // اجتماع 32، السؤال الثالث: ٫ فاصلة عشرية.
+        let toks = tokenize("اطبع ١٫٥\n").unwrap();
+        assert!(matches!(toks[1].kind, TokenKind::Number(n) if (n - 1.5).abs() < 1e-9));
+        let toks = tokenize("اطبع 1٫5\n").unwrap();
+        assert!(matches!(toks[1].kind, TokenKind::Number(n) if (n - 1.5).abs() < 1e-9));
+        let toks = tokenize("اطبع ١٫٥ + ٢٫٢٥\n").unwrap();
+        assert!(matches!(toks[1].kind, TokenKind::Number(n) if (n - 1.5).abs() < 1e-9));
+        assert!(matches!(toks[3].kind, TokenKind::Number(n) if (n - 2.25).abs() < 1e-9));
+        // النقطة ASCII ما زالت تعمل كما كانت.
+        let toks = tokenize("اطبع ١.٥\n").unwrap();
+        assert!(matches!(toks[1].kind, TokenKind::Number(n) if (n - 1.5).abs() < 1e-9));
+    }
+
+    #[test]
+    fn arabic_separator_alone_is_not_a_number() {
+        // ٫ بلا أرقام حولها ليست عددا: في أول السطر
+        // حرف غير معروف؛ وبعد عدد بلا كسر بعدها كذلك.
+        assert!(tokenize("اطبع ٫٥\n").is_err());
+        assert!(tokenize("اطبع ١٫\n").is_err());
+    }
+
+    #[test]
+    fn bom_is_skipped_silently() {
+        // اجتماع 32، السؤال الخامس: BOM في أول الملف
+        // يُتخطَّى بصمت، والسطر 1 والعمود 1 للحرف الأول.
+        let toks = tokenize("\u{FEFF}اطبع ١٢٣\n").unwrap();
+        assert!(matches!(toks[0].kind, TokenKind::Keyword(Keyword::Print)));
+        assert_eq!((toks[0].line, toks[0].col), (1, 1));
+        assert!(matches!(toks[1].kind, TokenKind::Number(n) if (n - 123.0).abs() < 1e-9));
+        // BOM وسط الملف ليس في أوله: يبقى حرفا غير معروف.
+        assert!(tokenize("اطبع ١\n\u{FEFF}اطبع ٢\n").is_err());
+    }
+
+    #[test]
+    fn named_tokenize_tags_lex_errors_with_file() {
+        let e = tokenize_named("اطبع \"نص\n", "برنامج.نيفا").unwrap_err();
+        assert_eq!(e.file.as_deref(), Some("برنامج.نيفا"));
+        assert!(e.to_string().contains("الملف برنامج.نيفا"));
     }
 
     #[test]
