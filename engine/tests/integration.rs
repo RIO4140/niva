@@ -1226,7 +1226,7 @@ fn install_github_repo_both_modes() {
         let (out, err, code) =
             run_src_flags_env(prog, flags, &[("NIVA_GITHUB_API_BASE", &api_base)]);
         assert_eq!(code, 0, "failed: stderr={}", err);
-        assert_eq!(out, "ثُبّتت الوحدة tool\n٤٢\n");
+        assert_eq!(out, "ثُبّتت الوحدة tool\nبصمة الملف: 4cee6f791f5495b679f4a5317bd3afccab74d827761164d6b4a4e4f76770d249\n٤٢\n");
     }
 }
 
@@ -1276,7 +1276,7 @@ fn install_github_release_both_modes() {
         let (out, err, code) =
             run_src_flags_env(prog, flags, &[("NIVA_GITHUB_API_BASE", &api_base)]);
         assert_eq!(code, 0, "failed: stderr={}", err);
-        assert_eq!(out, "ثُبّتت الوحدة tool\n٤٢\n");
+        assert_eq!(out, "ثُبّتت الوحدة tool\nبصمة الملف: 4cee6f791f5495b679f4a5317bd3afccab74d827761164d6b4a4e4f76770d249\n٤٢\n");
     }
 }
 

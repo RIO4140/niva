@@ -2156,7 +2156,7 @@ mod tests {
                 port
             ));
             assert!(!o.ended);
-            assert_eq!(o.output, "ثُبّتت الوحدة أداة\n", "got: {}", o.output);
+            assert_eq!(o.output, "ثُبّتت الوحدة أداة\nبصمة الملف: 3d5a2de9551ce2a171b674bd2360a7ed0d355a5d33e15b7893a4e361bd68678f\n", "got: {}", o.output);
             assert_eq!(
                 std::fs::read_to_string(dir.join("أداة.نيفا")).unwrap(),
                 "صدر قيمة\nقيمة = ٧\n"

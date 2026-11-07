@@ -60,6 +60,11 @@
 //!   لاحقة). واسم وحدة أصلية (رياضيات، شبكة، ...) لا
 //!   يُثبَّت أبدا — فـ `استورد` يقدّم الأصلية على
 //!   الملف، والملف المثبّت بهذا الاسم لا يُستورد أبدا.
+//! - بعد نجاح تثبيت برابط (مباشر أو مستودع أو إصدار)
+//!   يُطبع سطر ثانٍ «بصمة الملف: <بصمة SHA-256>» —
+//!   بصمة المحتوى المكتوب نفسه (فكرة الثقة 7)؛
+//!   والتثبيت من مسار محلي بلا بصمة (الملف عند
+//!   المستخدم أصلا).
 //! - الكتابة تحت حصة التخزين نفسها (100 ميغابايت)
 //!   كـ `اكتب_ملف`، وبلا نص خطأ نظام تشغيل إنجليزي
 //!   إطلاقا في أي رسالة من هذه الوحدة.
@@ -506,7 +511,8 @@ fn install_github_file(
             ))
         }
     };
-    write_installed_module(program_dir, stem, body, line, col)
+    // رابط جيت هاب — فتُطبع البصمة مع رسالة النجاح.
+    write_installed_module(program_dir, stem, body, true, line, col)
 }
 
 /// ثبّت من مصدر جيت هاب (مستودع أو إصدار) بعد تصنيفه.
@@ -618,11 +624,14 @@ fn install_from_github(
 
 /// تحقق الاسم الأصلي + بلا كتابة فوق موجود + الحصة +
 /// الكتابة — مشترك بين المسارات كلها (مباشر/محلي/
-/// جيت هاب) فلا ينحرف سلوك عن سلوك.
+/// جيت هاب) فلا ينحرف سلوك عن سلوك. ومع `with_fingerprint`
+/// (الرابط وحده) يعود نص التأكيد بسطر ثانٍ يحمل بصمة
+/// SHA-256 للمحتوى المكتوب نفسه.
 fn write_installed_module(
     program_dir: &Path,
     stem: String,
     content: String,
+    with_fingerprint: bool,
     line: usize,
     col: usize,
 ) -> RioResult<Value> {
@@ -659,11 +668,25 @@ fn write_installed_module(
             col,
         )
     })?;
+    // بصمة الملف (فكرة الثقة 7): للرابط وحده — بصمة
+    // SHA-256 للمحتوى المكتوب نفسه (وهي بايتات الملف
+    // حرفيا، فالكتابة أعلاه كتبت هذا المحتوى بعينه —
+    // فلا قراءة ثانية ولا بصمة تحقق سابقة هنا).
+    // والمسار المحلي بلا بصمة: الملف عند المستخدم أصلا.
+    if with_fingerprint {
+        let fingerprint = crate::crypto::sha256_hex(content.as_bytes());
+        return Ok(Value::Str(format!(
+            "ثُبّتت الوحدة {}\nبصمة الملف: {}",
+            stem, fingerprint
+        )));
+    }
     Ok(Value::Str(format!("ثُبّتت الوحدة {}", stem)))
 }
 
 /// ثبّت أداة نيفا من رابط أو مسار محلي إلى مجلد البرنامج.
-/// يعيد نص تأكيد («ثُبّتت الوحدة {الاسم}») يطبعه الطرفي.
+/// يعيد نص تأكيد («ثُبّتت الوحدة {الاسم}») يطبعه الطرفي —
+/// ومع الرابط سطر ثانٍ «بصمة الملف: <بصمة SHA-256>»
+/// (فكرة الثقة 7)؛ والمسار المحلي بلا سطر ثانٍ.
 /// `policy` و`cwd` هما سياسة الجلسة ومجلدها (للمصدر
 /// المحلي)؛ و`program_dir` هو مسار الاستيراد (للهدف).
 pub(crate) fn install_module(
@@ -762,7 +785,8 @@ fn install_module_with_api(
         )?;
         (stem, text)
     };
-    write_installed_module(program_dir, stem, content, line, col)
+    // رابط مباشر يطبع البصمة؛ والمسار المحلي لا.
+    write_installed_module(program_dir, stem, content, is_url, line, col)
 }
 
 #[cfg(test)]
@@ -1307,7 +1331,13 @@ mod tests {
             "https://github.com/owner/repo",
         )
         .unwrap();
-        assert_eq!(got, Value::Str("ثُبّتت الوحدة tool".to_string()));
+        assert_eq!(
+            got,
+            Value::Str(format!(
+                "ثُبّتت الوحدة tool\nبصمة الملف: {}",
+                MOCK_FILE_FINGERPRINT
+            ))
+        );
         assert_eq!(
             std::fs::read_to_string(base.join("tool.نيفا")).unwrap(),
             "صدر قيمة\nقيمة = ٤٢\n"
@@ -1343,7 +1373,13 @@ mod tests {
             "https://github.com/owner/repo/tree/main/tool.نيفا",
         )
         .unwrap();
-        assert_eq!(got, Value::Str("ثُبّتت الوحدة tool".to_string()));
+        assert_eq!(
+            got,
+            Value::Str(format!(
+                "ثُبّتت الوحدة tool\nبصمة الملف: {}",
+                MOCK_FILE_FINGERPRINT
+            ))
+        );
         crate::network::set_network_allowed(false);
         cleanup(&base);
     }
@@ -1435,7 +1471,13 @@ mod tests {
             "https://github.com/owner/repo/releases/tag/v1",
         )
         .unwrap();
-        assert_eq!(got, Value::Str("ثُبّتت الوحدة tool".to_string()));
+        assert_eq!(
+            got,
+            Value::Str(format!(
+                "ثُبّتت الوحدة tool\nبصمة الملف: {}",
+                MOCK_FILE_FINGERPRINT
+            ))
+        );
         assert_eq!(
             std::fs::read_to_string(base.join("tool.نيفا")).unwrap(),
             "صدر قيمة\nقيمة = ٤٢\n"
@@ -1539,12 +1581,147 @@ mod tests {
             "https://github.com/owner/repo/releases/tag/v5",
         )
         .unwrap();
-        assert_eq!(got, Value::Str("ثُبّتت الوحدة tool".to_string()));
+        assert_eq!(
+            got,
+            Value::Str(format!(
+                "ثُبّتت الوحدة tool\nبصمة الملف: {}",
+                MOCK_FILE_FINGERPRINT
+            ))
+        );
         assert_eq!(
             std::fs::read_to_string(base.join("tool.نيفا")).unwrap(),
             "صدر قيمة\nقيمة = ٤٢\n"
         );
         crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    /// بصمة الملف المتوقعة لمحتوى الخادم المحاكي
+    /// «صدر قيمة\nقيمة = ٤٢\n» — محسوبة بأداة النظام
+    /// (sha256sum) لا بالمحرك نفسه، فلا يختبر الكود
+    /// نفسه بنفسه.
+    const MOCK_FILE_FINGERPRINT: &str =
+        "4cee6f791f5495b679f4a5317bd3afccab74d827761164d6b4a4e4f76770d249";
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_direct_url_prints_fingerprint() {
+        // الرابط المباشر: رسالة النجاح بسطرها الأول
+        // كما هي، ثم سطر البصمة — والبصمة هي SHA-256
+        // للمحتوى المثبّت نفسه.
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("url-fp");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        let got = install_module_with_api(
+            &policy,
+            &base,
+            &base,
+            &format!("http://127.0.0.1:{}/files/tool.نيفا", port),
+            &api_base,
+            1,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            Value::Str(format!(
+                "ثُبّتت الوحدة tool\nبصمة الملف: {}",
+                MOCK_FILE_FINGERPRINT
+            ))
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.join("tool.نيفا")).unwrap(),
+            "صدر قيمة\nقيمة = ٤٢\n"
+        );
+        crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_github_repo_prints_fingerprint() {
+        // رابط المستودع: البصمة مع النجاح أيضا.
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("gh-repo-fp");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        let got = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo",
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            Value::Str(format!(
+                "ثُبّتت الوحدة tool\nبصمة الملف: {}",
+                MOCK_FILE_FINGERPRINT
+            ))
+        );
+        crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_github_release_prints_fingerprint() {
+        // رابط الإصدار: البصمة مع النجاح أيضا.
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("gh-rel-fp");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        let got = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/releases/tag/v1",
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            Value::Str(format!(
+                "ثُبّتت الوحدة tool\nبصمة الملف: {}",
+                MOCK_FILE_FINGERPRINT
+            ))
+        );
+        crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn install_local_no_fingerprint() {
+        // المسار المحلي: رسالة النجاح وحدها حرفيا —
+        // بلا سطر بصمة إطلاقا.
+        let _guard = install_test_lock();
+        let (base, src_dir) = test_dirs("local-fp");
+        let policy = test_policy(&base);
+        std::fs::write(src_dir.join("أداة.نيفا"), "صدر قيمة\nقيمة = ٤٢\n")
+            .unwrap();
+        let got = install_module(
+            &policy,
+            &base,
+            &base,
+            "مصادر/أداة.نيفا",
+            1,
+            1,
+        )
+        .unwrap();
+        assert_eq!(got, Value::Str("ثُبّتت الوحدة أداة".to_string()));
+        match &got {
+            Value::Str(s) => assert!(!s.contains("بصمة"), "got: {}", s),
+            _ => panic!("expected text, got: {:?}", got),
+        }
         cleanup(&base);
     }
 }
