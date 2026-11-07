@@ -1384,6 +1384,9 @@ fn device_entries() -> Vec<(&'static str, Value)> {
         // و«أوقف_صوت» بالهمزة حرفا (كما «أرسل»).
         ("شغل_صوت", native("شغل_صوت", device_play_audio)),
         ("أوقف_صوت", native("أوقف_صوت", device_stop_audio)),
+        // المهمة 25 (حساس): المفتاح «حساس» بلا شدة
+        // ولا همزة — فلا فخ تهجئة (درس المهمة 24).
+        ("حساس", native("حساس", device_sensor)),
     ]
 }
 
@@ -1415,4 +1418,8 @@ fn device_play_audio(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, c
 
 fn device_stop_audio(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     crate::device::stop_audio(args, line, col)
+}
+
+fn device_sensor(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::read_sensor(args, line, col)
 }

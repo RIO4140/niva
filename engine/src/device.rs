@@ -1,6 +1,6 @@
-//! جهاز — حوار تفاعلي + تنبيه + نطق (المهام 20 و21
-//! و23 من خطة البناء، أول قدرات واجهات الجهاز —
-//! المرحلة 4).
+//! جهاز — حوار تفاعلي + تنبيه + نطق + صوت + حساس
+//! (المهام 20 و21 و23 و24 و25 من خطة البناء، أول
+//! قدرات واجهات الجهاز — المرحلة 4).
 //!
 //! المبدأ: المحرك عملية فرعية في التطبيق، فيطلب
 //! الحوار أو التنبيه عبر قناة التحكم المنظمة على
@@ -56,6 +56,10 @@ const PLAY_AUDIO_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:شغّل_صو
 /// — أندرويد فقط.
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 const STOP_AUDIO_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:أوقف_صوت:";
+/// بادئة سطر طلب قراءة حساس على stderr (المهمة 25)
+/// — أندرويد فقط.
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const SENSOR_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:حساس:";
 /// بادئة سطر نتيجة التحكم على stdin — أندرويد فقط.
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 const RESULT_PREFIX: &str = "\u{0001}نيفا-نتيجة:";
@@ -649,6 +653,66 @@ pub fn serialize_stop_audio_request() -> String {
     "{}".to_string()
 }
 
+/// أسماء الحساسات الثمانية في v1 (المهمة 25) —
+/// القائمة الكاملة؛ وأي اسم خارجها «غير معروف»
+/// (فحص وسائط خالص قبل المنصة — كأنواع الحوار
+/// التسعة). المستثنى عمدا: نبض القلب (إذن جسدي)
+/// وعدّاد الخطوات (تراكمي) وحساسات الزناد.
+pub const SENSOR_NAMES: [&str; 8] = [
+    "تسارع", "جيروسكوب", "ضوء", "قرب", "مغناطيسي", "ضغط", "رطوبة", "حرارة",
+];
+
+/// التحقق الخالص من وسائط `جهاز.حساس` — معامل
+/// واحد نص (اسم حساس من الثمانية) غير فارغ
+/// (المهمة 25).
+pub fn validate_sensor_args(args: &[Value], line: usize, col: usize) -> RioResult<String> {
+    const DISPLAY: &str = "جهاز.حساس";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 معامل لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let name = match &args[0] {
+        Value::Str(s) => s.clone(),
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع نصا لاسم الحساس لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if name.is_empty() {
+        return Err(RioError::runtime("اسم الحساس فارغ", line, col));
+    }
+    if !SENSOR_NAMES.contains(&name.as_str()) {
+        return Err(RioError::runtime(
+            format!("حساس غير معروف: {}", name),
+            line,
+            col,
+        ));
+    }
+    Ok(name)
+}
+
+/// تسلسل طلب قراءة حساس إلى JSON (تهريب يدوي —
+/// يعيد استخدام `json_escape`).
+pub fn serialize_sensor_request(name: &str) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str("\"اسم\":");
+    out.push_str(&json_escape(name));
+    out.push('}');
+    out
+}
+
 /// نقطة الدخول: `جهاز.انطق(...)` — التحقق أولا (كل
 /// المنصات)، ثم بوابة المنصة، ثم القناة، ثم الإرسال
 /// والانتظار حتى ينتهي النطق؛ وترجع `صحيح` عند
@@ -862,6 +926,59 @@ fn stop_audio_native(line: usize, col: usize) -> RioResult<Value> {
             }
         } else {
             Err(RioError::runtime("الصوت متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.حساس(...)` — التحقق أولا (كل
+/// المنصات)، ثم بوابة المنصة، ثم القناة، ثم الإرسال
+/// والانتظار حتى تصل القراءة؛ وترجع قاموس {قيم،
+/// دقة} (قيم قائمة أعداد: 1 أو 3 حسب الحساس؛ ودقة
+/// عدد صحيح 0–3). القراءة حاجبة في المحرك (كالنطق
+/// والحوار) — والتطبيق يحدّ جانبه بمهلة 5 ثوان
+/// فيجيب دائما (المهمة 25).
+pub fn read_sensor(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let name = validate_sensor_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = name;
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        read_sensor_native(&name, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_sensor_native(name: &str, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = name;
+        Err(RioError::runtime(
+            "جهاز.حساس غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                SENSOR_CONTROL_PREFIX,
+                serialize_sensor_request(name)
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Dict(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("الحساس متاح داخل التطبيق فقط", line, col))
         }
     }
 }
@@ -2167,5 +2284,120 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+    }
+
+    #[test]
+    fn validate_sensor_args_ok_and_bad() {
+        // الأسماء الثمانية كلها صحيحة.
+        for name in SENSOR_NAMES {
+            assert_eq!(
+                validate_sensor_args(&[str_val(name)], 1, 1).unwrap(),
+                name.to_string(),
+                "name: {}",
+                name
+            );
+        }
+        // بلا معامل / معاملان.
+        let err = validate_sensor_args(&[], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+        let err = validate_sensor_args(&[str_val("تسارع"), str_val("زائد")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+        // غير نص.
+        let err = validate_sensor_args(&[num_val(5.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا لاسم الحساس"), "got: {}", err);
+        // اسم فارغ.
+        let err = validate_sensor_args(&[str_val("")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("اسم الحساس فارغ"), "got: {}", err);
+        // اسم غير معروف (ومنها المستثنى عمدا: نبض
+        // القلب وعدّاد الخطوات).
+        for bad in ["نبض", "خطوات", "سرعة", "تسارع "] {
+            let err = validate_sensor_args(&[str_val(bad)], 1, 1)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("حساس غير معروف"), "got: {}", err);
+        }
+    }
+
+    #[test]
+    fn serialize_sensor_request_round_trip() {
+        // الاسم يُهرَّب في JSON.
+        let text = serialize_sensor_request("تسارع");
+        let parsed = parse_json(&text).unwrap();
+        assert_eq!(
+            parsed,
+            Json::Obj(vec![("اسم".to_string(), Json::Str("تسارع".to_string()))])
+        );
+    }
+
+    #[test]
+    fn parse_sensor_result_dict() {
+        // نتيجة قراءة ثلاثية المحاور: قاموس {قيم، دقة}.
+        let value = parse_control_result(
+            "{\"قيمة\": {\"قيم\": [1.5, -2.0, 9.8], \"دقة\": 3}}",
+            1,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            value,
+            Value::Dict(vec![
+                (
+                    "قيم".to_string(),
+                    Value::List(vec![num_val(1.5), num_val(-2.0), num_val(9.8)]),
+                ),
+                ("دقة".to_string(), num_val(3.0)),
+            ])
+        );
+        // ونتيجة قراءة أحادية القيمة (ضوء).
+        let value = parse_control_result(
+            "{\"قيمة\": {\"قيم\": [450.0], \"دقة\": 2}}",
+            1,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            value,
+            Value::Dict(vec![
+                ("قيم".to_string(), Value::List(vec![num_val(450.0)])),
+                ("دقة".to_string(), num_val(2.0)),
+            ])
+        );
+        // (قيمة ليست قاموسا يرفضها `read_sensor_native`
+        // لا المحلل المشترك — فهي خارج هذا الاختبار.)
+    }
+
+    #[test]
+    fn sensor_refuses_off_android() {
+        // على هذه الآلة (لينكس): الوسائط الصحيحة تصل
+        // إلى بوابة المنصة وترفض بالعربية.
+        let err = read_sensor(&[str_val("تسارع")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("جهاز.حساس غير مدعوم على هذه المنصة"),
+            "got: {}",
+            err
+        );
+        // والوسائط الخاطئة ترفض قبل المنصة.
+        let err = read_sensor(&[str_val("")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("اسم الحساس فارغ"), "got: {}", err);
+        let err = read_sensor(&[str_val("نبض")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("حساس غير معروف"), "got: {}", err);
+        let err = read_sensor(&[num_val(3.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا لاسم الحساس"), "got: {}", err);
+        let err = read_sensor(&[], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
     }
 }
