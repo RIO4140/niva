@@ -322,22 +322,74 @@ pub fn fetch(url: &str, line: usize, col: usize) -> RioResult<Value> {
     }
 }
 
-/// الإرسال (اجتماع 29، DESIGN §44): `شبكة.أرسل(رابط،
-/// جسم[، نوع_المحتوى])` — HTTP POST، يرجع نص جسم الرد
+/// ترويسات المتصل (اجتماع 30، DESIGN §45): اسم
+/// وقيمة نصا فقط. والاسم حرف رمزي (token) غير فارغ
+/// — فاسم فيه مسافة أو نقطتان يكسر إطار الطلب على
+/// السلك؛ والقيمة بلا CR/LF أبدا (حقن الترويسات).
+/// تُفحص هنا قبل أي شبكة، قبل التوزيع على
+/// المسارات — فنقطة واحدة تخدم HTTP/1.1 وHTTP/2
+/// وWASM معا.
+fn validate_caller_headers(
+    headers: &[(String, String)],
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    for (name, value) in headers {
+        if name.is_empty() {
+            return Err(RioError::runtime(
+                "اسم ترويسة فارغ — الترويسة تحتاج اسما غير فارغ",
+                line,
+                col,
+            ));
+        }
+        if !name.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.'
+                        | b'^' | b'_' | b'`' | b'|' | b'~'
+                )
+        }) {
+            // بلا إظهار الاسم نفسه: قد يحمل أسطرا
+            // جديدة فتلوث نص الخطأ.
+            return Err(RioError::runtime(
+                "اسم ترويسة غير صالح — الاسم حروف رمزية فقط",
+                line,
+                col,
+            ));
+        }
+        if value.contains('\r') || value.contains('\n') {
+            return Err(RioError::runtime(
+                "قيمة ترويسة غير صالحة — لا يُسمح بأسطر جديدة في الترويسات",
+                line,
+                col,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// الإرسال (اجتماع 29، DESIGN §44؛ واجتماع 30،
+/// §45): `شبكة.أرسل(رابط، جسم[، نوع_المحتوى[،
+/// ترويسات]])` — HTTP POST، يرجع نص جسم الرد
 /// كما في `اجلب`. النوع الافتراضي `application/json`؛
 /// والوسيط الثالث يبدّله (لتدفق الجهاز:
-/// `application/x-www-form-urlencoded`). والبوابات
-/// والحدود حرفيا كما في `اجلب`: بوابة الشبكة نفسها بلا
-/// إذن جديد؛ ومهلة 30 ثانية إجمالية؛ وسقف الرد 5
-/// ميغابايت؛ وسقف جسم الطلب 5 ميغابايت (يُفحص قبل أي
-/// شبكة)؛ والتحقق الكامل من سلسلة TLS؛ وفحص IP قبل
-/// المصافحة. والمحرك لا يضيف أي ترويسة اعتماد من
-/// نفسه. وغير-2xx خطأ عربي يسمّي الحالة كما في `اجلب`.
-/// WASM: جلب المتصفح نفسه بطريقة POST.
+/// `application/x-www-form-urlencoded`)؛ والوسيط
+/// الرابع الاختياري قاموس ترويسات المتصل {اسم:
+/// قيمة} نصا فقط (للمكالمات المصدّقة: Authorization
+/// وAccept). والبوابات والحدود حرفيا كما في `اجلب`:
+/// بوابة الشبكة نفسها بلا إذن جديد؛ ومهلة 30 ثانية
+/// إجمالية؛ وسقف الرد 5 ميغابايت؛ وسقف جسم الطلب 5
+/// ميغابايت (يُفحص قبل أي شبكة)؛ والتحقق الكامل من
+/// سلسلة TLS؛ وفحص IP قبل المصافحة. والمحرك لا يضيف
+/// أي ترويسة اعتماد من نفسه. وغير-2xx خطأ عربي
+/// يسمّي الحالة كما في `اجلب`. WASM: جلب المتصفح
+/// نفسه بطريقة POST.
 pub fn post(
     url: &str,
     body: &str,
     content_type: &str,
+    headers: &[(String, String)],
     line: usize,
     col: usize,
 ) -> RioResult<Value> {
@@ -355,9 +407,11 @@ pub fn post(
             col,
         ));
     }
+    // اجتماع 30: ترويسات المتصل تُفحص قبل أي شبكة.
+    validate_caller_headers(headers, line, col)?;
     #[cfg(target_arch = "wasm32")]
     {
-        post_wasm(url, body, content_type, line, col)
+        post_wasm(url, body, content_type, headers, line, col)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -366,9 +420,18 @@ pub fn post(
         let url = url.to_string();
         let body = body.to_string();
         let content_type = content_type.to_string();
+        let headers = headers.to_vec();
         let text = run_cancellable(
             move || {
-                post_text_native(&url, &body, &content_type, TIMEOUT_SECS, line, col)
+                post_text_native(
+                    &url,
+                    &body,
+                    &content_type,
+                    &headers,
+                    TIMEOUT_SECS,
+                    line,
+                    col,
+                )
             },
             line,
             col,
@@ -1981,15 +2044,17 @@ enum FetchMethod {
 
 /// ما يصدره `fetch_one_native` في محاولة واحدة: الطريقة
 /// + جسم الطلب (فارغ في GET) + نوع المحتوى (فارغ في
-/// GET). الحلقة تحمل نسخة قابلة للتعديل — فبعد POST
-/// يتحول الطلب إلى GET عند 301/302/303، ويبقى POST
-/// بالجسم نفسه عند 307/308.
+/// GET) + ترويسات المتصل (فارغة في GET — بلا قناة
+/// لها في `اجلب`). الحلقة تحمل نسخة قابلة للتعديل —
+/// فبعد POST يتحول الطلب إلى GET عند 301/302/303،
+/// ويبقى POST بالجسم نفسه عند 307/308.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 struct FetchRequest {
     method: FetchMethod,
     body: Vec<u8>,
     content_type: String,
+    headers: Vec<(String, String)>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1999,28 +2064,48 @@ impl FetchRequest {
             method: FetchMethod::Get,
             body: Vec::new(),
             content_type: String::new(),
+            headers: Vec::new(),
         }
     }
 
-    fn post(body: &[u8], content_type: &str) -> Self {
+    fn post(body: &[u8], content_type: &str, headers: &[(String, String)]) -> Self {
         FetchRequest {
             method: FetchMethod::Post,
             body: body.to_vec(),
             content_type: content_type.to_string(),
+            headers: headers.to_vec(),
         }
     }
 
     /// بعد POST: 301/302/303 تُعاد GET (بلا جسم وبلا
-    /// نوع محتوى) — كما في المتصفحات.
+    /// نوع محتوى) — كما في المتصفحات. وترويسات
+    /// المتصل تبقى هنا؛ فإسقاطها عند التحويل لمضيف
+    /// مختلف قرار الحلقة (§45)، لا قرار التحويل.
     fn to_get(&mut self) {
         self.method = FetchMethod::Get;
         self.body.clear();
         self.content_type.clear();
     }
 
+    /// اجتماع 30: عند التحويل تُسقط ترويسات المتصل
+    /// لمضيف مختلف — فلا اعتماد يتسرب إلى مضيف آخر.
+    fn drop_caller_headers(&mut self) {
+        self.headers.clear();
+    }
+
     fn is_post(&self) -> bool {
         self.method == FetchMethod::Post
     }
+}
+
+/// اجتماع 30: ترويسات المتصل تُعاد للمضيف المطابق
+/// حرفيا فقط — المضيف بلا فرق حالة والمنفذ نفسه.
+/// (المنفذ غير القياسي على المضيف نفسه مضيف مختلف،
+/// كما في قاعدة الاجتماع 28 لمقارنة المضيفين.)
+#[cfg(not(target_arch = "wasm32"))]
+fn headers_survive_redirect(current: &ParsedUrl, next: &ParsedUrl) -> bool {
+    next.host.to_ascii_lowercase() == current.host.to_ascii_lowercase()
+        && next.port == current.port
 }
 
 /// النص الكامل للرد (اجلب): المصرف ذاكرة، والتحويل
@@ -2039,19 +2124,21 @@ fn fetch_text_native(
 }
 
 /// النص الكامل للرد (شبكة.أرسل): كـ`fetch_text_native`
-/// لكن بطلب POST — الجسم ونوع المحتوى يمران في الطلب
-/// عبر الحلقة (فيعيد التوجيه إصدارهما كما يقرر §44).
+/// لكن بطلب POST — الجسم ونوع المحتوى وترويسات
+/// المتصل تمر في الطلب عبر الحلقة (فيعيد التوجيه
+/// إصدارها كما يقرر §44 و§45).
 #[cfg(not(target_arch = "wasm32"))]
 fn post_text_native(
     url: &str,
     body: &str,
     content_type: &str,
+    headers: &[(String, String)],
     timeout_secs: u64,
     line: usize,
     col: usize,
 ) -> RioResult<String> {
     let sink: Box<dyn BodySink + Send> = Box::new(MemorySink::new());
-    let req = FetchRequest::post(body.as_bytes(), content_type);
+    let req = FetchRequest::post(body.as_bytes(), content_type, headers);
     let sink = fetch_loop(url, &req, timeout_secs, line, col, sink)?;
     Ok(sink.finish_string().unwrap_or_default())
 }
@@ -2189,6 +2276,16 @@ fn fetch_loop(
                             col,
                         ));
                     }
+                }
+                // اجتماع 30: عند التحويل تُعاد ترويسات
+                // المتصل للمضيف المطابق حرفيا فقط
+                // وتُسقط لغيره (307/308 لمضيف مختلف
+                // مرفوض أصلا أعلاه، فلا يصل هنا بمضيف
+                // مختلف إلا تحويل مسموح به — كالمسموح
+                // في قائمة السماح — فيُسقط الاعتماد
+                // عنه أيضا).
+                if !headers_survive_redirect(&current, &next) {
+                    req.drop_caller_headers();
                 }
                 // جسم 3xx — إن وُجد — لا يلوث الجسم
                 // النهائي: المصرف يُعاد إلى الصفر.
@@ -2629,12 +2726,30 @@ fn fetch_one_native(
     let target = encode_request_target(&url.path);
     // اجتماع 29: الطريقة من الطلب (GET أو POST)؛ وفي
     // POST يضاف نوع المحتوى وطول الجسم، والجسم نفسه
-    // بايتات بعد سطر فارغ (لا ترويسة اعتماد أبدا).
+    // بايتات بعد سطر فارغ. والمدارة (Host وUser-Agent
+    // وAccept) من المحرك وحده — لا ترويسة اعتماد
+    // يضيفها المحرك من نفسه أبدا؛ وترويسات المتصل
+    // (اجتماع 30) ملكه هو.
     let method = if req.is_post() { "POST" } else { "GET" };
     let mut head = format!(
         "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Niva/1.0\r\nAccept: */*\r\n",
         method, target, host_header
     );
+    // اجتماع 30: ترويسات المتصل — والمدارة (Host
+    // وContent-Length وContent-Type وConnection)
+    // تغلب دائما فتُسقط نسخ المتصل منها؛ فلا ازدواج
+    // على السلك ولا قيمة متصل تحل محل المدارة.
+    for (name, value) in &req.headers {
+        let lower = name.to_ascii_lowercase();
+        if lower == "host"
+            || lower == "content-length"
+            || lower == "content-type"
+            || lower == "connection"
+        {
+            continue;
+        }
+        head.push_str(&format!("{}: {}\r\n", name, value));
+    }
     if req.is_post() {
         head.push_str(&format!(
             "Content-Type: {}\r\nContent-Length: {}\r\n",
@@ -2962,7 +3077,9 @@ async fn fetch_h2(
     // فالمستقبل يُنقَل إلى مهمة tokio فيستلزم 'static.)
     let uri = format!("https://{}{}", host_header, path);
     // اجتماع 29: الطريقة من الطلب؛ وفي POST يضاف نوع
-    // المحتوى (بلا ترويسة اعتماد أبدا — كما في HTTP/1.1).
+    // المحتوى. والمدارة من المحرك وحده — لا ترويسة
+    // اعتماد يضيفها المحرك من نفسه أبدا؛ وترويسات
+    // المتصل (اجتماع 30) ملكه هو.
     let mut builder = http::Request::builder()
         .method(if req.is_post() {
             http::Method::POST
@@ -2973,6 +3090,20 @@ async fn fetch_h2(
         .header("host", host_header.as_str())
         .header("user-agent", "Niva/1.0")
         .header("accept", "*/*");
+    // اجتماع 30: ترويسات المتصل — والمدارة (host
+    // وcontent-type) تغلب؛ وconnection ممنوعة في
+    // HTTP/2 أصلا فتُسقط هي وcontent-length معهما.
+    for (name, value) in &req.headers {
+        let lower = name.to_ascii_lowercase();
+        if lower == "host"
+            || lower == "content-length"
+            || lower == "content-type"
+            || lower == "connection"
+        {
+            continue;
+        }
+        builder = builder.header(name.as_str(), value.as_str());
+    }
     if req.is_post() {
         builder = builder.header("content-type", req.content_type.as_str());
     }
@@ -3549,18 +3680,24 @@ fn read_line_capped(
 
 #[cfg(target_arch = "wasm32")]
 fn fetch_wasm(url: &str, line: usize, col: usize) -> RioResult<Value> {
-    Ok(Value::Str(wasm_request("GET", url, None, None, line, col)?))
+    Ok(Value::Str(wasm_request(
+        "GET", url, None, None, None, line, col,
+    )?))
 }
 
 /// POST في المتصفح (اجتماع 29): كـ`fetch_wasm` لكن
 /// بطريقة POST وجسم ونوع محتوى — والمتصفح نفسه
 /// يحوّل 301/302/303 إلى GET ويحفظ الطريقة في
 /// 307/308؛ وفحص الرابط النهائي والترويسات كما في GET.
+/// (اجتماع 30: ترويسات المتصل تمر هنا أيضا؛
+/// وإعادة التوجيه في المتصفح يديرها المتصفح نفسه
+/// — فلا إسقاط لمضيف مختلف من المحرك هنا.)
 #[cfg(target_arch = "wasm32")]
 fn post_wasm(
     url: &str,
     body: &str,
     content_type: &str,
+    headers: &[(String, String)],
     line: usize,
     col: usize,
 ) -> RioResult<Value> {
@@ -3569,21 +3706,23 @@ fn post_wasm(
         url,
         Some(body),
         Some(content_type),
+        Some(headers),
         line,
         col,
     )?))
 }
 
 /// طلب واحد عبر XMLHttpRequest المتزامن (WASM فقط):
-/// الطريقة والجسم ونوع المحتوى من المتصل؛ والباقي
-/// (فحص الرابط النهائي، والحالة، وسقف الرد) واحد
-/// في GET وPOST.
+/// الطريقة والجسم ونوع المحتوى وترويسات المتصل من
+/// المتصل؛ والباقي (فحص الرابط النهائي، والحالة،
+/// وسقف الرد) واحد في GET وPOST.
 #[cfg(target_arch = "wasm32")]
 fn wasm_request(
     method: &str,
     url: &str,
     body: Option<&str>,
     content_type: Option<&str>,
+    headers: Option<&[(String, String)]>,
     line: usize,
     col: usize,
 ) -> RioResult<String> {
@@ -3603,6 +3742,29 @@ fn wasm_request(
         xhr.set_request_header("Content-Type", ct).map_err(|_| {
             RioError::runtime("تعذر ضبط نوع محتوى الطلب", line, col)
         })?;
+    }
+    // اجتماع 30: ترويسات المتصل — والمدارة تغلب:
+    // Content-Type مدارة بالوسيط أعلاه، وHost
+    // وContent-Length وConnection ممنوعة في XHR
+    // أصلا فتُسقط من القائمة.
+    if let Some(headers) = headers {
+        for (name, value) in headers {
+            let lower = name.to_ascii_lowercase();
+            if lower == "host"
+                || lower == "content-length"
+                || lower == "content-type"
+                || lower == "connection"
+            {
+                continue;
+            }
+            xhr.set_request_header(name, value).map_err(|_| {
+                RioError::runtime(
+                    format!("تعذر ضبط ترويسة الطلب: {}", name),
+                    line,
+                    col,
+                )
+            })?;
+        }
     }
     xhr.set_timeout(TIMEOUT_SECS as u32 * 1000);
     match body {
@@ -4118,6 +4280,12 @@ mod tests {
                 let path = parts.next().unwrap_or("/").to_string();
                 let mut content_length = 0usize;
                 let mut content_type = String::new();
+                // اجتماع 30: التقاط ترويسات المتصل
+                // لفحصها (تفويض/مخصص) والمدارة (مضيف
+                // وطول) — فيردّها /echo-headers كما وصلت.
+                let mut authorization = String::new();
+                let mut x_test = String::new();
+                let mut host = String::new();
                 for l in lines {
                     if let Some((name, value)) = l.split_once(':') {
                         match name.trim().to_ascii_lowercase().as_str() {
@@ -4127,6 +4295,15 @@ mod tests {
                             }
                             "content-type" => {
                                 content_type = value.trim().to_string()
+                            }
+                            "authorization" => {
+                                authorization = value.trim().to_string()
+                            }
+                            "x-test" => {
+                                x_test = value.trim().to_string()
+                            }
+                            "host" => {
+                                host = value.trim().to_string()
                             }
                             _ => {}
                         }
@@ -4161,6 +4338,41 @@ mod tests {
                     ("POST", "/echo-get") => {
                         ("200 OK", vec![], "وصل POST".as_bytes().to_vec())
                     }
+                    // اجتماع 30: يردّ الترويسات كما
+                    // وصلت (طريقة + تفويض + مخصص +
+                    // نوع + مضيف + طول) — لفحص إرسال
+                    // ترويسات المتصل وغلبة المدارة
+                    // وبقائها عند التحويل للمضيف نفسه.
+                    ("POST", "/echo-headers") | ("GET", "/echo-headers") => (
+                        "200 OK",
+                        vec![],
+                        format!(
+                            "طريقة:{} تفويض:{} مخصص:{} نوع:{} مضيف:{} طول:{}",
+                            method,
+                            authorization,
+                            x_test,
+                            content_type,
+                            host,
+                            content_length
+                        )
+                        .into_bytes(),
+                    ),
+                    ("POST", "/post-redirect-302-headers") => (
+                        "302 Found",
+                        vec![
+                            "Location: /echo-headers".to_string(),
+                            "Content-Length: 0".to_string(),
+                        ],
+                        Vec::new(),
+                    ),
+                    ("POST", "/post-redirect-307-headers") => (
+                        "307 Temporary Redirect",
+                        vec![
+                            "Location: /echo-headers".to_string(),
+                            "Content-Length: 0".to_string(),
+                        ],
+                        Vec::new(),
+                    ),
                     ("POST", "/post-redirect-302") => (
                         "302 Found",
                         vec![
@@ -4227,7 +4439,16 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn post_ok(url: &str, body: &str, ct: &str) -> String {
-        match post(url, body, ct, 1, 1).unwrap() {
+        post_ok_headers(url, body, ct, &[])
+    }
+
+    fn post_ok_headers(
+        url: &str,
+        body: &str,
+        ct: &str,
+        headers: &[(String, String)],
+    ) -> String {
+        match post(url, body, ct, headers, 1, 1).unwrap() {
             Value::Str(s) => s,
             other => panic!("expected text, got {:?}", other),
         }
@@ -4246,6 +4467,7 @@ mod tests {
             url,
             body,
             ct,
+            &[],
             timeout_secs,
             line,
             col,
@@ -4460,8 +4682,15 @@ mod tests {
     fn post_gate_refused() {
         let _guard = NET_TEST_LOCK.lock().unwrap();
         set_network_allowed(false);
-        let err = post("http://127.0.0.1:9/echo", "{}", "application/json", 1, 1)
-            .unwrap_err();
+        let err = post(
+            "http://127.0.0.1:9/echo",
+            "{}",
+            "application/json",
+            &[],
+            1,
+            1,
+        )
+        .unwrap_err();
         assert!(
             err.to_string().contains(PERMISSION_ERROR_MARKER),
             "got: {}",
@@ -4482,6 +4711,7 @@ mod tests {
             &format!("http://127.0.0.1:{}/echo", port),
             &big,
             "application/json",
+            &[],
             1,
             1,
         )
@@ -4540,6 +4770,7 @@ mod tests {
             &format!("http://127.0.0.1:{}/post-cross-307", port),
             "{}",
             "application/json",
+            &[],
             1,
             1,
         )
@@ -4596,12 +4827,202 @@ mod tests {
             &format!("http://127.0.0.1:{}/missing", port),
             "{}",
             "application/json",
+            &[],
             1,
             1,
         )
         .unwrap_err();
         assert!(err.to_string().contains("404"), "got: {}", err);
         set_network_allowed(false);
+    }
+
+    // اجتماع 30: ترويسات المتصل تُرسل كما هي —
+    // التفويض والمخصص يصلان إلى الخادم.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_sends_caller_headers() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = post_test_server();
+        let headers = vec![
+            ("Authorization".to_string(), "Bearer رمز".to_string()),
+            ("X-Test".to_string(), "قيمة".to_string()),
+        ];
+        let out = post_ok_headers(
+            &format!("http://127.0.0.1:{}/echo-headers", port),
+            "{}",
+            "application/json",
+            &headers,
+        );
+        assert_eq!(
+            out,
+            format!(
+                "طريقة:POST تفويض:Bearer رمز مخصص:قيمة نوع:application/json مضيف:127.0.0.1:{} طول:2",
+                port
+            ),
+            "got: {}",
+            out
+        );
+        set_network_allowed(false);
+    }
+
+    // اجتماع 30: المدارة تغلب دائما — نسخ المتصل
+    // من Host وContent-Type وContent-Length
+    // وConnection لا تصل إلى الخادم أبدا.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_managed_headers_win() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = post_test_server();
+        let headers = vec![
+            ("Content-Type".to_string(), "text/plain".to_string()),
+            ("Host".to_string(), "evil.example".to_string()),
+            ("Content-Length".to_string(), "999".to_string()),
+            ("Connection".to_string(), "keep-alive".to_string()),
+        ];
+        let out = post_ok_headers(
+            &format!("http://127.0.0.1:{}/echo-headers", port),
+            "{}",
+            "application/json",
+            &headers,
+        );
+        assert_eq!(
+            out,
+            format!(
+                "طريقة:POST تفويض: مخصص: نوع:application/json مضيف:127.0.0.1:{} طول:2",
+                port
+            ),
+            "got: {}",
+            out
+        );
+        set_network_allowed(false);
+    }
+
+    // اجتماع 30: CR/LF في اسم ترويسة أو قيمتها
+    // يُرفض بخطأ عربي قبل أي شبكة — فحتى رابط
+    // بلا خادم يعطي خطأ الترويسة لا خطأ الاتصال.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_headers_crlf_refused() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let bad_value = vec![(
+            "X-Bad".to_string(),
+            "حقن\r\nترويسة: x".to_string(),
+        )];
+        let err = post(
+            "http://127.0.0.1:9/echo",
+            "{}",
+            "application/json",
+            &bad_value,
+            1,
+            1,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("ترويسة"), "got: {}", err);
+        let bad_name = vec![("X-Bad\r\nName".to_string(), "x".to_string())];
+        let err = post(
+            "http://127.0.0.1:9/echo",
+            "{}",
+            "application/json",
+            &bad_name,
+            1,
+            1,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("ترويسة"), "got: {}", err);
+        set_network_allowed(false);
+    }
+
+    // اجتماع 30: التحويل 302 للمضيف نفسه يحوّل
+    // إلى GET ويُبقي ترويسات المتصل (التفويض يصل
+    // إلى الهدف النهائي على المضيف نفسه).
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_redirect_302_keeps_headers_same_host() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = post_test_server();
+        let headers = vec![(
+            "Authorization".to_string(),
+            "Bearer رمز".to_string(),
+        )];
+        let out = post_ok_headers(
+            &format!(
+                "http://127.0.0.1:{}/post-redirect-302-headers",
+                port
+            ),
+            "{}",
+            "application/json",
+            &headers,
+        );
+        assert_eq!(
+            out,
+            format!(
+                "طريقة:GET تفويض:Bearer رمز مخصص: نوع: مضيف:127.0.0.1:{} طول:0",
+                port
+            ),
+            "got: {}",
+            out
+        );
+        set_network_allowed(false);
+    }
+
+    // اجتماع 30: التحويل 307 للمضيف نفسه يعيد
+    // POST بالجسم نفسه ويُبقي ترويسات المتصل.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn post_redirect_307_keeps_headers_same_host() {
+        let _guard = NET_TEST_LOCK.lock().unwrap();
+        set_network_allowed(true);
+        allow_local_host("127.0.0.1");
+        let port = post_test_server();
+        let headers = vec![(
+            "Authorization".to_string(),
+            "Bearer رمز".to_string(),
+        )];
+        let out = post_ok_headers(
+            &format!(
+                "http://127.0.0.1:{}/post-redirect-307-headers",
+                port
+            ),
+            "{}",
+            "application/json",
+            &headers,
+        );
+        assert_eq!(
+            out,
+            format!(
+                "طريقة:POST تفويض:Bearer رمز مخصص: نوع:application/json مضيف:127.0.0.1:{} طول:2",
+                port
+            ),
+            "got: {}",
+            out
+        );
+        set_network_allowed(false);
+    }
+
+    // اجتماع 30: قاعدة بقاء الترويسات عند التحويل
+    // — المضيف المطابق حرفيا (بلا فرق حالة) مع
+    // المنفذ نفسه فقط؛ ومضيف أو منفذ مختلف يُسقطها.
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn headers_survive_redirect_rule() {
+        let a = parse_url("http://127.0.0.1:8080/a", 1, 1).unwrap();
+        let same = parse_url("http://127.0.0.1:8080/b", 1, 1).unwrap();
+        assert!(headers_survive_redirect(&a, &same));
+        let case = parse_url("http://LOCALHOST:8080/b", 1, 1).unwrap();
+        let lower = parse_url("http://localhost:8080/b", 1, 1).unwrap();
+        assert!(headers_survive_redirect(&case, &lower));
+        let other_host = parse_url("http://localhost:8080/b", 1, 1).unwrap();
+        assert!(!headers_survive_redirect(&a, &other_host));
+        let other_port = parse_url("http://127.0.0.1:9090/b", 1, 1).unwrap();
+        assert!(!headers_survive_redirect(&a, &other_port));
     }
 
     #[test]

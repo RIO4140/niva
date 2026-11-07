@@ -3196,6 +3196,10 @@ fn net_post_test_server() -> u16 {
             let path = parts.next().unwrap_or("/").to_string();
             let mut content_length = 0usize;
             let mut content_type = String::new();
+            // اجتماع 30: التقاط ترويسات المتصل
+            // لفحصها — فيردّها /echo-headers كما وصلت.
+            let mut authorization = String::new();
+            let mut x_test = String::new();
             for l in lines {
                 if let Some((name, value)) = l.split_once(':') {
                     match name.trim().to_ascii_lowercase().as_str() {
@@ -3203,6 +3207,10 @@ fn net_post_test_server() -> u16 {
                             content_length = value.trim().parse().unwrap_or(0)
                         }
                         "content-type" => content_type = value.trim().to_string(),
+                        "authorization" => {
+                            authorization = value.trim().to_string()
+                        }
+                        "x-test" => x_test = value.trim().to_string(),
                         _ => {}
                     }
                 }
@@ -3222,6 +3230,16 @@ fn net_post_test_server() -> u16 {
                         "200 OK",
                         format!("طريقة:POST نوع:{} جسم:{}", content_type, body_text)
                             .into_bytes(),
+                    ),
+                    // اجتماع 30: يردّ ترويسات المتصل
+                    // كما وصلت (تفويض + مخصص + نوع).
+                    ("POST", "/echo-headers") => (
+                        "200 OK",
+                        format!(
+                            "طريقة:POST تفويض:{} مخصص:{} نوع:{}",
+                            authorization, x_test, content_type
+                        )
+                        .into_bytes(),
                     ),
                     _ => ("404 Not Found", Vec::new()),
                 };
@@ -3331,6 +3349,54 @@ fn network_post_gate_refused_both_modes() {
         "VM stderr: {}",
         err_v
     );
+}
+
+// اجتماع 30: شبكة.أرسل بالوسيط الرابع (قاموس
+// ترويسات) — التفويض والمخصص يصلان في الوضعين.
+#[test]
+fn network_post_headers_both_modes() {
+    let port = net_post_test_server();
+    let src = format!(
+        "استورد شبكة\nترويسات = {{\"Authorization\": \"Bearer رمز-اختبار\"، \"X-Test\": \"قيمة\"}}\nاطبع شبكة.أرسل(\"http://127.0.0.1:{}/echo-headers\", \"بيانات\", \"application/json\", ترويسات)\n",
+        port
+    );
+    let (out_i, err_i, code_i) = run_src_flags(
+        &src,
+        &["--مفسر", "--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"],
+    );
+    let (out_v, err_v, code_v) = run_src_flags(
+        &src,
+        &["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"],
+    );
+    assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
+    assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
+    assert_eq!(out_v, out_i);
+    assert_eq!(err_v, err_i);
+    assert_eq!(
+        out_v,
+        "طريقة:POST تفويض:Bearer رمز-اختبار مخصص:قيمة نوع:application/json\n",
+        "stdout={}",
+        out_v
+    );
+}
+
+// اجتماع 30: CR/LF في قيمة ترويسة يُرفض بخطأ
+// عربي قبل أي شبكة في الوضعين.
+#[test]
+fn network_post_headers_crlf_refused_both_modes() {
+    let port = net_post_test_server();
+    let src = format!(
+        "استورد شبكة\nترويسات = {{\"X-Bad\": \"حقن\\r\\nترويسة\"}}\nاطبع شبكة.أرسل(\"http://127.0.0.1:{}/echo\", \"بيانات\", \"application/json\", ترويسات)\n",
+        port
+    );
+    let flags_i = ["--مفسر", "--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"];
+    let flags_v = ["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"];
+    let (_o, err_i, c_i) = run_src_flags(&src, &flags_i);
+    let (_o2, err_v, c_v) = run_src_flags(&src, &flags_v);
+    assert_ne!(c_i, 0, "interpreter accepted a CRLF header");
+    assert_ne!(c_v, 0, "VM accepted a CRLF header");
+    assert!(err_i.contains("ترويسة"), "interpreter stderr: {}", err_i);
+    assert!(err_v.contains("ترويسة"), "VM stderr: {}", err_v);
 }
 
 // المهمة 22: إلغاء جلب طويل من stdin — يكتب

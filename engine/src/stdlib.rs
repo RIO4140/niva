@@ -622,12 +622,19 @@ fn net_bind(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usiz
     Ok(Value::Nil)
 }
 
-// --- إرسال HTTP (اجتماع 29، DESIGN §44) ---
+// --- إرسال HTTP (اجتماع 29، DESIGN §44؛ واجتماع 30، §45) ---
 //
-// `شبكة.أرسل(رابط، جسم[، نوع_المحتوى])` — HTTP POST،
-// يرجع نص جسم الرد كما في `اجلب`. النوع الافتراضي
-// `application/json`، والوسيط الثالث يبدّله (لتدفق
-// الجهاز: `application/x-www-form-urlencoded`).
+// `شبكة.أرسل(رابط، جسم[، نوع_المحتوى[، ترويسات]])`
+// — HTTP POST، يرجع نص جسم الرد كما في `اجلب`.
+// النوع الافتراضي `application/json`، والوسيط
+// الثالث يبدّله (لتدفق الجهاز:
+// `application/x-www-form-urlencoded`)، والوسيط
+// الرابع الاختياري قاموس ترويسات المتصل {اسم:
+// قيمة} نصا فقط (للمكالمات المصدّقة: Authorization
+// وAccept). والمدارة (Host وContent-Length
+// وContent-Type) تغلب على قيم المتصل؛ وCR/LF في
+// اسم أو قيمة يُرفض بخطأ عربي قبل أي شبكة؛ وعند
+// التحويل تُعاد الترويسات للمضيف المطابق فقط.
 // تحت بوابة الشبكة نفسها بلا إذن جديد؛ وسقف جسم
 // الطلب 5 ميغابايت؛ وغير-2xx خطأ عربي يسمّي الحالة.
 // المفتاح المخزّن `أرسل` نفسه لمقابس المهمة 13 —
@@ -640,16 +647,16 @@ fn network_post(
     line: usize,
     col: usize,
 ) -> RioResult<Value> {
-    if args.len() != 2 && args.len() != 3 {
+    if args.len() < 2 || args.len() > 4 {
         return Err(RioError::typ(
-            "الدالة شبكة.أرسل تتوقع معاملين (رابط جسم) أو 3 (رابط جسم نوع_المحتوى)",
+            "الدالة شبكة.أرسل تتوقع معاملين (رابط جسم) أو 3 (رابط جسم نوع_المحتوى) أو 4 (رابط جسم نوع_المحتوى ترويسات)",
             line,
             col,
         ));
     }
     let url = need_string("شبكة.أرسل", &args[0], line, col)?;
     let body = need_string("شبكة.أرسل", &args[1], line, col)?;
-    let content_type = if args.len() == 3 {
+    let content_type = if args.len() >= 3 {
         let ct = need_string("شبكة.أرسل", &args[2], line, col)?;
         if ct.is_empty() {
             return Err(RioError::typ(
@@ -662,6 +669,40 @@ fn network_post(
     } else {
         "application/json".to_string()
     };
+    // اجتماع 30: الوسيط الرابع قاموس ترويسات
+    // نصا فقط — فغير القاموس أو قيمة غير نص
+    // خطأ نوع عربي قبل أي شبكة.
+    let headers: Vec<(String, String)> = if args.len() == 4 {
+        match &args[3] {
+            Value::Dict(entries) => {
+                let mut out = Vec::with_capacity(entries.len());
+                for (name, value) in entries {
+                    match value {
+                        Value::Str(text) => {
+                            out.push((name.clone(), text.clone()));
+                        }
+                        _ => {
+                            return Err(RioError::typ(
+                                "الدالة شبكة.أرسل تتوقع ترويسات نصا فقط",
+                                line,
+                                col,
+                            ));
+                        }
+                    }
+                }
+                out
+            }
+            _ => {
+                return Err(RioError::typ(
+                    "الدالة شبكة.أرسل تتوقع قاموس ترويسات في الوسيط الرابع",
+                    line,
+                    col,
+                ));
+            }
+        }
+    } else {
+        Vec::new()
+    };
     if url.is_empty() {
         return Err(RioError::typ(
             "الدالة شبكة.أرسل تتوقع رابطا غير فارغ",
@@ -669,7 +710,7 @@ fn network_post(
             col,
         ));
     }
-    crate::network::post(&url, &body, &content_type, line, col)
+    crate::network::post(&url, &body, &content_type, &headers, line, col)
 }
 
 fn net_send(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
