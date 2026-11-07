@@ -1800,22 +1800,35 @@ impl Interpreter {
                 col,
             ));
         }
-        // Step 1: a closure call runs in its captured environment:
-        // save the caller's stack, replace it with the captured
-        // chain, push the parameter scope, restore after the call.
-        // Module functions (module: Some) keep the Step 2
-        // module-scope push on the caller's stack instead.
-        let mut pushed_module_scope = false;
-        let mut saved_scopes: Option<Vec<Rc<RefCell<HashMap<String, Value>>>>> = None;
-        if let Some(mod_name) = &module {
-            if let Some(Value::Module { scope, .. }) = self.loaded_modules.get(mod_name) {
-                let scope = scope.clone();
-                self.scopes.push(Rc::new(RefCell::new(scope)));
-                pushed_module_scope = true;
+        // اجتماع 32، السؤال الحادي عشر: عزل إطارات
+        // الاستدعاء — كل استدعاء دالة يجري في إطار
+        // محليات خاص به، مطابقا لدلالة المترجم (VM):
+        // سلسلة المتصل تُحفظ وتُستبدل بسلسلة الدالة
+        // المعجمية وحدها، ثم تُستعاد بعد الاستدعاء —
+        // فلا يرى المستدعى محليات المتصل أبدا، ولا
+        // يسمّم اسما حرا منها. دالة وحدة: نسخة جديدة
+        // من نطاق الوحدة المخزَّن (فلا يستمر تغيير
+        // نطاق الوحدة — كما في VM حرفيا). إغلاق:
+        // سلسلته الملتقَطة. دالة بلا سلسلة ملتقَطة
+        // (دفاعيا فقط — كل القيم تحمل واحدة): نطاق
+        // المعاملات وحده، كما في VM.
+        let base: Vec<Rc<RefCell<HashMap<String, Value>>>> = if let Some(mod_name) = &module {
+            match self.loaded_modules.get(mod_name) {
+                Some(Value::Module { scope, .. }) => {
+                    vec![Rc::new(RefCell::new(scope.clone()))]
+                }
+                _ => match &captured {
+                    Some(chain) => chain.clone(),
+                    None => vec![Rc::new(RefCell::new(HashMap::new()))],
+                },
             }
-        } else if let Some(captured) = &captured {
-            saved_scopes = Some(std::mem::replace(&mut self.scopes, captured.clone()));
-        }
+        } else {
+            match &captured {
+                Some(chain) => chain.clone(),
+                None => vec![Rc::new(RefCell::new(HashMap::new()))],
+            }
+        };
+        let saved_scopes = std::mem::replace(&mut self.scopes, base);
         let mut scope = HashMap::new();
         for (p, v) in params.iter().zip(args.into_iter()) {
             scope.insert(p.clone(), v);
@@ -1834,12 +1847,7 @@ impl Interpreter {
             None => result,
         };
         self.scopes.pop();
-        if pushed_module_scope {
-            self.scopes.pop();
-        }
-        if let Some(saved) = saved_scopes {
-            self.scopes = saved;
-        }
+        self.scopes = saved_scopes;
         self.call_depth -= 1;
         match result? {
             Flow::Return => {
@@ -1942,20 +1950,28 @@ impl Interpreter {
                 col,
             ));
         }
-        // Step 1: like call_user — module methods keep the Step 2
-        // module-scope push; other methods run in their captured
-        // environment (the scope chain at class definition time).
-        let mut pushed_module_scope = false;
-        let mut saved_scopes: Option<Vec<Rc<RefCell<HashMap<String, Value>>>>> = None;
-        if let Some(mod_name) = &module {
-            if let Some(Value::Module { scope, .. }) = self.loaded_modules.get(mod_name) {
-                let scope = scope.clone();
-                self.scopes.push(Rc::new(RefCell::new(scope)));
-                pushed_module_scope = true;
+        // اجتماع 32، السؤال الحادي عشر: كـ call_user —
+        // عزل إطار الاستدعاء: سلسلة المتصل تُحفظ
+        // وتُستبدل بسلسلة الطريقة المعجمية وحدها —
+        // نسخة نطاق الوحدة لطريقة وحدة، وسلسلتها
+        // الملتقَطة لغيرها — ثم تُستعاد بعد الاستدعاء.
+        let base: Vec<Rc<RefCell<HashMap<String, Value>>>> = if let Some(mod_name) = &module {
+            match self.loaded_modules.get(mod_name) {
+                Some(Value::Module { scope, .. }) => {
+                    vec![Rc::new(RefCell::new(scope.clone()))]
+                }
+                _ => match &captured {
+                    Some(chain) => chain.clone(),
+                    None => vec![Rc::new(RefCell::new(HashMap::new()))],
+                },
             }
-        } else if let Some(captured) = &captured {
-            saved_scopes = Some(std::mem::replace(&mut self.scopes, captured.clone()));
-        }
+        } else {
+            match &captured {
+                Some(chain) => chain.clone(),
+                None => vec![Rc::new(RefCell::new(HashMap::new()))],
+            }
+        };
+        let saved_scopes = std::mem::replace(&mut self.scopes, base);
         let mut scope = HashMap::new();
         for (p, v) in params.iter().zip(args.into_iter()) {
             scope.insert(p.clone(), v);
@@ -1973,12 +1989,7 @@ impl Interpreter {
             None => result,
         };
         self.scopes.pop();
-        if pushed_module_scope {
-            self.scopes.pop();
-        }
-        if let Some(saved) = saved_scopes {
-            self.scopes = saved;
-        }
+        self.scopes = saved_scopes;
         self.call_depth -= 1;
         match result? {
             Flow::Return => {
