@@ -561,6 +561,9 @@ int nv_is_native_module(const char *name);
 // حل مسار نسبي ضد مجلد البرنامج/الجلسة + فحص السياسة.
 // تعيد مسارا مطلقا مملوكا (free) أو NULL مع خطأ مطلق.
 char *nv_resolve_path(const char *path, int line, int col);
+// حل مسار برنامج فرعي `.نيفا` نسبي: مجلد البرنامج
+// أولا ثم cwd — مرآة `شغّل` (اجتماع 49 §63).
+char *nv_resolve_subprogram(const char *program, int line, int col);
 // عرض مسار كما يعرضه المحرك (‎~ للبيت، شرطات مائلة).
 char *nv_display_path(const char *path); // free
 // هل المسار داخل مجلد البرنامج؟

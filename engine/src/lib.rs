@@ -17,6 +17,7 @@ pub mod ast;
 pub mod cgen;
 pub mod crypto;
 pub mod device;
+pub mod env;
 pub mod error;
 pub mod files;
 pub mod install;
