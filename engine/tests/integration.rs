@@ -28,8 +28,87 @@ fn run_file(path: &str) -> (String, String, i32) {
 /// المسار حرفيا بين تشغيلين مع أن الخطأ نفسه واحد.
 /// يُستبدل مسار المجلد بـ `<مجلد>`، ويبقى اسم الملف
 /// والسطر والعمود كما هما.
+///
+/// الصيغ الأربع (كما في parity_cases.rs — اجتماعا 35 و36):
+/// المقنّنة (ماك ‎/tmp ← /private/tmp‎، ويندوز بادئة
+/// `\\?\`) ثم الخام، بكل من صورتي الفاصل؛ ثم إصلاح
+/// الفاصل الباقي بعد `<مجلد>` (`<مجلد>\` ← `<مجلد>/`).
+///
+/// والفاصل المختلط (الجولة 5 — عيب ويندوز في
+/// operations_subprogram_both_modes): مسار العملية
+/// الفرعية يأتي من `normalize()` في permissions.rs
+/// بفاصل أول `/` وباقي `\` (`C:/Users\...`)، فلا تطابقه
+/// أي صيغة موحدة — لا الخام ولا المائلة ولا المقنّنة.
+/// لذلك تُطابَق نسخة موحّدة الفواصل (`\` ← `/`)، ويُستبدل
+/// المدى نفسه في النص الأصل (الشرطتان بايت واحد،
+/// فالإزاحات محفوظة)، فيبقى باقي النص كما هو.
 fn norm_dir(s: &str, dir: &std::path::Path) -> String {
-    s.replace(&dir.display().to_string(), "<مجلد>")
+    let mut out = s.to_string();
+    // 1) الصيغة المقنّنة أولا: فالخام لاحقة لها على
+    // ويندوز، واستبداله أولا يفسدها ويترك `\\?\`.
+    if let Ok(canon) = std::fs::canonicalize(dir) {
+        let cn = canon.to_string_lossy().to_string();
+        out = out
+            .replace(&cn, "<مجلد>")
+            .replace(&cn.replace('\\', "/"), "<مجلد>");
+    }
+    // 2) الصيغة الخام بصورتي الفاصل، ثم الفاصل الباقي.
+    let native = dir.display().to_string();
+    let slashed = native.replace('\\', "/");
+    out = out
+        .replace(&native, "<مجلد>")
+        .replace(&slashed, "<مجلد>")
+        .replace("<مجلد>\\", "<مجلد>/");
+    // 3) الفاصل المختلط: طابِق على نسخة موحّدة الفواصل
+    // واستبدل المدى نفسه في الأصل.
+    loop {
+        let unified = out.replace('\\', "/");
+        let Some(pos) = unified.find(&slashed) else {
+            break;
+        };
+        let end = pos + slashed.len();
+        out.replace_range(pos..end, "<مجلد>");
+        out = out.replace("<مجلد>\\", "<مجلد>/");
+    }
+    out
+}
+
+#[test]
+fn norm_dir_covers_all_windows_forms() {
+    // الجولة 5: رسالة الخطأ على ويندوز تحوي مسار المجلد
+    // المؤقت بصيغ لا يطابقها dir.display() وحده — خام
+    // (`\`)، ومائلة (`/`)، ومختلطة (`C:/Users\...` من
+    // normalize() في permissions.rs). كلها يجب أن تصير
+    // `<مجلد>/فاشل.نيفا` كما في توقع الاختبار.
+    let dir = PathBuf::from(
+        r"C:\Users\RUNNER~1\AppData\Local\Temp\rio4140-engine-module-test-8024-42",
+    );
+    let want =
+        "خطأ وقت التشغيل: قسمة على صفر (الملف <مجلد>/فاشل.نيفا، السطر 2، العمود 8)";
+    let forms = [
+        r"C:\Users\RUNNER~1\AppData\Local\Temp\rio4140-engine-module-test-8024-42\فاشل.نيفا",
+        r"C:/Users/RUNNER~1/AppData/Local/Temp/rio4140-engine-module-test-8024-42/فاشل.نيفا",
+        r"C:/Users\RUNNER~1\AppData\Local\Temp\rio4140-engine-module-test-8024-42\فاشل.نيفا",
+    ];
+    for f in forms {
+        let msg = format!(
+            "خطأ وقت التشغيل: قسمة على صفر (الملف {}، السطر 2، العمود 8)",
+            f
+        );
+        assert_eq!(norm_dir(&msg, &dir), want, "form: {}", f);
+    }
+    // الصيغة المقنّنة بمجلد حقيقي (ماك /tmp ← /private/tmp).
+    let real = std::env::temp_dir().join("rio4140-engine-norm-test");
+    fs::create_dir_all(&real).unwrap();
+    let canon = std::fs::canonicalize(&real).unwrap();
+    let msg = format!("خطأ (الملف {}/فاشل.نيفا)", canon.display());
+    assert_eq!(norm_dir(&msg, &real), "خطأ (الملف <مجلد>/فاشل.نيفا)");
+    let _ = fs::remove_dir_all(&real);
+    // شرطة خلفية لا علاقة لها بالمسار تبقى كما هي.
+    assert_eq!(
+        norm_dir(r"نص بلا مسار C:\شيء آخر", &dir),
+        r"نص بلا مسار C:\شيء آخر"
+    );
 }
 
 fn run_src(src: &str) -> (String, String, i32) {
