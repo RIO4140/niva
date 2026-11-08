@@ -14,6 +14,10 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
+#ifdef __APPLE__
+#include <mach-o/dyld.h> // _NSGetExecutablePath — التضمين
+// في niva_rt.c وحده لا يصل هذه الوحدة (ترجمة مستقلة).
+#endif
 
 // ---------- مساعدات فحص الوسائط (كما need_* في stdlib.rs) ----------
 static void nv_std_need_args(const char *display, NvValue *args, int nargs, int expected, int line, int col) {
@@ -1007,7 +1011,7 @@ static long nv_std_time_days_in_month(long long y, long m) {
 
 /* ---------- وقت: المنطقة الزمنية المحلية (ملف TZif) ---------- */
 
-#if defined(__linux__) || defined(__ANDROID__)
+#if defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__)
 static unsigned int nv_std_time_be_u32(const unsigned char *d, size_t off, size_t len) {
     if (off + 4 > len) {
         return 0;
@@ -1228,11 +1232,11 @@ static char *nv_std_time_local_zone_path(void) {
     return strdup("/etc/localtime");
 }
 
-#endif // defined(__linux__) || defined(__ANDROID__)
+#endif // defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__)
 
-/* الإزاحة المحلية (بالثواني) عند secs. خارج لينكس/أندرويد تُرفض بصدق. */
+/* الإزاحة المحلية (بالثواني) عند secs. خارج لينكس/أندرويد/ماك تُرفض بصدق. */
 static long long nv_std_time_local_offset_at(long long secs, const char *display, int line, int col) {
-#if defined(__linux__) || defined(__ANDROID__)
+#if defined(__linux__) || defined(__ANDROID__) || defined(__APPLE__)
     char *path = NULL;
     long long off = 0;
     (void)display;
@@ -2703,6 +2707,37 @@ static char **nv_std_proc_build_exec_argv(char *first, char *second, char **user
     return out;
 }
 
+// مسار الثنائي الحالي (لتشغيل برامج .نيفا الفرعية بمحرك
+// نيفا نفسه): على لينكس /proc/self/exe؛ وعلى ماك
+// _NSGetExecutablePath + realpath (لا /proc هناك) —
+// على نمط nv_exe_dir في niva_rt.c (حجم المخزن +
+// realpath حرفيا). يعيد الطول أو -1 عند الفشل.
+static ssize_t nv_std_exe_path(char *buf, size_t cap) {
+    if (!buf || cap == 0) {
+        return -1;
+    }
+#ifdef __APPLE__
+    uint32_t sz = (uint32_t)cap;
+    if (_NSGetExecutablePath(buf, &sz) != 0) {
+        return -1;
+    }
+    char *real = realpath(buf, NULL);
+    if (!real) {
+        return -1;
+    }
+    size_t rl = strlen(real);
+    if (rl >= cap) {
+        rl = cap - 1;
+    }
+    memcpy(buf, real, rl);
+    buf[rl] = '\0';
+    free(real);
+    return (ssize_t)rl;
+#else
+    return readlink("/proc/self/exe", buf, cap - 1);
+#endif
+}
+
 static NvValue nv_std_proc_spawn(NvValue *args, int nargs, int line, int col) {
     nv_std_need_args("عمليات.أنشئ", args, nargs, 1, line, col);
     const char *cmd = nv_std_need_string("عمليات.أنشئ", args[0], line, col);
@@ -2731,7 +2766,7 @@ static NvValue nv_std_proc_spawn(NvValue *args, int nargs, int line, int col) {
         // يُشغَّل بثنائي نيفا الحالي نفسه.
         char *resolved = nv_resolve_path(program, line, col);
         char exe[4096];
-        ssize_t elen = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+        ssize_t elen = nv_std_exe_path(exe, sizeof(exe));
         if (elen <= 0) {
             nv_std_proc_free_argv(argv, ntok);
             free(display);
@@ -3775,7 +3810,7 @@ static struct NvStdIpcEntry *nv_std_ipc_spawn(const char *command, int line, int
         if (is_niva) {
             resolved = nv_resolve_path(program, line, col);
             char exe_buf[4096];
-            ssize_t exelen = readlink("/proc/self/exe", exe_buf, sizeof exe_buf - 1);
+            ssize_t exelen = nv_std_exe_path(exe_buf, sizeof exe_buf);
             if (exelen < 0) {
                 snprintf(emsg, sizeof emsg, "تعذّر تحديد مسار ثنائي نيفا الحالي");
                 goto fail;

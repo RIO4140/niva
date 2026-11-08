@@ -1731,6 +1731,17 @@ static NvValue nv_call_func_impl(NvFunc *f, NvValue self, int has_self,
 
 NvValue nv_call_at(NvValue callee, NvValue *args, int nargs, int line, int col,
                    int callee_line, int callee_col) {
+    // دفاعي (الجولة 3، اجتماع 38 §53): لا يصل مؤشر
+    // فارغ أبدا إلى دالة أصلية. المولّد يمرّر NULL
+    // للاستدعاءات بلا وسائط (مثل شبكة.استقبل())، وهو
+    // الفرق الهيكلي الوحيد بين هذا الاستدعاء المنهار
+    // على ويندوز وبين كل الاستدعاءات الناجحة — وكل
+    // الدوال الأصلية تفحص العدد قبل لمس الوسائط، فلا
+    // سلوك يتغير على أي منصة؛ المصفوفة الثابتة الفارغة
+    // تزيل الفارق وحده. السطر الدقيق للانهيار لم يُعزل
+    // (انظر CATALOG-34)؛ وهذا تحصين لا ادعاء إصلاح.
+    static NvValue nv_empty_args[1];
+    if (!args) args = nv_empty_args;
     // جذّر الوسائط أثناء الاستدعاء (الإطار ينسخها بعدها).
     int base = (int)nv_root_len;
     for (int i = 0; i < nargs; i++) {
