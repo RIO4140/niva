@@ -1002,8 +1002,52 @@ pub fn version() -> &'static str {
 /// text the WASM console shows on load. Minimal by the owner's
 /// no-explanation rule (2026-11-05): name + version only, like
 /// Termux/Linux — no teaching, no how-to, no docs links.
+/// نسخة الترمنال المضيف (بلاغ 2026-11-08: `اص` يعرض
+/// نسخة المحرك ١٫٠٫٠ لا نسخة الترمنال الحقيقية).
+/// التطبيق يمرّر نسخته في `NIVA_TERMINAL_VERSION`
+/// (مثلا "1.2.11") عند تشغيل المحرك؛ والمحرك يقبلها
+/// أرقاما ونقاطا لاتينية فقط، وإلا تجاهلها.
+fn terminal_version() -> Option<String> {
+    let raw = std::env::var("NIVA_TERMINAL_VERSION").ok()?;
+    let raw = raw.trim();
+    if raw.is_empty() || !raw.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    Some(raw.to_string())
+}
+
+/// أرقام لاتينية ونقطة عشرية إلى أرقام مشرقية وفاصلة
+/// عشرية عربية (مثلا "1.2.11" ← «١٫٢٫١١»).
+fn eastern_version(raw: &str) -> String {
+    raw.chars()
+        .map(|c| match c {
+            '0'..='9' => {
+                char::from_u32('٠' as u32 + (c as u32 - '0' as u32)).unwrap_or(c)
+            }
+            '.' => '٫',
+            other => other,
+        })
+        .collect()
+}
+
+/// اللافتة لنسخة ترمنال معطاة (دالة خالصة للاختبار):
+/// بلا ترمنال — لافتة المحرك كما هي؛ ومعه — «ترمنال
+/// نيفا X (محرك Y)» فيبقى رقم المحرك ظاهرا ولا يضيع.
+/// `إصدار_المحرك()` لا يمسّه هذا أبدا (نسخة اللغة
+/// للتوافق، لا نسخة التطبيق).
+pub fn banner_for(terminal: Option<&str>) -> String {
+    match terminal {
+        Some(t) => format!(
+            "ترمنال نيفا {} (محرك {})",
+            eastern_version(t),
+            version()
+        ),
+        None => format!("محرك نيفا {}", version()),
+    }
+}
+
 pub fn banner() -> String {
-    format!("محرك نيفا {}", version())
+    banner_for(terminal_version().as_deref())
 }
 
 /// `:مساعدة` output: a BARE command list — terminal convention,
@@ -1758,6 +1802,22 @@ mod tests {
         // Minimal banner (owner's no-explanation rule): name +
         // version only, no teaching, no how-to.
         assert_eq!(banner(), "محرك نيفا ١٫٠٫٠");
+    }
+
+    #[test]
+    fn repl_banner_terminal_version() {
+        // بلاغ 2026-11-08: `اص` في الترمنال يعرض نسخة
+        // المحرك لا نسخة الترمنال — اللافتة مع نسخة
+        // ترمنال تسمّي الترمنال أولا وتبقي المحرك.
+        assert_eq!(
+            banner_for(Some("1.2.11")),
+            "ترمنال نيفا ١٫٢٫١١ (محرك ١٫٠٫٠)"
+        );
+        assert_eq!(
+            banner_for(Some("2.0")),
+            "ترمنال نيفا ٢٫٠ (محرك ١٫٠٫٠)"
+        );
+        assert_eq!(banner_for(None), "محرك نيفا ١٫٠٫٠");
     }
 
     // Arabic terminal shortcuts in the REPL (owner's order
