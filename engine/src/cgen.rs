@@ -1975,7 +1975,11 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
     }
     let out_arg = out_path.to_string_lossy().to_string();
     let output = std::process::Command::new("cc")
-        .arg("-O2")
+        // مؤقت (اجتماع 41 §56): -O0 بدلا من -O2 حتى
+        // يشخص انهيار ويندوز الحساس للمحسن على
+        // العداء نفسه؛ يستعاد -O2 فور العثور على
+        // العيب الحقيقي.
+        .arg("-O0")
         // gnu11 لا c11 الصارم (اجتماع 35 §50): يفتح
         // إعلانات memmem وstrcasestr على ماك (clang
         // يخفيها تحت __STRICT_ANSI__ مع c11)؛ ولينكس
