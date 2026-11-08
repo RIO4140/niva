@@ -252,6 +252,17 @@ fn main() -> ExitCode {
     // that previously passed in debug began overflowing the default
     // 8 MB main stack. This restores the original guarantee.
     let program_dir = program_dir_of(&path);
+    // اجتماع 45 §59: تجهيز أول تشغيل (مجلدات + نقل
+    // البيت + الإعدادات) — والخطأ القاتل يخرج برمز غير
+    // صفر (البند 51). الإشعارات إلى stderr حتى لا تلوث
+    // مخرجات البرنامج.
+    // اجتماع 48 §62: تشغيل الملف يرحّل بصمت — الإشعار
+    // للتفاعلي وحده؛ وstderr هنا مخرج برنامج (تكافؤ
+    // العادي/المصنوع). والخطأ القاتل يبقى مرئيا.
+    if let Err(msg) = repl::ensure_first_run(&program_dir) {
+        eprintln!("{}", msg);
+        return ExitCode::FAILURE;
+    }
     let handle = std::thread::Builder::new()
         .stack_size(STACK_SIZE_BYTES)
         .spawn(move || {
@@ -349,11 +360,14 @@ fn run_vm(
         niva_engine::network::allow_local_host(host);
     }
     // مهمة 10: سياسة العمليات للمسار المباشر (المترجم
-    // الافتراضي) — مجلد البرنامج + موثوق، وcwd يبدأ منه.
+    // الافتراضي) — مجلد البرنامج + موثوق، وcwd يبدأ
+    // من البيت (اجتماع 45 §59: الجلسة تبدأ في البيت؛
+    // و`Vm` الداخلي لا يعيد المزامنة كـ`VmSession`،
+    // فهذه المزامنة الوحيدة هي ما يراه `أنشئ`/`أنبوب`).
     niva_engine::processes::set_process_policy(
         program_dir.clone(),
         allow_all,
-        program_dir.clone(),
+        program_dir.join("home"),
     );
     let mut vm_inst = vm::Vm::new(compiled, program_dir);
     vm_inst.set_trusted(allow_all);
@@ -444,6 +458,15 @@ fn run_standalone(payload: Vec<u8>) -> ExitCode {
         .unwrap_or_else(|| {
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
         });
+    // اجتماع 45 §59 + اجتماع 48 §62: المستقل تشغيل
+    // برنامج كتشغيل الملف — لكن بلا نقل (مجلد الملف
+    // التنفيذي ليس مجلد ترمنال، والنقل فيه يحرّك
+    // الملف التنفيذي نفسه): إنشاء المجلدات وفحص
+    // الكتابة وحدهما.
+    if let Err(msg) = repl::ensure_dirs(&program_dir) {
+        eprintln!("{}", msg);
+        return ExitCode::FAILURE;
+    }
     // الفك والتشغيل داخل الخيط: CompiledProgram يحمل
     // Rc فلا يعبر خيطا — كالترجمة في المسار العادي.
     let handle = std::thread::Builder::new()
@@ -725,6 +748,14 @@ fn do_run_artifact(
         }
     };
     let program_dir = program_dir_of(&art_path);
+    // اجتماع 45 §59 + اجتماع 48 §62: تشغيل المصنوع
+    // تشغيل برنامج كتشغيل الملف — التهيئة كاملة بصمت
+    // (فـ`home/` غير موجود يكسر كتابة البرنامج للملفات
+    // النسبية)؛ والخطأ القاتل يبقى مرئيا.
+    if let Err(msg) = repl::ensure_first_run(&program_dir) {
+        eprintln!("{}", msg);
+        return ExitCode::FAILURE;
+    }
     // نسخة مملوكة للخيط (الخيط المولود يشترط 'static).
     let local_hosts = local_hosts.to_vec();
     // الفك والتشغيل داخل الخيط: CompiledProgram يحمل

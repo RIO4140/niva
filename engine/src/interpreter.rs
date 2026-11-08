@@ -147,7 +147,9 @@ impl Interpreter {
             return_value: None,
             call_depth: 0,
             program_dir: program_dir.clone(),
-            cwd: program_dir.clone(),
+            // اجتماع 45 §59: الجلسة تبدأ في البيت
+            // (`program_dir/home`)، لا في مجلد البرنامج.
+            cwd: program_dir.join("home"),
             loaded_modules: HashMap::new(),
             loading_stack: Vec::new(),
             file_policy: crate::permissions::FilePolicy::restricted(program_dir),
@@ -162,7 +164,8 @@ impl Interpreter {
     pub fn with_program_dir(program_dir: PathBuf) -> Self {
         let mut interp = Self::new();
         interp.program_dir = program_dir.clone();
-        interp.cwd = program_dir.clone();
+        // اجتماع 45 §59: الجلسة تبدأ في البيت.
+        interp.cwd = program_dir.join("home");
         interp.file_policy = crate::permissions::FilePolicy::restricted(program_dir);
         interp
     }
@@ -2487,14 +2490,17 @@ impl Interpreter {
                             std::fs::metadata(&resolved).map(|m| m.len()).unwrap_or(0);
                         let extra = (content.len() as u64).saturating_sub(existing);
                         self.check_disk_quota(extra, line, col)?;
-                        std::fs::write(&resolved, content).map(|_| Value::Nil).map_err(|e| {
-                            RioError::new(
-                                ErrorKind::Io,
-                                format!("تعذر كتابة الملف {}: {}", self.file_policy.display_str(path), e),
-                                line,
-                                col,
-                            )
-                        })
+                        // اجتماع 45 §59 (47): كتابة ذرية.
+                        crate::install::write_atomic(&resolved, content.as_bytes())
+                            .map(|_| Value::Nil)
+                            .map_err(|e| {
+                                RioError::new(
+                                    ErrorKind::Io,
+                                    format!("تعذر كتابة الملف {}: {}", self.file_policy.display_str(path), e),
+                                    line,
+                                    col,
+                                )
+                            })
                     }
                     _ => Err(RioError::typ(
                         "اكتب_ملف يتطلب مسارا ونصا",
@@ -2579,6 +2585,23 @@ impl Interpreter {
                 // ~22:38): home shows as `~`, below it `~/...`
                 // — never the absolute internal path.
                 Ok(Value::Str(self.file_policy.display_path(&self.cwd)))
+            }
+            "بيئة" => {
+                arity(1)?;
+                // اجتماع 45 §59 (39–41): قراءة فقط، الثمانية
+                // فقط — الاسم غير الصالح أو المجهول خطأ
+                // يسمّي الاسم.
+                match &args[0] {
+                    Value::Str(name) => match crate::env::lookup_checked(name, crate::repl::version()) {
+                        Ok(v) => Ok(Value::Str(v)),
+                        Err(msg) => Err(RioError::runtime(msg, line, col)),
+                    },
+                    other => Err(RioError::runtime(
+                        format!("بيئة تتوقع نصا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
             }
             "انتقل" => {
                 arity(1)?;
@@ -2821,7 +2844,8 @@ impl Interpreter {
                     Value::Str(path) => {
                         let resolved = self.resolve_cwd(path, line, col)?;
                         if !resolved.exists() {
-                            std::fs::write(&resolved, "").map_err(|e| {
+                            // اجتماع 45 §59 (47): كتابة ذرية.
+                            crate::install::write_atomic(&resolved, b"").map_err(|e| {
                                 RioError::new(
                                     ErrorKind::Io,
                                     format!("تعذر إنشاء الملف {}: {}", self.file_policy.display_str(path), e),
@@ -3701,14 +3725,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("niva-shortcuts-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        // اجتماع 45 §59: الجلسة تبدأ في البيت — أنشئه
+        // ليكون مجلد العمل موجودا للاختبارات.
+        std::fs::create_dir_all(dir.join("home")).unwrap();
         dir
     }
 
     #[test]
     fn shortcuts_list_pwd_cd_mkdir() {
         let dir = shortcuts_dir();
-        std::fs::write(dir.join("أ.txt"), "نص").unwrap();
-        std::fs::create_dir(dir.join("فرعي")).unwrap();
+        // اجتماع 45 §59: ملفات العمل في البيت (مجلد
+        // الجلسة الحالي)، لا في جذر مجلد البرنامج.
+        let home = dir.join("home");
+        std::fs::write(home.join("أ.txt"), "نص").unwrap();
+        std::fs::create_dir(home.join("فرعي")).unwrap();
         let mut interp = Interpreter::with_program_dir(dir.clone());
         // المجلد_الحالي() = home, displayed as `~` (owner's
         // order 2026-11-05 ~22:38 — terminal paths like any
@@ -3724,7 +3754,7 @@ mod tests {
         // أنشئ_مجلد + انتقل + .. back to the base.
         let (_, res) = run_in(&mut interp, "أنشئ_مجلد(\"جديد\")");
         assert!(res.is_ok(), "{:?}", res);
-        assert!(dir.join("جديد").is_dir());
+        assert!(home.join("جديد").is_dir());
         let (_, res) = run_in(&mut interp, "انتقل(\"جديد\")");
         assert!(res.is_ok(), "{:?}", res);
         let (out, _) = run_in(&mut interp, "اطبع المجلد_الحالي()");
@@ -3746,13 +3776,61 @@ mod tests {
         let msg = format!("{:?}", res.unwrap_err());
         assert!(!msg.contains("com.rio4140.niva"), "got: {}", msg);
         assert!(!msg.contains("/data/"), "got: {}", msg);
+        // اجتماع 45 §59: من البيت `..` تصل إلى مجلد
+        // البرنامج ($نيفا) — مسموحة؛ والثانية تتجاوزه
+        // فتُرفض.
+        let (_, res) = run_in(&mut interp, "انتقل(\"..\")");
+        assert!(res.is_ok(), "{:?}", res);
+        let (out, _) = run_in(&mut interp, "اطبع المجلد_الحالي()");
+        assert_eq!(out.trim_end(), "$نيفا", "got: {}", out);
         let (_, res) = run_in(&mut interp, "انتقل(\"..\")");
         assert!(res.is_err(), "expected escape to be rejected");
         let (out, _) = run_in(&mut interp, "اطبع المجلد_الحالي()");
-        assert_eq!(out.trim_end(), "~", "got: {}", out);
-        // Escaping the base is rejected (restricted mode).
-        let (_, res) = run_in(&mut interp, "احذف(\"../خارج.txt\")");
+        assert_eq!(out.trim_end(), "$نيفا", "got: {}", out);
+        let (_, res) = run_in(&mut interp, "انتقل(\"~\")");
+        assert!(res.is_ok(), "{:?}", res);
+        // Escaping the base is rejected (restricted mode):
+        // من البيت يلزم `../..` للخروج.
+        let (_, res) = run_in(&mut interp, "احذف(\"../../خارج.txt\")");
         assert!(res.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // اجتماع 45 §59 (البنود 39–41): بيئة() تقرأ الثمانية
+    // فقط، والاسم غير الصالح أو المجهول خطأ يسمّيه.
+    #[test]
+    fn env_builtin_reads_eight_only() {
+        let dir = shortcuts_dir();
+        let mut interp = Interpreter::with_program_dir(dir.clone());
+        for (name, want) in [
+            ("البيت", "~\n"),
+            ("مجلد_البرنامج", "$نيفا\n"),
+            ("المسار", "$نيفا\n"),
+            ("إصدار_نيفا", "١٫٠٫٠\n"),
+            ("الطرفية", "نيفا\n"),
+            ("اللغة", "ar_EG.UTF-8\n"),
+            ("المجلد_المؤقت", "$نيفا/tmp\n"),
+            ("الألوان", "truecolor\n"),
+        ] {
+            let (out, res) = run_in(&mut interp, &format!("اطبع بيئة(\"{}\")", name));
+            assert!(res.is_ok(), "{:?}", res);
+            assert_eq!(out, want, "got: {} for {}", out, name);
+        }
+        // بلا تمرير لبيئة النظام: الاسم اللاتيني غير صالح.
+        let (_, res) = run_in(&mut interp, "اطبع بيئة(\"PATH\")");
+        assert!(res.is_err());
+        let msg = format!("{:?}", res.unwrap_err());
+        assert!(msg.contains("غير صالح"), "got: {}", msg);
+        // اسم صحيح النحو لكن مجهول.
+        let (_, res) = run_in(&mut interp, "اطبع بيئة(\"بيت\")");
+        assert!(res.is_err());
+        let msg = format!("{:?}", res.unwrap_err());
+        assert!(msg.contains("غير معروف"), "got: {}", msg);
+        // اسم يبدأ برقم: غير صالح.
+        let (_, res) = run_in(&mut interp, "اطبع بيئة(\"١بيت\")");
+        assert!(res.is_err());
+        let msg = format!("{:?}", res.unwrap_err());
+        assert!(msg.contains("غير صالح"), "got: {}", msg);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3763,16 +3841,17 @@ mod tests {
     #[test]
     fn shortcuts_delete_file_and_empty_dir() {
         let dir = shortcuts_dir();
-        std::fs::write(dir.join("أ.txt"), "نص").unwrap();
+        let home = dir.join("home");
+        std::fs::write(home.join("أ.txt"), "نص").unwrap();
         let mut interp = Interpreter::with_program_dir(dir.clone());
         let (_, res) = run_in(&mut interp, "احذف(\"أ.txt\")");
         assert!(res.is_ok(), "{:?}", res);
-        assert!(!dir.join("أ.txt").exists());
+        assert!(!home.join("أ.txt").exists());
         // احذف on a missing path errors; on a non-empty dir errors.
         let (_, res) = run_in(&mut interp, "احذف(\"غيرموجود.txt\")");
         assert!(res.is_err());
-        std::fs::create_dir(dir.join("ممتلئ")).unwrap();
-        std::fs::write(dir.join("ممتلئ/داخل.txt"), "x").unwrap();
+        std::fs::create_dir(home.join("ممتلئ")).unwrap();
+        std::fs::write(home.join("ممتلئ/داخل.txt"), "x").unwrap();
         let (_, res) = run_in(&mut interp, "احذف(\"ممتلئ\")");
         assert!(res.is_err());
         // An empty dir deletes fine.
@@ -3780,7 +3859,7 @@ mod tests {
         assert!(res.is_ok(), "{:?}", res);
         let (_, res) = run_in(&mut interp, "احذف(\"فارغ\")");
         assert!(res.is_ok(), "{:?}", res);
-        assert!(!dir.join("فارغ").exists());
+        assert!(!home.join("فارغ").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3791,8 +3870,9 @@ mod tests {
         // half of this check is on hold with the comma ruling:
         // it is a two-argument call.)
         let dir = shortcuts_dir();
-        std::fs::create_dir(dir.join("داخل")).unwrap();
-        std::fs::write(dir.join("داخل/ملف.txt"), "من الداخل").unwrap();
+        let home = dir.join("home");
+        std::fs::create_dir(home.join("داخل")).unwrap();
+        std::fs::write(home.join("داخل/ملف.txt"), "من الداخل").unwrap();
         let mut interp = Interpreter::with_program_dir(dir.clone());
         let (_, res) = run_in(&mut interp, "انتقل(\"داخل\")");
         assert!(res.is_ok(), "{:?}", res);
@@ -3805,22 +3885,23 @@ mod tests {
     #[test]
     fn shortcuts_rmdir_rmfile_distinction() {
         let dir = shortcuts_dir();
-        std::fs::write(dir.join("أ.txt"), "نص").unwrap();
-        std::fs::create_dir(dir.join("مجلد")).unwrap();
+        let home = dir.join("home");
+        std::fs::write(home.join("أ.txt"), "نص").unwrap();
+        std::fs::create_dir(home.join("مجلد")).unwrap();
         let mut interp = Interpreter::with_program_dir(dir.clone());
         // احذف_مجلد is dir-only: a file is an error.
         let (_, res) = run_in(&mut interp, "احذف_مجلد(\"أ.txt\")");
         assert!(res.is_err());
         let (_, res) = run_in(&mut interp, "احذف_مجلد(\"مجلد\")");
         assert!(res.is_ok(), "{:?}", res);
-        assert!(!dir.join("مجلد").exists());
+        assert!(!home.join("مجلد").exists());
         // احذف_ملف is file-only: a dir is an error.
-        std::fs::create_dir(dir.join("مجلد٢")).unwrap();
+        std::fs::create_dir(home.join("مجلد٢")).unwrap();
         let (_, res) = run_in(&mut interp, "احذف_ملف(\"مجلد٢\")");
         assert!(res.is_err());
         let (_, res) = run_in(&mut interp, "احذف_ملف(\"أ.txt\")");
         assert!(res.is_ok(), "{:?}", res);
-        assert!(!dir.join("أ.txt").exists());
+        assert!(!home.join("أ.txt").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3850,18 +3931,19 @@ mod tests {
     #[test]
     fn shortcuts_new_file_builtins() {
         let dir = shortcuts_dir();
-        std::fs::write(dir.join("ملف.txt"), "ألف\nباء\nجيم\nدال\nهاء\nواو").unwrap();
-        std::fs::create_dir(dir.join("فرعي")).unwrap();
-        std::fs::write(dir.join("فرعي/داخلي.txt"), "داخل").unwrap();
+        let home = dir.join("home");
+        std::fs::write(home.join("ملف.txt"), "ألف\nباء\nجيم\nدال\nهاء\nواو").unwrap();
+        std::fs::create_dir(home.join("فرعي")).unwrap();
+        std::fs::write(home.join("فرعي/داخلي.txt"), "داخل").unwrap();
         let mut interp = Interpreter::with_program_dir(dir.clone());
         // أنشئ_ملف (touch): creates an empty file, and is a
         // no-op when the file already exists.
         let (_, res) = run_in(&mut interp, "أنشئ_ملف(\"جديد.txt\")");
         assert!(res.is_ok(), "{:?}", res);
-        assert_eq!(std::fs::read_to_string(dir.join("جديد.txt")).unwrap(), "");
+        assert_eq!(std::fs::read_to_string(home.join("جديد.txt")).unwrap(), "");
         let (_, res) = run_in(&mut interp, "أنشئ_ملف(\"ملف.txt\")");
         assert!(res.is_ok(), "{:?}", res);
-        assert_eq!(std::fs::read_to_string(dir.join("ملف.txt")).unwrap(), "ألف\nباء\nجيم\nدال\nهاء\nواو");
+        assert_eq!(std::fs::read_to_string(home.join("ملف.txt")).unwrap(), "ألف\nباء\nجيم\nدال\nهاء\nواو");
         // اعرض_البداية / اعرض_النهاية default to 5 lines.
         let (out, res) = run_in(&mut interp, "اطبع اعرض_البداية(\"ملف.txt\")");
         assert!(res.is_ok(), "{:?}", res);
@@ -3893,7 +3975,7 @@ mod tests {
         // حجم_المسار (du): bytes, equals the real file size.
         let (out, res) = run_in(&mut interp, "اطبع حجم_المسار(\"ملف.txt\")");
         assert!(res.is_ok(), "{:?}", res);
-        let expected = std::fs::metadata(dir.join("ملف.txt")).unwrap().len();
+        let expected = std::fs::metadata(home.join("ملف.txt")).unwrap().len();
         assert_eq!(out.trim(), crate::value::Value::Number(expected as f64).fmt_value());
         // موجود / نوع_المسار.
         let (out, res) = run_in(&mut interp, "اطبع موجود(\"ملف.txt\")");
@@ -3934,8 +4016,9 @@ mod tests {
     #[test]
     fn read_file_capped_refuses_oversize() {
         let dir = shortcuts_dir();
+        let home = dir.join("home");
         let big = vec![b'x'; Interpreter::MAX_READ_BYTES + 1];
-        std::fs::write(dir.join("ضخم.txt"), &big).unwrap();
+        std::fs::write(home.join("ضخم.txt"), &big).unwrap();
         let mut interp = Interpreter::with_program_dir(dir.clone());
         let (_, res) = run_in(&mut interp, "اطبع اقرأ_ملف(\"ضخم.txt\")");
         assert!(res.is_err(), "oversize read must fail");
@@ -3947,7 +4030,7 @@ mod tests {
         );
         // Just under the cap still reads (one line, no newline).
         let ok = vec![b'x'; Interpreter::MAX_READ_BYTES];
-        std::fs::write(dir.join("تمام.txt"), &ok).unwrap();
+        std::fs::write(home.join("تمام.txt"), &ok).unwrap();
         let (out, res) = run_in(&mut interp, "اطبع عد_الأسطر(\"تمام.txt\")");
         assert!(res.is_ok(), "{:?}", res);
         assert_eq!(out, "١\n");
@@ -3960,8 +4043,9 @@ mod tests {
     #[test]
     fn list_files_caps_at_1000_with_marker() {
         let dir = shortcuts_dir();
+        let home = dir.join("home");
         for i in 0..1005 {
-            std::fs::write(dir.join(format!("ملف-{:04}.txt", i)), "").unwrap();
+            std::fs::write(home.join(format!("ملف-{:04}.txt", i)), "").unwrap();
         }
         let mut interp = Interpreter::with_program_dir(dir.clone());
         let (out, res) = run_in(&mut interp, "اطبع اعرض_الملفات()");

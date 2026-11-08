@@ -285,6 +285,65 @@ fn operations_subprogram_both_modes() {
     );
 }
 
+/// اجتماع 49 §63: البرنامج الفرعي `.نيفا` النسبي يُحل
+/// مجلد البرنامج أولا ثم البيت — مرآة `شغّل`.
+#[test]
+fn operations_subprogram_home_fallback() {
+    use std::process::Command;
+    fn run_case(files: &[(&str, &str)]) -> (String, String, i32) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "rio4140-engine-spawn-home-{}-{}",
+            std::process::id(),
+            n
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        for (name, src) in files {
+            let path = dir.join(name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(path, src).unwrap();
+        }
+        let out = Command::new(bin())
+            .arg(dir.join("برنامج.نيفا"))
+            .current_dir(&dir)
+            .output()
+            .expect("run نيفا");
+        let result = (
+            norm_dir(&String::from_utf8_lossy(&out.stdout).to_string(), &dir),
+            norm_dir(&String::from_utf8_lossy(&out.stderr).to_string(), &dir),
+            out.status.code().unwrap_or(-1),
+        );
+        let _ = fs::remove_dir_all(&dir);
+        result
+    }
+    let parent_prog = "استورد عمليات\nمعرف = عمليات.أنشئ(\"مساعد.نيفا\")\nاطبع عمليات.انتظر(معرف)\n";
+    // 1) الشقيق في البيت وحده يُوجد.
+    let (out, err, code) = run_case(&[
+        ("برنامج.نيفا", parent_prog),
+        ("home/مساعد.نيفا", "اطبع \"من البيت\"\n"),
+    ]);
+    assert_eq!(code, 0, "stderr={}", err);
+    assert_eq!(out, "من البيت\n٠\n");
+    // 2) الشقيق في المكانين يفوز مجلد البرنامج.
+    let (out, err, code) = run_case(&[
+        ("برنامج.نيفا", parent_prog),
+        ("مساعد.نيفا", "اطبع \"من البرنامج\"\n"),
+        ("home/مساعد.نيفا", "اطبع \"من البيت\"\n"),
+    ]);
+    assert_eq!(code, 0, "stderr={}", err);
+    assert_eq!(out, "من البرنامج\n٠\n");
+    // 3) الغائب من المكانين: الابن نفسه يفشل بخطأ عربي
+    // يسمّي المسار، والأب يطبع رمز خروجه (١) ويخرج 0.
+    let (out, err, code) = run_case(&[("برنامج.نيفا", parent_prog)]);
+    assert_eq!(code, 0, "stderr={}", err);
+    assert_eq!(out, "١\n");
+    assert!(err.contains("مساعد.نيفا"), "stderr={}", err);
+}
+
 /// تجهيزة Unix لبرامج النظام في اختبارات التكامل: أول موجود
 /// من /bin/<الاسم> ثم /usr/bin/<الاسم> — نمط true_program
 /// في processes.rs. الغرض هنا تشغيل برامج حقيقية في الوضع
@@ -712,16 +771,21 @@ fn security_capabilities_linux_both_modes() {
 }
 
 /// مهمة 18 (أمن): التحقق من صلاحيات ملف على لينكس
-/// (+Android) في الوضعين — ملف البرنامج نفسه (0644،
+/// (+Android) في الوضعين — ملف برنامج في البيت (0644،
 /// بملكية العملية): قراءة وكتابة صحيح، تنفيذ خطأ؛
 /// والمفقود والخارج عن المجلد والوسائط الخاطئة
-/// أخطاء عربية تُمسكها ماعدا.
+/// أخطاء عربية تُمسكها ماعدا. (بعد الفصل §59 تحل
+/// دوال الملفات المسارات ضد cwd = البيت، فالملف
+/// المفحوص هنا في البيت لا البرنامج الجاري نفسه
+/// في مجلد البرنامج.)
 #[test]
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn security_check_linux_both_modes() {
-    let files: &[(&str, &str)] = &[(
+    let files: &[(&str, &str)] = &[
+        ("home/هدف.نيفا", "س = ١\n"),
+        (
         "برنامج.نيفا",
-        "استورد أمن\nح = أمن.تحقق(\"برنامج.نيفا\")\nاطبع ح[\"قراءة\"]\nاطبع ح[\"كتابة\"]\nاطبع ح[\"تنفيذ\"]\nحاول:\n    أمن.تحقق(\"مفقود.نيفا\")\nماعدا:\n    اطبع \"غير موجود كما يجب\"\nحاول:\n    أمن.تحقق(\"../خارج.نيفا\")\nماعدا:\n    اطبع \"سياسة كما يجب\"\nحاول:\n    أمن.تحقق(٥)\nماعدا:\n    اطبع \"نص كما يجب\"\nحاول:\n    أمن.تحقق()\nماعدا:\n    اطبع \"وسائط كما يجب\"\n",
+        "استورد أمن\nح = أمن.تحقق(\"هدف.نيفا\")\nاطبع ح[\"قراءة\"]\nاطبع ح[\"كتابة\"]\nاطبع ح[\"تنفيذ\"]\nحاول:\n    أمن.تحقق(\"مفقود.نيفا\")\nماعدا:\n    اطبع \"غير موجود كما يجب\"\nحاول:\n    أمن.تحقق(\"../../خارج.نيفا\")\nماعدا:\n    اطبع \"سياسة كما يجب\"\nحاول:\n    أمن.تحقق(٥)\nماعدا:\n    اطبع \"نص كما يجب\"\nحاول:\n    أمن.تحقق()\nماعدا:\n    اطبع \"وسائط كما يجب\"\n",
     )];
     let (out_i, err_i, code_i) =
         run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
@@ -821,7 +885,7 @@ fn async_socket_echo_both_modes() {
 /// «خطأ» — كلها متطابقة في الوضعين.
 #[test]
 fn async_unknown_and_policy_both_modes() {
-    let src = "استورد غير_متزامن\nحاول:\n    غير_متزامن.اقرأ(٩٩٩٩٩٩، \"أ.txt\"، ٠)\nماعدا:\n    اطبع \"حلقة كما يجب\"\nحاول:\n    غير_متزامن.انتظر_النتائج(٩٩٩٩٩٩)\nماعدا:\n    اطبع \"حلقة كما يجب\"\nحلقة = غير_متزامن.أنشئ_حلقة()\nحاول:\n    غير_متزامن.اقرأ(حلقة، \"../خارج.txt\"، ٠)\nماعدا:\n    اطبع \"سياسة كما يجب\"\nعملية = غير_متزامن.اقرأ(حلقة، \"مفقود.txt\"، ٠)\nنتائج = غير_متزامن.انتظر_النتائج(حلقة)\nاطبع نتائج[٠][\"النوع\"]\nاطبع نتائج[٠][\"خطأ\"]\nاطبع \"تم\"\n";
+    let src = "استورد غير_متزامن\nحاول:\n    غير_متزامن.اقرأ(٩٩٩٩٩٩، \"أ.txt\"، ٠)\nماعدا:\n    اطبع \"حلقة كما يجب\"\nحاول:\n    غير_متزامن.انتظر_النتائج(٩٩٩٩٩٩)\nماعدا:\n    اطبع \"حلقة كما يجب\"\nحلقة = غير_متزامن.أنشئ_حلقة()\nحاول:\n    غير_متزامن.اقرأ(حلقة، \"../../خارج.txt\"، ٠)\nماعدا:\n    اطبع \"سياسة كما يجب\"\nعملية = غير_متزامن.اقرأ(حلقة، \"مفقود.txt\"، ٠)\nنتائج = غير_متزامن.انتظر_النتائج(حلقة)\nاطبع نتائج[٠][\"النوع\"]\nاطبع نتائج[٠][\"خطأ\"]\nاطبع \"تم\"\n";
     let ((out_i, err_i, code_i), (out_v, err_v, code_v)) = run_both_src(src);
     assert_eq!(code_i, 0, "interpreter failed: stderr={}", err_i);
     assert_eq!(code_v, 0, "VM failed: stderr={}", err_v);
@@ -1194,7 +1258,7 @@ fn files_saf_name_resolves_both_modes() {
 fn files_open_read_write_both_modes() {
     let files: &[(&str, &str)] = &[(
         "برنامج.نيفا",
-        "استورد ملفات\nم = ملفات.افتح(\"أ.txt\")\nاطبع م > ٠\nملفات.اكتب(م، \"مرحبا\")\nاطبع ملفات.اقرأ(م)\nملفات.اكتب(م، \"جديد\")\nاطبع ملفات.اقرأ(م)\nحاول:\n    ملفات.اقرأ(٩٩٩٩٩٩)\nماعدا:\n    اطبع \"غير معروف كما يجب\"\nحاول:\n    ملفات.افتح(\"../خارج.txt\")\nماعدا:\n    اطبع \"خارج كما يجب\"\nحاول:\n    ملفات.افتح(\".\")\nماعدا:\n    اطبع \"ليس ملفا كما يجب\"\nحاول:\n    ملفات.افتح(\"فرعي/غائب.txt\")\nماعدا:\n    اطبع \"تعذر كما يجب\"\nحاول:\n    ملفات.افتح(٥)\nماعدا:\n    اطبع \"نص كما يجب\"\nحاول:\n    ملفات.اقرأ(م، \"زيادة\")\nماعدا:\n    اطبع \"وسائط كما يجب\"\n",
+        "استورد ملفات\nم = ملفات.افتح(\"أ.txt\")\nاطبع م > ٠\nملفات.اكتب(م، \"مرحبا\")\nاطبع ملفات.اقرأ(م)\nملفات.اكتب(م، \"جديد\")\nاطبع ملفات.اقرأ(م)\nحاول:\n    ملفات.اقرأ(٩٩٩٩٩٩)\nماعدا:\n    اطبع \"غير معروف كما يجب\"\nحاول:\n    ملفات.افتح(\"../../خارج.txt\")\nماعدا:\n    اطبع \"خارج كما يجب\"\nحاول:\n    ملفات.افتح(\".\")\nماعدا:\n    اطبع \"ليس ملفا كما يجب\"\nحاول:\n    ملفات.افتح(\"فرعي/غائب.txt\")\nماعدا:\n    اطبع \"تعذر كما يجب\"\nحاول:\n    ملفات.افتح(٥)\nماعدا:\n    اطبع \"نص كما يجب\"\nحاول:\n    ملفات.اقرأ(م، \"زيادة\")\nماعدا:\n    اطبع \"وسائط كما يجب\"\n",
     )];
     let (out_i, err_i, code_i) =
         run_with_modules_flags(files, "برنامج.نيفا", &["--مفسر"]);
@@ -1232,13 +1296,13 @@ fn files_policy_error_matches_flat_builtin() {
     }
     let prog_a: &[(&str, &str)] = &[(
         "برنامج.نيفا",
-        "استورد ملفات\nملفات.افتح(\"../خارج.txt\")\n",
+        "استورد ملفات\nملفات.افتح(\"../../خارج.txt\")\n",
     )];
     // Program B has no import line: pad it so the failing
     // call sits on line 2, exactly like program A.
     let prog_b: &[(&str, &str)] = &[(
         "برنامج.نيفا",
-        "# سطر\nاقرأ_ملف(\"../خارج.txt\")\n",
+        "# سطر\nاقرأ_ملف(\"../../خارج.txt\")\n",
     )];
     let (out_ai, err_ai, code_ai) =
         run_with_modules_flags(prog_a, "برنامج.نيفا", &["--مفسر"]);
@@ -2528,7 +2592,7 @@ fn vm_files_outside_dir_refusal_cli_parity() {
     let dir_v = base.join("vm");
     for dir in [&dir_i, &dir_v] {
         fs::create_dir_all(dir).unwrap();
-        fs::write(dir.join("prog.نيفا"), "اطبع اقرأ_ملف(\"../سر.txt\")\n").unwrap();
+        fs::write(dir.join("prog.نيفا"), "اطبع اقرأ_ملف(\"../../سر.txt\")\n").unwrap();
     }
     fs::write(base.join("سر.txt"), "سرّي\n").unwrap();
     let run = |dir: &std::path::Path, vm: bool, trusted: bool| -> (String, String, i32) {
@@ -2577,7 +2641,7 @@ fn vm_files_broad_parity() {
     assert_eq!(out_i, out_v);
     assert_eq!(
         out_i,
-        "ألف\nباء\n٣\n٣\n[\"باء\"]\n~/فرعي\n[\"prog.نيفا\", \"فرعي/\", \"  داخل.txt\", \"نص.txt\"]\n[\"نص.txt\"]\n٢١\nألف\nباء\nجيم\n\nخطأ\nمحرك نيفا ١٫٠٫٠\n"
+        "ألف\nباء\n٣\n٣\n[\"باء\"]\n~/فرعي\n[\"إعدادات/\", \"فرعي/\", \"  داخل.txt\", \"نص.txt\"]\n[\"نص.txt\"]\n٢١\nألف\nباء\nجيم\n\nخطأ\nمحرك نيفا ١٫٠٫٠\n"
     );
 }
 
@@ -2751,10 +2815,10 @@ fn file_policy_restricted_blocks_escape_and_allow_all_permits_it() {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join("prog.نيفا");
-    fs::write(&path, "اكتب_ملف(\"../niva-perm-escape.txt\"، \"x\")\n").unwrap();
+    fs::write(&path, "اكتب_ملف(\"../../niva-perm-escape.txt\"، \"x\")\n").unwrap();
     // Default (restricted): must fail, and must NOT create the file outside.
-    // current_dir = program dir, so the relative ../ path means
-    // exactly dir.parent()/niva-perm-escape.txt in both modes.
+    // cwd is now program_dir/home (separation §59), so the
+    // escape needs ../../ to reach dir.parent() in both modes.
     let out = Command::new(bin()).arg(&path).current_dir(&dir).output().expect("run نيفا");
     assert_ne!(out.status.code().unwrap_or(0), 0);
     assert!(String::from_utf8_lossy(&out.stderr).contains("خارج مجلد البرنامج"));
@@ -2809,7 +2873,13 @@ fn vm_slice3_lists_match_interpreter() {
 fn repl_session_via_stdin() {
     use std::io::Write;
     use std::process::{Command, Stdio};
+    // مجلد مؤقت صريح — REPL بلا current_dir يرث cwd
+    // عملية الاختبار (= جذر المحرك) فينقله النقل
+    // (اجتماع 49 §63: كارثة batch2e).
+    let dir = std::env::temp_dir().join(format!("niva-repl-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
     let mut child = Command::new(bin())
+        .current_dir(&dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2846,7 +2916,10 @@ fn repl_clear_history_keeps_variables() {
     // stdin, like repl_session_via_stdin.
     use std::io::Write;
     use std::process::{Command, Stdio};
+    let dir = std::env::temp_dir().join(format!("niva-repl-clear-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
     let mut child = Command::new(bin())
+        .current_dir(&dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -2882,7 +2955,10 @@ fn repl_clear_history_keeps_variables() {
 #[test]
 fn repl_eof_exits_cleanly() {
     use std::process::{Command, Stdio};
+    let dir = std::env::temp_dir().join(format!("niva-repl-eof-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
     let mut child = Command::new(bin())
+        .current_dir(&dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -4051,8 +4127,11 @@ fn repl_interpreter_flag_session_via_stdin() {
     // المتغيرات تبقى، والتعبير يُطبع، والموجّه نفسه.
     use std::io::Write;
     use std::process::{Command, Stdio};
+    let dir = std::env::temp_dir().join(format!("niva-repl-interp-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
     let mut child = Command::new(bin())
         .arg("--مفسر")
+        .current_dir(&dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

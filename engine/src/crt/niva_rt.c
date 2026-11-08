@@ -24,6 +24,7 @@ NvValue nv_retval;
 NvHandler *nv_handlers = NULL;
 
 char *nv_program_dir = NULL;
+char *nv_home_dir = NULL;
 char *nv_cwd = NULL;
 int nv_trusted = 0;
 int nv_network_allowed = 0;
@@ -1299,8 +1300,29 @@ NvScope *nv_module_call_scope(NvFunc *f) {
 }
 
 // ---------- تهيئة ----------
+static void nv_mkdir_best_effort(const char *path) {
+#ifdef _WIN32
+    mkdir(path);
+#else
+    mkdir(path, 0777);
+#endif
+}
+
 void nv_init(const char *program_dir) {
     nv_program_dir = nv_strdup(program_dir);
+    // اجتماع 45 §59: البيت هو `program_dir/home`؛
+    // يُنشأ بأفضل جهد (بلا رسالة إن نجح، وبلا خطأ
+    // إن تعذّر — البرنامج المستقل لا يملك جلسة
+    // تفاعلية تشرح له).
+    size_t n = strlen(program_dir) + 6;
+    nv_home_dir = (char *)malloc(n);
+    snprintf(nv_home_dir, n, "%s/home", program_dir);
+    nv_mkdir_best_effort(nv_home_dir);
+    size_t tn = strlen(program_dir) + 5;
+    char *tmpdir = (char *)malloc(tn);
+    snprintf(tmpdir, tn, "%s/tmp", program_dir);
+    nv_mkdir_best_effort(tmpdir);
+    free(tmpdir);
     char *cwd = getcwd(NULL, 0);
     nv_cwd = cwd ? cwd : nv_strdup(".");
 }
@@ -2145,25 +2167,45 @@ static char *nv_canonical_with_suffix(const char *path) {
     return out;
 }
 
-// توسيع ~ : ~ هو مجلد البرنامج؛ و~/س تحته.
+// توسيع ~ و$نيفا (اجتماع 45 §59، البندان 35 و38):
+// ~ هو البيت (`program_dir/home`)، و~/س تحته؛
+// $نيفا هو مجلد البرنامج، و$نيفا/س تحته.
 static char *nv_expand_home(const char *path) {
-    if (strcmp(path, "~") == 0) return nv_strdup(nv_program_dir);
+    if (strcmp(path, "~") == 0) return nv_strdup(nv_home_dir);
     if (strncmp(path, "~/", 2) == 0) {
-        size_t n = strlen(nv_program_dir) + strlen(path + 1) + 1;
+        size_t n = strlen(nv_home_dir) + strlen(path + 1) + 1;
         char *out = (char *)malloc(n);
-        snprintf(out, n, "%s%s", nv_program_dir, path + 1);
+        snprintf(out, n, "%s%s", nv_home_dir, path + 1);
+        return out;
+    }
+    if (strcmp(path, "$نيفا") == 0) return nv_strdup(nv_program_dir);
+    // "$نيفا/" عشرة بايتات UTF-8 ($ + 4 حروف × بايتين + /).
+    if (strncmp(path, "$نيفا/", 10) == 0) {
+        size_t n = strlen(nv_program_dir) + strlen(path + 9) + 1;
+        char *out = (char *)malloc(n);
+        snprintf(out, n, "%s%s", nv_program_dir, path + 9);
         return out;
     }
     return nv_strdup(path);
 }
 
 char *nv_display_path(const char *path) {
-    if (strcmp(path, nv_program_dir) == 0) return nv_strdup("~");
+    // أطول مطابقة أولا: تحت البيت يظهر ~/...
+    // لا $نيفا/home/... أبدا.
+    if (strcmp(path, nv_home_dir) == 0) return nv_strdup("~");
+    size_t hl = strlen(nv_home_dir);
+    if (strncmp(path, nv_home_dir, hl) == 0 && path[hl] == '/') {
+        size_t n = strlen(path + hl) + 2;
+        char *out = (char *)malloc(n);
+        snprintf(out, n, "~%s", path + hl);
+        return out;
+    }
+    if (strcmp(path, nv_program_dir) == 0) return nv_strdup("$نيفا");
     size_t bl = strlen(nv_program_dir);
     if (strncmp(path, nv_program_dir, bl) == 0 && path[bl] == '/') {
-        size_t n = strlen(path + bl) + 2;
+        size_t n = strlen(path + bl) + 10;
         char *out = (char *)malloc(n);
-        snprintf(out, n, "~%s", path + bl);
+        snprintf(out, n, "$نيفا%s", path + bl);
         return out;
     }
     // مسار /data/... الخاص: الورقة فقط.
@@ -2180,6 +2222,7 @@ char *nv_display_path(const char *path) {
 
 char *nv_display_str(const char *s) {
     if (strcmp(s, "~") == 0 || strncmp(s, "~/", 2) == 0) return nv_strdup(s);
+    if (strcmp(s, "$نيفا") == 0 || strncmp(s, "$نيفا/", 10) == 0) return nv_strdup(s);
     if (s[0] == '/') return nv_display_path(s);
     return nv_strdup(s);
 }
@@ -2230,6 +2273,27 @@ char *nv_resolve_path(const char *path, int line, int col) {
     free(canon_base);
     free(base_norm);
     return normalized;
+}
+
+// (اجتماع 49 §63) حل مسار برنامج فرعي `.نيفا` نسبي:
+// مجلد البرنامج أولا (إن وُجد الملف هناك) ثم cwd
+// (البيت) — مرآة `شغّل` ومرآة `build_spawn_command`
+// في Rust. المسار المطلق أو `~`/`$نيفا` كما هو؛
+// والمرشح يمر بفحص السياسة نفسه عبر nv_resolve_path.
+char *nv_resolve_subprogram(const char *program, int line, int col) {
+    if (program[0] != '/' && program[0] != '~' && program[0] != '$') {
+        size_t n = strlen(nv_program_dir) + 1 + strlen(program) + 1;
+        char *cand = (char *)malloc(n);
+        snprintf(cand, n, "%s/%s", nv_program_dir, program);
+        struct stat st;
+        if (nv_lstat(cand, &st) == 0 && S_ISREG(st.st_mode)) {
+            char *resolved = nv_resolve_path(cand, line, col);
+            free(cand);
+            return resolved;
+        }
+        free(cand);
+    }
+    return nv_resolve_path(program, line, col);
 }
 
 int nv_path_inside_program(const char *abs_path) {
@@ -2855,7 +2919,7 @@ int nv_is_builtin(const char *name) {
         "أنشئ_ملف", "اعرض_البداية", "اعرض_النهاية", "عد_الأسطر", "عد_الكلمات",
         "ابحث_في_ملف", "ابحث_عن", "اعرض_الشجرة", "حجم_المسار", "أنشئ_رابط",
         "التاريخ_الآن", "النسخة", "موجود", "نوع_المسار", "تفاصيل_المسار",
-        "تثبيت", "عد_الملفات", "ادخل", NULL
+        "تثبيت", "عد_الملفات", "ادخل", "بيئة", NULL
     };
     for (int i = 0; names[i]; i++) {
         if (strcmp(name, names[i]) == 0) return 1;
@@ -3067,6 +3131,51 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
         char *disp = nv_display_path(nv_cwd);
         NvValue v = nv_str_take(disp, strlen(disp));
         return v;
+    }
+    if (strcmp(name, "بيئة") == 0) {
+        // اجتماع 45 §59 (39–41): قراءة فقط، الثمانية
+        // فقط — مرآة ذراع المحرك نفسه.
+        nv_arity(args, nargs, 1, name, line, col);
+        if (args[0].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "بيئة تتوقع نصا، وليس %s", nv_type_name(args[0]));
+        }
+        const char *n = args[0].u.str->data;
+        // التحقق على مستوى البايت: الحرف العربي بايتان
+        // أو أكثر (≥ 0x80) فيمر؛ والحرف اللاتيني أو
+        // المسافة أو الترقيم ASCII مرفوض؛ والرقم الأول
+        // مرفوض — غربي (0-9) أو عربي مشرقي (٠-٩) أو
+        // ممتد (۰-۹). يطابق قاعدة Rust للمدخلات المعتادة.
+        // أول نقطة شفرة: فك بايتي UTF-8 الأولين.
+        unsigned int first_cp = (unsigned char)n[0];
+        if ((first_cp & 0xE0) == 0xC0 && n[1]) {
+            first_cp = ((first_cp & 0x1F) << 6) | ((unsigned char)n[1] & 0x3F);
+        } else if ((first_cp & 0xF0) == 0xE0 && n[1] && n[2]) {
+            first_cp = ((first_cp & 0x0F) << 12) | (((unsigned char)n[1] & 0x3F) << 6) | ((unsigned char)n[2] & 0x3F);
+        }
+        if (n[0] == '\0' || (first_cp >= '0' && first_cp <= '9')
+            || (first_cp >= 0x660 && first_cp <= 0x669)
+            || (first_cp >= 0x6F0 && first_cp <= 0x6F9)) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "اسم متغير البيئة غير صالح: %s", n);
+        }
+        for (const unsigned char *p = (const unsigned char *)n; *p; p++) {
+            unsigned char c = *p;
+            if (c < 0x80 && !(c == '_' || (c >= '0' && c <= '9'))) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "اسم متغير البيئة غير صالح: %s", n);
+            }
+        }
+        const char *v = NULL;
+        if (strcmp(n, "البيت") == 0) v = "~";
+        else if (strcmp(n, "مجلد_البرنامج") == 0) v = "$نيفا";
+        else if (strcmp(n, "المسار") == 0) v = "$نيفا";
+        else if (strcmp(n, "إصدار_نيفا") == 0) v = "١٫٠٫٠";
+        else if (strcmp(n, "الطرفية") == 0) v = "نيفا";
+        else if (strcmp(n, "اللغة") == 0) v = "ar_EG.UTF-8";
+        else if (strcmp(n, "المجلد_المؤقت") == 0) v = "$نيفا/tmp";
+        else if (strcmp(n, "الألوان") == 0) v = "truecolor";
+        else {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "متغير بيئة غير معروف: %s", n);
+        }
+        return nv_str_cstr(v);
     }
     if (strcmp(name, "انتقل") == 0) {
         nv_arity(args, nargs, 1, name, line, col);
@@ -3720,7 +3829,8 @@ int nv_main(int argc, char **argv, void (*body)(NvScope *top)) {
     }
     nv_init(dir);
     free(nv_cwd);
-    nv_cwd = nv_strdup(dir);
+    // اجتماع 45 §59: الجلسة تبدأ في البيت.
+    nv_cwd = nv_strdup(nv_home_dir);
     free(dir);
     // النطاق العلوي + إطار الجذر.
     NvScope *top = nv_scope_new(NULL);

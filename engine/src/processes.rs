@@ -265,7 +265,17 @@ pub(crate) fn build_spawn_command(
     if program.ends_with(".نيفا") {
         // A Niva subprogram: resolved under the file rules,
         // then run with the current niva binary itself.
-        let path = policy.resolve_in(&cwd, program, line, col)?;
+        // (اجتماع 49 §63) الرمز النسبي يُحل مجلد
+        // البرنامج أولا (إن وُجد الملف هناك) ثم cwd
+        // (البيت) — مرآة `شغّل`: قبل الفصل كان cwd
+        // هو مجلد البرنامج فوجد الشقيق تلقائيا.
+        let path = if !program.starts_with('/')
+            && program_dir.join(program).is_file()
+        {
+            policy.resolve_in(&program_dir, program, line, col)?
+        } else {
+            policy.resolve_in(&cwd, program, line, col)?
+        };
         let exe = std::env::current_exe().map_err(|_| {
             RioError::runtime("تعذّر تحديد مسار ثنائي نيفا الحالي", line, col)
         })?;

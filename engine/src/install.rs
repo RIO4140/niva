@@ -840,6 +840,39 @@ fn install_from_github(
     }
 }
 
+/// كتابة ذرية واحدة لكل كتابات المحرك (اجتماع 45 §59،
+/// البندان 47 و53أ): ملف مؤقت في المجلد نفسه، ثم نقل
+/// فوق الهدف — فلا يبقى ملف نصف مكتوب أبدا، وإن فشل
+/// النقل بقي المثبّت السابق كما هو. اسم المؤقت فريد
+/// لكل عملية (معرف العملية + نانوثواني) فلا يتصادم
+/// كاتبان في المجلد نفسه. على الفشل يُحذف المؤقت
+/// بأفضل جهد، بلا صوت.
+pub(crate) fn write_atomic(target: &Path, content: &[u8]) -> std::io::Result<()> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let temp_name = format!(
+        ".نيفا-مؤقت-{}-{}",
+        std::process::id(),
+        nanos
+    );
+    let temp = target.with_file_name(temp_name);
+    match std::fs::write(&temp, content) {
+        Ok(()) => match std::fs::rename(&temp, target) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp);
+                Err(e)
+            }
+        },
+        Err(e) => {
+            let _ = std::fs::remove_file(&temp);
+            Err(e)
+        }
+    }
+}
+
 /// تحقق الاسم الأصلي + بلا كتابة فوق موجود + الحصة +
 /// الكتابة — مشترك بين المسارات كلها (مباشر/محلي/
 /// جيت هاب) فلا ينحرف سلوك عن سلوك. ومع `with_fingerprint`
@@ -878,7 +911,9 @@ fn write_installed_module(
         ));
     }
     check_disk_quota(program_dir, content.len() as u64, line, col)?;
-    std::fs::write(&target, &content).map_err(|_| {
+    // اجتماع 45 §59 (53أ): كتابة ذرية — إن فشلت
+    // بقي المثبّت السابق كما هو.
+    write_atomic(&target, content.as_bytes()).map_err(|_| {
         RioError::new(
             ErrorKind::Io,
             format!("تعذر تثبيت الوحدة {}", stem),
@@ -1104,6 +1139,34 @@ mod tests {
         assert!(validate_module_filename(".نيفا", 1, 1).is_err());
         assert!(validate_module_filename("أ/ب.نيفا", 1, 1).is_err());
         assert!(validate_module_filename("أ\\ب.نيفا", 1, 1).is_err());
+    }
+
+    #[test]
+    fn write_atomic_replaces_and_leaves_no_temp() {
+        // اجتماع 45 §59 (47/53أ): ملف مؤقت في المجلد
+        // نفسه ثم نقل — الهدف يحمل المحتوى الجديد
+        // كاملا، ولا يبقى أي ملف مؤقت.
+        let dir = std::env::temp_dir()
+            .join(format!("niva-atomic-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("ملف.نيفا");
+        std::fs::write(&target, "قديم").unwrap();
+        write_atomic(&target, "جديد كامل".as_bytes()).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "جديد كامل");
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, vec!["ملف.نيفا"], "got: {:?}", left);
+        // الكتابة فوق مسار في مجلد غير موجود تفشل
+        // بلا إنشاء شيء، والهدف القديم يبقى كما هو.
+        let missing = dir.join("غير-موجود/ملف.نيفا");
+        assert!(write_atomic(&missing, b"x").is_err());
+        assert!(!missing.exists());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "جديد كامل");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

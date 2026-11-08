@@ -6,6 +6,13 @@
 //! NOT against the terminal working directory (this matches
 //! module loading, which was already program_dir-only).
 //!
+//! Layout (Meeting 45 §59, items 35/38): the program folder
+//! itself is internal; the user's home is `program_dir/home`.
+//! The session starts in home, and `~` means home. The
+//! program folder is reachable as `$نيفا` (shortcut) and
+//! shown as `$نيفا/...` in displays; under home `~/...`
+//! wins the longest match.
+//!
 //! Trusted mode (--اسمح-بالكل, explicit CLI flag only): no file
 //! restriction. Use it for your own programs that must reach
 //! outside their folder. It does NOT change module loading:
@@ -51,16 +58,21 @@ pub(crate) fn slash_display(path: &Path) -> String {
 #[derive(Debug, Clone)]
 pub struct FilePolicy {
     pub trusted: bool,
+    /// The program folder (internal): modules, store, settings.
     pub base: PathBuf,
+    /// The user's home: `base/home` (Meeting 45 §59).
+    pub home: PathBuf,
 }
 
 impl FilePolicy {
     pub fn restricted(base: PathBuf) -> Self {
-        Self { trusted: false, base }
+        let home = base.join("home");
+        Self { trusted: false, base, home }
     }
 
     pub fn trusted(base: PathBuf) -> Self {
-        Self { trusted: true, base }
+        let home = base.join("home");
+        Self { trusted: true, base, home }
     }
 
     fn normalize(base: &Path, path: &Path) -> PathBuf {
@@ -107,13 +119,20 @@ impl FilePolicy {
         }
     }
 
-    /// Expand a leading `~` (home) like any Unix terminal:
-    /// `~` is the program dir (home), `~/x` is under it.
-    /// Anything else passes through unchanged.
+    /// Expand a leading `~` (home) and `$نيفا` (program
+    /// folder) like any Unix terminal (Meeting 45 §59,
+    /// items 35/38): `~` is home (`base/home`), `~/x`
+    /// under it; `$نيفا` is the program folder itself,
+    /// `$نيفا/x` under it. Anything else passes through
+    /// unchanged.
     fn expand_home(&self, path_str: &str) -> PathBuf {
         if path_str == "~" {
-            self.base.clone()
+            self.home.clone()
         } else if let Some(rest) = path_str.strip_prefix("~/") {
+            self.home.join(rest)
+        } else if path_str == "$نيفا" {
+            self.base.clone()
+        } else if let Some(rest) = path_str.strip_prefix("$نيفا/") {
             self.base.join(rest)
         } else {
             PathBuf::from(path_str)
@@ -122,21 +141,33 @@ impl FilePolicy {
 
     /// Display a path the terminal way (owner's order
     /// 2026-11-05 ~22:38: paths look like any Unix terminal):
-    /// the program dir (home) is `~`, below it `~/...`; an
-    /// absolute path inside Android's private /data/ area never
-    /// shows its internal segments — only its leaf name; any
-    /// other path shows as-is, with `/` separators on every
-    /// platform (slash_display). The package name and the
-    /// /data/data/... prefix can never reach the display.
+    /// home is `~`, below it `~/...`; the program folder is
+    /// `$نيفا`, below it `$نيفا/...` (longest match wins, so
+    /// a path under home never shows as `$نيفا/home/...`);
+    /// an absolute path inside Android's private /data/ area
+    /// never shows its internal segments — only its leaf
+    /// name; any other path shows as-is, with `/`
+    /// separators on every platform (slash_display). The
+    /// package name and the /data/data/... prefix can never
+    /// reach the display.
     pub fn display_path(&self, path: &Path) -> String {
-        if path == self.base {
+        if path == self.home {
             return "~".to_string();
         }
-        if let Ok(rel) = path.strip_prefix(&self.base) {
+        if let Ok(rel) = path.strip_prefix(&self.home) {
             if rel.as_os_str().is_empty() {
                 return "~".to_string();
             }
             return format!("~/{}", slash_display(rel));
+        }
+        if path == self.base {
+            return "$نيفا".to_string();
+        }
+        if let Ok(rel) = path.strip_prefix(&self.base) {
+            if rel.as_os_str().is_empty() {
+                return "$نيفا".to_string();
+            }
+            return format!("$نيفا/{}", slash_display(rel));
         }
         // has_root(), not is_absolute(): on Windows a path
         // like "/data/..." is rooted but has no drive prefix,
@@ -158,13 +189,14 @@ impl FilePolicy {
     }
 
     /// Display-form of a user-typed path string: already-display
-    /// forms (`~`, `~/...`) and relative paths pass through;
-    /// absolute paths go through display_path. Rooted paths
-    /// (has_root, not is_absolute) count as absolute here for
-    /// the same Windows reason as display_path: "/data/..."
-    /// must reach the Android strip instead of echoing raw.
+    /// forms (`~`, `~/...`, `$نيفا`, `$نيفا/...`) and
+    /// relative paths pass through; absolute paths go through
+    /// display_path. Rooted paths (has_root, not is_absolute)
+    /// count as absolute here for the same Windows reason as
+    /// display_path: "/data/..." must reach the Android strip
+    /// instead of echoing raw.
     pub fn display_str(&self, s: &str) -> String {
-        if s == "~" || s.starts_with("~/") {
+        if s == "~" || s.starts_with("~/") || s == "$نيفا" || s.starts_with("$نيفا/") {
             return s.to_string();
         }
         let p = Path::new(s);
@@ -330,6 +362,9 @@ mod tests {
     fn home_displays_as_tilde_and_expands() {
         // Owner's order 2026-11-05 ~22:38: paths look like any
         // Unix terminal — home is `~`, below it `~/...`.
+        // Meeting 45 §59: home is `base/home`, the program
+        // folder itself is `$نيفا` — the longest match wins,
+        // so a path under home never shows as `$نيفا/home/...`.
         // The fake home is built per-platform (a temp dir),
         // never a hardcoded Unix path: on Windows "/tmp/..."
         // is a rooted path with no drive. The hardcoded
@@ -339,13 +374,15 @@ mod tests {
         let base = std::env::temp_dir()
             .join(format!("niva-home-test-{}", std::process::id()));
         let p = FilePolicy::restricted(base.clone());
-        assert_eq!(p.display_path(&base), "~");
+        assert_eq!(p.display_path(&base), "$نيفا");
+        assert_eq!(p.display_path(&base.join(".نيفا")), "$نيفا/.نيفا");
+        assert_eq!(p.display_path(&base.join("home")), "~");
         assert_eq!(
-            p.display_path(&base.join("مشاريع")),
+            p.display_path(&base.join("home/مشاريع")),
             "~/مشاريع"
         );
         assert_eq!(
-            p.display_path(&base.join("مشاريع/أ.نيفا")),
+            p.display_path(&base.join("home/مشاريع/أ.نيفا")),
             "~/مشاريع/أ.نيفا"
         );
         // Absolute Android private paths never show internals.
@@ -362,14 +399,22 @@ mod tests {
         assert_eq!(p.display_str("ملف.txt"), "ملف.txt");
         assert_eq!(p.display_str("~"), "~");
         assert_eq!(p.display_str("~/ملف.txt"), "~/ملف.txt");
+        assert_eq!(p.display_str("$نيفا"), "$نيفا");
+        assert_eq!(p.display_str("$نيفا/ملف.txt"), "$نيفا/ملف.txt");
         assert_eq!(
             p.display_str("/data/data/com.rio4140.niva/files/ملف.txt"),
             "ملف.txt"
         );
-        // `~` resolves to home, `~/x` under it.
-        assert_eq!(p.resolve("~", 1, 1).unwrap(), base);
+        // `~` resolves to home, `~/x` under it; `$نيفا`
+        // resolves to the program folder, `$نيفا/x` under it.
+        assert_eq!(p.resolve("~", 1, 1).unwrap(), base.join("home"));
         assert_eq!(
             p.resolve("~/ملف.txt", 1, 1).unwrap(),
+            base.join("home/ملف.txt")
+        );
+        assert_eq!(p.resolve("$نيفا", 1, 1).unwrap(), base);
+        assert_eq!(
+            p.resolve("$نيفا/ملف.txt", 1, 1).unwrap(),
             base.join("ملف.txt")
         );
         // The escape error never leaks the internal path.

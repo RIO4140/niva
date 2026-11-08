@@ -2763,8 +2763,9 @@ static NvValue nv_std_proc_spawn(NvValue *args, int nargs, int line, int col) {
     size_t prog_len = strlen(program);
     if (prog_len >= 9 && strcmp(program + prog_len - 9, ".نيفا") == 0) {
         // برنامج نيفا فرعي: يُحلّ المسار بقواعد الملفات ثم
-        // يُشغَّل بثنائي نيفا الحالي نفسه.
-        char *resolved = nv_resolve_path(program, line, col);
+        // يُشغَّل بثنائي نيفا الحالي نفسه. (اجتماع 49 §63)
+        // الرمز النسبي: مجلد البرنامج أولا ثم البيت.
+        char *resolved = nv_resolve_subprogram(program, line, col);
         char exe[4096];
         ssize_t elen = nv_std_exe_path(exe, sizeof(exe));
         if (elen <= 0) {
@@ -3530,6 +3531,7 @@ static char *nv_std_ipc_strdup(const char *s) {
 // والنسبي كما هو.
 static char *nv_std_ipc_display_str(const char *s) {
     if (strcmp(s, "~") == 0 || strncmp(s, "~/", 2) == 0) return nv_std_ipc_strdup(s);
+    if (strcmp(s, "$نيفا") == 0 || strncmp(s, "$نيفا/", 10) == 0) return nv_std_ipc_strdup(s);
     if (s[0] == '/') return nv_display_path(s);
     return nv_std_ipc_strdup(s);
 }
@@ -3808,7 +3810,9 @@ static struct NvStdIpcEntry *nv_std_ipc_spawn(const char *command, int line, int
         int is_niva = (plen >= slen && strcmp(program + plen - slen, suf) == 0);
         int is_path = (strchr(program, '/') != NULL || strchr(program, '\\') != NULL);
         if (is_niva) {
-            resolved = nv_resolve_path(program, line, col);
+            // (اجتماع 49 §63) الرمز النسبي: مجلد البرنامج
+            // أولا ثم البيت — مرآة `شغّل`.
+            resolved = nv_resolve_subprogram(program, line, col);
             char exe_buf[4096];
             ssize_t exelen = nv_std_exe_path(exe_buf, sizeof exe_buf);
             if (exelen < 0) {
@@ -4336,6 +4340,7 @@ static char *nv_std_async_format(const char *fmt, const char *arg) {
 // والنسبي كما هو.
 static char *nv_std_async_display_str(const char *s) {
     if (strcmp(s, "~") == 0 || strncmp(s, "~/", 2) == 0) return nv_std_async_strdup(s);
+    if (strcmp(s, "$نيفا") == 0 || strncmp(s, "$نيفا/", 10) == 0) return nv_std_async_strdup(s);
     if (s[0] == '/') return nv_display_path(s);
     return nv_std_async_strdup(s);
 }

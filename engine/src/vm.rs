@@ -367,12 +367,13 @@ fn is_pure_builtin(name: &str) -> bool {
 /// Op::Builtin for these, like the pure ones; the
 /// runtime env-first check in Op::Builtin still applies
 /// (a bound name wins over the builtin).
-const FILE_BUILTINS: [&str; 30] = [
+const FILE_BUILTINS: [&str; 31] = [
     "اقرأ_ملف", "اكتب_ملف", "اعرض_الملفات", "المجلد_الحالي", "انتقل", "أنشئ_مجلد",
     "احذف", "احذف_مجلد", "احذف_ملف", "انسخ", "انقل", "أنشئ_ملف", "اعرض_البداية",
     "اعرض_النهاية", "عد_الأسطر", "عد_الكلمات", "ابحث_في_ملف", "ابحث_عن",
     "اعرض_الشجرة", "حجم_المسار", "أنشئ_رابط", "التاريخ_الآن", "النسخة", "موجود",
     "نوع_المسار", "عد_الملفات", "تفاصيل_المسار", "تثبيت", "ادخل", "إصدار_المحرك",
+    "بيئة",
 ];
 
 fn is_file_builtin(name: &str) -> bool {
@@ -1337,7 +1338,8 @@ impl Vm {
             file_policy: Rc::new(RefCell::new(
                 crate::permissions::FilePolicy::restricted(program_dir.clone()),
             )),
-            cwd: Rc::new(RefCell::new(program_dir)),
+            // اجتماع 45 §59: الجلسة تبدأ في البيت.
+            cwd: Rc::new(RefCell::new(program_dir.join("home"))),
             loaded_modules: Rc::new(RefCell::new(HashMap::new())),
             loading_stack: Rc::new(RefCell::new(Vec::new())),
             return_value: None,
@@ -2622,14 +2624,17 @@ impl Vm {
                             std::fs::metadata(&resolved).map(|m| m.len()).unwrap_or(0);
                         let extra = (content.len() as u64).saturating_sub(existing);
                         self.check_disk_quota(extra, line, col)?;
-                        std::fs::write(&resolved, content).map(|_| Value::Nil).map_err(|e| {
-                            RioError::new(
-                                crate::error::ErrorKind::Io,
-                                format!("تعذر كتابة الملف {}: {}", self.file_policy.borrow().display_str(path), e),
-                                line,
-                                col,
-                            )
-                        })
+                        // اجتماع 45 §59 (47): كتابة ذرية.
+                        crate::install::write_atomic(&resolved, content.as_bytes())
+                            .map(|_| Value::Nil)
+                            .map_err(|e| {
+                                RioError::new(
+                                    crate::error::ErrorKind::Io,
+                                    format!("تعذر كتابة الملف {}: {}", self.file_policy.borrow().display_str(path), e),
+                                    line,
+                                    col,
+                                )
+                            })
                     }
                     _ => Err(RioError::typ(
                         "اكتب_ملف يتطلب مسارا ونصا",
@@ -2706,6 +2711,22 @@ impl Vm {
                 Ok(Value::Str(
                     self.file_policy.borrow().display_path(&self.cwd.borrow()),
                 ))
+            }
+            "بيئة" => {
+                arity(1)?;
+                // اجتماع 45 §59 (39–41): قراءة فقط، الثمانية
+                // فقط — مرآة ذراع المفسر نفسه.
+                match &args[0] {
+                    Value::Str(name) => match crate::env::lookup_checked(name, crate::repl::version()) {
+                        Ok(v) => Ok(Value::Str(v)),
+                        Err(msg) => Err(RioError::runtime(msg, line, col)),
+                    },
+                    other => Err(RioError::runtime(
+                        format!("بيئة تتوقع نصا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
             }
             "انتقل" => {
                 arity(1)?;
@@ -2944,7 +2965,8 @@ impl Vm {
                     Value::Str(path) => {
                         let resolved = self.resolve_cwd(path, line, col)?;
                         if !resolved.exists() {
-                            std::fs::write(&resolved, "").map_err(|e| {
+                            // اجتماع 45 §59 (47): كتابة ذرية.
+                            crate::install::write_atomic(&resolved, b"").map_err(|e| {
                                 RioError::new(
                                     crate::error::ErrorKind::Io,
                                     format!("تعذر إنشاء الملف {}: {}", self.file_policy.borrow().display_str(path), e),
@@ -6206,8 +6228,11 @@ mod tests {
         let dir_v = base.join("vm");
         for dir in [&dir_i, &dir_v] {
             std::fs::create_dir_all(dir).unwrap();
+            // اجتماع 45 §59: الجلسة تبدأ في البيت — أنشئه
+            // وبذور الملفات فيه (مجلد العمل الحالي).
+            std::fs::create_dir_all(dir.join("home")).unwrap();
             for (name, src) in files {
-                let path = dir.join(name);
+                let path = dir.join("home").join(name);
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent).unwrap();
                 }
@@ -6378,6 +6403,17 @@ mod tests {
     }
 
     #[test]
+    fn vm_env_builtin_matches_interpreter() {
+        // اجتماع 45 §59 (البنود 39–41): بيئة() في الوضعين
+        // بقيمها نفسها.
+        assert_file_parity(
+            "اطبع بيئة(\"البيت\")\nاطبع بيئة(\"مجلد_البرنامج\")\nاطبع بيئة(\"إصدار_نيفا\")\nاطبع بيئة(\"الألوان\")\n",
+            &[],
+            "~\n$نيفا\n١٫٠٫٠\ntruecolor\n",
+        );
+    }
+
+    #[test]
     fn vm_files_version_and_date() {
         // النسخة: نص ثابت — تكافؤ حرفي. التاريخ_الآن:
         // ثواني UTC؛ قد تعبر الثانية بين التشغيلين،
@@ -6432,9 +6468,14 @@ mod tests {
         let dir_v = base.join("vm");
         for dir in [&dir_i, &dir_v] {
             std::fs::create_dir_all(dir).unwrap();
+            // اجتماع 45 §59: الجلسة تبدأ في البيت — أنشئه،
+            // فالوضع الموثوق يمرر المسار إلى النظام كما هو.
+            std::fs::create_dir_all(dir.join("home")).unwrap();
         }
         std::fs::write(base.join("سر.txt"), "سرّي\n").unwrap();
-        let src = "اطبع اقرأ_ملف(\"../سر.txt\")\n";
+        // اجتماع 45 §59: الجلسة تبدأ في البيت — الخروج
+        // من القاعدة يلزم `../..` لا `..` وحده.
+        let src = "اطبع اقرأ_ملف(\"../../سر.txt\")\n";
         let run = |dir: &std::path::Path, trusted: bool, use_vm: bool| -> (String, String, bool) {
             let toks = tokenize(src).unwrap();
             let prog = Parser::new(toks).parse_program().unwrap();

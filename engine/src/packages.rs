@@ -230,38 +230,64 @@ fn store_dir(program_dir: &Path) -> PathBuf {
     program_dir.join(".نيفا").join("حزم")
 }
 
+/// مخازن البحث (اجتماع 47 §61): مخزن مجلد البرنامج
+/// أولا؛ وإن كان مجلد البرنامج `home` نفسه فمخزن
+/// مجلد الأب (الترمنال) ثانيا — فبرنامج سائب في
+/// البيت يرى ما ثبّته `حزم` من التفاعلي.
+fn store_dirs(program_dir: &Path) -> Vec<PathBuf> {
+    let mut dirs = vec![store_dir(program_dir)];
+    if program_dir
+        .file_name()
+        .map(|n| n == "home")
+        .unwrap_or(false)
+    {
+        if let Some(parent) = program_dir.parent() {
+            let up = store_dir(parent);
+            if up != dirs[0] {
+                dirs.push(up);
+            }
+        }
+    }
+    dirs
+}
+
 /// أحدث إصدار مثبّت لحزمة في المخزن العام، من بين
 /// المجلدات التي تحوي ملف الدخول `<اسم>.نيفا` فعلا.
 /// يُرجَع الإصدار كما كُتب في اسم المجلد.
+/// (اجتماع 47 §61: يُفحص مخزن الأب أيضا حين يكون
+/// مجلد البرنامج `home`، والأحدث بين المخزنين يفوز.)
 pub fn newest_store_version(program_dir: &Path, module: &str) -> Option<String> {
-    let dir = store_dir(program_dir);
-    let entries = std::fs::read_dir(&dir).ok()?;
     let prefix = format!("{}-", module);
     let entry_file = format!("{}.نيفا", module);
     let mut best: Option<(Version, String)> = None;
-    for entry in entries.flatten() {
-        let Ok(ft) = entry.file_type() else {
+    for dir in store_dirs(program_dir) {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
         };
-        if !ft.is_dir() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(rest) = name.strip_prefix(&prefix) else {
-            continue;
-        };
-        let Some(version) = parse_version(rest) else {
-            continue;
-        };
-        if !entry.path().join(&entry_file).exists() {
-            continue;
-        }
-        let replace = match &best {
-            None => true,
-            Some((current, _)) => compare_versions(&version, current) == Ordering::Greater,
-        };
-        if replace {
-            best = Some((version, rest.to_string()));
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if !ft.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(rest) = name.strip_prefix(&prefix) else {
+                continue;
+            };
+            let Some(version) = parse_version(rest) else {
+                continue;
+            };
+            if !entry.path().join(&entry_file).exists() {
+                continue;
+            }
+            let replace = match &best {
+                None => true,
+                Some((current, _)) => compare_versions(&version, current) == Ordering::Greater,
+            };
+            if replace {
+                best = Some((version, rest.to_string()));
+            }
         }
     }
     best.map(|(_, rest)| rest)
@@ -309,17 +335,21 @@ pub fn find_module_file(program_dir: &Path, module: &str) -> Result<ModuleSearch
         });
     }
     // 4 — المخزن العام: قفل ثم أحدث.
+    // (اجتماع 47 §61: مخزن الأب أيضا حين يكون مجلد
+    // البرنامج `home` — والترتيب مخزن البيت أولا.)
     match locked_version(program_dir, module)? {
         Some(pinned) => {
-            let candidate = store_dir(program_dir)
-                .join(format!("{}-{}", module, pinned))
-                .join(format!("{}.نيفا", module));
-            searched.push(candidate.clone());
-            if candidate.exists() {
-                return Ok(ModuleSearch {
-                    found: Some(candidate),
-                    searched,
-                });
+            for dir in store_dirs(program_dir) {
+                let candidate = dir
+                    .join(format!("{}-{}", module, pinned))
+                    .join(format!("{}.نيفا", module));
+                searched.push(candidate.clone());
+                if candidate.exists() {
+                    return Ok(ModuleSearch {
+                        found: Some(candidate),
+                        searched,
+                    });
+                }
             }
             // القفل يقيّد — لا رجوع إلى الأحدث أبدا.
             Ok(ModuleSearch {
@@ -329,15 +359,17 @@ pub fn find_module_file(program_dir: &Path, module: &str) -> Result<ModuleSearch
         }
         None => match newest_store_version(program_dir, module) {
             Some(newest) => {
-                let candidate = store_dir(program_dir)
-                    .join(format!("{}-{}", module, newest))
-                    .join(format!("{}.نيفا", module));
-                searched.push(candidate.clone());
-                if candidate.exists() {
-                    return Ok(ModuleSearch {
-                        found: Some(candidate),
-                        searched,
-                    });
+                for dir in store_dirs(program_dir) {
+                    let candidate = dir
+                        .join(format!("{}-{}", module, newest))
+                        .join(format!("{}.نيفا", module));
+                    searched.push(candidate.clone());
+                    if candidate.exists() {
+                        return Ok(ModuleSearch {
+                            found: Some(candidate),
+                            searched,
+                        });
+                    }
                 }
                 Ok(ModuleSearch {
                     found: None,
@@ -345,7 +377,9 @@ pub fn find_module_file(program_dir: &Path, module: &str) -> Result<ModuleSearch
                 })
             }
             None => {
-                searched.push(store_dir(program_dir));
+                for dir in store_dirs(program_dir) {
+                    searched.push(dir);
+                }
                 Ok(ModuleSearch {
                     found: None,
                     searched,
@@ -608,6 +642,56 @@ mod tests {
             "searched: {:?}",
             found.searched
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_module_file_home_sees_parent_store() {
+        // اجتماع 47 §61: برنامج في `home/` يرى مخزن الأب.
+        let dir = temp_dir("home-store");
+        write(&dir, ".نيفا/حزم/أداة-1.1.0/أداة.نيفا", "صدّر ق\nق = ٤٣\n");
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        let home = dir.join("home");
+        // بلا قفل — الأحدث من مخزن الأب.
+        let found = find_module_file(&home, "أداة").unwrap();
+        assert_eq!(
+            found.found,
+            Some(dir.join(".نيفا/حزم/أداة-1.1.0/أداة.نيفا"))
+        );
+        // مخزن البيت نفسه أولا حين يوجد فيه الأحدث.
+        write(
+            &dir,
+            "home/.نيفا/حزم/أداة-1.2.0/أداة.نيفا",
+            "صدّر ق\nق = ٤٤\n",
+        );
+        let found = find_module_file(&home, "أداة").unwrap();
+        assert_eq!(
+            found.found,
+            Some(dir.join("home/.نيفا/حزم/أداة-1.2.0/أداة.نيفا"))
+        );
+        // المقيَّد بالقفل يجده من مخزن الأب، ويرفض الأحدث.
+        write(
+            &dir,
+            "home/قفل.حزمة",
+            "# قفل حزم\nأداة 1.1.0 github.com/مالك/أداة 9f2c\n",
+        );
+        let found = find_module_file(&home, "أداة").unwrap();
+        assert_eq!(
+            found.found,
+            Some(dir.join(".نيفا/حزم/أداة-1.1.0/أداة.نيفا"))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_module_file_non_home_does_not_see_parent_store() {
+        // اجتماع 47 §61: الرجوع لـ`home` وحده — مجلد
+        // آخر لا يرى مخزن أبيه.
+        let dir = temp_dir("no-home-store");
+        write(&dir, ".نيفا/حزم/أداة-1.1.0/أداة.نيفا", "صدّر ق\nق = ٤٣\n");
+        std::fs::create_dir_all(dir.join("فرعي")).unwrap();
+        let found = find_module_file(&dir.join("فرعي"), "أداة").unwrap();
+        assert_eq!(found.found, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

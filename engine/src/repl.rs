@@ -64,6 +64,7 @@ use crate::semantic::SemanticAnalyzer;
 use crate::value::Value;
 use crate::vm::VmSession;
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// Parser errors that mean "this input is incomplete, read more".
@@ -101,6 +102,9 @@ pub enum ReplControl {
     /// The session was cleared (:مسح) — the host clears its
     /// arrow-key history.
     SessionCleared,
+    /// The settings were re-read (أعد-الإعدادات) — the host
+    /// re-applies them live (Meeting 45 §59, item 19).
+    SettingsReload,
 }
 
 /// The result of feeding one line to the REPL: the text to
@@ -272,6 +276,9 @@ pub struct Repl {
     // `last_control()` — a side channel so run_repl can emit
     // it on stderr without touching the display text.
     last_control: ReplControl,
+    // اجتماع 45 §59 (البند 19): تأكيد أعد-الضبط معلّق —
+    // السطر التالي «نعم» حرفيا ينفّذه، وأي سطر آخر يلغيه.
+    pending_reset: bool,
 }
 
 impl Repl {
@@ -290,6 +297,7 @@ impl Repl {
             live_output: false,
             program_dir,
             last_control: ReplControl::None,
+            pending_reset: false,
         }
     }
 
@@ -309,6 +317,7 @@ impl Repl {
             live_output: false,
             program_dir,
             last_control: ReplControl::None,
+            pending_reset: false,
         }
     }
 
@@ -369,29 +378,17 @@ impl Repl {
         self.engine.allow_local_network_host(host);
     }
 
-    /// رسالة الترحيب مفعّلة أم لا: تُقرأ من
-    /// `niva.properties` في مجلد البرنامج — نفس صيغة
+    /// رسالة الترحيب مفعّلة أم لا: تُقرأ من ملف الإعدادات
+    /// الجديد (`~/إعدادات/niva.properties`، مع نقل القديم
+    /// عند القراءة — اجتماع 45 §59، البند 36) — نفس صيغة
     /// التطبيق (سطور `مفتاح=قيمة`، `#` تعليق، فراغات
     /// تُهمل). المفتاح `الترحيب` بقيمة `لا` يوقفها؛
     /// وغياب الملف أو المفتاح أو أي قيمة أخرى يبقيها
     /// ظاهرة (الافتراضي: نعم). الملف قابل للتحرير من
     /// الترمنال نفسه.
     pub fn welcome_enabled(&self) -> bool {
-        let path = self.program_dir.join("niva.properties");
-        let text = match std::fs::read_to_string(&path) {
-            Ok(t) => t,
-            Err(_) => return true,
-        };
-        for raw in text.lines() {
-            let line = raw.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let Some(eq) = line.find('=') else {
-                continue;
-            };
-            let key = line[..eq].trim();
-            let value = line[eq + 1..].trim();
+        let (entries, _) = read_settings(&self.program_dir);
+        for (key, value) in entries {
             if key == "الترحيب" {
                 return value != "لا";
             }
@@ -697,6 +694,185 @@ impl Repl {
     /// برنامجية (من استدعاه من الكود يأخذ خطأ الاسم غير
     /// المعرف المعتاد). فقط في المستوى الأعلى، كـ
     /// try_full_command.
+    /// مصدر الفهرس الافتراضي (كما في حزم — مخزن.نيفا):
+    /// سطر «مصدر الفهرس» في `معلومات`.
+    const DEFAULT_INDEX_URL: &str =
+        "https://raw.githubusercontent.com/RIO4140/niva-index/main/فهرس.حزمة";
+
+    /// `معلومات` (اجتماع 45 §59، البندان 18 و78): خمسة
+    /// أسطر بالضبط، بلا نسخ للحافظة.
+    fn info_lines(&self) -> String {
+        // الوحدات المثبتة: ملفات .نيفا في جذر مجلد
+        // البرنامج (ما يثبّته `تثبيت`) — لا وحدات المخزن
+        // (لحزم أمرها الخاص).
+        let installed = std::fs::read_dir(&self.program_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| {
+                        e.path()
+                            .extension()
+                            .map(|x| x == "نيفا")
+                            .unwrap_or(false)
+                            && e.metadata().map(|m| m.is_file()).unwrap_or(false)
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        let terminal = match terminal_version() {
+            Some(t) => eastern_version(&t),
+            None => "غير معروف".to_string(),
+        };
+        let network = if self.network_connected() {
+            "متصلة"
+        } else {
+            "غير متصلة"
+        };
+        format!(
+            "محرك نيفا {}\nترمنال التطبيق: {}\nالوحدات المثبتة: {}\nالشبكة: {}\nمصدر الفهرس: {}\n",
+            version(),
+            terminal,
+            Value::Number(installed as f64).fmt_value(),
+            network,
+            Self::DEFAULT_INDEX_URL
+        )
+    }
+
+    /// الشبكة متصلة أم لا: بلا سماح بالشبكة فالجواب
+    /// «غير متصلة» حتما (بلا فحص)؛ ومع السماح فحص خفيف:
+    /// اتصال TCP قصير (3 ثوان) بمضيف مصدر الفهرس — أي
+    /// اتصال ناجح يعني «متصلة»، والفشل يعني انقطاعا.
+    fn network_connected(&self) -> bool {
+        if !self.network_allowed() {
+            return false;
+        }
+        use std::net::ToSocketAddrs;
+        let Ok(mut addrs) = ("raw.githubusercontent.com", 443).to_socket_addrs() else {
+            return false;
+        };
+        let Some(addr) = addrs.next() else {
+            return false;
+        };
+        std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(3)).is_ok()
+    }
+
+    /// `أعد-الإعدادات` (اجتماع 45 §59، البند 19): أعد
+    /// قراءة niva.properties بلا إعادة تشغيل، وأرسل إشارة
+    /// `إعدادات` للتطبيق ليعيد التطبيق الحي؛ وسطر تأكيد
+    /// واحد يسمّي المفاتيح التي تحتاج إعادة تشغيل.
+    fn reload_settings(&mut self) -> ReplOutput {
+        let (_, notices) = read_settings(&self.program_dir);
+        self.last_control = ReplControl::SettingsReload;
+        // المفاتيح بلا مسار تطبيق حي (من قراءة loadSettings):
+        // تُسمّى في الرسالة بأنها تحتاج إعادة تشغيل؛
+        // والترحيب يسري من الجلسة الجديدة.
+        let mut out = String::from(
+            "أُعيدت قراءة الإعدادات وطُبّقت — وتحتاج إعادة تشغيل: إخفاء_لوحة_المفاتيح_عند_البدء، خط_مخصص، ملء_الشاشة؛ والترحيب يسري من الجلسة الجديدة\n",
+        );
+        for n in notices {
+            out.push_str(&n);
+            out.push('\n');
+        }
+        ReplOutput {
+            output: out,
+            prompt: self.prompt(),
+            ended: false,
+            needs_network: false,
+        }
+    }
+
+    /// `أعد-الضبط` — الخطوة الأولى (اجتماع 45 §59، البند
+    /// 19): رسالة تسمّي ما سيُمسح وما يبقى، وتطلب كتابة
+    /// «نعم» حرفيا؛ وأي سطر آخر يلغي.
+    fn ask_reset(&mut self) -> ReplOutput {
+        self.pending_reset = true;
+        // الجلسات المحفوظة إن كانت في مجلد البرنامج
+        // (session-* في الجذر) — تُسمّى بعددها.
+        let sessions = std::fs::read_dir(&self.program_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|e| e.file_name().to_string_lossy().starts_with("session-"))
+                    .count()
+            })
+            .unwrap_or(0);
+        let sessions_part = if sessions > 0 {
+            format!(
+                "، ومنها {} جلسة محفوظة",
+                Value::Number(sessions as f64).fmt_value()
+            )
+        } else {
+            String::new()
+        };
+        ReplOutput {
+            output: format!(
+                "سيُمسح مجلد البرنامج كاملا ما عدا البيت (~) — الوحدات المثبتة والملفات الداخلية{}؛ وتبقى ملفاتك في البيت (~) والإعدادات في ~/إعدادات/. اكتب نعم حرفيا للتأكيد، وأي شيء آخر يلغي.\n",
+                sessions_part
+            ),
+            prompt: self.prompt(),
+            ended: false,
+            needs_network: false,
+        }
+    }
+
+    /// `أعد-الضبط` — الخطوة الثانية بعد «نعم»: امسح مجلد
+    /// البرنامج كاملا ما عدا home/، وأعد بناء المشتقات في
+    /// الخطوة نفسها (البند 52)، وأعد مجلد الجلسة إلى البيت.
+    /// الإعدادات تعيش في home/ فلا تُمس.
+    fn do_reset(&mut self) -> ReplOutput {
+        let policy = crate::permissions::FilePolicy::restricted(self.program_dir.clone());
+        let mut failed: Vec<String> = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&self.program_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if entry.file_name() == "home" {
+                    continue;
+                }
+                let res = if path.is_dir() {
+                    std::fs::remove_dir_all(&path)
+                } else {
+                    std::fs::remove_file(&path)
+                };
+                if res.is_err() {
+                    failed.push(policy.display_path(&path));
+                }
+            }
+        }
+        // (52) إعادة بناء المشتقات في الخطوة نفسها.
+        let _ = std::fs::create_dir_all(self.program_dir.join("tmp"));
+        let _ = std::fs::create_dir_all(self.program_dir.join(".نيفا"));
+        // الجلسة تعود إلى البيت (مجلدها قد يكون في
+        // المنطقة الممسوحة).
+        let _ = self
+            .engine
+            .call_builtin("انتقل", vec![Value::Str("~".to_string())], 1, 1);
+        // سلامة الإعدادات بعد المسح (تعيش في home/):
+        // الملف غائب (افتراضي) أو مقروء = سليم.
+        let settings_ok = match std::fs::read_to_string(&settings_path(&self.program_dir)) {
+            Ok(_) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+            Err(_) => false,
+        };
+        let mut out = if failed.is_empty() {
+            "أُعيد ضبط مجلد البرنامج — وبقي البيت (~) كما هو، ومجلد الجلسة الآن البيت.".to_string()
+        } else {
+            format!(
+                "أُعيد ضبط مجلد البرنامج جزئيا — تعذّر مسح: {}.",
+                failed.join("، ")
+            )
+        };
+        if !settings_ok {
+            out.push_str(" تنبيه: ملف الإعدادات غير قابل للقراءة بعد المسح.");
+        }
+        out.push('\n');
+        ReplOutput {
+            output: out,
+            prompt: self.prompt(),
+            ended: false,
+            needs_network: false,
+        }
+    }
+
     fn try_run_command(&mut self, line: &str) -> Option<ReplOutput> {
         let mut words = line.split_whitespace();
         let first = words.next()?;
@@ -726,19 +902,35 @@ impl Repl {
         Some(self.run_program_file(&file_name))
     }
 
-    /// اقرأ ملف `.نيفا` من مجلد البرنامج وشغّله كبرنامج
-    /// في جلسة جديدة على محرك التفاعلي الحالي (افتراضي
-    /// أو مفسر) — جلسة التفاعلي نفسها لا تُمس ولا يتسرب
-    /// شيء في أي اتجاه. المخرجات تُبث حية (أو تُجمع في
-    /// ناتج الإرجاع حين يكون البث معطلا كما في
-    /// الاختبارات)؛ وخطأ وقت التشغيل يُطبع بالعربية
-    /// ويعود التحكم إلى الموجه بلا خروج من التفاعلي.
+    /// اقرأ ملف `.نيفا` — من مجلد البرنامج أولا (المثبَّت)،
+    /// ثم من البيت (اجتماع 45 §59، البند 35: المثبَّت
+    /// يفوز عند التعارض) — وشغّله كبرنامج في جلسة جديدة
+    /// على محرك التفاعلي الحالي (افتراضي أو مفسر) — جلسة
+    /// التفاعلي نفسها لا تُمس ولا يتسرب شيء في أي اتجاه.
+    /// المخرجات تُبث حية (أو تُجمع في ناتج الإرجاع حين
+    /// يكون البث معطلا كما في الاختبارات)؛ وخطأ وقت
+    /// التشغيل يُطبع بالعربية ويعود التحكم إلى الموجه
+    /// بلا خروج من التفاعلي.
     fn run_program_file(&mut self, name: &str) -> ReplOutput {
-        let path = self.program_dir.join(name);
+        // مجلد البرنامج أولا، ثم البيت؛ ورسالة الغياب
+        // تسمّي المكانين.
+        let mut path = self.program_dir.join(name);
+        if !std::fs::metadata(&path).map(|m| m.is_file()).unwrap_or(false) {
+            let home_path = self.program_dir.join("home").join(name);
+            if std::fs::metadata(&home_path)
+                .map(|m| m.is_file())
+                .unwrap_or(false)
+            {
+                path = home_path;
+            }
+        }
         let is_file = std::fs::metadata(&path).map(|m| m.is_file()).unwrap_or(false);
         if !is_file {
             return ReplOutput {
-                output: format!("الملف غير موجود: {}\n", name),
+                output: format!(
+                    "الملف {} غير موجود — بحثت في $نيفا وفي ~\n",
+                    name
+                ),
                 prompt: self.prompt(),
                 ended: false,
                 needs_network: false,
@@ -819,6 +1011,59 @@ impl Repl {
             ended: false,
             needs_network: false,
         }
+    }
+
+    /// ملف البدء والمقتطفات (اجتماع 45 §59، البنود 44 و45
+    /// و46 و111): `~/بدء.نيفا` ثم `~/مقتطفات/*.نيفا`
+    /// أبجديا، عند دخول التفاعلي فقط — لا في تشغيل ملف
+    /// ولا في `شغّل`. الخطأ في ملف لا يمنع الدخول أبدا:
+    /// يُطبع الخطأ باسم الملف، ويكمل الباقي، ثم يظهر
+    /// الموجه. التعريفات تبقى في الجلسة.
+    fn run_startup_files(&mut self) -> String {
+        let home = self.program_dir.join("home");
+        let mut out = String::new();
+        let mut files: Vec<(String, PathBuf)> = Vec::new();
+        let start = home.join("بدء.نيفا");
+        if start.is_file() {
+            files.push(("~/بدء.نيفا".to_string(), start));
+        }
+        let snippets = home.join("مقتطفات");
+        if let Ok(entries) = std::fs::read_dir(&snippets) {
+            let mut names: Vec<(String, PathBuf)> = entries
+                .flatten()
+                .filter(|e| {
+                    e.path()
+                        .extension()
+                        .map(|x| x == "نيفا")
+                        .unwrap_or(false)
+                        && e.metadata().map(|m| m.is_file()).unwrap_or(false)
+                })
+                .map(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    (format!("~/مقتطفات/{}", name), e.path())
+                })
+                .collect();
+            names.sort_by(|a, b| a.0.cmp(&b.0));
+            files.extend(names);
+        }
+        for (display, path) in files {
+            match std::fs::read_to_string(&path) {
+                Ok(source) => match self.eval(&source) {
+                    ReplEval::Done { output } => out.push_str(&output),
+                    ReplEval::Failed { output, error } => {
+                        out.push_str(&output);
+                        out.push_str(&format!("خطأ في {}: {}\n", display, error));
+                    }
+                    ReplEval::Incomplete => {
+                        out.push_str(&format!("خطأ في {}: الملف غير مكتمل\n", display));
+                    }
+                },
+                Err(_) => {
+                    out.push_str(&format!("تعذّر قراءة الملف: {}\n", display));
+                }
+            }
+        }
+        out
     }
 
     /// استدعاء دالة مدمجة بمعاملات نصية، لعبارات كاملة:
@@ -902,6 +1147,11 @@ impl Repl {
             ["انسخ", ..] => ("انسخ", 1, 2, 2),
             ["انقل", ..] => ("انقل", 1, 2, 2),
             ["موجود", ..] => ("موجود", 1, 1, 1),
+            // اجتماع 45 §59 (البنود 18 و19 و78): أوامر
+            // كاملة بكلمة واحدة، بلا معاملات.
+            ["معلومات", ..] => ("معلومات", 1, 0, 0),
+            ["أعد-الإعدادات", ..] => ("أعد-الإعدادات", 1, 0, 0),
+            ["أعد-الضبط", ..] => ("أعد-الضبط", 1, 0, 0),
             _ => return None,
         };
         let args: Vec<String> = words[nwords..].iter().map(|w| w.to_string()).collect();
@@ -937,6 +1187,23 @@ impl Repl {
             "انتقل" | "انسخ" | "انقل" | "موجود" => {
                 self.history.push(line.to_string());
                 Some(self.call_str_builtin(phrase, args))
+            }
+            "معلومات" => {
+                self.history.push(line.to_string());
+                Some(ReplOutput {
+                    output: self.info_lines(),
+                    prompt: self.prompt(),
+                    ended: false,
+                    needs_network: false,
+                })
+            }
+            "أعد-الإعدادات" => {
+                self.history.push(line.to_string());
+                Some(self.reload_settings())
+            }
+            "أعد-الضبط" => {
+                self.history.push(line.to_string());
+                Some(self.ask_reset())
             }
             "حول إلى عدد" => {
                 self.history.push(line.to_string());
@@ -1037,12 +1304,29 @@ impl Repl {
         trial.analyze_program(&program).is_ok()
     }
 
+    /// تأكيد أعد-الضبط المعلّق (اجتماع 45 §59، البند 19):
+    /// السطر التالي «نعم» حرفيا ينفّذ المسح، وأي سطر آخر
+    /// يلغي ويُعالج عاديا (مع سطر الإلغاء قبله).
+    fn feed_inner(&mut self, line: &str) -> ReplOutput {
+        if self.pending_reset {
+            self.pending_reset = false;
+            if line.trim() == "نعم" {
+                self.history.push(line.to_string());
+                return self.do_reset();
+            }
+            let mut out = self.feed_inner_impl(line);
+            out.output = format!("أُلغي إعادة الضبط.\n{}", out.output);
+            return out;
+        }
+        self.feed_inner_impl(line)
+    }
+
     /// The exact logic of the old `run_repl` loop, moved into
     /// the struct so the native loop and the WASM console share
     /// it: an empty line while a block is pending cancels it; a
     /// command line never belongs to the block; an indented line
     /// only waits; only a line at indent 0 can finish the block.
-    fn feed_inner(&mut self, line: &str) -> ReplOutput {
+    fn feed_inner_impl(&mut self, line: &str) -> ReplOutput {
         let line = line.trim_end_matches(['\n', '\r']).to_string();
         if !self.pending.is_empty() {
             if line.trim().is_empty() {
@@ -1347,7 +1631,7 @@ pub fn welcome_text() -> String {
 /// `:مساعدة` output: a BARE command list — terminal convention,
 /// not teaching. No explanations, no examples, no notes.
 pub fn help_text() -> &'static str {
-    ":مساعدة\n:اعرض\n:امسح-المحفوظات\n:مسح\n:اسمح-بالشبكة\n:اسمح-بالخادم\n:خروج\n"
+    ":مساعدة\n:اعرض\n:امسح-المحفوظات\n:مسح\n:اسمح-بالشبكة\n:اسمح-بالخادم\n:خروج\nمعلومات\nأعد-الإعدادات\nأعد-الضبط\n"
 }
 
 pub enum ReplCommand {
@@ -1489,6 +1773,345 @@ pub fn parse_command(line: &str) -> Option<ReplCommand> {
     }
 }
 
+/// مجلد الإعدادات (اجتماع 45 §59، البندان 36 و37):
+/// `~/إعدادات/` — مرئي في البيت، يحرره المستخدم،
+/// لا مخفي.
+pub(crate) fn settings_dir(program_dir: &Path) -> PathBuf {
+    program_dir.join("home").join("إعدادات")
+}
+
+/// ملف الإعدادات: `~/إعدادات/niva.properties`.
+pub(crate) fn settings_path(program_dir: &Path) -> PathBuf {
+    settings_dir(program_dir).join("niva.properties")
+}
+
+/// المسار القديم قبل الفصل (في جذر مجلد البرنامج).
+fn legacy_settings_path(program_dir: &Path) -> PathBuf {
+    program_dir.join("niva.properties")
+}
+
+/// مفاتيح متقاعدة سبق تحويلها (البند 75): (قديم، جديد).
+/// لا مفتاح أُعيدت تسميته بعد حتى الآن — الجدول فارغ
+/// عمدا، والآلية (migrate_retired_keys + إعادة الكتابة)
+/// جاهزة للتحويلة الأولى حين يأمر بها المالك.
+const RETIRED_KEYS: &[(&str, &str)] = &[];
+
+/// حوّل المفاتيح المتقاعدة في نص ملف إعدادات إلى
+/// أسمائها الجديدة (البند 75): دالة خالصة للاختبار.
+/// تعيد النص الجديد وسطور الإشعار («المفتاح القديم X
+/// صار Y») — سطر واحد لكل تحويلة.
+pub(crate) fn migrate_retired_keys(
+    content: &str,
+    table: &[(&str, &str)],
+) -> (String, Vec<String>) {
+    if table.is_empty() {
+        return (content.to_string(), Vec::new());
+    }
+    let mut out = String::new();
+    let mut notices = Vec::new();
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            out.push_str(raw);
+            out.push('\n');
+            continue;
+        }
+        let Some(eq) = line.find('=') else {
+            out.push_str(raw);
+            out.push('\n');
+            continue;
+        };
+        let key = line[..eq].trim();
+        match table.iter().find(|(old, _)| *old == key) {
+            Some((old, new)) => {
+                out.push_str(new);
+                out.push('=');
+                out.push_str(line[eq + 1..].trim());
+                out.push('\n');
+                notices.push(format!("المفتاح القديم {} صار {}", old, new));
+            }
+            None => {
+                out.push_str(raw);
+                out.push('\n');
+            }
+        }
+    }
+    (out, notices)
+}
+
+/// إدخالات ملف إعدادات: أزواج (مفتاح، قيمة) بلا
+/// تعليقات ولا سطور تالفة.
+fn parse_settings_entries(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some(eq) = line.find('=') else {
+            continue;
+        };
+        out.push((
+            line[..eq].trim().to_string(),
+            line[eq + 1..].trim().to_string(),
+        ));
+    }
+    out
+}
+
+/// اقرأ ملف الإعدادات (اجتماع 45 §59، البندان 36 و75):
+/// الجديد أولا (`~/إعدادات/niva.properties`)؛ وإن غاب
+/// والقديم موجود نُقل إليه (وإن تعذّر النقل قُرئ القديم
+/// مع إشعار بإعادة المحاولة لاحقا)؛ والمفاتيح المتقاعدة
+/// تتحول عند القراءة ويُعاد كتابة الملف بها. تعيد
+/// (الإدخالات، الإشعارات).
+pub(crate) fn read_settings(program_dir: &Path) -> (Vec<(String, String)>, Vec<String>) {
+    let mut notices = Vec::new();
+    let path = settings_path(program_dir);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => {
+            let (migrated, mut n) = migrate_retired_keys(&t, RETIRED_KEYS);
+            let converted = !n.is_empty();
+            notices.append(&mut n);
+            if converted {
+                let _ = crate::install::write_atomic(&path, migrated.as_bytes());
+            }
+            migrated
+        }
+        Err(_) => {
+            let legacy = legacy_settings_path(program_dir);
+            match std::fs::read_to_string(&legacy) {
+                Ok(old) => {
+                    let (migrated, mut n) = migrate_retired_keys(&old, RETIRED_KEYS);
+                    notices.append(&mut n);
+                    let _ = std::fs::create_dir_all(settings_dir(program_dir));
+                    match crate::install::write_atomic(&path, migrated.as_bytes()) {
+                        Ok(()) => {
+                            let _ = std::fs::remove_file(&legacy);
+                            migrated
+                        }
+                        Err(_) => {
+                            notices.push(
+                                "تعذّر نقل ملف الإعدادات إلى ~/إعدادات/niva.properties — سأستخدم الملف القديم وأعيد المحاولة لاحقا"
+                                    .to_string(),
+                            );
+                            old
+                        }
+                    }
+                }
+                Err(_) => return (Vec::new(), notices),
+            }
+        }
+    };
+    let mut entries = parse_settings_entries(&text);
+    // (41) قيمة بلا بايت فارغ: القيمة غير الصالحة تُسقط
+    // مع إشعار يسمّي المفتاح، بلا إيقاف للجلسة.
+    entries.retain(|(key, value)| {
+        if crate::env::valid_value(value) {
+            true
+        } else {
+            notices.push(format!("قيمة المفتاح {} غير صالحة — أُسقطت", key));
+            false
+        }
+    });
+    (entries, notices)
+}
+
+/// قفل النقل (البند 50): ملف فارغ عادي باسم المهمة
+/// تحت `<program_dir>/.نيفا/` — يُنشأ فقط بعد النجاح
+/// الكامل للنقل.
+const MOVE_LOCK_NAME: &str = "نقل-البيت.قفل";
+
+/// (اجتماع 49 §63) علامات شجرة مصدر — مجلد ترمنال
+/// لن يحمل أيا منها أبدا.
+const SOURCE_CHECKOUT_MARKERS: &[&str] = &[
+    "Cargo.toml",
+    ".git",
+    "package.json",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    "Makefile",
+    "CMakeLists.txt",
+];
+
+/// (اجتماع 49 §63) هل هذا المجلد شجرة مصدر لا مجلد
+/// ترمنال؟ — وجود أي علامة من القائمة يكفي.
+fn is_source_checkout(program_dir: &Path) -> bool {
+    SOURCE_CHECKOUT_MARKERS
+        .iter()
+        .any(|m| program_dir.join(m).exists())
+}
+
+/// أسماء الجذر التي لا تنتقل إلى البيت أبدا (اجتماع 45
+/// §59، البند 42 + استثناءان موثقان في CATALOG-43):
+/// - home/ و.نيفا/ وtmp/ وniva.properties وملفات
+///   الجلسات (session-*) — استثناءات الاجتماع الأربعة.
+/// - `إعدادات/` — مجلد الإعدادات الجديد نفسه.
+/// - `*.نيفا` — ملفات البرامج المثبتة: `استورد` يبحث
+///   في مجلد البرنامج وحده، فنقلها يكسر الاستيراد.
+/// - `*.نيفاب` — مصنوع مبني: منتج بناء لا ملف قديم
+///   سائب، فتشغيله لا يرحّله.
+/// - `بيان.حزمة` و`قفل.حزمة` — بيان المشروع وقفله:
+///   يُقرآن من جذر مجلد البرنامج (`اقرأ_مشروع` و
+///   `locked_version`)، فنقلهما يكسر الاستيراد
+///   المقيَّد (المفسر يأخذ الأحدث بدلا من المقيَّد).
+/// - `حول-نيفا.md` — وثيقة يولّدها التطبيق ويعيد
+///   كتابتها في الجذر.
+fn stays_at_root(name: &str) -> bool {
+    matches!(
+        name,
+        "home" | ".نيفا" | "tmp" | "إعدادات" | "niva.properties" | "حول-نيفا.md"
+            | "بيان.حزمة" | "قفل.حزمة"
+    ) || name.starts_with("session-")
+        || name.ends_with(".نيفا")
+        || name.ends_with(".نيفاب")
+}
+
+/// إنشاء مجلدات الجلسة وفحص الكتابة فقط (اجتماع 45
+/// §59، البنود 42 و51): home/ وtmp/ و~/إعدادات/
+/// و.نيفا/، ثم ملف اختبار في tmp/ (خطأ قاتل يسمّي
+/// المجلد). بلا نقل وبلا قفل — وهذا ما يحتاجه
+/// المستقل (مجلد الملف التنفيذي ليس مجلد ترمنال،
+/// والنقل فيه يحرّك الملف التنفيذي نفسه).
+pub fn ensure_dirs(program_dir: &Path) -> Result<(), String> {
+    let policy = crate::permissions::FilePolicy::restricted(program_dir.to_path_buf());
+    let home = program_dir.join("home");
+    let tmp = program_dir.join("tmp");
+    let internal = program_dir.join(".نيفا");
+    // المجلدات أولا — بلا رسالة للمستخدم إن نجحت.
+    for dir in [&home, &tmp, &internal, &settings_dir(program_dir)] {
+        std::fs::create_dir_all(dir).map_err(|e| {
+            format!(
+                "تعذّر إنشاء مجلد {}: {}",
+                policy.display_path(dir),
+                e
+            )
+        })?;
+    }
+    // (51) فحص الكتابة: ملف اختبار في tmp/ — والخطأ
+    // قاتل يسمّي المجلد، ولا يبدأ الدخول.
+    let probe = tmp.join(".نيفا-اختبار-كتابة");
+    match std::fs::write(&probe, "اختبار") {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&probe);
+        }
+        Err(_) => {
+            return Err(format!(
+                "مجلد الملفات غير قابل للكتابة: {} — تحقق من صلاحيات المجلد ثم أعد المحاولة",
+                policy.display_path(&tmp)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// تجهيز أول تشغيل (اجتماع 45 §59، البنود 35 و36 و42
+/// و50 و51): أنشئ home/ وtmp/ و~/إعدادات/ و.نيفا/؛
+/// وافحص قابلية كتابة مجلد الملفات بملف اختبار في tmp/
+/// (خطأ قاتل يسمّي المجلد)؛ وانقل ملفات الجذر القديمة
+/// إلى البيت مرة واحدة (بقفل)؛ وانقل الإعدادات القديمة
+/// إلى ~/إعدادات/. تعيد إشعارات تُطبع بعد اللافتة، أو
+/// رسالة قاتلة تمنع بدء الدخول.
+pub fn ensure_first_run(program_dir: &Path) -> Result<Vec<String>, String> {
+    let mut notices = Vec::new();
+    let policy = crate::permissions::FilePolicy::restricted(program_dir.to_path_buf());
+    let home = program_dir.join("home");
+    // هل كان البيت موجودا قبل هذا التشغيل؟ — يُفحص
+    // قبل إنشائه، لأن القفل مع بيت أُعيد إنشاؤه الآن
+    // حالة غير متسقة (البند 50).
+    let home_existed = home.is_dir();
+    // المجلدات وفحص الكتابة أولا.
+    ensure_dirs(program_dir)?;
+    // (36) نقل الإعدادات القديمة — read_settings يفعله
+    // عند القراءة؛ وهنا نفعله مبكرا ليظهر التخطيط
+    // الجديد فورا.
+    let (_, mut settings_notices) = read_settings(program_dir);
+    notices.append(&mut settings_notices);
+    // (35/42/50) نقل البيت مرة واحدة، بقفل.
+    let lock = program_dir.join(".نيفا").join(MOVE_LOCK_NAME);
+    if lock.exists() {
+        // القفل موجود لكن البيت لم يكن موجودا قبل هذا
+        // التشغيل (أُعيد إنشاؤه فارغا أعلاه): حالة غير
+        // متسقة — الخطأ يسمّي القفل بصيغته القصيرة
+        // ويطلب حذفه يدويا لإعادة المحاولة.
+        if !home_existed {
+            return Err(format!(
+                "البيت غير موجود رغم وجود القفل {} — احذف الملف يدويا لإعادة المحاولة",
+                format!(".نيفا/{}", MOVE_LOCK_NAME)
+            ));
+        }
+        return Ok(notices);
+    }
+    // (اجتماع 46 §60) مجلد مشروع: محتوياته هي
+    // المشروع نفسه لا ملفات قديمة سائبة — يُتخطى
+    // النقل كاملا (نقل `مصدر/` أو `حزم/` يكسر
+    // البرنامج الجاري واستيراده)، ويُنشأ القفل بصمت.
+    let is_project = program_dir.join("بيان.حزمة").is_file()
+        || program_dir.join("حزم").is_dir()
+        || program_dir.join("مصدر/رئيسي.نيفا").is_file();
+    if is_project {
+        let _ = std::fs::write(&lock, "");
+        return Ok(notices);
+    }
+    // (اجتماع 49 §63) حارس مجلد المصدر: مجلد فيه علامة
+    // شجرة مصدر ليس مجلد ترمنال أبدا — فالنقل يُتخطى
+    // كاملا ويُنشأ القفل بصمت (الترحيل «غير منطبق»).
+    // بلا هذا الحارس نقلت سلسلة batch2e شجرة مصدر
+    // المحرك كاملة إلى home/ (اختبار REPL بلا مجلد
+    // مؤقت ورث جذر المحرك فصار مجلد برنامج).
+    if is_source_checkout(program_dir) {
+        let _ = std::fs::write(&lock, "");
+        return Ok(notices);
+    }
+    let mut to_move: Vec<(PathBuf, String)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(program_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if stays_at_root(&name) {
+                continue;
+            }
+            to_move.push((entry.path(), name));
+        }
+    }
+    if to_move.is_empty() {
+        // لا شيء لينقل: القفل يثبّت الاكتمال.
+        let _ = std::fs::write(&lock, "");
+        return Ok(notices);
+    }
+    let mut moved_names: Vec<String> = Vec::new();
+    for (path, name) in &to_move {
+        let dest = home.join(name);
+        if dest.exists() {
+            // هدف بنفس الاسم في البيت: لا نكتب فوقه —
+            // الحالة غير متسقة، بلا قفل، وتُعاد المحاولة
+            // تلقائيا في المرة التالية.
+            return Err(format!(
+                "تعذّر نقل {} إلى البيت — ملف بنفس الاسم موجود في ~ — ستعاد المحاولة تلقائيا في المرة التالية",
+                policy.display_path(path)
+            ));
+        }
+        if let Err(e) = std::fs::rename(path, &dest) {
+            return Err(format!(
+                "تعذّر نقل {} إلى البيت ({}) — ستعاد المحاولة تلقائيا في المرة التالية",
+                policy.display_path(path),
+                e
+            ));
+        }
+        moved_names.push(name.clone());
+    }
+    // النجاح الكامل وحده ينشئ القفل.
+    let _ = std::fs::write(&lock, "");
+    // رسالة واحدة واضحة بأسماء المنقولات.
+    let shown: Vec<&str> = moved_names.iter().take(5).map(|s| s.as_str()).collect();
+    let mut msg = format!("نُقلت ملفاتك القديمة إلى البيت (~): {}", shown.join("، "));
+    if moved_names.len() > 5 {
+        msg.push_str(&format!("، و {} أخرى", moved_names.len() - 5));
+    }
+    notices.push(msg);
+    Ok(notices)
+}
+
 /// The interactive loop: read lines from stdin, feed them to
 /// the stateful `Repl`, print what it returns. Returns SUCCESS
 /// on :خروج or EOF. The session runs on the compiler (VM) by
@@ -1516,9 +2139,27 @@ pub fn run_repl(
     for host in local_hosts {
         repl.allow_local_network_host(host);
     }
+    // اجتماع 45 §59: تجهيز أول تشغيل (مجلدات + نقل
+    // البيت + الإعدادات) — والخطأ القاتل يمنع الدخول.
+    let notices = match ensure_first_run(&repl.program_dir) {
+        Ok(n) => n,
+        Err(msg) => {
+            eprintln!("{}", msg);
+            return ExitCode::FAILURE;
+        }
+    };
     println!("{}", banner());
+    for n in &notices {
+        println!("{}", n);
+    }
     if repl.welcome_enabled() {
         println!("{}", welcome_text());
+    }
+    // ملف البدء والمقتطفات (البنود 44–46 و111) — الخطأ
+    // فيهما لا يمنع الدخول.
+    let startup = repl.run_startup_files();
+    if !startup.is_empty() {
+        print!("{}", startup);
     }
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
@@ -1558,6 +2199,9 @@ pub fn run_repl(
                 ReplControl::NetworkNeeded => eprintln!("\u{0001}نيفا-تحكم:شبكة"),
                 ReplControl::ServerNeeded => eprintln!("\u{0001}نيفا-تحكم:خادم"),
                 ReplControl::SessionCleared => eprintln!("\u{0001}نيفا-تحكم:مسح"),
+                // اجتماع 45 §59 (البند 19): إعادة قراءة
+                // الإعدادات — التطبيق يعيد التطبيق الحي.
+                ReplControl::SettingsReload => eprintln!("\u{0001}نيفا-تحكم:إعدادات"),
                 ReplControl::None => {}
             }
         }
@@ -1893,7 +2537,7 @@ mod tests {
         let o = r.feed(":مساعدة");
         assert_eq!(
             o.output,
-            "ألغيت الكتلة غير المكتملة.\n:مساعدة\n:اعرض\n:امسح-المحفوظات\n:مسح\n:اسمح-بالشبكة\n:اسمح-بالخادم\n:خروج\n"
+            "ألغيت الكتلة غير المكتملة.\n:مساعدة\n:اعرض\n:امسح-المحفوظات\n:مسح\n:اسمح-بالشبكة\n:اسمح-بالخادم\n:خروج\nمعلومات\nأعد-الإعدادات\nأعد-الضبط\n"
         );
         assert_eq!(o.prompt, "~ $ ");
         assert!(!o.ended);
@@ -2097,14 +2741,25 @@ mod tests {
     #[test]
     fn repl_welcome_enabled_by_properties() {
         let dir = shortcut_dir();
+        let home = dir.join("home");
+        let settings_dir = home.join("إعدادات");
+        std::fs::create_dir_all(&settings_dir).unwrap();
         let r = Repl::with_program_dir(dir.clone());
         assert!(r.welcome_enabled());
-        std::fs::write(dir.join("niva.properties"), "# تعليق\nالترحيب=لا\n").unwrap();
+        // المسار الجديد: ~/إعدادات/niva.properties.
+        std::fs::write(settings_dir.join("niva.properties"), "# تعليق\nالترحيب=لا\n").unwrap();
         assert!(!r.welcome_enabled());
-        std::fs::write(dir.join("niva.properties"), "الترحيب = نعم\n").unwrap();
+        std::fs::write(settings_dir.join("niva.properties"), "الترحيب = نعم\n").unwrap();
         assert!(r.welcome_enabled());
-        std::fs::write(dir.join("niva.properties"), "المظهر=فاتح\n").unwrap();
+        std::fs::write(settings_dir.join("niva.properties"), "المظهر=فاتح\n").unwrap();
         assert!(r.welcome_enabled());
+        // المسار القديم (جذر مجلد البرنامج) يُنقل عند
+        // القراءة (اجتماع 45 §59، البند 36).
+        let _ = std::fs::remove_file(settings_dir.join("niva.properties"));
+        std::fs::write(dir.join("niva.properties"), "الترحيب=لا\n").unwrap();
+        assert!(!r.welcome_enabled());
+        assert!(settings_dir.join("niva.properties").is_file());
+        assert!(!dir.join("niva.properties").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2132,7 +2787,10 @@ mod tests {
     // layer calls these as its implementation).
     #[test]
     fn repl_file_shortcuts_work() {
-        let mut r = Repl::new();
+        let dir = shortcut_dir();
+        let home = dir.join("home");
+        std::fs::write(home.join("ملف.txt"), "نص").unwrap();
+        let mut r = Repl::with_program_dir(dir.clone());
         let o = r.feed("المجلد_الحالي()");
         assert!(!o.ended);
         // Home displays as `~` (owner's order 2026-11-05
@@ -2140,7 +2798,8 @@ mod tests {
         assert_eq!(o.output.trim(), "~", "got: {}", o.output);
         let o = r.feed("اعرض_الملفات()");
         assert!(!o.ended);
-        assert!(o.output.contains("Cargo.toml"), "got: {}", o.output);
+        assert!(o.output.contains("ملف.txt"), "got: {}", o.output);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // Short terminal commands (owner's order 2026-11-05 ~22:02):
@@ -2150,22 +2809,26 @@ mod tests {
             std::env::temp_dir().join(format!("niva-shortcut-cmd-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        // اجتماع 45 §59: الجلسة تبدأ في البيت — أنشئه
+        // ليكون مجلد العمل موجودا للاختبارات.
+        std::fs::create_dir_all(dir.join("home")).unwrap();
         dir
     }
 
     #[test]
     fn repl_shortcut_list_and_pwd() {
         let dir = shortcut_dir();
-        std::fs::write(dir.join("أ.txt"), "نص").unwrap();
-        std::fs::create_dir(dir.join("فرعي")).unwrap();
-        std::fs::write(dir.join(".مخفي"), "سر").unwrap();
+        let home = dir.join("home");
+        std::fs::write(home.join("أ.txt"), "نص").unwrap();
+        std::fs::create_dir(home.join("فرعي")).unwrap();
+        std::fs::write(home.join(".مخفي"), "سر").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let exe = dir.join("شغّل");
+            let exe = home.join("شغّل");
             std::fs::write(&exe, "نص").unwrap();
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
-            std::os::unix::fs::symlink("أ.txt", dir.join("رابط")).unwrap();
+            std::os::unix::fs::symlink("أ.txt", home.join("رابط")).unwrap();
         }
         let mut r = Repl::with_program_dir(dir.clone());
         let o = r.feed("مح");
@@ -2203,11 +2866,12 @@ mod tests {
     #[test]
     fn repl_shortcut_cd_mkdir_rmdir() {
         let dir = shortcut_dir();
+        let home = dir.join("home");
         let mut r = Repl::with_program_dir(dir.clone());
         let o = r.feed("شم جديد");
         assert!(!o.ended);
         assert_eq!(o.output, "");
-        assert!(dir.join("جديد").is_dir());
+        assert!(home.join("جديد").is_dir());
         let o = r.feed("انتقل جديد");
         assert_eq!(o.output, "");
         let o = r.feed("مح");
@@ -2216,8 +2880,13 @@ mod tests {
         assert_eq!(o.output, "");
         let o = r.feed("حم جديد");
         assert_eq!(o.output, "");
-        assert!(!dir.join("جديد").exists());
-        // Escaping the base is rejected.
+        assert!(!home.join("جديد").exists());
+        // اجتماع 45 §59: من البيت `..` تصل إلى مجلد
+        // البرنامج ($نيفا) — مسموحة؛ والثانية تتجاوزه
+        // فتُرفض.
+        let o = r.feed("انتقل ..");
+        assert_eq!(o.output, "");
+        assert_eq!(o.prompt, "$نيفا $ ");
         let o = r.feed("انتقل ..");
         assert!(o.output.contains("خارج مجلد البرنامج"), "got: {}", o.output);
         let _ = std::fs::remove_dir_all(&dir);
@@ -2226,8 +2895,9 @@ mod tests {
     #[test]
     fn repl_shortcut_show_file_and_rm_file() {
         let dir = shortcut_dir();
-        std::fs::write(dir.join("أ.txt"), "نص الملف").unwrap();
-        std::fs::create_dir(dir.join("مجلد")).unwrap();
+        let home = dir.join("home");
+        std::fs::write(home.join("أ.txt"), "نص الملف").unwrap();
+        std::fs::create_dir(home.join("مجلد")).unwrap();
         let mut r = Repl::with_program_dir(dir.clone());
         // اف = اعرض ملف (cat).
         let o = r.feed("اف أ.txt");
@@ -2241,23 +2911,24 @@ mod tests {
         assert!(o.output.contains("ليس ملفا"), "got: {}", o.output);
         let o = r.feed("حف أ.txt");
         assert_eq!(o.output, "");
-        assert!(!dir.join("أ.txt").exists());
+        assert!(!home.join("أ.txt").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn repl_shortcut_copy_move_space_separated() {
         let dir = shortcut_dir();
-        std::fs::write(dir.join("أ.txt"), "نص").unwrap();
+        let home = dir.join("home");
+        std::fs::write(home.join("أ.txt"), "نص").unwrap();
         let mut r = Repl::with_program_dir(dir.clone());
         let o = r.feed("انسخ أ.txt ب.txt");
         assert!(!o.ended);
         assert_eq!(o.output, "");
-        assert_eq!(std::fs::read_to_string(dir.join("ب.txt")).unwrap(), "نص");
+        assert_eq!(std::fs::read_to_string(home.join("ب.txt")).unwrap(), "نص");
         let o = r.feed("انقل ب.txt ج.txt");
         assert_eq!(o.output, "");
-        assert!(!dir.join("ب.txt").exists());
-        assert!(dir.join("ج.txt").exists());
+        assert!(!home.join("ب.txt").exists());
+        assert!(home.join("ج.txt").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2288,8 +2959,9 @@ mod tests {
     #[test]
     fn repl_full_word_commands_replace_removed_codes() {
         let dir = shortcut_dir();
-        std::fs::write(dir.join("أ.txt"), "نص").unwrap();
-        std::fs::create_dir(dir.join("فرعي")).unwrap();
+        let home = dir.join("home");
+        std::fs::write(home.join("أ.txt"), "نص").unwrap();
+        std::fs::create_dir(home.join("فرعي")).unwrap();
         let mut r = Repl::with_program_dir(dir.clone());
         let o = r.feed("انتقل فرعي");
         assert_eq!(o.output, "");
@@ -2301,10 +2973,10 @@ mod tests {
         assert_eq!(o.prompt, "~ $ ");
         let o = r.feed("انسخ أ.txt ب.txt");
         assert_eq!(o.output, "");
-        assert_eq!(std::fs::read_to_string(dir.join("ب.txt")).unwrap(), "نص");
+        assert_eq!(std::fs::read_to_string(home.join("ب.txt")).unwrap(), "نص");
         let o = r.feed("انقل ب.txt ج.txt");
         assert_eq!(o.output, "");
-        assert!(dir.join("ج.txt").exists());
+        assert!(home.join("ج.txt").exists());
         let o = r.feed("موجود أ.txt");
         assert_eq!(o.output, "صحيح\n");
         let o = r.feed("موجود غائب.txt");
@@ -2377,13 +3049,14 @@ mod tests {
     #[test]
     fn repl_shortcut_new_file_builtins() {
         let dir = shortcut_dir();
-        std::fs::write(dir.join("ملف.txt"), "ألف\nباء\nجيم\nدال\nهاء\nواو").unwrap();
-        std::fs::create_dir(dir.join("فرعي")).unwrap();
-        std::fs::write(dir.join("فرعي/ملف-داخلي.txt"), "داخل").unwrap();
+        let home = dir.join("home");
+        std::fs::write(home.join("ملف.txt"), "ألف\nباء\nجيم\nدال\nهاء\nواو").unwrap();
+        std::fs::create_dir(home.join("فرعي")).unwrap();
+        std::fs::write(home.join("فرعي/ملف-داخلي.txt"), "داخل").unwrap();
         let mut r = Repl::with_program_dir(dir.clone());
         let o = r.feed("شف جديد.txt");
         assert_eq!(o.output, "");
-        assert_eq!(std::fs::read_to_string(dir.join("جديد.txt")).unwrap(), "");
+        assert_eq!(std::fs::read_to_string(home.join("جديد.txt")).unwrap(), "");
         let o = r.feed("عب ملف.txt");
         assert_eq!(o.output, "ألف\nباء\nجيم\nدال\nهاء\n");
         let o = r.feed("عب ملف.txt ٢");
@@ -2402,7 +3075,7 @@ mod tests {
         let o = r.feed("عش");
         assert!(o.output.contains("فرعي/"), "got: {}", o.output);
         assert!(o.output.contains("  ملف-داخلي.txt"), "got: {}", o.output);
-        let expected = std::fs::metadata(dir.join("ملف.txt")).unwrap().len() as f64;
+        let expected = std::fs::metadata(home.join("ملف.txt")).unwrap().len() as f64;
         let o = r.feed("حج ملف.txt");
         assert_eq!(parse_shortcut_number(o.output.trim()), Some(expected));
         let o = r.feed("موجود ملف.txt");
@@ -2419,14 +3092,14 @@ mod tests {
         let o = r.feed("شر ملف.txt رابط.txt");
         assert_eq!(o.output, "");
         assert_eq!(
-            std::fs::read_to_string(dir.join("رابط.txt")).unwrap(),
+            std::fs::read_to_string(home.join("رابط.txt")).unwrap(),
             "ألف\nباء\nجيم\nدال\nهاء\nواو"
         );
         // اك: path + the rest joined with spaces.
         let o = r.feed("اك ملف٢.txt مرحبا بالعالم");
         assert_eq!(o.output, "");
         assert_eq!(
-            std::fs::read_to_string(dir.join("ملف٢.txt")).unwrap(),
+            std::fs::read_to_string(home.join("ملف٢.txt")).unwrap(),
             "مرحبا بالعالم"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -2489,7 +3162,8 @@ mod tests {
         // ارجع للبيت: from a subdir back home — the prompt
         // returns to "~ $ ".
         let dir = shortcut_dir();
-        std::fs::create_dir(dir.join("فرعي")).unwrap();
+        let home = dir.join("home");
+        std::fs::create_dir(home.join("فرعي")).unwrap();
         let mut r = Repl::with_program_dir(dir.clone());
         let o = r.feed("انتقل فرعي");
         assert_eq!(o.prompt, "~/فرعي $ ");
@@ -2497,7 +3171,7 @@ mod tests {
         assert_eq!(o.output, "");
         assert_eq!(o.prompt, "~ $ ");
         // تم: details of a file, a dir, and a missing path.
-        std::fs::write(dir.join("ملف.txt"), "abc").unwrap();
+        std::fs::write(home.join("ملف.txt"), "abc").unwrap();
         let o = r.feed("تم ملف.txt");
         assert!(o.output.contains("\"نوع\": \"ملف\""), "got: {}", o.output);
         assert!(o.output.contains("\"حجم\": ٣"), "got: {}", o.output);
@@ -2531,8 +3205,9 @@ mod tests {
     fn repl_full_command_install_local() {
         for interpreter in [false, true] {
             let dir = shortcut_dir();
-            std::fs::create_dir(dir.join("مصادر")).unwrap();
-            std::fs::write(dir.join("مصادر/أداة.نيفا"), "صدر قيمة\nقيمة = ٤٢\n")
+            let home = dir.join("home");
+            std::fs::create_dir(home.join("مصادر")).unwrap();
+            std::fs::write(home.join("مصادر/أداة.نيفا"), "صدر قيمة\nقيمة = ٤٢\n")
                 .unwrap();
             let mut r = if interpreter {
                 Repl::with_program_dir_interpreter(dir.clone())
@@ -2573,10 +3248,11 @@ mod tests {
     fn repl_full_command_install_rejections() {
         assert!(shortcut_def("تثبيت").is_none());
         let dir = shortcut_dir();
-        std::fs::create_dir(dir.join("مصادر")).unwrap();
-        std::fs::write(dir.join("مصادر/نص.txt"), "نص").unwrap();
-        std::fs::write(dir.join("مصادر/أداة.نيفا"), "صدر قيمة\nقيمة = ١\n").unwrap();
-        std::fs::write(dir.join("مصادر/رياضيات.نيفا"), "صدر س\nس = ١\n").unwrap();
+        let home = dir.join("home");
+        std::fs::create_dir(home.join("مصادر")).unwrap();
+        std::fs::write(home.join("مصادر/نص.txt"), "نص").unwrap();
+        std::fs::write(home.join("مصادر/أداة.نيفا"), "صدر قيمة\nقيمة = ١\n").unwrap();
+        std::fs::write(home.join("مصادر/رياضيات.نيفا"), "صدر س\nس = ١\n").unwrap();
         let mut r = Repl::with_program_dir(dir.clone());
         // العارية وحدها كود (اسم مدمج معروف تحليليا) —
         // فترد «متغير غير معرف» وقت التشغيل، كأي دالة
@@ -2591,7 +3267,9 @@ mod tests {
         assert!(o.output.contains("تتوقع"), "got: {}", o.output);
         let o = r.feed("تثبيت مصادر/نص.txt");
         assert!(o.output.contains(".نيفا"), "got: {}", o.output);
-        let o = r.feed("تثبيت ../خارج.نيفا");
+        // اجتماع 45 §59: من البيت الخروج من القاعدة
+        // يلزم `../..` لا `..` وحده.
+        let o = r.feed("تثبيت ../../خارج.نيفا");
         assert!(
             o.output.contains("خارج مجلد البرنامج"),
             "got: {}",
@@ -2731,7 +3409,8 @@ mod tests {
     #[test]
     fn repl_prompt_is_directory_and_dollar() {
         let dir = shortcut_dir();
-        std::fs::create_dir(dir.join("فرعي")).unwrap();
+        let home = dir.join("home");
+        std::fs::create_dir(home.join("فرعي")).unwrap();
         let mut r = Repl::with_program_dir(dir.clone());
         let o = r.feed("س = ٥");
         assert_eq!(o.prompt, "~ $ ");
@@ -2752,7 +3431,8 @@ mod tests {
     #[test]
     fn repl_shortcut_names_do_not_shadow_code() {
         let dir = shortcut_dir();
-        std::fs::write(dir.join("أ.txt"), "نص").unwrap();
+        let home = dir.join("home");
+        std::fs::write(home.join("أ.txt"), "نص").unwrap();
         let mut r = Repl::with_program_dir(dir.clone());
         // Undefined: the shortcut owns the bare name.
         let o = r.feed("ات");
@@ -2954,8 +3634,9 @@ mod tests {
     #[test]
     fn repl_full_phrases() {
         let dir = shortcut_dir();
-        std::fs::write(dir.join("ملف.txt"), "ألف\nباء\n").unwrap();
-        std::fs::create_dir(dir.join("فرعي")).unwrap();
+        let home = dir.join("home");
+        std::fs::write(home.join("ملف.txt"), "ألف\nباء\n").unwrap();
+        std::fs::create_dir(home.join("فرعي")).unwrap();
         let mut r = Repl::with_program_dir(dir.clone());
         // ابحث في ملف: نمط + اسم.
         let o = r.feed("ابحث في ملف ألف ملف.txt");
@@ -3129,7 +3810,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // اجتماع 43 §58 + تجاوز المالك: الأخطاء العربية
+    // اجتماع 45 §59 + تجاوز المالك: الأخطاء العربية
     // القصيرة — ملف غائب، صفر معاملات، معاملات زائدة،
     // اسم فيه مسار — والتفاعلي حي بعد كل خطأ.
     #[test]
@@ -3195,5 +3876,250 @@ mod tests {
         // المحلل يجرّد الشدة فيبلغ الاسم بلا شدة (درس
         // المهمة 24): «شغل» لا «شغّل».
         assert!(failed.contains("شغل"), "got: {}", failed);
+    }
+
+    // اجتماع 45 §59 — الدفعة 2: معلومات، أعد-الإعدادات،
+    // أعد-الضبط، النقل والقفل، الترحيل، البدء والمقتطفات،
+    // والبحث في المكانين.
+
+    #[test]
+    fn batch2_info_is_exactly_five_lines() {
+        let dir = shortcut_dir();
+        // وحدتان مثبّتتان في جذر مجلد البرنامج.
+        std::fs::write(dir.join("أداة.نيفا"), "صدر س\nس = ١\n").unwrap();
+        std::fs::write(dir.join("أداة٢.نيفا"), "صدر س\nس = ٢\n").unwrap();
+        let mut r = Repl::with_program_dir(dir.clone());
+        let o = r.feed("معلومات");
+        let lines: Vec<&str> = o.output.lines().collect();
+        assert_eq!(lines.len(), 5, "got: {}", o.output);
+        assert_eq!(lines[0], "محرك نيفا ١٫٠٫٠");
+        assert_eq!(lines[1], "ترمنال التطبيق: غير معروف");
+        assert_eq!(lines[2], "الوحدات المثبتة: ٢");
+        // الشبكة مغلقة افتراضيا في الاختبار: غير متصلة.
+        assert_eq!(lines[3], "الشبكة: غير متصلة");
+        assert_eq!(
+            lines[4],
+            "مصدر الفهرس: https://raw.githubusercontent.com/RIO4140/niva-index/main/فهرس.حزمة"
+        );
+        // بلا معاملات.
+        let o = r.feed("معلومات زيادة");
+        assert!(o.output.contains("تتوقع"), "got: {}", o.output);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch2_reload_settings_signals_and_names_restart_keys() {
+        let dir = shortcut_dir();
+        let home = dir.join("home");
+        std::fs::create_dir_all(home.join("إعدادات")).unwrap();
+        std::fs::write(home.join("إعدادات/niva.properties"), "المظهر=فاتح\n").unwrap();
+        let mut r = Repl::with_program_dir(dir.clone());
+        assert_eq!(r.last_control(), ReplControl::None);
+        let o = r.feed("أعد-الإعدادات");
+        assert!(o.output.contains("أُعيدت قراءة الإعدادات"), "got: {}", o.output);
+        assert!(o.output.contains("إخفاء_لوحة_المفاتيح_عند_البدء"), "got: {}", o.output);
+        assert!(o.output.contains("خط_مخصص"), "got: {}", o.output);
+        assert!(o.output.contains("ملء_الشاشة"), "got: {}", o.output);
+        assert!(o.output.contains("الترحيب يسري من الجلسة الجديدة"), "got: {}", o.output);
+        assert_eq!(r.last_control(), ReplControl::SettingsReload);
+        // سطر التأكيد واحد (بلا إشعارات إضافية هنا).
+        assert_eq!(o.output.lines().count(), 1, "got: {}", o.output);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch2_reset_asks_confirms_and_keeps_home() {
+        let dir = shortcut_dir();
+        let home = dir.join("home");
+        std::fs::create_dir_all(home.join("إعدادات")).unwrap();
+        std::fs::write(home.join("إعدادات/niva.properties"), "المظهر=فاتح\n").unwrap();
+        std::fs::write(home.join("ملف-مستخدم.txt"), "ملفي").unwrap();
+        std::fs::write(dir.join("أداة.نيفا"), "صدر س\nس = ١\n").unwrap();
+        std::fs::write(dir.join("session-1.txt"), "جلسة").unwrap();
+        let mut r = Repl::with_program_dir(dir.clone());
+        // الطلب: رسالة تسمّي المسح والبقاء والجلسة.
+        let o = r.feed("أعد-الضبط");
+        assert!(o.output.contains("سيُمسح"), "got: {}", o.output);
+        assert!(o.output.contains("جلسة محفوظة"), "got: {}", o.output);
+        assert!(o.output.contains("تبقى ملفاتك في البيت"), "got: {}", o.output);
+        // أي سطر آخر يلغي — والسطر نفسه يُعالج عاديا.
+        let o = r.feed("١ + ١");
+        assert!(o.output.starts_with("أُلغي إعادة الضبط."), "got: {}", o.output);
+        assert!(o.output.contains("٢"), "got: {}", o.output);
+        assert!(dir.join("أداة.نيفا").exists());
+        // الطلب ثم «نعم»: المسح يتم.
+        let _ = r.feed("أعد-الضبط");
+        let o = r.feed("نعم");
+        assert!(o.output.contains("أُعيد ضبط مجلد البرنامج"), "got: {}", o.output);
+        assert!(!dir.join("أداة.نيفا").exists());
+        assert!(!dir.join("session-1.txt").exists());
+        // البيت والإعدادات باقيان، والمشتقات أُعيد بناؤها.
+        assert!(home.join("ملف-مستخدم.txt").exists());
+        assert!(home.join("إعدادات/niva.properties").exists());
+        assert!(dir.join("tmp").is_dir());
+        assert!(dir.join(".نيفا").is_dir());
+        // مجلد الجلسة عاد إلى البيت.
+        assert_eq!(r.feed("مح").output.trim(), "~");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch2_source_checkout_skips_home_move() {
+        // اجتماع 49 §63: مجلد مصدر (Cargo.toml) لا يُنقل
+        // منه شيء — الحارس يمنع كارثة batch2e (ترحيل
+        // شجرة المصدر كاملة إلى home/).
+        let dir = shortcut_dir();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\n").unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/مهم.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(dir.join("ملاحظة.txt"), "ملاحظة").unwrap();
+        let notices = ensure_first_run(&dir).unwrap();
+        assert!(!notices.iter().any(|n| n.contains("نُقلت")), "got: {:?}", notices);
+        assert!(dir.join("Cargo.toml").exists());
+        assert!(dir.join("src/مهم.rs").exists());
+        assert!(dir.join("ملاحظة.txt").exists());
+        // القفل يُنشأ بصمت رغم التخطي.
+        assert!(dir.join(".نيفا/نقل-البيت.قفل").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch2_project_dir_skips_home_move() {
+        // اجتماع 46 §60: مجلد مشروع لا يُنقل — لا
+        // `مصدر/` ولا `حزم/` ولا `بيان.حزمة`.
+        let dir = shortcut_dir();
+        std::fs::create_dir_all(dir.join("مصدر")).unwrap();
+        std::fs::write(dir.join("مصدر/رئيسي.نيفا"), "اطبع \"ناجح\"\n").unwrap();
+        std::fs::create_dir_all(dir.join("حزم/حزمة_صغيرة")).unwrap();
+        std::fs::write(dir.join("بيان.حزمة"), "اسم: مشروعي\n").unwrap();
+        std::fs::write(dir.join("ملاحظة.txt"), "ملاحظة").unwrap();
+        let notices = ensure_first_run(&dir).unwrap();
+        assert!(!notices.iter().any(|n| n.contains("نُقلت")), "got: {:?}", notices);
+        assert!(dir.join("مصدر/رئيسي.نيفا").exists());
+        assert!(dir.join("حزم/حزمة_صغيرة").is_dir());
+        assert!(dir.join("بيان.حزمة").exists());
+        assert!(dir.join("ملاحظة.txt").exists());
+        // القفل يُنشأ بصمت رغم التخطي.
+        assert!(dir.join(".نيفا/نقل-البيت.قفل").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch2_first_run_moves_old_files_with_exclusions() {
+        let dir = shortcut_dir();
+        // ملفات قديمة في الجذر (قبل الفصل).
+        std::fs::write(dir.join("ملاحظة.txt"), "ملاحظة").unwrap();
+        std::fs::write(dir.join("قديم.نيفا"), "صدر س\nس = ١\n").unwrap();
+        std::fs::write(dir.join("niva.properties"), "الترحيب=لا\n").unwrap();
+        std::fs::write(dir.join("session-1.txt"), "جلسة").unwrap();
+        std::fs::create_dir(dir.join("tmp")).unwrap();
+        let notices = ensure_first_run(&dir).unwrap();
+        // رسالة النقل تسمّي المنقول.
+        assert!(notices.iter().any(|n| n.contains("ملاحظة.txt")), "got: {:?}", notices);
+        assert!(dir.join("home/ملاحظة.txt").exists());
+        // الاستثناءات بقيت في الجذر.
+        assert!(dir.join("قديم.نيفا").exists());
+        assert!(dir.join("session-1.txt").exists());
+        assert!(dir.join("tmp").is_dir());
+        // الإعدادات انتقلت إلى ~/إعدادات/.
+        assert!(dir.join("home/إعدادات/niva.properties").exists());
+        assert!(!dir.join("niva.properties").exists());
+        // القفل وُجد، والتشغيل الثاني بلا نقل ولا رسالة نقل.
+        assert!(dir.join(".نيفا/نقل-البيت.قفل").is_file());
+        let notices2 = ensure_first_run(&dir).unwrap();
+        assert!(!notices2.iter().any(|n| n.contains("نُقلت")), "got: {:?}", notices2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch2_move_lock_inconsistent_names_lock() {
+        // البند 50: قفل موجود والبيت غائب — الخطأ يسمّي
+        // القفل بصيغته القصيرة ويطلب حذفه يدويا.
+        let dir = shortcut_dir();
+        let home = dir.join("home");
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(dir.join(".نيفا")).unwrap();
+        std::fs::write(dir.join(".نيفا/نقل-البيت.قفل"), "").unwrap();
+        let err = ensure_first_run(&dir).unwrap_err();
+        assert!(err.contains(".نيفا/نقل-البيت.قفل"), "got: {}", err);
+        assert!(err.contains("احذف الملف يدويا"), "got: {}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch2_retired_key_migration_is_pure_and_named() {
+        // البند 75: الآلية خالصة — بجدول عينة، إذ لا
+        // مفتاح أُعيدت تسميته بعد حتى الآن.
+        let (out, notices) = migrate_retired_keys(
+            "# تعليق\nمفتاح_قديم=قيمة\nمفتاح_آخر=١\n",
+            &[("مفتاح_قديم", "مفتاح_جديد")],
+        );
+        assert_eq!(out, "# تعليق\nمفتاح_جديد=قيمة\nمفتاح_آخر=١\n");
+        assert_eq!(notices, vec!["المفتاح القديم مفتاح_قديم صار مفتاح_جديد"]);
+        // بلا جدول: النص كما هو بلا إشعارات.
+        let (out, notices) = migrate_retired_keys("أ=١\n", &[]);
+        assert_eq!(out, "أ=١\n");
+        assert!(notices.is_empty());
+    }
+
+    #[test]
+    fn batch2_settings_value_validation_drops_nul() {
+        // البند 41: قيمة بلا بايت فارغ — القيمة غير
+        // الصالحة تُسقط مع إشعار يسمّي المفتاح.
+        let dir = shortcut_dir();
+        let home = dir.join("home");
+        std::fs::create_dir_all(home.join("إعدادات")).unwrap();
+        std::fs::write(
+            home.join("إعدادات/niva.properties"),
+            "المظهر=فاتح\nتالف=قبل\0بعد\n",
+        )
+        .unwrap();
+        let (entries, notices) = read_settings(&dir);
+        assert!(entries.iter().any(|(k, v)| k == "المظهر" && v == "فاتح"));
+        assert!(!entries.iter().any(|(k, _)| k == "تالف"));
+        assert!(notices.iter().any(|n| n.contains("تالف")), "got: {:?}", notices);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch2_startup_and_snippets_run_but_never_block() {
+        let dir = shortcut_dir();
+        let home = dir.join("home");
+        std::fs::create_dir_all(home.join("مقتطفات")).unwrap();
+        std::fs::write(home.join("بدء.نيفا"), "س = ٤٢\nاطبع \"بدء\"\n").unwrap();
+        std::fs::write(home.join("مقتطفات/أ.نيفا"), "اطبع \"أ\"\n").unwrap();
+        std::fs::write(home.join("مقتطفات/ب.نيفا"), "س = ١ / ٠\n").unwrap();
+        std::fs::write(home.join("مقتطفات/ملاحظة.txt"), "ليس برنامجا\n").unwrap();
+        let mut r = Repl::with_program_dir(dir.clone());
+        let out = r.run_startup_files();
+        // بدء ثم المقتطفات أبجديا؛ والملف التالف لا يمنع
+        // الدخول: خطؤه يُطبع باسمه ويكمل الباقي.
+        assert!(out.contains("بدء\n"), "got: {}", out);
+        assert!(out.contains("أ\n"), "got: {}", out);
+        assert!(out.contains("خطأ في ~/مقتطفات/ب.نيفا"), "got: {}", out);
+        assert!(!out.contains("ملاحظة"), "got: {}", out);
+        // تعريفات البدء بقيت في الجلسة.
+        assert_eq!(r.feed("س").output, "٤٢\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch2_run_searches_program_dir_then_home() {
+        let dir = run_test_dir("twoplace");
+        // في المكانين معا: المثبَّت (الجذر) يفوز.
+        std::fs::write(dir.join("مثال.نيفا"), "اطبع \"جذر\"\n").unwrap();
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        std::fs::write(dir.join("home/مثال.نيفا"), "اطبع \"بيت\"\n").unwrap();
+        // في البيت وحده: يُوجد.
+        std::fs::write(dir.join("home/بيتي.نيفا"), "اطبع \"بيتي\"\n").unwrap();
+        let mut r = Repl::with_program_dir(dir.clone());
+        assert_eq!(r.feed("شغّل مثال").output, "جذر\n");
+        assert_eq!(r.feed("شغّل بيتي").output, "بيتي\n");
+        // الغائب يسمّي المكانين.
+        let o = r.feed("شغّل غائب");
+        assert!(o.output.contains("غير موجود"), "got: {}", o.output);
+        assert!(o.output.contains("$نيفا"), "got: {}", o.output);
+        assert!(o.output.contains("~"), "got: {}", o.output);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
