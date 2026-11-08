@@ -4,8 +4,18 @@
 //! (أقرب نطاق يربط الاسم، وإلا الأعمق)؛ والقوائم والقواميس
 //! قيم تُنسخ عند التعيين؛ والاستدعاء يحسب عمقه بحد ٥٠٠.
 
+#ifdef __APPLE__
+// على Darwin يعريف _POSIX_C_SOURCE بلا _DARWIN_C_SOURCE
+// يقيّد الترويسات بـ POSIX الصارم ويخفي امتدادات BSD
+// (memmem وstrcasestr) وINADDR_LOOPBACK — اجتماع 36 §51؛
+// فعلى Apple يُعرَّف _DARWIN_C_SOURCE وحده (وهو يعيد
+// واجهة Darwin الكاملة)، ولا يُعرَّف _POSIX_C_SOURCE
+// ولا _GNU_SOURCE هناك.
+#define _DARWIN_C_SOURCE 1
+#else
 #define _GNU_SOURCE 1
 #define _POSIX_C_SOURCE 200809L
+#endif
 
 #ifndef NIVA_RT_H
 #define NIVA_RT_H

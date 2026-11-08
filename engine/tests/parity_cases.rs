@@ -50,6 +50,12 @@ pub fn src(lines: &[&str]) -> String {
 /// وويندوز بادئة ‎//?/‎. والصيغة المقنّنة أولا:
 /// فالخام لاحقة لها على ويندوز، واستبداله أولا
 /// يفسدها ويترك ‎//?/‎.)
+/// (اجتماع 36 §51: الفاصل أيضا — فبعد استبدال
+/// المجلد الخام على ويندوز يبقى الفاصل الخلفي
+/// بينه وبين اسم الملف (`<مجلد>\prog.نيفا`)، بينما
+/// الأصلي يطبع الشرطة المائلة (`slash_display`
+/// سلوك مقصود لا يُمسّ)؛ فيُستبدل `<مجلد>\` أيضا
+/// بـ `<مجلد>/` بعد الاستبدالين.)
 pub fn normalize_temp_dir(text: String, dir: &PathBuf) -> String {
     let native = dir.to_string_lossy().to_string();
     let slashed = native.replace('\\', "/");
@@ -59,7 +65,9 @@ pub fn normalize_temp_dir(text: String, dir: &PathBuf) -> String {
         let canon_slashed = canon_native.replace('\\', "/");
         out = out.replace(&canon_native, "<مجلد>").replace(&canon_slashed, "<مجلد>");
     }
-    out.replace(&native, "<مجلد>").replace(&slashed, "<مجلد>")
+    out.replace(&native, "<مجلد>")
+        .replace(&slashed, "<مجلد>")
+        .replace("<مجلد>\\", "<مجلد>/")
 }
 
 /// شغّل مصدرا في وضع واحد داخل مجلد مؤقت؛ `files`

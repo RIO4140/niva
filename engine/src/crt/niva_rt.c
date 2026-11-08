@@ -15,6 +15,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h> // CreateSymbolicLinkA وGetFinalPathNameByHandleA
+#include <io.h> // _setmode — الوضع الثنائي للمخرجات (اجتماع 36 §51)
 #endif
 
 // ---------- الحالة العامة ----------
@@ -3653,6 +3654,16 @@ static char *nv_exe_dir(void) {
 }
 
 int nv_main(int argc, char **argv, void (*body)(NvScope *top)) {
+#ifdef _WIN32
+    // الوضع الثنائي للمخرجات على ويندوز حتى تطابق
+    // بايتات الأصلي بايتات المفسر (اجتماع 36 §51):
+    // فالوضع النصي يترجم \n إلى \r\n عند الطباعة،
+    // فيختلف المخرج عن المفسر بايتًا بايتًا؛ وهذا
+    // أول سطر ينفَّذ في البرنامج الأصلي كله، فيغطي
+    // حتى --مساعدة و--نسخة.
+    _setmode(_fileno(stdout), _O_BINARY);
+    _setmode(_fileno(stderr), _O_BINARY);
+#endif
     setlocale(LC_ALL, "");
     // حلل الأعلام (المطابقة على الصيغة المطبّعة: ة -> ه).
     // (الأعلام هنا بلا تشكيل أصلا في الاستخدام.)
