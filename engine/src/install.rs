@@ -405,6 +405,16 @@ fn json_str(json: &Json) -> Option<&str> {
     }
 }
 
+/// حجم عدد في JSON أو بلا شيء — أحجام السرد
+/// أعداد صحيحة موجبة؛ والسالب أو الكسر أو الغائب
+/// يعامل غائبا فيُحسب السطر بلا حجم.
+fn json_size(json: &Json) -> Option<u64> {
+    match json {
+        Json::Num(n) if n.is_finite() && *n >= 0.0 => Some(*n as u64),
+        _ => None,
+    }
+}
+
 /// اجلب رد واجهة جيت هاب وحلّله JSON — عبر `اجلب` نفسها
 /// فتسري بوابة الشبكة وقواعدها (ورمز حالة غير 2xx يرفضه
 /// `اجلب` برسالة عربية قبل أن يصل الرد هنا).
@@ -432,8 +442,9 @@ fn fetch_github_json(
 }
 
 /// ملفات `.نيفا` في رد قائمة محتويات (مصفوفة): الاسم
-/// ورابط التنزيل لكل ملف (المجلدات بلا رابط تُتخطى).
-fn niva_files_in_listing(json: &Json, line: usize, col: usize) -> RioResult<Vec<(String, String)>> {
+/// ورابط التنزيل والحجم (حين يذكره السرد) لكل ملف
+/// (المجلدات بلا رابط تُتخطى).
+fn niva_files_in_listing(json: &Json, line: usize, col: usize) -> RioResult<Vec<(String, String, Option<u64>)>> {
     let items = match json {
         Json::Arr(items) => items,
         _ => {
@@ -450,9 +461,10 @@ fn niva_files_in_listing(json: &Json, line: usize, col: usize) -> RioResult<Vec<
         let name = json_field(item, "name").and_then(json_str);
         let kind = json_field(item, "type").and_then(json_str);
         let url = json_field(item, "download_url").and_then(json_str);
+        let size = json_field(item, "size").and_then(json_size);
         if let (Some(name), Some("file"), Some(url)) = (name, kind, url) {
             if name.ends_with(".نيفا") {
-                out.push((name.to_string(), url.to_string()));
+                out.push((name.to_string(), url.to_string(), size));
             }
         }
     }
@@ -498,9 +510,10 @@ fn install_all_stop(
 /// صراحة، وواحد يسلك مسار الملف المفرد حرفيا،
 /// واثنان فأكثر يسلكان مسار تثبيت-الكل.
 fn install_listed_files(
-    files: Vec<(String, String)>,
+    files: Vec<(String, String, Option<u64>)>,
     where_ar: &str,
     program_dir: &Path,
+    emit: &mut dyn FnMut(&str),
     line: usize,
     col: usize,
 ) -> RioResult<Value> {
@@ -512,10 +525,10 @@ fn install_listed_files(
             col,
         )),
         1 => {
-            let (name, url) = files.into_iter().next().unwrap();
+            let (name, url, _) = files.into_iter().next().unwrap();
             install_github_file(&name, &url, program_dir, line, col)
         }
-        _ => install_all_files(files, program_dir, line, col),
+        _ => install_all_files(files, program_dir, emit, line, col),
     }
 }
 
@@ -527,9 +540,16 @@ fn install_listed_files(
 /// ثُبّت قبله، وما ثُبّت يبقى مثبَّتا. والملخص سطر
 /// واحد بالأرقام المشرقية؛ وإن كان المثبَّت صفرا
 /// (الكل متخطَّى) فخطأ صريح بدل نجاح صامت.
+/// كل سطر يُبعث لحظة إنتاجه عبر `emit` (يسلك فرع
+/// `اطبع` نفسه: حي مع البث الحي، ومخزَّن بدونه)
+/// فتظهر سطور التقدم أثناء التثبيت لا في نهايته؛
+/// وقيمة الإرجاع سلسلة فارغة حتى لا يطبع التفاعلي
+/// السطور مرة ثانية. وبلا سطر بصمة هنا — البصمة
+/// للمسار المفرد وحده.
 fn install_all_files(
-    files: Vec<(String, String)>,
+    files: Vec<(String, String, Option<u64>)>,
     program_dir: &Path,
+    emit: &mut dyn FnMut(&str),
     line: usize,
     col: usize,
 ) -> RioResult<Value> {
@@ -546,11 +566,50 @@ fn install_all_files(
         ));
     }
     let total = files.len();
+    // فحص مسبق لسقف البايتات من أحجام السرد نفسه —
+    // قبل أي تنزيل: أول ملف يتجاوز عنده المجموع
+    // السقف يرفض بالصياغة نفسها (وثُبّت ٠ قبله).
+    // وإن غاب أي حجم فلا فحص مسبق (الحلقة تحرس
+    // بالبايتات المنزَّلة فعلا كما كانت).
+    if files.iter().all(|(_, _, s)| s.is_some()) {
+        let mut running: u64 = 0;
+        for (name, _, size) in &files {
+            running = running.saturating_add(size.unwrap());
+            if running > INSTALL_ALL_MAX_BYTES {
+                if let Ok(stem) = validate_module_filename(name, line, col) {
+                    return Err(RioError::new(
+                        ErrorKind::Io,
+                        format!(
+                            "تجاوز سقف {} ميغابايت عند {} (ثُبّت {} قبله)",
+                            eastern_number(5),
+                            stem,
+                            eastern_number(0),
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+                break;
+            }
+        }
+    }
+    // سطر الخطة قبل أي تنزيل: بالحجم الإجمالي حين
+    // تذكره الأحجام كلها، وبالعدد وحده إن غاب أي حجم.
+    if files.iter().all(|(_, _, s)| s.is_some()) {
+        let total_bytes: u64 = files.iter().map(|(_, _, s)| s.unwrap()).sum();
+        emit(&format!(
+            "سيُثبَّت {} ملفات (الحجم الإجمالي {} بايت)",
+            eastern_number(total),
+            eastern_number(total_bytes as usize),
+        ));
+    } else {
+        emit(&format!("سيُثبَّت {} ملفات", eastern_number(total)));
+    }
     let mut installed = 0usize;
     let mut skipped = 0usize;
     let mut total_bytes: u64 = 0;
-    let mut lines: Vec<String> = Vec::new();
-    for (name, url) in &files {
+    for (idx, (name, url, size)) in files.iter().enumerate() {
+        let n = idx + 1;
         let stem = match validate_module_filename(name, line, col) {
             Ok(stem) => stem,
             Err(e) => {
@@ -561,8 +620,23 @@ fn install_all_files(
         // تنزيل وبلا كتابة — الملف المثبَّت لا يُمس.
         if program_dir.join(format!("{}.نيفا", stem)).exists() {
             skipped += 1;
-            lines.push(format!("تُخطَّى {}: مثبّتة أصلا", stem));
+            emit(&format!("تُخطَّى {}: مثبّتة أصلا", stem));
             continue;
+        }
+        match size {
+            Some(s) => emit(&format!(
+                "جارٍ تنزيل {} ({} بايت)... ({} من {})",
+                stem,
+                eastern_number(*s as usize),
+                eastern_number(n),
+                eastern_number(total),
+            )),
+            None => emit(&format!(
+                "جارٍ تنزيل {}... ({} من {})",
+                stem,
+                eastern_number(n),
+                eastern_number(total),
+            )),
         }
         let body = match crate::network::fetch(url, line, col) {
             Ok(Value::Str(text)) => text,
@@ -593,9 +667,10 @@ fn install_all_files(
                 col,
             ));
         }
-        match write_installed_module(program_dir, stem.clone(), body, true, line, col) {
+        // بلا بصمة في تثبيت-الكل: رسالة النجاح وحدها.
+        match write_installed_module(program_dir, stem.clone(), body, false, line, col) {
             Ok(Value::Str(msg)) => {
-                lines.push(msg);
+                emit(&msg);
                 installed += 1;
                 total_bytes += body_len;
             }
@@ -621,13 +696,13 @@ fn install_all_files(
             col,
         ));
     }
-    lines.push(format!(
+    emit(&format!(
         "ثُبّت {} من {} (تُخطَّى {})",
         eastern_number(installed),
         eastern_number(total),
         eastern_number(skipped)
     ));
-    Ok(Value::Str(lines.join("\n")))
+    Ok(Value::Str(String::new()))
 }
 
 /// نزّل ملف `.نيفا` من رابطه وثبّته في مسار الاستيراد
@@ -660,9 +735,12 @@ fn install_from_github(
     api_base: &str,
     program_dir: &Path,
     gh: GithubSource,
+    emit: &mut dyn FnMut(&str),
     line: usize,
     col: usize,
 ) -> RioResult<Value> {
+    // أول سطر يراه المثبِّت: قراءة السرد قبل أي تنزيل.
+    emit("جارٍ قراءة قائمة الملفات...");
     match gh {
         GithubSource::Repo {
             owner,
@@ -699,11 +777,12 @@ fn install_from_github(
                     let name = json_field(&json, "name").and_then(json_str);
                     let kind = json_field(&json, "type").and_then(json_str);
                     let url = json_field(&json, "download_url").and_then(json_str);
+                    let size = json_field(&json, "size").and_then(json_size);
                     match (name, kind, url) {
                         (Some(name), Some("file"), Some(url))
                             if name.ends_with(".نيفا") =>
                         {
-                            vec![(name.to_string(), url.to_string())]
+                            vec![(name.to_string(), url.to_string(), size)]
                         }
                         _ => {
                             return Err(RioError::new(
@@ -724,7 +803,7 @@ fn install_from_github(
                     ))
                 }
             };
-            install_listed_files(files, where_ar, program_dir, line, col)
+            install_listed_files(files, where_ar, program_dir, emit, line, col)
         }
         GithubSource::Release { owner, repo, tag } => {
             let api_path = format!(
@@ -749,13 +828,14 @@ fn install_from_github(
             for item in assets {
                 let name = json_field(item, "name").and_then(json_str);
                 let url = json_field(item, "browser_download_url").and_then(json_str);
+                let size = json_field(item, "size").and_then(json_size);
                 if let (Some(name), Some(url)) = (name, url) {
                     if name.ends_with(".نيفا") {
-                        files.push((name.to_string(), url.to_string()));
+                        files.push((name.to_string(), url.to_string(), size));
                     }
                 }
             }
-            install_listed_files(files, "في هذا الإصدار", program_dir, line, col)
+            install_listed_files(files, "في هذا الإصدار", program_dir, emit, line, col)
         }
     }
 }
@@ -825,6 +905,8 @@ fn write_installed_module(
 /// يعيد نص تأكيد («ثُبّتت الوحدة {الاسم}») يطبعه الطرفي —
 /// ومع الرابط سطر ثانٍ «بصمة الملف: <بصمة SHA-256>»
 /// (فكرة الثقة 7)؛ والمسار المحلي بلا سطر ثانٍ.
+/// وتثبيت-الكل يعيد سلسلة فارغة (سطوره تُبعث لحظة
+/// إنتاجها عبر `emit` فلا تطبع مرتين).
 /// `policy` و`cwd` هما سياسة الجلسة ومجلدها (للمصدر
 /// المحلي)؛ و`program_dir` هو مسار الاستيراد (للهدف).
 pub(crate) fn install_module(
@@ -834,9 +916,10 @@ pub(crate) fn install_module(
     source: &str,
     line: usize,
     col: usize,
+    emit: &mut dyn FnMut(&str),
 ) -> RioResult<Value> {
     let api_base = github_api_base(line, col)?;
-    install_module_with_api(policy, cwd, program_dir, source, &api_base, line, col)
+    install_module_with_api(policy, cwd, program_dir, source, &api_base, line, col, emit)
 }
 
 /// التنفيذ الداخلي بقاعدة واجهة صريحة (الاختبارات تمرّر
@@ -849,6 +932,7 @@ fn install_module_with_api(
     api_base: &str,
     line: usize,
     col: usize,
+    emit: &mut dyn FnMut(&str),
 ) -> RioResult<Value> {
     // رابط أم مسار محلي؟ مخطط غير http/https يرفض
     // برسالة واضحة بدلا من أن يُقرأ كمسار غائب.
@@ -867,7 +951,7 @@ fn install_module_with_api(
     // رابط جيت هاب (مستودع أو إصدار) — قبل المباشر.
     if is_url {
         if let Some(gh) = classify_github_url(source, line, col)? {
-            return install_from_github(api_base, program_dir, gh, line, col);
+            return install_from_github(api_base, program_dir, gh, emit, line, col);
         }
     }
     let (stem, content): (String, String) = if is_url {
@@ -1039,6 +1123,7 @@ mod tests {
             "مصادر/أداة.نيفا",
             1,
             1,
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(got, Value::Str("ثُبّتت الوحدة أداة".to_string()));
@@ -1047,7 +1132,7 @@ mod tests {
             "صدر قيمة\nقيمة = ٤٢\n"
         );
         // الثانية مرفوضة: بلا كتابة صامتة فوق موجود.
-        let err = install_module(&policy, &base, &base, "مصادر/أداة.نيفا", 1, 1)
+        let err = install_module(&policy, &base, &base, "مصادر/أداة.نيفا", 1, 1, &mut |_| {})
             .unwrap_err();
         assert!(
             err.to_string().contains("مثبّتة أصلا"),
@@ -1070,11 +1155,11 @@ mod tests {
         std::fs::write(src_dir.join("نص.txt"), "نص").unwrap();
         std::fs::write(src_dir.join("أداة.نيفا"), "صدر قيمة\nقيمة = ١\n").unwrap();
         // ليس .نيفا.
-        let err = install_module(&policy, &base, &base, "مصادر/نص.txt", 1, 1)
+        let err = install_module(&policy, &base, &base, "مصادر/نص.txt", 1, 1, &mut |_| {})
             .unwrap_err();
         assert!(err.to_string().contains(".نيفا"), "got: {}", err);
         // خارج مجلد البرنامج.
-        let err = install_module(&policy, &base, &base, "../خارج.نيفا", 1, 1)
+        let err = install_module(&policy, &base, &base, "../خارج.نيفا", 1, 1, &mut |_| {})
             .unwrap_err();
         assert!(
             err.to_string().contains("خارج مجلد البرنامج"),
@@ -1082,11 +1167,11 @@ mod tests {
             err
         );
         // مجلد لا ملف.
-        let err = install_module(&policy, &base, &base, "مصادر", 1, 1).unwrap_err();
+        let err = install_module(&policy, &base, &base, "مصادر", 1, 1, &mut |_| {}).unwrap_err();
         assert!(err.to_string().contains("ليس ملفا"), "got: {}", err);
         // ملف غائب.
         let err =
-            install_module(&policy, &base, &base, "مصادر/غائب.نيفا", 1, 1)
+            install_module(&policy, &base, &base, "مصادر/غائب.نيفا", 1, 1, &mut |_| {})
                 .unwrap_err();
         assert!(
             err.to_string().contains("غير موجود"),
@@ -1094,13 +1179,13 @@ mod tests {
             err
         );
         // اسم وحدة أصلية لا يُثبَّت.
-        let err = install_module(&policy, &base, &base, "مصادر/أداة.نيفا", 1, 1)
+        let err = install_module(&policy, &base, &base, "مصادر/أداة.نيفا", 1, 1, &mut |_| {})
             .unwrap();
         assert_eq!(err, Value::Str("ثُبّتت الوحدة أداة".to_string()));
         // (رياضيات أصلية — المصدر باسمها يُرفض.)
         std::fs::write(src_dir.join("رياضيات.نيفا"), "صدر س\nس = ١\n").unwrap();
         let err =
-            install_module(&policy, &base, &base, "مصادر/رياضيات.نيفا", 1, 1)
+            install_module(&policy, &base, &base, "مصادر/رياضيات.نيفا", 1, 1, &mut |_| {})
                 .unwrap_err();
         assert!(
             err.to_string().contains("وحدة أصلية"),
@@ -1122,6 +1207,7 @@ mod tests {
             "ftp://مثال.مصر/أداة.نيفا",
             1,
             1,
+            &mut |_| {},
         )
         .unwrap_err();
         assert!(
@@ -1146,6 +1232,7 @@ mod tests {
             "http://127.0.0.1:9/أداة.نيفا",
             1,
             1,
+            &mut |_| {},
         )
         .unwrap_err();
         assert!(
@@ -1347,10 +1434,12 @@ mod tests {
                         ),
                     ),
                     // مسار فيه ملفان — تثبيت-الكل يثبّتهما معا.
+                    // الأحجام من السرد نفسه (32 بايتا لكل
+                    // منهما — حجم محتوى المحاكي حرفيا).
                     "/repos/owner/repo/contents/sub" => (
                         "200 OK",
                         format!(
-                            "[{{\"name\":\"a.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/a.نيفا\"}},{{\"name\":\"b.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/b.نيفا\"}}]",
+                            "[{{\"name\":\"a.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/a.نيفا\",\"size\":32}},{{\"name\":\"b.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/b.نيفا\",\"size\":32}}]",
                             base, base
                         ),
                     ),
@@ -1374,6 +1463,16 @@ mod tests {
                         "200 OK",
                         format!(
                             "[{{\"name\":\"big1.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/big1.نيفا\"}},{{\"name\":\"big2.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/big2.نيفا\"}}]",
+                            base, base
+                        ),
+                    ),
+                    // مسار فيه ملفان كبيران بأحجام مذكورة
+                    // في السرد (3 ميغابايت لكل منهما) —
+                    // الفحص المسبق يرفض قبل أي تنزيل.
+                    "/repos/owner/repo/contents/huge" => (
+                        "200 OK",
+                        format!(
+                            "[{{\"name\":\"big1.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/big1.نيفا\",\"size\":3145728}},{{\"name\":\"big2.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/big2.نيفا\",\"size\":3145728}}]",
                             base, base
                         ),
                     ),
@@ -1414,7 +1513,7 @@ mod tests {
                     "/repos/owner/repo/releases/tags/v2" => (
                         "200 OK",
                         format!(
-                            "{{\"assets\":[{{\"name\":\"a.نيفا\",\"browser_download_url\":\"{}/files/a.نيفا\"}},{{\"name\":\"b.نيفا\",\"browser_download_url\":\"{}/files/b.نيفا\"}}]}}",
+                            "{{\"assets\":[{{\"name\":\"a.نيفا\",\"browser_download_url\":\"{}/files/a.نيفا\",\"size\":32}},{{\"name\":\"b.نيفا\",\"browser_download_url\":\"{}/files/b.نيفا\",\"size\":32}}]}}",
                             base, base
                         ),
                     ),
@@ -1476,7 +1575,30 @@ mod tests {
         api_base: &str,
         source: &str,
     ) -> Result<Value, RioError> {
-        install_module_with_api(policy, base, base, source, api_base, 1, 1)
+        install_module_with_api(policy, base, base, source, api_base, 1, 1, &mut |_| {})
+    }
+
+    /// النسخة الجامعة للسطور: تعيد القيمة والأسطر
+    /// المبثوثة معا — لاختبارات تثبيت-الكل.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn github_install_lines(
+        base: &Path,
+        policy: &FilePolicy,
+        api_base: &str,
+        source: &str,
+    ) -> (Result<Value, RioError>, Vec<String>) {
+        let mut lines = Vec::new();
+        let res = install_module_with_api(
+            policy,
+            base,
+            base,
+            source,
+            api_base,
+            1,
+            1,
+            &mut |l: &str| lines.push(l.to_string()),
+        );
+        (res, lines)
     }
 
     #[test]
@@ -1739,7 +1861,10 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn install_github_repo_install_all() {
         // اجتماع 43 §58: مجلد فيه ملفان — تثبيت-الكل
-        // يثبّتهما معا: سطر لكل ملف + بصمته + سطر الملخص.
+        // يثبّتهما معا. السطور تُبعث لحظة إنتاجها:
+        // قراءة السرد، ثم الخطة بالحجم الإجمالي، ثم
+        // سطر جارٍ وسطر نجاح لكل ملف، ثم الملخص —
+        // وبلا سطر بصمة؛ والقيمة سلسلة فارغة.
         let _guard = install_test_lock();
         let (base, _src_dir) = test_dirs("gh-all-repo");
         let policy = test_policy(&base);
@@ -1747,19 +1872,27 @@ mod tests {
         crate::network::allow_local_host("127.0.0.1");
         let port = github_mock_server();
         let api_base = format!("http://127.0.0.1:{}", port);
-        let got = github_install(
+        let (res, lines) = github_install_lines(
             &base,
             &policy,
             &api_base,
             "https://github.com/owner/repo/tree/main/sub",
-        )
-        .unwrap();
+        );
+        assert_eq!(res.unwrap(), Value::Str(String::new()));
         assert_eq!(
-            got,
-            Value::Str(format!(
-                "ثُبّتت الوحدة a\nبصمة الملف: {}\nثُبّتت الوحدة b\nبصمة الملف: {}\nثُبّت ٢ من ٢ (تُخطَّى ٠)",
-                MOCK_FILE_FINGERPRINT, MOCK_FILE_FINGERPRINT
-            ))
+            lines,
+            vec![
+                "جارٍ قراءة قائمة الملفات...",
+                "سيُثبَّت ٢ ملفات (الحجم الإجمالي ٦٤ بايت)",
+                "جارٍ تنزيل a (٣٢ بايت)... (١ من ٢)",
+                "ثُبّتت الوحدة a",
+                "جارٍ تنزيل b (٣٢ بايت)... (٢ من ٢)",
+                "ثُبّتت الوحدة b",
+                "ثُبّت ٢ من ٢ (تُخطَّى ٠)",
+            ]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<String>>()
         );
         assert_eq!(
             std::fs::read_to_string(base.join("a.نيفا")).unwrap(),
@@ -1777,7 +1910,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     fn install_github_release_install_all() {
         // اجتماع 43 §58: إصدار بأصلين — تثبيت-الكل
-        // يثبّتهما معا بالصيغة نفسها.
+        // يثبّتهما معا بالسطور نفسها.
         let _guard = install_test_lock();
         let (base, _src_dir) = test_dirs("gh-all-rel");
         let policy = test_policy(&base);
@@ -1785,19 +1918,27 @@ mod tests {
         crate::network::allow_local_host("127.0.0.1");
         let port = github_mock_server();
         let api_base = format!("http://127.0.0.1:{}", port);
-        let got = github_install(
+        let (res, lines) = github_install_lines(
             &base,
             &policy,
             &api_base,
             "https://github.com/owner/repo/releases/tag/v2",
-        )
-        .unwrap();
+        );
+        assert_eq!(res.unwrap(), Value::Str(String::new()));
         assert_eq!(
-            got,
-            Value::Str(format!(
-                "ثُبّتت الوحدة a\nبصمة الملف: {}\nثُبّتت الوحدة b\nبصمة الملف: {}\nثُبّت ٢ من ٢ (تُخطَّى ٠)",
-                MOCK_FILE_FINGERPRINT, MOCK_FILE_FINGERPRINT
-            ))
+            lines,
+            vec![
+                "جارٍ قراءة قائمة الملفات...",
+                "سيُثبَّت ٢ ملفات (الحجم الإجمالي ٦٤ بايت)",
+                "جارٍ تنزيل a (٣٢ بايت)... (١ من ٢)",
+                "ثُبّتت الوحدة a",
+                "جارٍ تنزيل b (٣٢ بايت)... (٢ من ٢)",
+                "ثُبّتت الوحدة b",
+                "ثُبّت ٢ من ٢ (تُخطَّى ٠)",
+            ]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<String>>()
         );
         assert!(base.join("a.نيفا").exists());
         assert!(base.join("b.نيفا").exists());
@@ -1820,19 +1961,26 @@ mod tests {
         let port = github_mock_server();
         let api_base = format!("http://127.0.0.1:{}", port);
         std::fs::write(base.join("a.نيفا"), "قديم\n").unwrap();
-        let got = github_install(
+        let (res, lines) = github_install_lines(
             &base,
             &policy,
             &api_base,
             "https://github.com/owner/repo/tree/main/sub",
-        )
-        .unwrap();
+        );
+        assert_eq!(res.unwrap(), Value::Str(String::new()));
         assert_eq!(
-            got,
-            Value::Str(format!(
-                "تُخطَّى a: مثبّتة أصلا\nثُبّتت الوحدة b\nبصمة الملف: {}\nثُبّت ١ من ٢ (تُخطَّى ١)",
-                MOCK_FILE_FINGERPRINT
-            ))
+            lines,
+            vec![
+                "جارٍ قراءة قائمة الملفات...",
+                "سيُثبَّت ٢ ملفات (الحجم الإجمالي ٦٤ بايت)",
+                "تُخطَّى a: مثبّتة أصلا",
+                "جارٍ تنزيل b (٣٢ بايت)... (٢ من ٢)",
+                "ثُبّتت الوحدة b",
+                "ثُبّت ١ من ٢ (تُخطَّى ١)",
+            ]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<String>>()
         );
         // المتخطَّى بقي كما هو — بلا استبدال.
         assert_eq!(
@@ -1841,13 +1989,27 @@ mod tests {
         );
         assert!(base.join("b.نيفا").exists());
         // الكل مثبَّت الآن — إعادة التشغيل خطأ صريح.
-        let err = github_install(
+        // والسطور المبثوثة قبل الخطأ: القراءة والخطة
+        // ثم التخطي للملفين (بلا تنزيل).
+        let (res, lines) = github_install_lines(
             &base,
             &policy,
             &api_base,
             "https://github.com/owner/repo/tree/main/sub",
-        )
-        .unwrap_err();
+        );
+        let err = res.unwrap_err();
+        assert_eq!(
+            lines,
+            vec![
+                "جارٍ قراءة قائمة الملفات...",
+                "سيُثبَّت ٢ ملفات (الحجم الإجمالي ٦٤ بايت)",
+                "تُخطَّى a: مثبّتة أصلا",
+                "تُخطَّى b: مثبّتة أصلا",
+            ]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<String>>()
+        );
         assert!(
             err.to_string().contains("كل الملفات مثبّتة أصلا"),
             "got: {}",
@@ -1869,15 +2031,18 @@ mod tests {
         crate::network::allow_local_host("127.0.0.1");
         let port = github_mock_server();
         let api_base = format!("http://127.0.0.1:{}", port);
-        let err = github_install(
+        let (res, lines) = github_install_lines(
             &base,
             &policy,
             &api_base,
             "https://github.com/owner/repo/tree/main/many",
-        )
-        .unwrap_err();
+        );
+        let err = res.unwrap_err();
         assert!(err.to_string().contains("٢٠"), "got: {}", err);
         assert!(err.to_string().contains("٢١"), "got: {}", err);
+        // سقف العدد يُفحص قبل سطر الخطة — سطر القراءة
+        // وحده مبثوث.
+        assert_eq!(lines, vec!["جارٍ قراءة قائمة الملفات..."]);
         assert!(!base.join("f00.نيفا").exists());
         assert!(!base.join("f20.نيفا").exists());
         crate::network::set_network_allowed(false);
@@ -1899,42 +2064,57 @@ mod tests {
         crate::network::allow_local_host("127.0.0.1");
         let port = github_mock_server();
         let api_base = format!("http://127.0.0.1:{}", port);
-        let err = github_install(
+        let (res, lines) = github_install_lines(
             &base,
             &policy,
             &api_base,
             "https://github.com/owner/repo/tree/main/big",
-        )
-        .unwrap_err();
+        );
+        let err = res.unwrap_err();
         assert!(err.to_string().contains("٥ ميغابايت"), "got: {}", err);
         assert!(err.to_string().contains("big2"), "got: {}", err);
         assert!(err.to_string().contains("١"), "got: {}", err);
+        // بلا أحجام في السرد: الخطة بالعدد وحده، وسطر
+        // جارٍ بلا حجم — والثاني توقف بعد تثبيت الأول.
+        assert_eq!(
+            lines,
+            vec![
+                "جارٍ قراءة قائمة الملفات...",
+                "سيُثبَّت ٢ ملفات",
+                "جارٍ تنزيل big1... (١ من ٢)",
+                "ثُبّتت الوحدة big1",
+                "جارٍ تنزيل big2... (٢ من ٢)",
+            ]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<String>>()
+        );
         assert_eq!(
             std::fs::metadata(base.join("big1.نيفا")).unwrap().len(),
             3 * 1024 * 1024
         );
         assert!(!base.join("big2.نيفا").exists());
         // إعادة التشغيل تكمل الناقص.
-        let got = github_install(
+        let (res, lines) = github_install_lines(
             &base,
             &policy,
             &api_base,
             "https://github.com/owner/repo/tree/main/big",
-        )
-        .unwrap();
-        let text = match got {
-            Value::Str(s) => s,
-            _ => panic!("expected text value"),
-        };
-        assert!(
-            text.contains("تُخطَّى big1: مثبّتة أصلا"),
-            "got: {}",
-            text
         );
-        assert!(
-            text.contains("ثُبّت ١ من ٢ (تُخطَّى ١)"),
-            "got: {}",
-            text
+        assert_eq!(res.unwrap(), Value::Str(String::new()));
+        assert_eq!(
+            lines,
+            vec![
+                "جارٍ قراءة قائمة الملفات...",
+                "سيُثبَّت ٢ ملفات",
+                "تُخطَّى big1: مثبّتة أصلا",
+                "جارٍ تنزيل big2... (٢ من ٢)",
+                "ثُبّتت الوحدة big2",
+                "ثُبّت ١ من ٢ (تُخطَّى ١)",
+            ]
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<String>>()
         );
         assert_eq!(
             std::fs::metadata(base.join("big2.نيفا")).unwrap().len(),
@@ -1942,6 +2122,60 @@ mod tests {
         );
         crate::network::set_network_allowed(false);
         cleanup(&base);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_all_byte_cap_precheck() {
+        // الفحص المسبق لسقف البايتات من أحجام السرد:
+        // ملفان بثلاثة ميغابايت لكل منهما (مجموعهما
+        // 6 ميغابايت) يُرفضان قبل أي تنزيل — بالصياغة
+        // نفسها (وثُبّت ٠ قبله)، وبلا ملف مكتوب وبلا
+        // سطر خطة (الرفض قبلها؛ وسطر القراءة وحده مبثوث).
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("gh-all-precap");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        let (res, lines) = github_install_lines(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/tree/main/huge",
+        );
+        let err = res.unwrap_err();
+        assert!(err.to_string().contains("٥ ميغابايت"), "got: {}", err);
+        assert!(err.to_string().contains("big2"), "got: {}", err);
+        assert!(err.to_string().contains("٠"), "got: {}", err);
+        assert_eq!(lines, vec!["جارٍ قراءة قائمة الملفات..."]);
+        assert!(!base.join("big1.نيفا").exists());
+        assert!(!base.join("big2.نيفا").exists());
+        crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    #[test]
+    fn niva_files_listing_sizes() {
+        // السرد يمرّر الحجم حين يذكره، وبلا شيء حين
+        // يغيب؛ والمجلد وغير .نيفا يُتخطيان.
+        let json = parse_json(
+            "[{\"name\":\"a.نيفا\",\"type\":\"file\",\"download_url\":\"http://x/a\",\"size\":32},{\"name\":\"b.نيفا\",\"type\":\"file\",\"download_url\":\"http://x/b\"},{\"name\":\"note.txt\",\"type\":\"file\",\"download_url\":\"http://x/n\",\"size\":5},{\"name\":\"sub\",\"type\":\"dir\",\"download_url\":null}]",
+        )
+        .unwrap();
+        let files = niva_files_in_listing(&json, 1, 1).unwrap();
+        assert_eq!(
+            files,
+            vec![
+                (
+                    "a.نيفا".to_string(),
+                    "http://x/a".to_string(),
+                    Some(32)
+                ),
+                ("b.نيفا".to_string(), "http://x/b".to_string(), None),
+            ]
+        );
     }
 
     /// بصمة الملف المتوقعة لمحتوى الخادم المحاكي
@@ -1972,6 +2206,7 @@ mod tests {
             &api_base,
             1,
             1,
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(
@@ -2063,6 +2298,7 @@ mod tests {
             "مصادر/أداة.نيفا",
             1,
             1,
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(got, Value::Str("ثُبّتت الوحدة أداة".to_string()));

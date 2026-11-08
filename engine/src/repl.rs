@@ -369,6 +369,36 @@ impl Repl {
         self.engine.allow_local_network_host(host);
     }
 
+    /// رسالة الترحيب مفعّلة أم لا: تُقرأ من
+    /// `niva.properties` في مجلد البرنامج — نفس صيغة
+    /// التطبيق (سطور `مفتاح=قيمة`، `#` تعليق، فراغات
+    /// تُهمل). المفتاح `الترحيب` بقيمة `لا` يوقفها؛
+    /// وغياب الملف أو المفتاح أو أي قيمة أخرى يبقيها
+    /// ظاهرة (الافتراضي: نعم). الملف قابل للتحرير من
+    /// الترمنال نفسه.
+    pub fn welcome_enabled(&self) -> bool {
+        let path = self.program_dir.join("niva.properties");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => return true,
+        };
+        for raw in text.lines() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some(eq) = line.find('=') else {
+                continue;
+            };
+            let key = line[..eq].trim();
+            let value = line[eq + 1..].trim();
+            if key == "الترحيب" {
+                return value != "لا";
+            }
+        }
+        true
+    }
+
     pub fn history(&self) -> &[String] {
         &self.history
     }
@@ -519,19 +549,13 @@ impl Repl {
         }
         // Successful shortcut lines join the session history,
         // like code lines do, so :اعرض shows what was typed.
-        // Session commands (اس، عر) are control, not
+        // Session commands (اس) are control, not
         // content — like the :commands, they are not recorded.
         if !matches!(def.kind, ShortcutKind::Command) {
             self.history.push(line.to_string());
         }
         match def.kind {
             ShortcutKind::Command => Some(self.handle_command(def.key)),
-            ShortcutKind::Echo => Some(ReplOutput {
-                output: format!("{}\n", args.join(" ")),
-                prompt: self.prompt(),
-                ended: false,
-                needs_network: false,
-            }),
             ShortcutKind::Snippet => {
                 let snippet = match def.key {
                     "عشوائي" => "استورد عشوائي\nعشوائي.عدد_عشوائي()".to_string(),
@@ -626,7 +650,7 @@ impl Repl {
 
     /// Full-name terminal command (تثبيت): a whole Arabic
     /// word, not a two-letter code — so it never enters the
-    /// 37-code table (the table stays 37, and the app has no
+    /// 31-code table (the table stays 31, and the app has no
     /// code for it either). Like the Snippet shortcuts, it
     /// builds a builtin call and evaluates it; the typed line
     /// joins the history, like code lines do. Only at the top
@@ -848,7 +872,13 @@ impl Repl {
     /// كاملين»): 6 عبارات محرك بدلا من أكوادها المحذوفة
     /// — بم/بع/مس/ال/كا هنا، وحع هنا («حول إلى عدد»)؛
     /// ومع/اد/اق/مى بلا عبارة: دوالها العادية
-    /// مجموع/أدنى/أقصى/مدى تكفي في الكود. مطابقة بادئة
+    /// مجموع/أدنى/أقصى/مدى تكفي في الكود. وأوامر كاملة
+    /// بكلمة واحدة (2026-11-08 ~20:00، أمر المالك:
+    /// كلمة واحدة 4–5 حروف بلا ألف في النصف لا تحتاج
+    /// اختصارا): انتقل/انسخ/انقل/موجود بدلا من أكوادها
+    /// المحذوفة نم/سم/قم/وج — وعر/اط خرجا بلا بديل هنا
+    /// لأن :اعرض واطبع يعملان أصلا بصيغتهما الكاملة.
+    /// مطابقة بادئة للسطر كله: الكلمات الأولى هي العبارة
     /// للسطر كله: الكلمات الأولى هي العبارة والباقي
     /// معاملات مفصولة بمسافة بلا فصلة أبدا، وعدد
     /// المعاملات ورسائل الخطأ بنفس أسلوب الاختصارات
@@ -868,6 +898,10 @@ impl Repl {
             ["حول", "إلى", "عدد", ..] => ("حول إلى عدد", 3, 1, 1),
             ["ارجع", "للبيت", ..] => ("ارجع للبيت", 2, 0, 0),
             ["كرر", "الأخير", ..] => ("كرر الأخير", 2, 0, 0),
+            ["انتقل", ..] => ("انتقل", 1, 1, 1),
+            ["انسخ", ..] => ("انسخ", 1, 2, 2),
+            ["انقل", ..] => ("انقل", 1, 2, 2),
+            ["موجود", ..] => ("موجود", 1, 1, 1),
             _ => return None,
         };
         let args: Vec<String> = words[nwords..].iter().map(|w| w.to_string()).collect();
@@ -900,6 +934,10 @@ impl Repl {
                 Some(self.call_str_builtin("ابحث_عن", args))
             }
             "امسح الجلسة" => Some(self.handle_command(":مسح")),
+            "انتقل" | "انسخ" | "انقل" | "موجود" => {
+                self.history.push(line.to_string());
+                Some(self.call_str_builtin(phrase, args))
+            }
             "حول إلى عدد" => {
                 self.history.push(line.to_string());
                 // المعامل الواحد مضمون بفحص العدد أعلاه.
@@ -1181,9 +1219,18 @@ impl Repl {
             }
             let printed = self.engine.take_output();
             return match self.engine.eval_one(expr) {
-                Ok(v) => ReplEval::Done {
-                    output: format!("{}{}\n", printed, v.fmt_value()),
-                },
+                Ok(v) => {
+                    // قيمة فارغة (كقيمة تثبيت-الكل) لا تطبع
+                    // سطرا فارغا بعدها — المخرج يبقى ما طُبع
+                    // فقط، بلا `\n` زائدة.
+                    let value = v.fmt_value();
+                    let output = if value.is_empty() {
+                        printed
+                    } else {
+                        format!("{}{}\n", printed, value)
+                    };
+                    ReplEval::Done { output }
+                }
                 Err(e) => ReplEval::Failed {
                     output: printed,
                     error: e.to_string(),
@@ -1288,6 +1335,15 @@ pub fn banner() -> String {
     banner_for(terminal_version().as_deref())
 }
 
+/// رسالة الترحيب: تُطبع بعد اللافتة عند بدء التفاعلي
+/// فقط — لا في تشغيل ملف ولا مع `--نسخه`. عربية كاملة
+/// مختصرة: الوثائق والإبلاغ والأوامر اليومية. بلا سطر
+/// مجتمع (لا قناة مخصصة لنيفا بعد — يُضاف حين يحددها
+/// المالك، ولا يُختلق رابط).
+pub fn welcome_text() -> String {
+    "أهلا بك في نيفا\n\nالوثائق: https://github.com/RIO4140/niva\nبلّغ عن مشكلة: https://github.com/RIO4140/niva/issues\n\nأوامر يومية:\n ات — اعرض الملفات\n شغل <اسم> — شغّل ملف\n تثبيت <رابط> — ثبّت أداة\n تن — حدّث التطبيق".to_string()
+}
+
 /// `:مساعدة` output: a BARE command list — terminal convention,
 /// not teaching. No explanations, no examples, no notes.
 pub fn help_text() -> &'static str {
@@ -1326,8 +1382,6 @@ enum ShortcutKind {
     /// First argument is a path, the rest joined with spaces
     /// as one string (اكتب_ملف content may hold spaces).
     RestJoined,
-    /// Print the arguments joined with spaces (echo).
-    Echo,
     /// Evaluate a constructed stdlib snippet (رياضيات /
     /// عشوائي / وقت / شبكة / عمليات).
     Snippet,
@@ -1335,8 +1389,8 @@ enum ShortcutKind {
     Command,
 }
 
-/// One row of the 37-shortcut table
-/// (~/workspace/android-app/SHORTCUTS-37.md): the code, the
+/// One row of the 31-shortcut table
+/// (~/workspace/android-app/SHORTCUTS-31.md): the code, the
 /// builtin or snippet key, the argument count range, and the
 /// kind. App-level codes (جلسات، مسح الشاشة، ...) are NOT
 /// here: the app intercepts them before sending the line to
@@ -1350,15 +1404,12 @@ struct ShortcutDef {
 
 fn shortcut_def(code: &str) -> Option<ShortcutDef> {
     Some(match code {
-        // --- ملفات ومجلدات (22) ---
+        // --- ملفات ومجلدات (18) ---
         "ات" => ShortcutDef { key: "اعرض_الملفات", min: 0, max: 0, kind: ShortcutKind::StrArgs },
         "مح" => ShortcutDef { key: "المجلد_الحالي", min: 0, max: 0, kind: ShortcutKind::StrArgs },
-        "نم" => ShortcutDef { key: "انتقل", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "شم" => ShortcutDef { key: "أنشئ_مجلد", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "حم" => ShortcutDef { key: "احذف_مجلد", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "حف" => ShortcutDef { key: "احذف_ملف", min: 1, max: 1, kind: ShortcutKind::StrArgs },
-        "سم" => ShortcutDef { key: "انسخ", min: 2, max: 2, kind: ShortcutKind::StrArgs },
-        "قم" => ShortcutDef { key: "انقل", min: 2, max: 2, kind: ShortcutKind::StrArgs },
         "اف" => ShortcutDef { key: "اقرأ_ملف", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "شف" => ShortcutDef { key: "أنشئ_ملف", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "عب" => ShortcutDef { key: "اعرض_البداية", min: 1, max: 2, kind: ShortcutKind::StrArgs },
@@ -1369,13 +1420,11 @@ fn shortcut_def(code: &str) -> Option<ShortcutDef> {
         "حج" => ShortcutDef { key: "حجم_المسار", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "شر" => ShortcutDef { key: "أنشئ_رابط", min: 2, max: 2, kind: ShortcutKind::StrArgs },
         "اك" => ShortcutDef { key: "اكتب_ملف", min: 2, max: usize::MAX, kind: ShortcutKind::RestJoined },
-        "وج" => ShortcutDef { key: "موجود", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "ام" => ShortcutDef { key: "نوع_المسار", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "تم" => ShortcutDef { key: "تفاصيل_المسار", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "عم" => ShortcutDef { key: "عد_الملفات", min: 0, max: 1, kind: ShortcutKind::StrArgs },
-        // --- أوامر الجلسة (2) ---
+        // --- أوامر الجلسة (1) ---
         "اس" => ShortcutDef { key: ":مساعدة", min: 0, max: 0, kind: ShortcutKind::Command },
-        "عر" => ShortcutDef { key: ":اعرض", min: 0, max: 0, kind: ShortcutKind::Command },
         // --- إصدار المحرك (1) ---
         "اص" => ShortcutDef { key: "النسخة", min: 0, max: 0, kind: ShortcutKind::StrArgs },
         // --- نص وأعداد (1) ---
@@ -1385,8 +1434,6 @@ fn shortcut_def(code: &str) -> Option<ShortcutDef> {
         "وق" => ShortcutDef { key: "وقت", min: 0, max: 0, kind: ShortcutKind::Snippet },
         "نو" => ShortcutDef { key: "نوم", min: 1, max: 1, kind: ShortcutKind::Snippet },
         "اج" => ShortcutDef { key: "اجلب", min: 1, max: 1, kind: ShortcutKind::Snippet },
-        // --- طباعة (1) ---
-        "اط" => ShortcutDef { key: "", min: 0, max: usize::MAX, kind: ShortcutKind::Echo },
         // --- عمليات (3) ---
         "عع" => ShortcutDef { key: "الحالية", min: 0, max: 0, kind: ShortcutKind::Snippet },
         "نب" => ShortcutDef { key: "أنشئ_برنامج", min: 1, max: usize::MAX, kind: ShortcutKind::Snippet },
@@ -1470,6 +1517,9 @@ pub fn run_repl(
         repl.allow_local_network_host(host);
     }
     println!("{}", banner());
+    if repl.welcome_enabled() {
+        println!("{}", welcome_text());
+    }
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     loop {
@@ -2024,6 +2074,40 @@ mod tests {
         assert_eq!(banner(), "محرك نيفا ١٫٠٫٠");
     }
 
+    // رسالة الترحيب: عربية مختصرة — الوثائق والإبلاغ
+    // والأوامر اليومية فقط، وبلا سطر مجتمع (لا قناة بعد).
+    #[test]
+    fn repl_welcome_text() {
+        let text = welcome_text();
+        assert!(text.starts_with("أهلا بك في نيفا"), "got: {}", text);
+        assert!(text.contains("https://github.com/RIO4140/niva"), "got: {}", text);
+        assert!(
+            text.contains("https://github.com/RIO4140/niva/issues"),
+            "got: {}",
+            text
+        );
+        for cmd in ["ات", "شغل", "تثبيت", "تن"] {
+            assert!(text.contains(cmd), "got: {}", text);
+        }
+        assert!(!text.contains("المجتمع"), "got: {}", text);
+    }
+
+    // مفتاح `الترحيب` في niva.properties: `لا` يوقفها،
+    // وغياب الملف أو المفتاح أو أي قيمة أخرى يبقيها.
+    #[test]
+    fn repl_welcome_enabled_by_properties() {
+        let dir = shortcut_dir();
+        let r = Repl::with_program_dir(dir.clone());
+        assert!(r.welcome_enabled());
+        std::fs::write(dir.join("niva.properties"), "# تعليق\nالترحيب=لا\n").unwrap();
+        assert!(!r.welcome_enabled());
+        std::fs::write(dir.join("niva.properties"), "الترحيب = نعم\n").unwrap();
+        assert!(r.welcome_enabled());
+        std::fs::write(dir.join("niva.properties"), "المظهر=فاتح\n").unwrap();
+        assert!(r.welcome_enabled());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn repl_banner_terminal_version() {
         // بلاغ 2026-11-08: `اص` في الترمنال يعرض نسخة
@@ -2074,6 +2158,15 @@ mod tests {
         let dir = shortcut_dir();
         std::fs::write(dir.join("أ.txt"), "نص").unwrap();
         std::fs::create_dir(dir.join("فرعي")).unwrap();
+        std::fs::write(dir.join(".مخفي"), "سر").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let exe = dir.join("شغّل");
+            std::fs::write(&exe, "نص").unwrap();
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::os::unix::fs::symlink("أ.txt", dir.join("رابط")).unwrap();
+        }
         let mut r = Repl::with_program_dir(dir.clone());
         let o = r.feed("مح");
         assert!(!o.ended);
@@ -2084,7 +2177,27 @@ mod tests {
         assert!(!o.ended);
         assert!(o.output.contains("أ.txt"), "got: {}", o.output);
         assert!(o.output.contains("فرعي/"), "got: {}", o.output);
+        // مثل `ls` الافتراضي: المخفي لا يظهر.
+        assert!(!o.output.contains(".مخفي"), "got: {}", o.output);
+        #[cfg(unix)]
+        {
+            // علامات `ls -F`: `*` للتنفيذي و`@` للرابط.
+            assert!(o.output.contains("شغّل*"), "got: {}", o.output);
+            assert!(o.output.contains("رابط@"), "got: {}", o.output);
+        }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // قيمة فارغة (كقيمة تثبيت-الكل) لا تطبع سطرا فارغا
+    // بعدها — الموجّه يأتي مباشرة.
+    #[test]
+    fn repl_empty_value_prints_nothing() {
+        let mut r = Repl::new();
+        let o = r.feed("\"\"");
+        assert!(!o.ended);
+        assert_eq!(o.output, "", "got: {:?}", o.output);
+        let o = r.feed("٢ + ٢");
+        assert_eq!(o.output, "٤\n", "got: {:?}", o.output);
     }
 
     #[test]
@@ -2095,17 +2208,17 @@ mod tests {
         assert!(!o.ended);
         assert_eq!(o.output, "");
         assert!(dir.join("جديد").is_dir());
-        let o = r.feed("نم جديد");
+        let o = r.feed("انتقل جديد");
         assert_eq!(o.output, "");
         let o = r.feed("مح");
         assert!(o.output.contains("جديد"), "got: {}", o.output);
-        let o = r.feed("نم ..");
+        let o = r.feed("انتقل ..");
         assert_eq!(o.output, "");
         let o = r.feed("حم جديد");
         assert_eq!(o.output, "");
         assert!(!dir.join("جديد").exists());
         // Escaping the base is rejected.
-        let o = r.feed("نم ..");
+        let o = r.feed("انتقل ..");
         assert!(o.output.contains("خارج مجلد البرنامج"), "got: {}", o.output);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2137,11 +2250,11 @@ mod tests {
         let dir = shortcut_dir();
         std::fs::write(dir.join("أ.txt"), "نص").unwrap();
         let mut r = Repl::with_program_dir(dir.clone());
-        let o = r.feed("سم أ.txt ب.txt");
+        let o = r.feed("انسخ أ.txt ب.txt");
         assert!(!o.ended);
         assert_eq!(o.output, "");
         assert_eq!(std::fs::read_to_string(dir.join("ب.txt")).unwrap(), "نص");
-        let o = r.feed("قم ب.txt ج.txt");
+        let o = r.feed("انقل ب.txt ج.txt");
         assert_eq!(o.output, "");
         assert!(!dir.join("ب.txt").exists());
         assert!(dir.join("ج.txt").exists());
@@ -2153,9 +2266,9 @@ mod tests {
         let dir = shortcut_dir();
         let mut r = Repl::with_program_dir(dir.clone());
         // Wrong arg counts are short Arabic errors; the session survives.
-        let o = r.feed("نم");
+        let o = r.feed("انتقل");
         assert!(o.output.contains("تتوقع"), "got: {}", o.output);
-        let o = r.feed("سم أ.txt");
+        let o = r.feed("انسخ أ.txt");
         assert!(o.output.contains("تتوقع"), "got: {}", o.output);
         let o = r.feed("ات زيادة");
         assert!(o.output.contains("تتوقع"), "got: {}", o.output);
@@ -2167,8 +2280,49 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // The 37-shortcut table (owner's correction 2026-11-05
-    // ~22:11, superseding the 100): exactly 37 codes, all
+    // أوامر كاملة بكلمة واحدة (2026-11-08 ~20:00، قاعدة
+    // 4–5 حروف بلا ألف في النصف): انتقل/انسخ/انقل/موجود
+    // بدلا من نم/سم/قم/وج — والأكواد المحذوفة نفسها لم
+    // تعد تعمل (لا اختصار ولا أمر)؛ وعر/اط خرجا لأن
+    // :اعرض واطبع يعملان أصلا بصيغتهما الكاملة.
+    #[test]
+    fn repl_full_word_commands_replace_removed_codes() {
+        let dir = shortcut_dir();
+        std::fs::write(dir.join("أ.txt"), "نص").unwrap();
+        std::fs::create_dir(dir.join("فرعي")).unwrap();
+        let mut r = Repl::with_program_dir(dir.clone());
+        let o = r.feed("انتقل فرعي");
+        assert_eq!(o.output, "");
+        assert_eq!(o.prompt, "~/فرعي $ ");
+        let o = r.feed("انتقل ..");
+        assert_eq!(o.prompt, "~ $ ");
+        let o = r.feed("نم فرعي");
+        assert!(!o.output.is_empty(), "removed code must not silently work");
+        assert_eq!(o.prompt, "~ $ ");
+        let o = r.feed("انسخ أ.txt ب.txt");
+        assert_eq!(o.output, "");
+        assert_eq!(std::fs::read_to_string(dir.join("ب.txt")).unwrap(), "نص");
+        let o = r.feed("انقل ب.txt ج.txt");
+        assert_eq!(o.output, "");
+        assert!(dir.join("ج.txt").exists());
+        let o = r.feed("موجود أ.txt");
+        assert_eq!(o.output, "صحيح\n");
+        let o = r.feed("موجود غائب.txt");
+        assert_eq!(o.output, "خطأ\n");
+        let o = r.feed("س = ٥");
+        assert_eq!(o.output, "");
+        let o = r.feed(":اعرض");
+        assert!(o.output.contains("س = ٥"), "got: {}", o.output);
+        let o = r.feed("عر");
+        assert!(!o.output.contains("س = ٥"), "got: {}", o.output);
+        assert_eq!(r.feed("اطبع \"مرحبا\"").output, "مرحبا\n");
+        let o = r.feed("اط مرحبا");
+        assert_ne!(o.output, "مرحبا\n", "got: {}", o.output);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // The 31-shortcut table (owner's correction 2026-11-05
+    // ~22:11, superseding the 100): exactly 31 codes, all
     // present, no collisions. The 3 app-level codes (جل،
     // مد، اع) are NOT here — the app intercepts them before
     // the line reaches the engine.
@@ -2180,22 +2334,26 @@ mod tests {
     // بم/بع/مس/مع/اد/اق/حع/مى/ال/كا left the engine table
     // and مش/شب/سش left the app table, to their full
     // phrases — 34 engine codes + 3 app codes = 37.
+    // Change 2026-11-08 ~20:00 (owner's 4–5-letter rule):
+    // نم/سم/قم/وج/عر/اط left the engine table, to their
+    // full commands — 28 engine codes + 3 app codes = 31.
     #[test]
-    fn shortcut_table_is_thirty_seven_unique_codes() {
+    fn shortcut_table_is_thirty_one_unique_codes() {
         let codes = [
-            "ات", "مح", "نم", "شم", "حم", "حف", "سم", "قم", "اف", "شف", "عب", "عن", "عس",
-            "عك", "عش", "حج", "شر", "اك", "وج", "ام", "تم", "عم", "اس", "عر",
-            "اص", "رع", "تا", "وق", "نو", "اج", "اط",
+            "ات", "مح", "شم", "حم", "حف", "اف", "شف", "عب", "عن", "عس",
+            "عك", "عش", "حج", "شر", "اك", "ام", "تم", "عم", "اس",
+            "اص", "رع", "تا", "وق", "نو", "اج",
             "عع", "نب", "اب",
         ];
-        assert_eq!(codes.len(), 34, "engine codes (37 total - 3 app-level)");
+        assert_eq!(codes.len(), 28, "engine codes (31 total - 3 app-level)");
         let mut seen = std::collections::HashSet::new();
         for code in codes {
             assert!(shortcut_def(code).is_some(), "missing code: {}", code);
             assert!(seen.insert(code), "duplicate code: {}", code);
         }
-        // The 9 original codes stay inside the 37.
-        for code in ["ات", "مح", "نم", "شم", "حم", "حف", "سم", "قم", "اف"] {
+        // The 9 original codes stay inside the 31 — except
+        // نم/سم/قم, removed by the 4–5-letter rule.
+        for code in ["ات", "مح", "شم", "حم", "حف", "اف"] {
             assert!(shortcut_def(code).is_some(), "original code lost: {}", code);
         }
         // App-level codes must NOT be engine shortcuts.
@@ -2207,6 +2365,7 @@ mod tests {
             "خج", "طن", "طع", "جذ", "قو", "جد",
             "بم", "بع", "مس", "مع", "اد", "اق", "حع", "مى", "ال", "كا",
             "مش", "شب", "سش",
+            "نم", "سم", "قم", "وج", "عر", "اط",
         ] {
             assert!(shortcut_def(code).is_none(), "removed code still present: {}", code);
         }
@@ -2246,9 +2405,9 @@ mod tests {
         let expected = std::fs::metadata(dir.join("ملف.txt")).unwrap().len() as f64;
         let o = r.feed("حج ملف.txt");
         assert_eq!(parse_shortcut_number(o.output.trim()), Some(expected));
-        let o = r.feed("وج ملف.txt");
+        let o = r.feed("موجود ملف.txt");
         assert_eq!(o.output, "صحيح\n");
-        let o = r.feed("وج غائب.txt");
+        let o = r.feed("موجود غائب.txt");
         assert_eq!(o.output, "خطأ\n");
         let o = r.feed("ام فرعي");
         assert_eq!(o.output, "مجلد\n");
@@ -2273,8 +2432,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // Text and numbers: random and echo stay shortcuts; sum,
-    // min, max, convert and range left the table 2026-11-08
+    // Text and numbers: random stays a shortcut; echo left
+    // the table 2026-11-08 ~20:00 (owner's 4–5-letter
+    // rule) — اطبع is the full command. Sum, min, max,
+    // convert and range left the table 2026-11-08
     // (owner's «اكتب دول كاملين») — their plain builtins
     // مجموع/أدنى/أقصى/عدد/مدى take a list (مجموع/أدنى/
     // أقصى) or comma-separated args in normal code.
@@ -2292,7 +2453,7 @@ mod tests {
         let o = r.feed("رع");
         let n = parse_shortcut_number(o.output.trim());
         assert!(matches!(n, Some(v) if (0.0..1.0).contains(&v)), "got: {}", o.output);
-        assert_eq!(r.feed("اط مرحبا بالعالم").output, "مرحبا بالعالم\n");
+        assert_eq!(r.feed("اطبع \"مرحبا بالعالم\"").output, "مرحبا بالعالم\n");
         // A non-number where a number is expected: short error.
         let o = r.feed("عدد(\"نص\")");
         assert!(o.output.contains("لا يمكن تحويل"), "got: {}", o.output);
@@ -2330,7 +2491,7 @@ mod tests {
         let dir = shortcut_dir();
         std::fs::create_dir(dir.join("فرعي")).unwrap();
         let mut r = Repl::with_program_dir(dir.clone());
-        let o = r.feed("نم فرعي");
+        let o = r.feed("انتقل فرعي");
         assert_eq!(o.prompt, "~/فرعي $ ");
         let o = r.feed("ارجع للبيت");
         assert_eq!(o.output, "");
@@ -2350,7 +2511,7 @@ mod tests {
         let mut r = Repl::new();
         let o = r.feed("كرر الأخير");
         assert!(o.output.contains("لا يوجد سطر سابق"), "got: {}", o.output);
-        assert_eq!(r.feed("اط مرحبا").output, "مرحبا\n");
+        assert_eq!(r.feed("اطبع \"مرحبا\"").output, "مرحبا\n");
         assert_eq!(r.feed("كرر الأخير").output, "مرحبا\n");
         assert_eq!(r.feed("كرر الأخير").output, "مرحبا\n");
         assert_eq!(r.feed("س = ٥").output, "");
@@ -2553,11 +2714,11 @@ mod tests {
         assert!(o.output.contains(":خروج"), "got: {}", o.output);
         let o = r.feed("س = ٥");
         assert_eq!(o.output, "");
-        let o = r.feed("عر");
+        let o = r.feed(":اعرض");
         assert!(o.output.contains("س = ٥"), "got: {}", o.output);
         let o = r.feed("امسح الجلسة");
         assert!(!o.ended);
-        let o = r.feed("عر");
+        let o = r.feed(":اعرض");
         assert!(!o.output.contains("س = ٥"), "got: {}", o.output);
         let o = r.feed(":خروج");
         assert!(o.ended);
@@ -2574,9 +2735,9 @@ mod tests {
         let mut r = Repl::with_program_dir(dir.clone());
         let o = r.feed("س = ٥");
         assert_eq!(o.prompt, "~ $ ");
-        let o = r.feed("نم فرعي");
+        let o = r.feed("انتقل فرعي");
         assert_eq!(o.prompt, "~/فرعي $ ");
-        let o = r.feed("نم ..");
+        let o = r.feed("انتقل ..");
         assert_eq!(o.prompt, "~ $ ");
         let o = r.feed("دالة جمع(أ، ب):");
         assert_eq!(o.prompt, "> ");
@@ -2811,7 +2972,7 @@ mod tests {
         let o = r.feed("حول إلى عدد نص");
         assert!(o.output.contains("لا يمكن تحويل"), "got: {}", o.output);
         // ارجع للبيت: من فرعي إلى البيت.
-        let o = r.feed("نم فرعي");
+        let o = r.feed("انتقل فرعي");
         assert_eq!(o.prompt, "~/فرعي $ ");
         let o = r.feed("ارجع للبيت");
         assert_eq!(o.output, "");
@@ -2827,7 +2988,7 @@ mod tests {
         // تنفيذ آخر سطر، ولا يعيد تنفيذ نفسه أبدا.
         let o = r.feed("كرر الأخير");
         assert!(o.output.contains("لا يوجد سطر سابق"), "got: {}", o.output);
-        assert_eq!(r.feed("اط مرحبا").output, "مرحبا\n");
+        assert_eq!(r.feed("اطبع \"مرحبا\"").output, "مرحبا\n");
         assert_eq!(r.feed("كرر الأخير").output, "مرحبا\n");
         assert_eq!(r.feed("كرر الأخير").output, "مرحبا\n");
         // رفوض الوسائط: بنفس أسلوب الاختصارات.

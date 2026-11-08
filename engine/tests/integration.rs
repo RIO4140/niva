@@ -1344,10 +1344,12 @@ fn github_mock_server() -> u16 {
                     ),
                 ),
                 // مسار فيه ملفان — يُثبَّتان معا (تثبيت-الكل).
+                // الأحجام من السرد نفسه (32 بايتا لكل
+                // منهما — حجم محتوى المحاكي حرفيا).
                 "/repos/owner/repo/contents/sub" => (
                     "200 OK",
                     format!(
-                        "[{{\"name\":\"a.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/a.نيفا\"}},{{\"name\":\"b.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/b.نيفا\"}}]",
+                        "[{{\"name\":\"a.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/a.نيفا\",\"size\":32}},{{\"name\":\"b.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/b.نيفا\",\"size\":32}}]",
                         base, base
                     ),
                 ),
@@ -1403,7 +1405,7 @@ fn install_github_repo_both_modes() {
         let (out, err, code) =
             run_src_flags_env(prog, flags, &[("NIVA_GITHUB_API_BASE", &api_base)]);
         assert_eq!(code, 0, "failed: stderr={}", err);
-        assert_eq!(out, "ثُبّتت الوحدة tool\nبصمة الملف: 4cee6f791f5495b679f4a5317bd3afccab74d827761164d6b4a4e4f76770d249\n٤٢\n");
+        assert_eq!(out, "جارٍ قراءة قائمة الملفات...\nثُبّتت الوحدة tool\nبصمة الملف: 4cee6f791f5495b679f4a5317bd3afccab74d827761164d6b4a4e4f76770d249\n٤٢\n");
     }
 }
 
@@ -1411,12 +1413,14 @@ fn install_github_repo_both_modes() {
 /// الملفان يُثبَّتان معا ثم يُستورد أحدهما وتُطبع
 /// قيمته — اجتماع 43 §58 استبدل الرفض القديم لأكثر
 /// من ملف بهذا المسار، فهذا الاختبار يثبت السلوك
-/// الجديد لا القديم.
+/// الجديد لا القديم. والسطور تُبعث لحظة إنتاجها
+/// (قراءة، خطة بالحجم، جارٍ ونجاح لكل ملف، ملخص)
+/// وبلا سطر بصمة؛ والقيمة سلسلة فارغة.
 #[test]
 fn install_github_repo_multiple_install_all_both_modes() {
     let port = github_mock_server();
     let api_base = format!("http://127.0.0.1:{}", port);
-    let prog = "اطبع تثبيت(\"https://github.com/owner/repo/tree/main/sub\")\nاستورد a\nاطبع a.قيمة\n";
+    let prog = "تثبيت(\"https://github.com/owner/repo/tree/main/sub\")\nاستورد a\nاطبع a.قيمة\n";
     for interpreter in [true, false] {
         let flags: &[&str] = if interpreter {
             &[
@@ -1433,7 +1437,36 @@ fn install_github_repo_multiple_install_all_both_modes() {
         assert_eq!(code, 0, "failed: stderr={}", err);
         assert_eq!(
             out,
-            "ثُبّتت الوحدة a\nبصمة الملف: 4cee6f791f5495b679f4a5317bd3afccab74d827761164d6b4a4e4f76770d249\nثُبّتت الوحدة b\nبصمة الملف: 4cee6f791f5495b679f4a5317bd3afccab74d827761164d6b4a4e4f76770d249\nثُبّت ٢ من ٢ (تُخطَّى ٠)\n٤٢\n"
+            "جارٍ قراءة قائمة الملفات...\nسيُثبَّت ٢ ملفات (الحجم الإجمالي ٦٤ بايت)\nجارٍ تنزيل a (٣٢ بايت)... (١ من ٢)\nثُبّتت الوحدة a\nجارٍ تنزيل b (٣٢ بايت)... (٢ من ٢)\nثُبّتت الوحدة b\nثُبّت ٢ من ٢ (تُخطَّى ٠)\n٤٢\n"
+        );
+    }
+}
+
+/// ترتيب سطور تثبيت-الكل في وضع البرنامج (المخزَّن):
+/// `اطبع` قبل التثبيت وبعده — سطور التقدم تتداخل
+/// معها بالترتيب نفسه في الوضعين، بلا تقديم ولا تأخير.
+#[test]
+fn install_all_order_with_prints_both_modes() {
+    let port = github_mock_server();
+    let api_base = format!("http://127.0.0.1:{}", port);
+    let prog = "اطبع \"قبل\"\nتثبيت(\"https://github.com/owner/repo/tree/main/sub\")\nاطبع \"بعد\"\n";
+    for interpreter in [true, false] {
+        let flags: &[&str] = if interpreter {
+            &[
+                "--مفسر",
+                "--اسمح-بالشبكة",
+                "--مضيف-محلي",
+                "127.0.0.1",
+            ]
+        } else {
+            &["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"]
+        };
+        let (out, err, code) =
+            run_src_flags_env(prog, flags, &[("NIVA_GITHUB_API_BASE", &api_base)]);
+        assert_eq!(code, 0, "failed: stderr={}", err);
+        assert_eq!(
+            out,
+            "قبل\nجارٍ قراءة قائمة الملفات...\nسيُثبَّت ٢ ملفات (الحجم الإجمالي ٦٤ بايت)\nجارٍ تنزيل a (٣٢ بايت)... (١ من ٢)\nثُبّتت الوحدة a\nجارٍ تنزيل b (٣٢ بايت)... (٢ من ٢)\nثُبّتت الوحدة b\nثُبّت ٢ من ٢ (تُخطَّى ٠)\nبعد\n"
         );
     }
 }
@@ -1459,7 +1492,7 @@ fn install_github_release_both_modes() {
         let (out, err, code) =
             run_src_flags_env(prog, flags, &[("NIVA_GITHUB_API_BASE", &api_base)]);
         assert_eq!(code, 0, "failed: stderr={}", err);
-        assert_eq!(out, "ثُبّتت الوحدة tool\nبصمة الملف: 4cee6f791f5495b679f4a5317bd3afccab74d827761164d6b4a4e4f76770d249\n٤٢\n");
+        assert_eq!(out, "جارٍ قراءة قائمة الملفات...\nثُبّتت الوحدة tool\nبصمة الملف: 4cee6f791f5495b679f4a5317bd3afccab74d827761164d6b4a4e4f76770d249\n٤٢\n");
     }
 }
 

@@ -2654,12 +2654,40 @@ impl Vm {
                     let entry = entry.map_err(|e| {
                         RioError::new(crate::error::ErrorKind::Io, format!("تعذر عرض المجلد: {}", e), line, col)
                     })?;
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    // مثل `ls` الافتراضي: الملفات المخفية لا
+                    // تظهر ولا تُحسب في العدد ولا تشغل مكانا
+                    // في السقف.
+                    if name.starts_with('.') {
+                        continue;
+                    }
                     total += 1;
                     if names.len() < LIST_CAP {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                        let file_type = entry.file_type().ok();
+                        let is_dir = file_type.as_ref().map(|t| t.is_dir()).unwrap_or(false);
+                        let is_link = file_type
+                            .as_ref()
+                            .map(|t| t.is_symlink())
+                            .unwrap_or(false);
+                        // علامات `ls -F`: `/` للمجلد و`@`
+                        // للرابط و`*` للتنفيذي (يونكس فقط —
+                        // الفحص مكفوف على غير يونكس).
+                        #[cfg(unix)]
+                        let is_exec = {
+                            use std::os::unix::fs::PermissionsExt;
+                            entry
+                                .metadata()
+                                .map(|m| m.permissions().mode() & 0o111 != 0)
+                                .unwrap_or(false)
+                        };
+                        #[cfg(not(unix))]
+                        let is_exec = false;
                         if is_dir {
                             names.push(format!("{}/", name));
+                        } else if is_link {
+                            names.push(format!("{}@", name));
+                        } else if is_exec {
+                            names.push(format!("{}*", name));
                         } else {
                             names.push(name);
                         }
@@ -3220,14 +3248,33 @@ impl Vm {
             "تثبيت" => {
                 arity(1)?;
                 match &args[0] {
-                    Value::Str(source) => crate::install::install_module(
-                        &self.file_policy.borrow(),
-                        &self.cwd.borrow(),
-                        &self.program_dir,
-                        source,
-                        line,
-                        col,
-                    ),
+                    Value::Str(source) => {
+                        // باعث سطور التثبيت: يسلك فرع `اطبع`
+                        // نفسه (الآلة ~3544) — حي مع البث الحي
+                        // فيطبع فورا مع تفريغ، وإلا يُلحق
+                        // بمخزن المخرجات فيحفظ الترتيب.
+                        let live = self.live_output;
+                        let output = &mut self.output;
+                        let mut emit = move |line: &str| {
+                            if live {
+                                use std::io::Write;
+                                print!("{}\n", line);
+                                let _ = std::io::stdout().flush();
+                            } else {
+                                output.push_str(line);
+                                output.push('\n');
+                            }
+                        };
+                        crate::install::install_module(
+                            &self.file_policy.borrow(),
+                            &self.cwd.borrow(),
+                            &self.program_dir,
+                            source,
+                            line,
+                            col,
+                            &mut emit,
+                        )
+                    }
                     other => Err(RioError::typ(
                         format!(
                             "تثبيت يتطلب مصدرا نصيا، وليس {}",
