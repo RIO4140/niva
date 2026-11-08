@@ -58,7 +58,7 @@
 use crate::ast::{Expr, Stmt, StmtKind};
 use crate::error::RioResult;
 use crate::interpreter::Interpreter;
-use crate::lexer::tokenize;
+use crate::lexer::{normalize_cli_word, tokenize};
 use crate::parser::Parser;
 use crate::semantic::SemanticAnalyzer;
 use crate::value::Value;
@@ -263,6 +263,10 @@ pub struct Repl {
     // `اطبع` — النمط نفسه: المحرك يحمله لكل نسخة،
     // وreset() يعيد القيمة نفسها (وإلا ضاع عند :مسح).
     live_output: bool,
+    // مجلد البرنامج (جذر الاستيراد والتشغيل) — يُحفظ
+    // لأن `شغّل` يشغّل الملف منه؛ والجلسة نفسها تبنيه
+    // من مجلد العمل الجاري (new) أو من المعطى (tests).
+    program_dir: std::path::PathBuf,
     // Audit م-6: the control signal of the last fed line
     // (None / NetworkNeeded / SessionCleared), read by
     // `last_control()` — a side channel so run_repl can emit
@@ -273,10 +277,10 @@ pub struct Repl {
 impl Repl {
     /// الجلسة الافتراضية: على المترجم (VM).
     pub fn new() -> Self {
+        let program_dir =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         Self {
-            engine: Engine::Vm(VmSession::new(
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-            )),
+            engine: Engine::Vm(VmSession::new(program_dir.clone())),
             analyzer: SemanticAnalyzer::new(),
             history: Vec::new(),
             pending: String::new(),
@@ -284,6 +288,7 @@ impl Repl {
             network_allowed: false,
             server_allowed: false,
             live_output: false,
+            program_dir,
             last_control: ReplControl::None,
         }
     }
@@ -291,6 +296,8 @@ impl Repl {
     /// وضع التشخيص الخفي: الجلسة نفسها على مفسر الشجرة
     /// (CLI `--مفسر`) — للمقارنة والتشخيص فقط.
     pub fn new_interpreter() -> Self {
+        let program_dir =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         Self {
             engine: Engine::Interp(Interpreter::new()),
             analyzer: SemanticAnalyzer::new(),
@@ -300,6 +307,7 @@ impl Repl {
             network_allowed: false,
             server_allowed: false,
             live_output: false,
+            program_dir,
             last_control: ReplControl::None,
         }
     }
@@ -313,14 +321,16 @@ impl Repl {
     /// CLI use the process working directory via new()).
     pub fn with_program_dir(program_dir: std::path::PathBuf) -> Self {
         let mut r = Self::new();
-        r.engine = Engine::Vm(VmSession::new(program_dir));
+        r.engine = Engine::Vm(VmSession::new(program_dir.clone()));
+        r.program_dir = program_dir;
         r
     }
 
     /// Like with_program_dir, on the interpreter (diagnostic).
     pub fn with_program_dir_interpreter(program_dir: std::path::PathBuf) -> Self {
         let mut r = Self::new_interpreter();
-        r.engine = Engine::Interp(Interpreter::with_program_dir(program_dir));
+        r.engine = Engine::Interp(Interpreter::with_program_dir(program_dir.clone()));
+        r.program_dir = program_dir;
         r
     }
 
@@ -509,37 +519,13 @@ impl Repl {
         }
         // Successful shortcut lines join the session history,
         // like code lines do, so :اعرض shows what was typed.
-        // Session commands (اس، عر، مس) are control, not
+        // Session commands (اس، عر) are control, not
         // content — like the :commands, they are not recorded.
-        // كا (Repeat) is not recorded either: the rerun line
-        // records itself through its own path, so :اعرض
-        // shows the command that ran, not the كا that asked
-        // for it.
-        if !matches!(def.kind, ShortcutKind::Command | ShortcutKind::Repeat) {
+        if !matches!(def.kind, ShortcutKind::Command) {
             self.history.push(line.to_string());
         }
         match def.kind {
             ShortcutKind::Command => Some(self.handle_command(def.key)),
-            ShortcutKind::Repeat => {
-                // كرر الأخير (!!): rerun the last history
-                // line — the last line that is not كا itself.
-                // No previous line: a short Arabic error.
-                let last = self
-                    .history
-                    .iter()
-                    .rev()
-                    .find(|l| l.split_whitespace().next() != Some("كا"))
-                    .cloned();
-                match last {
-                    Some(line) => Some(self.feed_inner(&line)),
-                    None => Some(ReplOutput {
-                        output: "خطأ: لا يوجد سطر سابق لإعادة تنفيذه\n".to_string(),
-                        prompt: self.prompt(),
-                        ended: false,
-                        needs_network: false,
-                    }),
-                }
-            }
             ShortcutKind::Echo => Some(ReplOutput {
                 output: format!("{}\n", args.join(" ")),
                 prompt: self.prompt(),
@@ -585,9 +571,6 @@ impl Repl {
                             });
                         }
                     },
-                    // Home is "~" everywhere in Niva (the file
-                    // policy resolves it to the program dir).
-                    "بيت" => "انتقل(\"~\")".to_string(),
                     _ => unreachable!("unknown snippet key"),
                 };
                 // A snippet whose value is لاشيء prints nothing,
@@ -600,41 +583,6 @@ impl Repl {
                     ended: false,
                     needs_network: false,
                 })
-            }
-            ShortcutKind::NumArgs | ShortcutKind::NumList => {
-                let mut nums: Vec<Value> = Vec::new();
-                for a in &args {
-                    match parse_shortcut_number(a) {
-                        Some(n) => nums.push(Value::Number(n)),
-                        None => {
-                            return Some(ReplOutput {
-                                output: format!("خطأ: {} تتوقع أعدادا، وليس «{}»\n", code, a),
-                                prompt: self.prompt(),
-                                ended: false,
-                                needs_network: false,
-                            });
-                        }
-                    }
-                }
-                let values: Vec<Value> = if matches!(def.kind, ShortcutKind::NumList) {
-                    vec![Value::List(nums)]
-                } else {
-                    nums
-                };
-                match self.engine.call_builtin(def.key, values, 1, 1) {
-                    Ok(value) => Some(ReplOutput {
-                        output: format_shortcut_output(&value),
-                        prompt: self.prompt(),
-                        ended: false,
-                        needs_network: false,
-                    }),
-                    Err(e) => Some(ReplOutput {
-                        output: format!("{}\n", e),
-                        prompt: self.prompt(),
-                        ended: false,
-                        needs_network: false,
-                    }),
-                }
             }
             ShortcutKind::RestJoined => {
                 let values = vec![
@@ -678,7 +626,7 @@ impl Repl {
 
     /// Full-name terminal command (تثبيت): a whole Arabic
     /// word, not a two-letter code — so it never enters the
-    /// 50-code table (the table stays 50, and the app has no
+    /// 37-code table (the table stays 37, and the app has no
     /// code for it either). Like the Snippet shortcuts, it
     /// builds a builtin call and evaluates it; the typed line
     /// joins the history, like code lines do. Only at the top
@@ -713,6 +661,287 @@ impl Repl {
         })
     }
 
+    /// أمر تفاعلي `شغّل <اسم>` (اجتماع 43 §58 + تجاوز
+    /// المالك «بلا تعقيد»): يشغّل ملف أداة من مجلد
+    /// البرنامج كبرنامج — الاسم العاري بلا امتداد يُلحق
+    /// به `.نيفا` تلقائيا (`شغّل مثال-أول`)، والاسم
+    /// الكامل بالامتداد كما هو (`شغّل مثال-أول.نيفا`)،
+    /// ولا خطأ على الصيغتين. والاسم القانوني بلا تشكيل
+    /// (`شغل`) كما في باقي أوامر CLI — والصيغة المشكولة
+    /// (`شغّل`) مقبولة توافقا فقط عبر normalize_cli_word
+    /// (قاعدة المحلل نفسها). تفاعلي فقط — لا دالة
+    /// برنامجية (من استدعاه من الكود يأخذ خطأ الاسم غير
+    /// المعرف المعتاد). فقط في المستوى الأعلى، كـ
+    /// try_full_command.
+    fn try_run_command(&mut self, line: &str) -> Option<ReplOutput> {
+        let mut words = line.split_whitespace();
+        let first = words.next()?;
+        if normalize_cli_word(first) != "شغل" {
+            return None;
+        }
+        let args: Vec<String> = words.map(|w| w.to_string()).collect();
+        let bad = |msg: &str| ReplOutput {
+            output: format!("{}\n", msg),
+            prompt: self.prompt(),
+            ended: false,
+            needs_network: false,
+        };
+        if args.len() != 1 {
+            return Some(bad("شغّل تتوقع معاملا واحدا"));
+        }
+        let name = &args[0];
+        if name.contains('/') || name.contains('\\') || name.contains("..") {
+            return Some(bad("شغّل يقبل اسم ملف بلا مسار"));
+        }
+        let file_name = if name.ends_with(".نيفا") {
+            name.clone()
+        } else {
+            format!("{}.نيفا", name)
+        };
+        self.history.push(line.to_string());
+        Some(self.run_program_file(&file_name))
+    }
+
+    /// اقرأ ملف `.نيفا` من مجلد البرنامج وشغّله كبرنامج
+    /// في جلسة جديدة على محرك التفاعلي الحالي (افتراضي
+    /// أو مفسر) — جلسة التفاعلي نفسها لا تُمس ولا يتسرب
+    /// شيء في أي اتجاه. المخرجات تُبث حية (أو تُجمع في
+    /// ناتج الإرجاع حين يكون البث معطلا كما في
+    /// الاختبارات)؛ وخطأ وقت التشغيل يُطبع بالعربية
+    /// ويعود التحكم إلى الموجه بلا خروج من التفاعلي.
+    fn run_program_file(&mut self, name: &str) -> ReplOutput {
+        let path = self.program_dir.join(name);
+        let is_file = std::fs::metadata(&path).map(|m| m.is_file()).unwrap_or(false);
+        if !is_file {
+            return ReplOutput {
+                output: format!("الملف غير موجود: {}\n", name),
+                prompt: self.prompt(),
+                ended: false,
+                needs_network: false,
+            };
+        }
+        let source = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => {
+                return ReplOutput {
+                    output: format!("تعذر قراءة الملف: {}\n", name),
+                    prompt: self.prompt(),
+                    ended: false,
+                    needs_network: false,
+                }
+            }
+        };
+        let fail = |e: String| ReplOutput {
+            output: format!("{}\n", e),
+            prompt: self.prompt(),
+            ended: false,
+            needs_network: false,
+        };
+        let tokens = match tokenize(&source) {
+            Ok(t) => t,
+            Err(e) => return fail(e.to_string()),
+        };
+        let program = match Parser::new(tokens).parse_program() {
+            Ok(p) => p,
+            Err(e) => return fail(e.to_string()),
+        };
+        // محلل دلالي جديد للبرنامج — لا محلل الجلسة —
+        // فتعريفات البرنامج لا تتسرب إلى التفاعلي.
+        let mut analyzer = SemanticAnalyzer::new();
+        if let Err(e) = analyzer.analyze_program(&program) {
+            return fail(e.to_string());
+        }
+        // جلسة جديدة على محرك التفاعلي الحالي — بأعلام
+        // الجلسة نفسها (موثوق/شبكة/خادم/بث حي)، فالبرنامج
+        // يعمل كما يعمل `نيفا <ملف>` بالأعلام نفسها.
+        let output = match &self.engine {
+            Engine::Vm(_) => {
+                let mut session = VmSession::new(self.program_dir.clone());
+                session.set_trusted(self.trusted);
+                session.set_network_allowed(self.network_allowed);
+                session.set_server_allowed(self.server_allowed);
+                session.set_live_output(self.live_output);
+                session.set_source_file(name);
+                match session.run(&program) {
+                    Ok(()) => session.take_output(),
+                    Err(e) => {
+                        let mut out = session.take_output();
+                        out.push_str(&format!("{}\n", e));
+                        out
+                    }
+                }
+            }
+            Engine::Interp(_) => {
+                let mut interp =
+                    Interpreter::with_program_dir(self.program_dir.clone());
+                interp.set_trusted(self.trusted);
+                interp.set_network_allowed(self.network_allowed);
+                interp.set_server_allowed(self.server_allowed);
+                interp.set_live_output(self.live_output);
+                interp.set_source_file(name);
+                match interp.run(&program) {
+                    Ok(()) => std::mem::take(&mut interp.output),
+                    Err(e) => {
+                        let mut out = std::mem::take(&mut interp.output);
+                        out.push_str(&format!("{}\n", e));
+                        out
+                    }
+                }
+            }
+        };
+        ReplOutput {
+            output,
+            prompt: self.prompt(),
+            ended: false,
+            needs_network: false,
+        }
+    }
+
+    /// استدعاء دالة مدمجة بمعاملات نصية، لعبارات كاملة:
+    /// مثل ذراع StrArgs في try_shortcut — بلا مقتطف
+    /// وبلا فصلة في أي مكان.
+    fn call_str_builtin(&mut self, key: &str, args: Vec<String>) -> ReplOutput {
+        let values: Vec<Value> = args.into_iter().map(Value::Str).collect();
+        match self.engine.call_builtin(key, values, 1, 1) {
+            Ok(value) => ReplOutput {
+                output: format_shortcut_output(&value),
+                prompt: self.prompt(),
+                ended: false,
+                needs_network: false,
+            },
+            Err(e) => ReplOutput {
+                output: format!("{}\n", e),
+                prompt: self.prompt(),
+                ended: false,
+                needs_network: false,
+            },
+        }
+    }
+
+    /// استدعاء مدمج بمعامل واحد يُحلَّل عددا أولا (أرقام
+    /// عربية + ٫) فيمرَّر عددا، وإلا مرَّر النص كما هو —
+    /// سلوك حع القديم في «حول إلى عدد»: عدد(نص) لا تقبل
+    /// ٫، فبدون هذا التحويل ينكسر «حول إلى عدد ٣٫٥»
+    /// الذي كان يعمل. (إصلاح من التحقق المستقل 2026-11-08.)
+    fn call_num_or_str_builtin(&mut self, key: &str, arg: String) -> ReplOutput {
+        let value = match parse_shortcut_number(&arg) {
+            Some(n) => Value::Number(n),
+            None => Value::Str(arg),
+        };
+        match self.engine.call_builtin(key, vec![value], 1, 1) {
+            Ok(value) => ReplOutput {
+                output: format_shortcut_output(&value),
+                prompt: self.prompt(),
+                ended: false,
+                needs_network: false,
+            },
+            Err(e) => ReplOutput {
+                output: format!("{}\n", e),
+                prompt: self.prompt(),
+                ended: false,
+                needs_network: false,
+            },
+        }
+    }
+
+    /// العبارات الكاملة (2026-11-08، أمر المالك «اكتب دول
+    /// كاملين»): 6 عبارات محرك بدلا من أكوادها المحذوفة
+    /// — بم/بع/مس/ال/كا هنا، وحع هنا («حول إلى عدد»)؛
+    /// ومع/اد/اق/مى بلا عبارة: دوالها العادية
+    /// مجموع/أدنى/أقصى/مدى تكفي في الكود. مطابقة بادئة
+    /// للسطر كله: الكلمات الأولى هي العبارة والباقي
+    /// معاملات مفصولة بمسافة بلا فصلة أبدا، وعدد
+    /// المعاملات ورسائل الخطأ بنفس أسلوب الاختصارات
+    /// («تتوقع N معاملات لكن أعطيت M»). «حول إلى عدد»
+    /// بلا شدة على الواو (قاعدة بلا-تشكيل). تُفحص قبل
+    /// line_is_code (كـ parse_command) فلا يبتلعها اسم
+    /// معرّف من المستخدم: «ارجع للبيت» لأن ارجع كلمة
+    /// مفتاحية، و«كرر الأخير» لأن كرر اسم موجود.
+    /// «امسح الجلسة» محرك لا تطبيق: التطبيق يمررها
+    /// إلى المحرك كما هي ولا يعترضها.
+    fn try_full_phrase(&mut self, line: &str) -> Option<ReplOutput> {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let (phrase, nwords, min, max) = match words.as_slice() {
+            ["ابحث", "في", "ملف", ..] => ("ابحث في ملف", 3, 2, 2),
+            ["ابحث", "عن", "ملف", ..] => ("ابحث عن ملف", 3, 1, 1),
+            ["امسح", "الجلسة", ..] => ("امسح الجلسة", 2, 0, 0),
+            ["حول", "إلى", "عدد", ..] => ("حول إلى عدد", 3, 1, 1),
+            ["ارجع", "للبيت", ..] => ("ارجع للبيت", 2, 0, 0),
+            ["كرر", "الأخير", ..] => ("كرر الأخير", 2, 0, 0),
+            _ => return None,
+        };
+        let args: Vec<String> = words[nwords..].iter().map(|w| w.to_string()).collect();
+        if args.len() < min || args.len() > max {
+            let want = if min == max {
+                if min == 0 {
+                    "بدون معاملات".to_string()
+                } else {
+                    format!("{} معاملات", min)
+                }
+            } else if max == usize::MAX {
+                format!("{} معاملات على الأقل", min)
+            } else {
+                format!("{} إلى {} معاملات", min, max)
+            };
+            return Some(ReplOutput {
+                output: format!("{} تتوقع {} لكن أعطيت {}\n", phrase, want, args.len()),
+                prompt: self.prompt(),
+                ended: false,
+                needs_network: false,
+            });
+        }
+        match phrase {
+            "ابحث في ملف" => {
+                self.history.push(line.to_string());
+                Some(self.call_str_builtin("ابحث_في_ملف", args))
+            }
+            "ابحث عن ملف" => {
+                self.history.push(line.to_string());
+                Some(self.call_str_builtin("ابحث_عن", args))
+            }
+            "امسح الجلسة" => Some(self.handle_command(":مسح")),
+            "حول إلى عدد" => {
+                self.history.push(line.to_string());
+                // المعامل الواحد مضمون بفحص العدد أعلاه.
+                let arg = args.into_iter().next().unwrap();
+                Some(self.call_num_or_str_builtin("عدد", arg))
+            }
+            "ارجع للبيت" => {
+                self.history.push(line.to_string());
+                // البيت "~" في كل مكان في نيفا (سياسة
+                // الملفات تحله إلى مجلد البرنامج).
+                Some(self.call_str_builtin("انتقل", vec!["~".to_string()]))
+            }
+            "كرر الأخير" => {
+                // كرر الأخير (!!): إعادة تنفيذ آخر سطر في
+                // المحفوظات — آخر سطر ليس «كرر الأخير»
+                // نفسها أبدا، ولا سطر «كا» قديم من جلسة
+                // قبل الحذف؛ وبلا سطر سابق: الخطأ العربي
+                // القصير نفسه. العبارة نفسها لا تُسجَّل:
+                // السطر المعاد تنفيذه يسجّل نفسه في مساره.
+                let last = self
+                    .history
+                    .iter()
+                    .rev()
+                    .find(|l| {
+                        let w: Vec<&str> = l.split_whitespace().collect();
+                        w != ["كرر", "الأخير"] && w.first() != Some(&"كا")
+                    })
+                    .cloned();
+                match last {
+                    Some(prev) => Some(self.feed_inner(&prev)),
+                    None => Some(ReplOutput {
+                        output: "خطأ: لا يوجد سطر سابق لإعادة تنفيذه\n".to_string(),
+                        prompt: self.prompt(),
+                        ended: false,
+                        needs_network: false,
+                    }),
+                }
+            }
+            _ => unreachable!("unknown full phrase"),
+        }
+    }
+
     /// Feed one typed line and get what to display next. The
     /// wrapper flags the network-permission error so an
     /// interactive console can offer the first-use prompt.
@@ -742,9 +971,9 @@ impl Repl {
     /// Audit م-12: a line that parses as Niva code runs as
     /// code — shortcut codes must not shadow names. The check
     /// is a trial semantic analysis on a CLONE of the
-    /// analyzer: parse-only is not enough ("اد ٥" parses as
-    /// one binary expression but is not valid code while اد is
-    /// undefined). One line of code is normally one statement,
+    /// analyzer: parse-only is not enough (a shortcut-shaped
+    /// line can parse as code yet fail analysis while its
+    /// name is undefined). One line of code is normally one statement,
     /// so a multi-statement line is shortcut-shaped. A bare
     /// reference to a shortcut-named variable falls through to
     /// the shortcut only while no such variable exists; once
@@ -847,6 +1076,12 @@ impl Repl {
         if parse_command(&line).is_some() {
             return self.handle_command(&line);
         }
+        // العبارات الكاملة (2026-11-08): قبل line_is_code
+        // كـ parse_command — فلا يبتلعها اسم معرّف؛
+        // وتثبيت يبقى في موضعه بعد line_is_code بلا تغيير.
+        if let Some(out) = self.try_full_phrase(&line) {
+            return out;
+        }
         // Audit م-12 (code first): a line that parses as Niva
         // code runs as code — shortcut codes never shadow
         // names. Only when the line is not code does the
@@ -856,6 +1091,9 @@ impl Repl {
                 return out;
             }
             if let Some(out) = self.try_full_command(&line) {
+                return out;
+            }
+            if let Some(out) = self.try_run_command(&line) {
                 return out;
             }
         }
@@ -1085,10 +1323,6 @@ pub enum ReplCommand {
 enum ShortcutKind {
     /// All arguments as strings (file builtins).
     StrArgs,
-    /// Arguments parsed as numbers, passed one by one.
-    NumArgs,
-    /// Arguments parsed as numbers, passed as one list.
-    NumList,
     /// First argument is a path, the rest joined with spaces
     /// as one string (اكتب_ملف content may hold spaces).
     RestJoined,
@@ -1099,13 +1333,10 @@ enum ShortcutKind {
     Snippet,
     /// A REPL command (:مساعدة / :اعرض / :مسح / :خروج).
     Command,
-    /// Rerun the last history line (!!): كا. The key is
-    /// unused; the arm reads self.history directly.
-    Repeat,
 }
 
-/// One row of the 50-shortcut table
-/// (~/workspace/android-app/SHORTCUTS-50.md): the code, the
+/// One row of the 37-shortcut table
+/// (~/workspace/android-app/SHORTCUTS-37.md): the code, the
 /// builtin or snippet key, the argument count range, and the
 /// kind. App-level codes (جلسات، مسح الشاشة، ...) are NOT
 /// here: the app intercepts them before sending the line to
@@ -1119,7 +1350,7 @@ struct ShortcutDef {
 
 fn shortcut_def(code: &str) -> Option<ShortcutDef> {
     Some(match code {
-        // --- ملفات ومجلدات (24) ---
+        // --- ملفات ومجلدات (22) ---
         "ات" => ShortcutDef { key: "اعرض_الملفات", min: 0, max: 0, kind: ShortcutKind::StrArgs },
         "مح" => ShortcutDef { key: "المجلد_الحالي", min: 0, max: 0, kind: ShortcutKind::StrArgs },
         "نم" => ShortcutDef { key: "انتقل", min: 1, max: 1, kind: ShortcutKind::StrArgs },
@@ -1134,8 +1365,6 @@ fn shortcut_def(code: &str) -> Option<ShortcutDef> {
         "عن" => ShortcutDef { key: "اعرض_النهاية", min: 1, max: 2, kind: ShortcutKind::StrArgs },
         "عس" => ShortcutDef { key: "عد_الأسطر", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "عك" => ShortcutDef { key: "عد_الكلمات", min: 1, max: 1, kind: ShortcutKind::StrArgs },
-        "بم" => ShortcutDef { key: "ابحث_في_ملف", min: 2, max: 2, kind: ShortcutKind::StrArgs },
-        "بع" => ShortcutDef { key: "ابحث_عن", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "عش" => ShortcutDef { key: "اعرض_الشجرة", min: 0, max: 1, kind: ShortcutKind::StrArgs },
         "حج" => ShortcutDef { key: "حجم_المسار", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "شر" => ShortcutDef { key: "أنشئ_رابط", min: 2, max: 2, kind: ShortcutKind::StrArgs },
@@ -1144,18 +1373,12 @@ fn shortcut_def(code: &str) -> Option<ShortcutDef> {
         "ام" => ShortcutDef { key: "نوع_المسار", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "تم" => ShortcutDef { key: "تفاصيل_المسار", min: 1, max: 1, kind: ShortcutKind::StrArgs },
         "عم" => ShortcutDef { key: "عد_الملفات", min: 0, max: 1, kind: ShortcutKind::StrArgs },
-        // --- أوامر الجلسة (3) ---
+        // --- أوامر الجلسة (2) ---
         "اس" => ShortcutDef { key: ":مساعدة", min: 0, max: 0, kind: ShortcutKind::Command },
         "عر" => ShortcutDef { key: ":اعرض", min: 0, max: 0, kind: ShortcutKind::Command },
-        "مس" => ShortcutDef { key: ":مسح", min: 0, max: 0, kind: ShortcutKind::Command },
         // --- إصدار المحرك (1) ---
         "اص" => ShortcutDef { key: "النسخة", min: 0, max: 0, kind: ShortcutKind::StrArgs },
-        // --- نص وأعداد (6) ---
-        "مع" => ShortcutDef { key: "مجموع", min: 1, max: usize::MAX, kind: ShortcutKind::NumList },
-        "اد" => ShortcutDef { key: "أدنى", min: 1, max: usize::MAX, kind: ShortcutKind::NumList },
-        "اق" => ShortcutDef { key: "أقصى", min: 1, max: usize::MAX, kind: ShortcutKind::NumList },
-        "حع" => ShortcutDef { key: "عدد", min: 1, max: 1, kind: ShortcutKind::StrArgs },
-        "مى" => ShortcutDef { key: "مدى", min: 1, max: 3, kind: ShortcutKind::NumArgs },
+        // --- نص وأعداد (1) ---
         "رع" => ShortcutDef { key: "عشوائي", min: 0, max: 0, kind: ShortcutKind::Snippet },
         // --- وقت وشبكة (4) ---
         "تا" => ShortcutDef { key: "التاريخ_الآن", min: 0, max: 0, kind: ShortcutKind::StrArgs },
@@ -1168,9 +1391,6 @@ fn shortcut_def(code: &str) -> Option<ShortcutDef> {
         "عع" => ShortcutDef { key: "الحالية", min: 0, max: 0, kind: ShortcutKind::Snippet },
         "نب" => ShortcutDef { key: "أنشئ_برنامج", min: 1, max: usize::MAX, kind: ShortcutKind::Snippet },
         "اب" => ShortcutDef { key: "أوقف_برنامج", min: 1, max: 1, kind: ShortcutKind::Snippet },
-        // --- بيت وتكرار (2) ---
-        "ال" => ShortcutDef { key: "بيت", min: 0, max: 0, kind: ShortcutKind::Snippet },
-        "كا" => ShortcutDef { key: "", min: 0, max: 0, kind: ShortcutKind::Repeat },
         _ => return None,
     })
 }
@@ -1947,39 +2167,47 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // The 50-shortcut table (owner's correction 2026-11-05
-    // ~22:11, superseding the 100): exactly 50 engine codes,
-    // all present, no collisions. The 6 app-level codes (جل،
-    // مش، شب، سش، مد، اع) are NOT here — the app
-    // intercepts them before the line reaches the engine.
+    // The 37-shortcut table (owner's correction 2026-11-05
+    // ~22:11, superseding the 100): exactly 37 codes, all
+    // present, no collisions. The 3 app-level codes (جل،
+    // مد، اع) are NOT here — the app intercepts them before
+    // the line reaches the engine.
     // Change 2026-11-06 (owner's whole-table no-alif rule):
     // خج/طن/طع/جذ/قو left the engine table and جد left the
     // app table; عع/نب/اب/تم/ال/كا joined the engine table
     // — 44 engine codes + 6 app codes = 50.
+    // Change 2026-11-08 (owner's «اكتب دول كاملين»):
+    // بم/بع/مس/مع/اد/اق/حع/مى/ال/كا left the engine table
+    // and مش/شب/سش left the app table, to their full
+    // phrases — 34 engine codes + 3 app codes = 37.
     #[test]
-    fn shortcut_table_is_fifty_unique_codes() {
+    fn shortcut_table_is_thirty_seven_unique_codes() {
         let codes = [
             "ات", "مح", "نم", "شم", "حم", "حف", "سم", "قم", "اف", "شف", "عب", "عن", "عس",
-            "عك", "بم", "بع", "عش", "حج", "شر", "اك", "وج", "ام", "تم", "عم", "اس", "عر",
-            "مس", "اص", "مع", "اد", "اق", "حع", "مى", "رع", "تا", "وق", "نو", "اج", "اط",
-            "عع", "نب", "اب", "ال", "كا",
+            "عك", "عش", "حج", "شر", "اك", "وج", "ام", "تم", "عم", "اس", "عر",
+            "اص", "رع", "تا", "وق", "نو", "اج", "اط",
+            "عع", "نب", "اب",
         ];
-        assert_eq!(codes.len(), 44, "engine codes (50 total - 6 app-level)");
+        assert_eq!(codes.len(), 34, "engine codes (37 total - 3 app-level)");
         let mut seen = std::collections::HashSet::new();
         for code in codes {
             assert!(shortcut_def(code).is_some(), "missing code: {}", code);
             assert!(seen.insert(code), "duplicate code: {}", code);
         }
-        // The 9 original codes stay inside the 50.
+        // The 9 original codes stay inside the 37.
         for code in ["ات", "مح", "نم", "شم", "حم", "حف", "سم", "قم", "اف"] {
             assert!(shortcut_def(code).is_some(), "original code lost: {}", code);
         }
         // App-level codes must NOT be engine shortcuts.
-        for code in ["جل", "مش", "شب", "سش", "مد", "اع"] {
+        for code in ["جل", "مد", "اع"] {
             assert!(shortcut_def(code).is_none(), "app code leaked into engine: {}", code);
         }
         // The removed codes are gone from both tables.
-        for code in ["خج", "طن", "طع", "جذ", "قو", "جد"] {
+        for code in [
+            "خج", "طن", "طع", "جذ", "قو", "جد",
+            "بم", "بع", "مس", "مع", "اد", "اق", "حع", "مى", "ال", "كا",
+            "مش", "شب", "سش",
+        ] {
             assert!(shortcut_def(code).is_none(), "removed code still present: {}", code);
         }
     }
@@ -2007,9 +2235,9 @@ mod tests {
         assert_eq!(o.output, "٦\n");
         let o = r.feed("عك ملف.txt");
         assert_eq!(o.output, "٦\n");
-        let o = r.feed("بم ألف ملف.txt");
+        let o = r.feed("ابحث في ملف ألف ملف.txt");
         assert_eq!(o.output, "ألف\n");
-        let o = r.feed("بع ملف");
+        let o = r.feed("ابحث عن ملف ملف");
         assert!(o.output.contains("ملف.txt"), "got: {}", o.output);
         assert!(o.output.contains("فرعي/ملف-داخلي.txt"), "got: {}", o.output);
         let o = r.feed("عش");
@@ -2045,31 +2273,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // Text and numbers through the shortcuts: sum, min,
-    // max, convert, range, random, echo. (طن/طع/جذ/قو left
-    // the table 2026-11-06 under the no-alif rule; their
-    // builtins — طول/مطلق/رياضيات.جذر/رياضيات.قوة — still
-    // work in programs.)
+    // Text and numbers: random and echo stay shortcuts; sum,
+    // min, max, convert and range left the table 2026-11-08
+    // (owner's «اكتب دول كاملين») — their plain builtins
+    // مجموع/أدنى/أقصى/عدد/مدى take a list (مجموع/أدنى/
+    // أقصى) or comma-separated args in normal code.
+    // (طن/طع/جذ/قو left the table 2026-11-06 under the
+    // no-alif rule; their builtins — طول/مطلق/
+    // رياضيات.جذر/رياضيات.قوة — still work in programs.)
     #[test]
     fn repl_shortcut_numbers_and_text() {
         let mut r = Repl::new();
-        assert_eq!(r.feed("مع ١ ٢ ٣").output, "٦\n");
-        assert_eq!(r.feed("اد ٥ ٢ ٨").output, "٢\n");
-        assert_eq!(r.feed("اق ٥ ٢ ٨").output, "٨\n");
-        assert_eq!(r.feed("حع ٥").output, "٥\n");
-        assert_eq!(r.feed("مى ١ ٥").output, "١\n٢\n٣\n٤\n");
+        assert_eq!(r.feed("مجموع([١، ٢، ٣])").output, "٦\n");
+        assert_eq!(r.feed("أدنى([٥، ٢، ٨])").output, "٢\n");
+        assert_eq!(r.feed("أقصى([٥، ٢، ٨])").output, "٨\n");
+        assert_eq!(r.feed("عدد(\"٥\")").output, "٥\n");
+        assert_eq!(r.feed("مدى(١، ٥)").output, "[١, ٢, ٣, ٤]\n");
         let o = r.feed("رع");
         let n = parse_shortcut_number(o.output.trim());
         assert!(matches!(n, Some(v) if (0.0..1.0).contains(&v)), "got: {}", o.output);
         assert_eq!(r.feed("اط مرحبا بالعالم").output, "مرحبا بالعالم\n");
         // A non-number where a number is expected: short error.
-        let o = r.feed("مع ١ س");
-        assert!(o.output.contains("تتوقع أعدادا"), "got: {}", o.output);
+        let o = r.feed("عدد(\"نص\")");
+        assert!(o.output.contains("لا يمكن تحويل"), "got: {}", o.output);
     }
 
     // The 2026-11-06 replacements (owner's whole-table
-    // no-alif rule): عع/نب/اب/تم/ال/كا — each wired to a
-    // real action. The نب/اب error paths assume the serial
+    // no-alif rule): عع/نب/اب/تم — each wired to a
+    // real action. (ال/كا left the table 2026-11-08 to
+    // their full phrases «ارجع للبيت» و«كرر الأخير».)
+    // The نب/اب error paths assume the serial
     // runner (CI runs --test-threads=1): the snippet's
     // `استورد عمليات` resets the global process policy
     // right before the spawn, so no other test can
@@ -2092,14 +2325,14 @@ mod tests {
         assert!(o.output.contains("غير موجود"), "got: {}", o.output);
         let o = r.feed("اب ٩٩٩٩٩٩");
         assert!(o.output.contains("عملية غير معروفة"), "got: {}", o.output);
-        // ال: from a subdir back home — the prompt returns
-        // to "~ $ ".
+        // ارجع للبيت: from a subdir back home — the prompt
+        // returns to "~ $ ".
         let dir = shortcut_dir();
         std::fs::create_dir(dir.join("فرعي")).unwrap();
         let mut r = Repl::with_program_dir(dir.clone());
         let o = r.feed("نم فرعي");
         assert_eq!(o.prompt, "~/فرعي $ ");
-        let o = r.feed("ال");
+        let o = r.feed("ارجع للبيت");
         assert_eq!(o.output, "");
         assert_eq!(o.prompt, "~ $ ");
         // تم: details of a file, a dir, and a missing path.
@@ -2112,16 +2345,16 @@ mod tests {
         let o = r.feed("تم غائب.txt");
         assert!(o.output.contains("\"نوع\": \"غير موجود\""), "got: {}", o.output);
         let _ = std::fs::remove_dir_all(&dir);
-        // كا: rerun the last line (!!). Empty history is a
-        // short Arabic error; كا never reruns itself.
+        // كرر الأخير: rerun the last line (!!). Empty history
+        // is a short Arabic error; it never reruns itself.
         let mut r = Repl::new();
-        let o = r.feed("كا");
+        let o = r.feed("كرر الأخير");
         assert!(o.output.contains("لا يوجد سطر سابق"), "got: {}", o.output);
         assert_eq!(r.feed("اط مرحبا").output, "مرحبا\n");
-        assert_eq!(r.feed("كا").output, "مرحبا\n");
-        assert_eq!(r.feed("كا").output, "مرحبا\n");
+        assert_eq!(r.feed("كرر الأخير").output, "مرحبا\n");
+        assert_eq!(r.feed("كرر الأخير").output, "مرحبا\n");
         assert_eq!(r.feed("س = ٥").output, "");
-        assert_eq!(r.feed("كا").output, "");
+        assert_eq!(r.feed("كرر الأخير").output, "");
         // The removed codes' builtins still work as code.
         assert_eq!(done_out(r.eval("طول(\"مرحبا\")")), "٥\n");
         assert_eq!(done_out(r.eval("مطلق(٠ - ٥)")), "٥\n");
@@ -2173,7 +2406,7 @@ mod tests {
     // تثبيت: الرفوض — الوسائط، وليس .نيفا، والخروج عن
     // المجلد، والمجلد، والغائب، واسم الوحدة الأصلية،
     // والمخطط غير http/https، والشبكة المغلقة (البوابة
-    // قبل الشبكة نفسها). والجدول يبقى 50: تثبيت ليس
+    // قبل الشبكة نفسها). والجدول يبقى 37: تثبيت ليس
     // كود اختصار أبدا.
     #[test]
     fn repl_full_command_install_rejections() {
@@ -2322,7 +2555,7 @@ mod tests {
         assert_eq!(o.output, "");
         let o = r.feed("عر");
         assert!(o.output.contains("س = ٥"), "got: {}", o.output);
-        let o = r.feed("مس");
+        let o = r.feed("امسح الجلسة");
         assert!(!o.ended);
         let o = r.feed("عر");
         assert!(!o.output.contains("س = ٥"), "got: {}", o.output);
@@ -2422,7 +2655,7 @@ mod tests {
         let _ = r.feed("استورد شبكة");
         let _ = r.feed("شبكة.اجلب(\"http://127.0.0.1:9/\")");
         assert_eq!(r.last_control(), ReplControl::NetworkNeeded);
-        let _ = r.feed("مس");
+        let _ = r.feed("امسح الجلسة");
         assert_eq!(r.last_control(), ReplControl::SessionCleared);
         let _ = r.feed("س = ٦");
         assert_eq!(r.last_control(), ReplControl::None);
@@ -2543,14 +2776,113 @@ mod tests {
         assert!(is_failed(r.eval("س")));
     }
 
-    // ك-2 (مهمة 7): الاختصارات تعمل على محرك VM — حع
-    // (عدد) يمر عبر VmSession::call_builtin مباشرة.
+    // ك-2 (مهمة 7): الدوال العادية تعمل على محرك VM —
+    // عدد/مجموع تمر عبر VmSession::call_builtin مباشرة.
+    // (حع/مع left the table 2026-11-08 — plain calls now.)
     #[test]
     fn repl_vm_shortcut_calls_builtin() {
         let mut r = Repl::new();
-        assert_eq!(r.feed("حع ٥").output, "٥\n");
-        assert_eq!(r.feed("مع ١ ٢ ٣").output, "٦\n");
+        assert_eq!(r.feed("عدد(\"٥\")").output, "٥\n");
+        assert_eq!(r.feed("مجموع([١، ٢، ٣])").output, "٦\n");
         assert_eq!(r.feed("مح").output, "~\n");
+    }
+
+    // العبارات الكاملة (2026-11-08، أمر المالك «اكتب دول
+    // كاملين»): المحرك الست — بحثان ومسح جلسة وتحويل
+    // ورجوع للبيت وتكرار — مسارات سعيدة ورفوض وسائط.
+    #[test]
+    fn repl_full_phrases() {
+        let dir = shortcut_dir();
+        std::fs::write(dir.join("ملف.txt"), "ألف\nباء\n").unwrap();
+        std::fs::create_dir(dir.join("فرعي")).unwrap();
+        let mut r = Repl::with_program_dir(dir.clone());
+        // ابحث في ملف: نمط + اسم.
+        let o = r.feed("ابحث في ملف ألف ملف.txt");
+        assert_eq!(o.output, "ألف\n");
+        // ابحث عن ملف: اسم.
+        let o = r.feed("ابحث عن ملف ملف");
+        assert!(o.output.contains("ملف.txt"), "got: {}", o.output);
+        // حول إلى عدد: نص (بلا شدة على الواو).
+        assert_eq!(r.feed("حول إلى عدد ٥").output, "٥\n");
+        // الفاصلة العشرية العربية ٫ تعمل كما كانت في حع
+        // القديم (المعامل يُحلَّل عددا أولا قبل التمرير).
+        assert_eq!(r.feed("حول إلى عدد ٣٫٥").output, "٣٫٥\n");
+        // نص ليس عددا: خطأ عربي قصير.
+        let o = r.feed("حول إلى عدد نص");
+        assert!(o.output.contains("لا يمكن تحويل"), "got: {}", o.output);
+        // ارجع للبيت: من فرعي إلى البيت.
+        let o = r.feed("نم فرعي");
+        assert_eq!(o.prompt, "~/فرعي $ ");
+        let o = r.feed("ارجع للبيت");
+        assert_eq!(o.output, "");
+        assert_eq!(o.prompt, "~ $ ");
+        // امسح الجلسة: تعيد ضبط المحرك كـ :مسح تماما.
+        let o = r.feed("س = ٥");
+        assert_eq!(o.output, "");
+        let o = r.feed("امسح الجلسة");
+        assert!(!o.ended);
+        let o = r.feed("س");
+        assert!(o.output.contains("متغير غير معرف"), "got: {}", o.output);
+        // كرر الأخير: بلا سطر سابق خطأ قصير؛ وبعده يعيد
+        // تنفيذ آخر سطر، ولا يعيد تنفيذ نفسه أبدا.
+        let o = r.feed("كرر الأخير");
+        assert!(o.output.contains("لا يوجد سطر سابق"), "got: {}", o.output);
+        assert_eq!(r.feed("اط مرحبا").output, "مرحبا\n");
+        assert_eq!(r.feed("كرر الأخير").output, "مرحبا\n");
+        assert_eq!(r.feed("كرر الأخير").output, "مرحبا\n");
+        // رفوض الوسائط: بنفس أسلوب الاختصارات.
+        let o = r.feed("ابحث في ملف ألف");
+        assert!(o.output.contains("تتوقع 2 معاملات لكن أعطيت 1"), "got: {}", o.output);
+        let o = r.feed("ابحث في ملف ألف ملف.txt زيادة");
+        assert!(o.output.contains("تتوقع 2 معاملات لكن أعطيت 3"), "got: {}", o.output);
+        let o = r.feed("ابحث عن ملف");
+        assert!(o.output.contains("تتوقع 1 معاملات لكن أعطيت 0"), "got: {}", o.output);
+        let o = r.feed("حول إلى عدد");
+        assert!(o.output.contains("تتوقع 1 معاملات لكن أعطيت 0"), "got: {}", o.output);
+        let o = r.feed("امسح الجلسة زيادة");
+        assert!(o.output.contains("تتوقع بدون معاملات لكن أعطيت 1"), "got: {}", o.output);
+        let o = r.feed("ارجع للبيت زيادة");
+        assert!(o.output.contains("تتوقع بدون معاملات لكن أعطيت 1"), "got: {}", o.output);
+        let o = r.feed("كرر الأخير زيادة");
+        assert!(o.output.contains("تتوقع بدون معاملات لكن أعطيت 1"), "got: {}", o.output);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // الأكواد المحذوفة (2026-11-08) لا تنفذ اختصارا أبدا
+    // بعد الحذف: تسقط إلى الكود وتخطئ كاسم غير معرف،
+    // بلا فعل — فـ«بم» لا تبحث، و«مس» لا تمسح الجلسة،
+    // و«كا» لا تكرر.
+    #[test]
+    fn repl_removed_codes_do_not_execute() {
+        let dir = shortcut_dir();
+        std::fs::write(dir.join("ملف.txt"), "ألف\n").unwrap();
+        let mut r = Repl::with_program_dir(dir.clone());
+        let o = r.feed("س = ٥");
+        assert_eq!(o.output, "");
+        for line in [
+            "بم ألف ملف.txt",
+            "بع ملف",
+            "مس",
+            "مع ١ ٢",
+            "اد ٥ ٢",
+            "اق ٥ ٢",
+            "حع ٥",
+            "مى ١ ٥",
+            "ال",
+            "كا",
+        ] {
+            let o = r.feed(line);
+            assert!(
+                o.output.contains("متغير غير معرف"),
+                "line {}: got: {}",
+                line,
+                o.output
+            );
+            assert!(!o.ended, "line {} ended the session", line);
+        }
+        // و«مس» لم تمسح الجلسة: س ما زالت ٥.
+        assert_eq!(r.feed("س").output, "٥\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     // ك-2 (مهمة 7): إغلاق معرّف في سطر يبقى قابلا للاستدعاء
@@ -2566,5 +2898,141 @@ mod tests {
         assert_eq!(done_out(r.eval("أ = اصنع_عداد()")), "");
         assert_eq!(done_out(r.eval("أ()")), "١\n");
         assert_eq!(done_out(r.eval("أ()")), "٢\n");
+    }
+
+    /// مجلد مؤقت لاختبارات `شغّل` — ملفات فقط، ويُمسح
+    /// في نهاية كل اختبار.
+    fn run_test_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "niva-run-{}-{}",
+            std::process::id(),
+            tag
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// برنامج مثال بشرطة في اسمه يستورد وحدة: العرض
+    /// المصغر لتدفق NivaDB المستهدف.
+    fn write_dashed_example(dir: &std::path::Path) {
+        std::fs::write(dir.join("قاعدة.نيفا"), "صدر قيمة\nقيمة = ٤٢\n").unwrap();
+        std::fs::write(
+            dir.join("مثال-أول.نيفا"),
+            "استورد قاعدة\nاطبع قاعدة.قيمة\nمتغير_البرنامج = ٥\n",
+        )
+        .unwrap();
+    }
+
+    // اجتماع 43 §58 + تجاوز المالك «بلا تعقيد»: `شغّل`
+    // بالاسم العاري وبالاسم الكامل، بملف بشرطة يستورد
+    // وحدة — والجلسة معزولة (متغير البرنامج لا يتسرب)
+    // والتفاعلي حي بعد التشغيل.
+    #[test]
+    fn repl_run_command_dashed_name_and_isolation() {
+        let dir = run_test_dir("dash");
+        write_dashed_example(&dir);
+        let mut r = Repl::with_program_dir(dir.clone());
+        // الاسم العاري بلا امتداد (الإلحاق التلقائي).
+        let o = r.feed("شغّل مثال-أول");
+        assert_eq!(o.output, "٤٢\n");
+        assert!(!o.ended);
+        // والصيغة القانونية بلا تشكيل تعمل أيضا.
+        let o = r.feed("شغل مثال-أول");
+        assert_eq!(o.output, "٤٢\n");
+        // متغير البرنامج لا يتسرب إلى التفاعلي.
+        let o = r.feed("متغير_البرنامج");
+        assert!(
+            o.output.contains("متغير غير معرف"),
+            "got: {}",
+            o.output
+        );
+        // والاسم الكامل بالامتداد يشغّل أيضا.
+        let o = r.feed("شغّل مثال-أول.نيفا");
+        assert_eq!(o.output, "٤٢\n");
+        // والتفاعلي حي بعد التشغيلين.
+        assert_eq!(r.feed("١ + ١").output, "٢\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // اجتماع 43 §58: `شغّل` على المفسر أيضا — جلسة
+    // جديدة على محرك التفاعلي الحالي لا على الافتراضي.
+    #[test]
+    fn repl_run_command_interpreter_mode() {
+        let dir = run_test_dir("interp");
+        write_dashed_example(&dir);
+        let mut r = Repl::with_program_dir_interpreter(dir.clone());
+        let o = r.feed("شغّل مثال-أول");
+        assert_eq!(o.output, "٤٢\n");
+        assert_eq!(r.feed("١ + ١").output, "٢\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // اجتماع 43 §58 + تجاوز المالك: الأخطاء العربية
+    // القصيرة — ملف غائب، صفر معاملات، معاملات زائدة،
+    // اسم فيه مسار — والتفاعلي حي بعد كل خطأ.
+    #[test]
+    fn repl_run_command_errors() {
+        let dir = run_test_dir("err");
+        write_dashed_example(&dir);
+        let mut r = Repl::with_program_dir(dir.clone());
+        let o = r.feed("شغّل غائب");
+        assert!(o.output.contains("غير موجود"), "got: {}", o.output);
+        assert!(o.output.contains("غائب.نيفا"), "got: {}", o.output);
+        let o = r.feed("شغّل");
+        assert!(
+            o.output.contains("معاملا واحدا"),
+            "got: {}",
+            o.output
+        );
+        let o = r.feed("شغّل أ ب");
+        assert!(
+            o.output.contains("معاملا واحدا"),
+            "got: {}",
+            o.output
+        );
+        let o = r.feed("شغّل ../غائب.نيفا");
+        assert!(o.output.contains("بلا مسار"), "got: {}", o.output);
+        let o = r.feed("شغّل مجلد/ملف.نيفا");
+        assert!(o.output.contains("بلا مسار"), "got: {}", o.output);
+        assert_eq!(r.feed("١ + ١").output, "٢\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // اجتماع 43 §58: خطأ وقت التشغيل في البرنامج يُطبع
+    // بالعربية (بعد مخرجاته الجزئية) ويعود التحكم إلى
+    // الموجه بلا خروج من التفاعلي.
+    #[test]
+    fn repl_run_command_runtime_error_returns_to_prompt() {
+        let dir = run_test_dir("rterr");
+        std::fs::write(dir.join("خاطئ.نيفا"), "اطبع ١\nس = ١ / ٠\n").unwrap();
+        let mut r = Repl::with_program_dir(dir.clone());
+        let o = r.feed("شغّل خاطئ");
+        assert!(o.output.starts_with("١\n"), "got: {}", o.output);
+        assert!(o.output.contains("خطأ"), "got: {}", o.output);
+        assert!(!o.ended);
+        assert_eq!(r.feed("٢ + ٢").output, "٤\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // اجتماع 43 §58: `شغّل` تفاعلي فقط — لا دالة
+    // برنامجية: من استدعاه من الكود يأخذ خطأ الاسم غير
+    // المعرف المعتاد.
+    #[test]
+    fn repl_run_command_not_a_builtin() {
+        let mut r = Repl::new();
+        let failed = match r.eval("شغّل(\"x.نيفا\")") {
+            ReplEval::Failed { error, .. } => error,
+            ReplEval::Done { .. } => panic!("expected Failed, got Done"),
+            ReplEval::Incomplete => panic!("expected Failed, got Incomplete"),
+        };
+        assert!(
+            failed.contains("متغير غير معرف"),
+            "got: {}",
+            failed
+        );
+        // المحلل يجرّد الشدة فيبلغ الاسم بلا شدة (درس
+        // المهمة 24): «شغل» لا «شغّل».
+        assert!(failed.contains("شغل"), "got: {}", failed);
     }
 }

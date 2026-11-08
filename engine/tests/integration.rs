@@ -1343,7 +1343,7 @@ fn github_mock_server() -> u16 {
                         base, base
                     ),
                 ),
-                // مسار فيه ملفان — رفض ساردا الأسماء.
+                // مسار فيه ملفان — يُثبَّتان معا (تثبيت-الكل).
                 "/repos/owner/repo/contents/sub" => (
                     "200 OK",
                     format!(
@@ -1407,13 +1407,16 @@ fn install_github_repo_both_modes() {
     }
 }
 
-/// تثبيت من رابط مستودع فيه ملفان في الوضعين: الرفض
-/// يُمسك بـ حاول/ماعدا ويُطبع ماركر — بلا ملف مكتوب.
+/// تثبيت-الكل من رابط مستودع فيه ملفان في الوضعين:
+/// الملفان يُثبَّتان معا ثم يُستورد أحدهما وتُطبع
+/// قيمته — اجتماع 43 §58 استبدل الرفض القديم لأكثر
+/// من ملف بهذا المسار، فهذا الاختبار يثبت السلوك
+/// الجديد لا القديم.
 #[test]
-fn install_github_repo_multiple_refused_both_modes() {
+fn install_github_repo_multiple_install_all_both_modes() {
     let port = github_mock_server();
     let api_base = format!("http://127.0.0.1:{}", port);
-    let prog = "حاول:\n    تثبيت(\"https://github.com/owner/repo/tree/main/sub\")\nماعدا:\n    اطبع \"أكثر من واحد كما يجب\"\n";
+    let prog = "اطبع تثبيت(\"https://github.com/owner/repo/tree/main/sub\")\nاستورد a\nاطبع a.قيمة\n";
     for interpreter in [true, false] {
         let flags: &[&str] = if interpreter {
             &[
@@ -1428,7 +1431,10 @@ fn install_github_repo_multiple_refused_both_modes() {
         let (out, err, code) =
             run_src_flags_env(prog, flags, &[("NIVA_GITHUB_API_BASE", &api_base)]);
         assert_eq!(code, 0, "failed: stderr={}", err);
-        assert_eq!(out, "أكثر من واحد كما يجب\n");
+        assert_eq!(
+            out,
+            "ثُبّتت الوحدة a\nبصمة الملف: 4cee6f791f5495b679f4a5317bd3afccab74d827761164d6b4a4e4f76770d249\nثُبّتت الوحدة b\nبصمة الملف: 4cee6f791f5495b679f4a5317bd3afccab74d827761164d6b4a4e4f76770d249\nثُبّت ٢ من ٢ (تُخطَّى ٠)\n٤٢\n"
+        );
     }
 }
 

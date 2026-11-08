@@ -19,14 +19,17 @@
 //! - رابط مستودع جيت هاب `github.com/<مالك>/<مستودع>`
 //!   (ومسار فرعي `/tree/<فرع>/<مسار>` إن ورد): يُجلب
 //!   سرد المحتويات من واجهة جيت هاب عبر `اجلب` نفسها؛
-//!   فإن وُجد ملف `.نيفا` واحد فقط ثُبّت، وأكثر من واحد
-//!   يُرفض ساردا الأسماء بلا تخمين، ولا ملف يُرفض صراحة.
-//!   ومسار يشير إلى ملف `.نيفا` مفرد يُثبَّت مباشرة.
+//!   فإن وُجد ملف `.نيفا` واحد ثُبّت وحده، وملفان
+//!   فأكثر ثُبّتت كلها مرة واحدة (تثبيت-الكل: المستوى
+//!   الأعلى فقط، سقف 20 ملفا و5 ميغابايت إجمالا،
+//!   والمتعارض مع مثبَّت بنفس الاسم يُتخطَّى مع ملاحظة)،
+//!   ولا ملف يُرفض صراحة. ومسار يشير إلى ملف `.نيفا`
+//!   مفرد يُثبَّت مباشرة.
 //! - رابط إصدار جيت هاب `github.com/<مالك>/<مستودع>
 //!   /releases/tag/<وسم>`: تُجلب أصول الإصدار من الواجهة؛
 //!   فإن وُجد أصل `.نيفا` واحد نُزّل من رابطه المباشر
-//!   وثُبّت، وأكثر من واحد يُرفض ساردا الأسماء، ولا أصل
-//!   يُرفض صراحة.
+//!   وثُبّت، وأكثر من واحد ثُبّتت كلها مرة واحدة
+//!   (تثبيت-الكل كما في المستودع)، ولا أصل يُرفض صراحة.
 //! - روابط github.com بصيغ أخرى (blob/pull/issues) مرفوضة
 //!   صراحة — فلا يُنزَّل HTML صفحة كملف `.نيفا` أبدا.
 //!
@@ -70,8 +73,9 @@
 //!   إطلاقا في أي رسالة من هذه الوحدة.
 //! - الأداة المثبّتة برنامج نيفا عادي في مسار الاستيراد
 //!   فقط — لا مساس بالمكتبة الأصلية ولا بالمحرك، ولا
-//!   أمر تشغيل جديد: يشغّلها المستخدم بأوامرها هي
-//!   (`نيفا <اسم>.نيفا` أو `استورد`).
+//!   أمر تشغيل جديد في الكود: يشغّلها المستخدم بأوامرها
+//!   هي (`نيفا <اسم>.نيفا` أو `استورد` أو أمر التفاعلي
+//!   `شغّل <اسم>.نيفا`).
 
 use crate::device::{parse_json, Json};
 use crate::error::{ErrorKind, RioError, RioResult};
@@ -455,14 +459,51 @@ fn niva_files_in_listing(json: &Json, line: usize, col: usize) -> RioResult<Vec<
     Ok(out)
 }
 
-/// اختر الملف الواحد من قائمة: صفر يُرفض صراحة، وأكثر
-/// من واحد يُرفض ساردا الأسماء بلا تخمين.
-fn pick_single_file(
-    files: Vec<(String, String)>,
-    where_ar: &str,
+/// عدد بأرقام مشرقية لرسائل تثبيت-الكل — نفس تنسيق
+/// مخرجات المحرك (أرقام `اطبع` المشرقية).
+fn eastern_number(n: usize) -> String {
+    Value::Number(n as f64).fmt_value()
+}
+
+/// سقف ملفات تثبيت-الكل: يُفحص من عدد السرد قبل أي
+/// تنزيل — فلا يبدأ تثبيت ضخم أبدا.
+const INSTALL_ALL_MAX_FILES: usize = 20;
+/// سقف بايتات تثبيت-الكل إجمالا (5 ميغابايت) على مجموع
+/// البايتات المنزَّلة — بلا احتساب المتخطَّى (لا يُنزَّل).
+const INSTALL_ALL_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+/// خطأ توقف في تثبيت-الكل: يسمّي الملف وعدد ما ثُبّت
+/// قبله — فإعادة التشغيل تعرف أين توقفت وتُكمل الناقص.
+fn install_all_stop(
+    stem: &str,
+    installed: usize,
+    reason: &str,
     line: usize,
     col: usize,
-) -> RioResult<(String, String)> {
+) -> RioError {
+    RioError::new(
+        ErrorKind::Io,
+        format!(
+            "تعذّر تثبيت {} (ثُبّت {} قبله): {}",
+            stem,
+            eastern_number(installed),
+            reason
+        ),
+        line,
+        col,
+    )
+}
+
+/// ثبّت ملفات من سرد (مستودع أو إصدار): صفر يُرفض
+/// صراحة، وواحد يسلك مسار الملف المفرد حرفيا،
+/// واثنان فأكثر يسلكان مسار تثبيت-الكل.
+fn install_listed_files(
+    files: Vec<(String, String)>,
+    where_ar: &str,
+    program_dir: &Path,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
     match files.len() {
         0 => Err(RioError::new(
             ErrorKind::Io,
@@ -470,24 +511,123 @@ fn pick_single_file(
             line,
             col,
         )),
-        1 => Ok(files.into_iter().next().unwrap()),
-        _ => {
-            let names = files
-                .iter()
-                .map(|(n, _)| n.as_str())
-                .collect::<Vec<_>>()
-                .join(" / ");
-            Err(RioError::new(
+        1 => {
+            let (name, url) = files.into_iter().next().unwrap();
+            install_github_file(&name, &url, program_dir, line, col)
+        }
+        _ => install_all_files(files, program_dir, line, col),
+    }
+}
+
+/// ثبّت كل ملفات `.نيفا` في سرد (مستودع أو إصدار):
+/// المستوى الأعلى فقط، بترتيب السرد. المتعارض مع
+/// مثبَّت بنفس الاسم يُتخطَّى مع ملاحظة ويُثبَّت
+/// الباقي؛ وأول فشل تنزيل/كتابة أو تجاوز للسقف
+/// الإجمالي يوقف التثبيت بخطأ يسمّي الملف وعدد ما
+/// ثُبّت قبله، وما ثُبّت يبقى مثبَّتا. والملخص سطر
+/// واحد بالأرقام المشرقية؛ وإن كان المثبَّت صفرا
+/// (الكل متخطَّى) فخطأ صريح بدل نجاح صامت.
+fn install_all_files(
+    files: Vec<(String, String)>,
+    program_dir: &Path,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    if files.len() > INSTALL_ALL_MAX_FILES {
+        return Err(RioError::new(
+            ErrorKind::Io,
+            format!(
+                "تثبيت-الكل يقبل {} ملفا على الأكثر (وجد {})",
+                eastern_number(INSTALL_ALL_MAX_FILES),
+                eastern_number(files.len())
+            ),
+            line,
+            col,
+        ));
+    }
+    let total = files.len();
+    let mut installed = 0usize;
+    let mut skipped = 0usize;
+    let mut total_bytes: u64 = 0;
+    let mut lines: Vec<String> = Vec::new();
+    for (name, url) in &files {
+        let stem = match validate_module_filename(name, line, col) {
+            Ok(stem) => stem,
+            Err(e) => {
+                return Err(install_all_stop(name, installed, &e.message, line, col))
+            }
+        };
+        // متعارض مع مثبَّت بنفس الاسم: يُتخطَّى بلا
+        // تنزيل وبلا كتابة — الملف المثبَّت لا يُمس.
+        if program_dir.join(format!("{}.نيفا", stem)).exists() {
+            skipped += 1;
+            lines.push(format!("تُخطَّى {}: مثبّتة أصلا", stem));
+            continue;
+        }
+        let body = match crate::network::fetch(url, line, col) {
+            Ok(Value::Str(text)) => text,
+            Ok(_) => {
+                return Err(install_all_stop(
+                    &stem,
+                    installed,
+                    "الرابط لا يشير إلى ملف .نيفا",
+                    line,
+                    col,
+                ))
+            }
+            Err(e) => {
+                return Err(install_all_stop(&stem, installed, &e.message, line, col))
+            }
+        };
+        let body_len = body.len() as u64;
+        if total_bytes + body_len > INSTALL_ALL_MAX_BYTES {
+            return Err(RioError::new(
                 ErrorKind::Io,
                 format!(
-                    "يوجد أكثر من ملف .نيفا {}: {} — ثبّت الملف برابطه المباشر",
-                    where_ar, names
+                    "تجاوز سقف {} ميغابايت عند {} (ثُبّت {} قبله)",
+                    eastern_number(5),
+                    stem,
+                    eastern_number(installed)
                 ),
                 line,
                 col,
-            ))
+            ));
+        }
+        match write_installed_module(program_dir, stem.clone(), body, true, line, col) {
+            Ok(Value::Str(msg)) => {
+                lines.push(msg);
+                installed += 1;
+                total_bytes += body_len;
+            }
+            Ok(_) => {
+                return Err(install_all_stop(
+                    &stem,
+                    installed,
+                    "رد غير مفهوم",
+                    line,
+                    col,
+                ))
+            }
+            Err(e) => {
+                return Err(install_all_stop(&stem, installed, &e.message, line, col))
+            }
         }
     }
+    if installed == 0 {
+        return Err(RioError::new(
+            ErrorKind::Io,
+            "كل الملفات مثبّتة أصلا",
+            line,
+            col,
+        ));
+    }
+    lines.push(format!(
+        "ثُبّت {} من {} (تُخطَّى {})",
+        eastern_number(installed),
+        eastern_number(total),
+        eastern_number(skipped)
+    ));
+    Ok(Value::Str(lines.join("\n")))
 }
 
 /// نزّل ملف `.نيفا` من رابطه وثبّته في مسار الاستيراد
@@ -584,8 +724,7 @@ fn install_from_github(
                     ))
                 }
             };
-            let (name, url) = pick_single_file(files, where_ar, line, col)?;
-            install_github_file(&name, &url, program_dir, line, col)
+            install_listed_files(files, where_ar, program_dir, line, col)
         }
         GithubSource::Release { owner, repo, tag } => {
             let api_path = format!(
@@ -616,8 +755,7 @@ fn install_from_github(
                     }
                 }
             }
-            let (name, url) = pick_single_file(files, "في هذا الإصدار", line, col)?;
-            install_github_file(&name, &url, program_dir, line, col)
+            install_listed_files(files, "في هذا الإصدار", program_dir, line, col)
         }
     }
 }
@@ -1208,11 +1346,34 @@ mod tests {
                             base, base
                         ),
                     ),
-                    // مسار فيه ملفان — رفض ساردا الأسماء.
+                    // مسار فيه ملفان — تثبيت-الكل يثبّتهما معا.
                     "/repos/owner/repo/contents/sub" => (
                         "200 OK",
                         format!(
                             "[{{\"name\":\"a.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/a.نيفا\"}},{{\"name\":\"b.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/b.نيفا\"}}]",
+                            base, base
+                        ),
+                    ),
+                    // مسار فيه 21 ملفا — فوق سقف تثبيت-الكل
+                    // (20) فيُرفض قبل أي تنزيل.
+                    "/repos/owner/repo/contents/many" => {
+                        let items: Vec<String> = (0..21)
+                            .map(|i| {
+                                format!(
+                                    "{{\"name\":\"f{:02}.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/f{:02}.نيفا\"}}",
+                                    i, base, i
+                                )
+                            })
+                            .collect();
+                        ("200 OK", format!("[{}]", items.join(",")))
+                    }
+                    // مسار فيه ملفان كبيران (3 ميغابايت لكل
+                    // منهما) — مجموعهما فوق سقف 5 ميغابايت
+                    // فيتوقف الثاني بعد تثبيت الأول.
+                    "/repos/owner/repo/contents/big" => (
+                        "200 OK",
+                        format!(
+                            "[{{\"name\":\"big1.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/big1.نيفا\"}},{{\"name\":\"big2.نيفا\",\"type\":\"file\",\"download_url\":\"{}/files/big2.نيفا\"}}]",
                             base, base
                         ),
                     ),
@@ -1282,6 +1443,10 @@ mod tests {
                             base
                         ),
                     ),
+                    // ملفان كبيران لتثبيت-الكل (3 ميغابايت
+                    // لكل منهما) — قبل مسار /files/ العام.
+                    "/files/big1.نيفا" => ("200 OK", "x".repeat(3 * 1024 * 1024)),
+                    "/files/big2.نيفا" => ("200 OK", "x".repeat(3 * 1024 * 1024)),
                     _ if path.starts_with("/files/") => {
                         ("200 OK", file_body.to_string())
                     }
@@ -1394,23 +1559,9 @@ mod tests {
         crate::network::allow_local_host("127.0.0.1");
         let port = github_mock_server();
         let api_base = format!("http://127.0.0.1:{}", port);
-        // ملفان — الرفض يسرد الاسمين ولا يكتب شيئا.
-        let err = github_install(
-            &base,
-            &policy,
-            &api_base,
-            "https://github.com/owner/repo/tree/main/sub",
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("أكثر من ملف .نيفا"),
-            "got: {}",
-            err
-        );
-        assert!(err.to_string().contains("a.نيفا"), "got: {}", err);
-        assert!(err.to_string().contains("b.نيفا"), "got: {}", err);
-        assert!(!base.join("a.نيفا").exists());
-        assert!(!base.join("b.نيفا").exists());
+        // ملفان — تثبيت-الكل يثبّتهما معا: مغطى
+        // باختبار install_github_repo_install_all
+        // المستقل أدناه، لا هنا.
         // لا ملف .نيفا.
         let err = github_install(
             &base,
@@ -1496,21 +1647,9 @@ mod tests {
         crate::network::allow_local_host("127.0.0.1");
         let port = github_mock_server();
         let api_base = format!("http://127.0.0.1:{}", port);
-        // أصلان — الرفض يسرد الاسمين.
-        let err = github_install(
-            &base,
-            &policy,
-            &api_base,
-            "https://github.com/owner/repo/releases/tag/v2",
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("أكثر من ملف .نيفا"),
-            "got: {}",
-            err
-        );
-        assert!(err.to_string().contains("a.نيفا"), "got: {}", err);
-        assert!(err.to_string().contains("b.نيفا"), "got: {}", err);
+        // أصلان — تثبيت-الكل يثبّتهما معا: مغطى
+        // باختبار install_github_release_install_all
+        // المستقل أدناه، لا هنا.
         // بلا أصل .نيفا.
         let err = github_install(
             &base,
@@ -1591,6 +1730,215 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(base.join("tool.نيفا")).unwrap(),
             "صدر قيمة\nقيمة = ٤٢\n"
+        );
+        crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_github_repo_install_all() {
+        // اجتماع 43 §58: مجلد فيه ملفان — تثبيت-الكل
+        // يثبّتهما معا: سطر لكل ملف + بصمته + سطر الملخص.
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("gh-all-repo");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        let got = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/tree/main/sub",
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            Value::Str(format!(
+                "ثُبّتت الوحدة a\nبصمة الملف: {}\nثُبّتت الوحدة b\nبصمة الملف: {}\nثُبّت ٢ من ٢ (تُخطَّى ٠)",
+                MOCK_FILE_FINGERPRINT, MOCK_FILE_FINGERPRINT
+            ))
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.join("a.نيفا")).unwrap(),
+            "صدر قيمة\nقيمة = ٤٢\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(base.join("b.نيفا")).unwrap(),
+            "صدر قيمة\nقيمة = ٤٢\n"
+        );
+        crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_github_release_install_all() {
+        // اجتماع 43 §58: إصدار بأصلين — تثبيت-الكل
+        // يثبّتهما معا بالصيغة نفسها.
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("gh-all-rel");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        let got = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/releases/tag/v2",
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            Value::Str(format!(
+                "ثُبّتت الوحدة a\nبصمة الملف: {}\nثُبّتت الوحدة b\nبصمة الملف: {}\nثُبّت ٢ من ٢ (تُخطَّى ٠)",
+                MOCK_FILE_FINGERPRINT, MOCK_FILE_FINGERPRINT
+            ))
+        );
+        assert!(base.join("a.نيفا").exists());
+        assert!(base.join("b.نيفا").exists());
+        crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_all_skip_and_resume() {
+        // اجتماع 43 §58: المتعارض يُتخطَّى مع ملاحظة
+        // ويُثبَّت الباقي؛ والملف المثبَّت لا يُمس؛
+        // وإعادة التشغيل حين يكون الكل مثبَّتا خطأ
+        // صريح بدل نجاح صامت.
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("gh-all-skip");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        std::fs::write(base.join("a.نيفا"), "قديم\n").unwrap();
+        let got = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/tree/main/sub",
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            Value::Str(format!(
+                "تُخطَّى a: مثبّتة أصلا\nثُبّتت الوحدة b\nبصمة الملف: {}\nثُبّت ١ من ٢ (تُخطَّى ١)",
+                MOCK_FILE_FINGERPRINT
+            ))
+        );
+        // المتخطَّى بقي كما هو — بلا استبدال.
+        assert_eq!(
+            std::fs::read_to_string(base.join("a.نيفا")).unwrap(),
+            "قديم\n"
+        );
+        assert!(base.join("b.نيفا").exists());
+        // الكل مثبَّت الآن — إعادة التشغيل خطأ صريح.
+        let err = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/tree/main/sub",
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("كل الملفات مثبّتة أصلا"),
+            "got: {}",
+            err
+        );
+        crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_all_count_cap() {
+        // اجتماع 43 §58: سقف 20 ملفا يُفحص قبل أي
+        // تنزيل — 21 ملفا تُرفض بلا كتابة.
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("gh-all-cap-n");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        let err = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/tree/main/many",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("٢٠"), "got: {}", err);
+        assert!(err.to_string().contains("٢١"), "got: {}", err);
+        assert!(!base.join("f00.نيفا").exists());
+        assert!(!base.join("f20.نيفا").exists());
+        crate::network::set_network_allowed(false);
+        cleanup(&base);
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn install_all_size_cap_and_resume() {
+        // اجتماع 43 §58: سقف 5 ميغابايت إجمالا — ملفان
+        // بثلاثة ميغابايت لكل منهما: الأول يُثبَّت،
+        // والثاني يوقف بخطأ يسمّيه وعدد ما ثُبّت قبله؛
+        // وإعادة التشغيل تُكمل الناقص (الأول يُتخطَّى
+        // والثاني يُثبَّت).
+        let _guard = install_test_lock();
+        let (base, _src_dir) = test_dirs("gh-all-cap-b");
+        let policy = test_policy(&base);
+        crate::network::set_network_allowed(true);
+        crate::network::allow_local_host("127.0.0.1");
+        let port = github_mock_server();
+        let api_base = format!("http://127.0.0.1:{}", port);
+        let err = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/tree/main/big",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("٥ ميغابايت"), "got: {}", err);
+        assert!(err.to_string().contains("big2"), "got: {}", err);
+        assert!(err.to_string().contains("١"), "got: {}", err);
+        assert_eq!(
+            std::fs::metadata(base.join("big1.نيفا")).unwrap().len(),
+            3 * 1024 * 1024
+        );
+        assert!(!base.join("big2.نيفا").exists());
+        // إعادة التشغيل تكمل الناقص.
+        let got = github_install(
+            &base,
+            &policy,
+            &api_base,
+            "https://github.com/owner/repo/tree/main/big",
+        )
+        .unwrap();
+        let text = match got {
+            Value::Str(s) => s,
+            _ => panic!("expected text value"),
+        };
+        assert!(
+            text.contains("تُخطَّى big1: مثبّتة أصلا"),
+            "got: {}",
+            text
+        );
+        assert!(
+            text.contains("ثُبّت ١ من ٢ (تُخطَّى ١)"),
+            "got: {}",
+            text
+        );
+        assert_eq!(
+            std::fs::metadata(base.join("big2.نيفا")).unwrap().len(),
+            3 * 1024 * 1024
         );
         crate::network::set_network_allowed(false);
         cleanup(&base);
