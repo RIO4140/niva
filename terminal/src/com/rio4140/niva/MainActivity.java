@@ -420,6 +420,16 @@ public class MainActivity extends Activity {
     private static final int BLACK_ACTIVE = 0xFF1A1A1A;
     private static final int BLACK_PROMPT = 0xFF00E676;
     private static final int ERROR_RED = 0xFFFF5252;
+    /** بادئات سطور المخرجات الملوّنة (أمر المالك 2026-11-08):
+     * سطر يبدأ بـ«خطأ» أو فيه «تعذّر» فهو خطأ (أحمر)،
+     * وسطر يبدأ بـ«ثُبّت» فهو نجاح تثبيت (أخضر)؛ فتُقرأ
+     * النتيجة من أول نظرة على خلفية سوداء. الصيغتان
+     * بالشدة وبلا شدة معا: المحرك يكتبها أحيانا بلا شدة
+     * («تعذر تشغيل المحرك») وأحيانا بها. */
+    private static final String ERROR_PREFIX = "خطأ";
+    private static final String CANNOT_WITH_SHADDA = "تعذّر";
+    private static final String CANNOT_PLAIN = "تعذر";
+    private static final String INSTALL_PREFIX = "ثُبّت";
     private static final int SUBTITLE_GRAY_DARK = 0xFF9A9A9A;
     private static final int SUBTITLE_GRAY_LIGHT = 0xFF5A5A5A;
 
@@ -1558,6 +1568,12 @@ public class MainActivity extends Activity {
         // أشرطة النظام قد تعود بعد مغادرة التطبيق؛ أعد
         // إخفاءها إن كان ملء الشاشة مفعّلا (v1.1.7 بند 30).
         applyFullscreen();
+        // إعادة مزامنة ألوان المظهر عند كل عودة للواجهة
+        // (شكوى المالك 2026-11-08: كتابة سوداء فجأة):
+        // إن انحرفت ألوان العرض عن حقول المظهر لأي سبب
+        // (تحديث، تبديل ليلي للنظام أثناء الخلفية)،
+        // تُعاد هنا قبل أن يرى المستخدم أي سطر.
+        applyThemeColors();
     }
 
     /** زر الرجوع (شكوى المالك 2026-11-05 ~22:56): ضغطة
@@ -2259,9 +2275,16 @@ public class MainActivity extends Activity {
         terminalView.setText(s.text.toString());
         terminalView.inputStart = s.inputStart;
         terminalView.programmatic = false;
+        // إعادة تأكيد ألوان الترمنال عند استعادة الجلسة
+        // (شكوى المالك 2026-11-08: كتابة سوداء فجأة):
+        // الخلفية والنص من حقول المظهر نفسها، فلا يبقى
+        // سطر بلون قديم إن انحرف العرض عنها.
+        terminalView.setBackgroundColor(colorBg);
+        terminalView.setTextColor(colorText);
         currentPromptSpan = null;
         currentPromptStart = -1;
         paintPrompt();
+        colorAllOutputLines();
         int end = terminalView.getText().length();
         terminalView.setSelection(end, end);
         // إصلاح التبديل (مهمة 12): setText يستبدل النص
@@ -5974,8 +5997,66 @@ public class MainActivity extends Activity {
 
     private void appendToTerminal(String chunk) {
         terminalView.programmatic = true;
+        int chunkStart = terminalView.getText().length();
         terminalView.getText().append(chunk);
+        colorOutputLines(chunkStart);
         terminalView.programmatic = false;
+    }
+
+    /** لون سطور المخرجات المكتملة بعد إلحاق قطعة (أمر المالك
+     * 2026-11-08): سطور الأخطاء بالأحمر وسطور نجاح التثبيت
+     * بالأخضر. القطع تصل مجزأة: يُفحص من بداية السطر الذي
+     * بدأت فيه القطعة (بالرجوع إلى \n السابقة)، ولا يُلوَّن
+     * سطر ناقص (بلا \n في نهايته) حتى يكتمل بقطعة لاحقة.
+     * كل سطر يُلوَّن مرة واحدة فقط: القطعة التالية تبدأ
+     * فحصها من سطر لم يُلوَّن بعد. التلوين في terminalView
+     * فقط؛ ونص الجلسة المخزّن يبقى نصا عاديا بلا spans. */
+    private void colorOutputLines(int chunkStart) {
+        Editable text = terminalView.getText();
+        int len = text.length();
+        if (len == 0) return;
+        int start = chunkStart;
+        if (start > len) start = len;
+        while (start > 0 && text.charAt(start - 1) != '\n') start--;
+        int pos = start;
+        while (pos < len) {
+            int eol = -1;
+            for (int i = pos; i < len; i++) {
+                if (text.charAt(i) == '\n') { eol = i; break; }
+            }
+            if (eol < 0) break;
+            int color = lineColor(text, pos, eol);
+            if (color != 0) {
+                text.setSpan(new ForegroundColorSpan(color), pos, eol,
+                        Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }
+            pos = eol + 1;
+        }
+    }
+
+    /** لون سطر واحد حسب محتواه: أحمر للخطأ، أخضر لنجاح
+     * التثبيت، 0 بلا لون. المقارنة على النص دون \n النهائية.
+     * سطر الموجّه («~ $ ...») لا يُلوَّن أبدا: موجّهه الأخضر
+     * من paintPrompt، فيبقى كما هو. */
+    private int lineColor(Editable text, int start, int end) {
+        String line = text.subSequence(start, end).toString();
+        if (line.startsWith("~")) return 0;
+        if (line.startsWith(ERROR_PREFIX)
+                || line.contains(CANNOT_WITH_SHADDA)
+                || line.contains(CANNOT_PLAIN)) {
+            return ERROR_RED;
+        }
+        for (String marker : FETCH_ERROR_MARKERS) {
+            if (line.contains(marker)) return ERROR_RED;
+        }
+        if (line.startsWith(INSTALL_PREFIX)) return promptColor;
+        return 0;
+    }
+
+    /** إعادة تلوين النص الكامل (عند استعادة الجلسة): setText
+     * يمحو كل الـspans، فيُعاد التلوين على السطور المكتملة. */
+    private void colorAllOutputLines() {
+        colorOutputLines(0);
     }
 
     /** لون الموجّه الحالي بالأخضر (داخل الترمنال فقط).
@@ -6485,6 +6566,7 @@ public class MainActivity extends Activity {
         s.inputStart = s.text.length();
         terminalView.inputStart = s.inputStart;
         paintPrompt();
+        colorAllOutputLines();
         scrollToBottomIfAuto();
     }
 
