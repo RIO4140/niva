@@ -2,6 +2,10 @@ package com.rio4140.niva;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -9,18 +13,33 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.UriPermission;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.database.Cursor;
+import android.provider.DocumentsContract;
 import android.provider.Settings;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
+import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.Typeface;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
+import android.media.MediaPlayer;
 import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
+import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -32,6 +51,7 @@ import android.text.Editable;
 import android.text.InputFilter;
 import android.text.InputType;
 import android.text.Spanned;
+import android.text.TextWatcher;
 import android.text.style.ForegroundColorSpan;
 import android.view.ActionMode;
 import android.view.Gravity;
@@ -52,18 +72,28 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputConnectionWrapper;
 import android.view.inputmethod.InputMethodManager;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
+import android.widget.DatePicker;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
+import android.widget.ListView;
+import android.widget.NumberPicker;
 import android.widget.PopupMenu;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.TimePicker;
 import android.widget.Toast;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -73,16 +103,22 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.TimeZone;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -140,6 +176,173 @@ public class MainActivity extends Activity {
      * يبدأ بهذا الحرف لا يظهر أبدا للمستخدم، ولا يمكن
      * لبرنامج نيفا طباعته. */
     private static final String CONTROL_PREFIX = "\u0001نيفا-تحكم:";
+
+    /** بادئة نتائج الحوار على stdin (المهمة 20): سطر
+     * يبدأ بها يقرؤه المحرك نتيجة حوار — قيمة أو إلغاء
+     * أو خطأ — فلا تُكتب أبدا في الترمنال. (وتُعاد
+     * لنتيجة التنبيه في المهمة 21 — البادئة نفسها.) */
+    private static final String DIALOG_RESULT_PREFIX = "\u0001نيفا-نتيجة:";
+
+    /** قناة تنبيهات برامج نيفا (المهمة 21) — تُنشأ
+     * تلقائيا عند أول نبّه؛ معرّف مختلف عن قناة
+     * الخدمة الأمامية فلا تتداخل الأهميتان. */
+    private static final String NOTIFY_CHANNEL_ID = "niva_notify";
+    /** رمز طلب إذن الإشعارات (أندرويد 13+). */
+    private static final int REQ_NOTIFY_PERMISSION = 2101;
+
+    // ===== خطوة ملفات .نيفا (المهمة 28، CATALOG-19) =====
+    /** رمزا منتقيي SAF: المنح والتشغيل. */
+    private static final int REQ_SAF_GRANT = 3101;
+    private static final int REQ_SAF_RUN = 3102;
+    /** سقف الشجرات الممنوحة (CATALOG-19 §3). */
+    private static final int MAX_GRANTS = 64;
+    /** سقف قراءة SAF (نص UTF-8 — CATALOG-19 §2). */
+    private static final int SAF_READ_CAP = 5 * 1024 * 1024;
+    /** مجلد الملفات المؤقتة داخل مجلد التطبيق. */
+    private static final String TEMP_DIR_NAME = "tmp";
+
+    /** تنبيه معلّق بانتظار إذن الإشعارات (المهمة 21):
+     * الجلسة + معرّف المحرك + العنوان + النص. */
+    private static class PendingNotify {
+        final Session session;
+        final long id;
+        final String title;
+        final String text;
+
+        PendingNotify(Session s, long i, String t, String x) {
+            session = s;
+            id = i;
+            title = t;
+            text = x;
+        }
+    }
+
+    /** شجرة ممنوحة (المهمة 28 — CATALOG-19 §3):
+     * معرّف رتيب من 1 + الاسم + عنوان الشجرة. */
+    private static class Grant {
+        final long id;
+        final String name;
+        final Uri uri;
+
+        Grant(long i, String n, Uri u) {
+            id = i;
+            name = n;
+            uri = u;
+        }
+    }
+
+    /** سجل الشجرات الممنوحة (ملك التطبيق — يبقى عبر
+     * الجلسات؛ والإبطال من إعدادات النظام فقط). */
+    private final ArrayList<Grant> grants = new ArrayList<>();
+    /** معرّف الشجرة التالي (رتيب من 1 — لا يُعاد
+     * استخدامه أبدا في عمر التطبيق). */
+    private long nextGrantId = 1;
+    /** الجلسة المنتظرة لنتيجة منتقي المنح. */
+    private Session safGrantSession = null;
+
+    /** طلب قراءة حساس معلّق (المهمة 25): الجلسة +
+     * المستمع + المهلة + علامة الإجابة (مرة واحدة
+     * بالضبط — حدث أو مهلة، أيهما أولا). */
+    private static class PendingSensor {
+        final Session session;
+        SensorEventListener listener;
+        Runnable timeout;
+        boolean answered;
+
+        PendingSensor(Session s) {
+            session = s;
+            answered = false;
+        }
+    }
+
+    /** طابور التنبيهات المعلّقة بإذن (قد يضم جلسات
+     * عدة — الإذن على مستوى النشاط). */
+    private final ArrayList<PendingNotify> pendingNotifies = new ArrayList<>();
+    /** طلب إذن إشعارات جارٍ (فلا حوار ثان فوق الأول). */
+    private boolean notifyPermissionRequestInFlight = false;
+    /** عدّاد معرّفات نظام التنبيهات — فريد عبر كل
+     * الجلسات (معرّف المحرك لكل عملية على حدة فقد
+     * يتكرر بين جلستين؛ ومعرّف النظام لا يتكرر أبدا). */
+    private int nextSystemNotifyId = 1;
+
+    /** نطق جهاز.انطق + محركات_النطق (المهمة 23):
+     * كائن TextToSpeech واحد على مستوى النشاط
+     * (تهيئة كسولة عند أول طلب) — لا واحد لكل جلسة. */
+    private TextToSpeech tts;
+    /** بدأت تهيئة TTS (فلا إنشاء ثان). */
+    private boolean ttsInitStarted = false;
+    /** اكتملت تهيئة TTS بنجاح. */
+    private boolean ttsReady = false;
+    /** فشلت تهيئة TTS (فلا إعادة محاولة صامتة). */
+    private boolean ttsInitFailed = false;
+    /** الصوت العربي متاح في المحرك الحالي. */
+    private boolean ttsArabicOk = false;
+    /** طلب نطق وصل قبل اكتمال التهيئة (المهمة 23):
+     * الجلسة + النص. */
+    private static class PendingSpeak {
+        final Session session;
+        final String text;
+
+        PendingSpeak(Session s, String t) {
+            session = s;
+            text = t;
+        }
+    }
+
+    /** طابور طلبات النطق المعلّقة بالتهيئة. */
+    private final ArrayList<PendingSpeak> pendingSpeaks = new ArrayList<>();
+    /** النطق الجاري الواحد في كل التطبيق (لا نطق
+     * ثانٍ متزامن — انظر CATALOG-15). */
+    private PendingSpeak speakingNow = null;
+    /** معرّف الملفوظ الجاري (لتمييز الردود القديمة). */
+    private String speakingUtteranceId = null;
+    /** عدّاد معرّفات الملفوظات — رتيب. */
+    private int nextSpeakUtterance = 1;
+
+    /** تشغيل صوت جهاز.شغّل_صوت + أوقف_صوت (المهمة 24):
+     * مشغّل MediaPlayer واحد على مستوى النشاط (تهيئة
+     * كسولة عند أول تشغيل) — لا واحد لكل جلسة؛
+     * والجلسة صاحبة الصوت الجاري (واحدة على الأكثر)
+     * — وتشغيل جديد يوقف الجاري ويستبدله. */
+    private MediaPlayer audioPlayer;
+    /** الجلسة صاحبة الصوت الجاري (null إن لم يكن
+     * شيء يشتغل). */
+    private Session audioPlayingSession = null;
+
+    /** قراءة حساس جهاز.حساس (المهمة 25):
+     * مدير حساسات كسول + قائمة طلبات القراءة
+     * المعلقة (كل طلب بمستمعه ومهلته وعلامة
+     * إجابته وجلسته — وعادة عنصر واحد؛ وطلب ثانٍ
+     * مستمع مستقل لا يرفض). */
+    private SensorManager sensorManager;
+    private final ArrayList<PendingSensor> pendingSensors = new ArrayList<>();
+
+    /** استماع جهاز.اسمع (المهمة 26):
+     * رمز طلب إذن الميكروفون. */
+    private static final int REQ_LISTEN_PERMISSION = 2102;
+
+    /** طلب استماع معلّق (المهمة 26): الجلسة فقط —
+     * الخانة الواحدة للحالات الثلاث (إفصاح معروض /
+     * إذن مطلوب / استماع جارٍ). */
+    private static class PendingListen {
+        final Session session;
+
+        PendingListen(Session s) {
+            session = s;
+        }
+    }
+
+    /** كائن التعرف الصوتي (كسول — يُنشأ عند أول
+     * استماع)؛ والاستماع الجاري الواحد في كل
+     * التطبيق (لا استماع ثانٍ متزامن — انظر
+     * CATALOG-18)؛ وطلب إذن ميكروفون جارٍ (فلا
+     * حوار ثان فوق الأول)؛ وقبول الإفصاح مرة في
+     * كل تشغيل؛ ومرجع حوار الإفصاح المعروض. */
+    private SpeechRecognizer speechRecognizer;
+    private PendingListen listeningNow = null;
+    private boolean listenPermissionRequestInFlight = false;
+    private boolean speechDisclosureAccepted = false;
+    private AlertDialog listenDisclosureDialog = null;
 
     /** إعدادات محفوظة (SharedPreferences) + ملف
      * niva.properties في مجلد المحرك (قابل للتحرير من
@@ -221,25 +424,27 @@ public class MainActivity extends Activity {
     private static final int SUBTITLE_GRAY_LIGHT = 0xFF5A5A5A;
 
     /** أكواد الاختصارات التي يعالجها التطبيق نفسه (لا المحرك):
-     * جلسات / جلسة جديدة / مسح الشاشة / تنظيف الشاشة /
+     * جلسات / مسح الشاشة / تنظيف الشاشة /
      * حالة الشبكة / السماح بالشبكة / مدة الجلسة /
-     * إعادة تشغيل الجلسة / تحديث نيفا (v1.1.4). */
+     * إعادة تشغيل الجلسة / تحديث نيفا (v1.1.4).
+     * (جد خرج 2026-11-06 بقاعدة بلا-ألف — إنشاء الجلسة
+     * من الدرج والقائمة يبقى.) */
     private static final String[] APP_CODES = {
-            "جل", "جد", "مش", "تنظيف", "شب", "سش", "مد", "اع", "تن"
+            "جل", "مش", "تنظيف", "شب", "سش", "مد", "اع", "تن"
     };
 
     /** صف المفاتيح (أمر المالك 2026-11-05 ~23:02): الأكواد
-     * بالترتيب — 43 للمحرك + 9 للتطبيق. «تن» (تحديث نيفا،
+     * بالترتيب — 44 للمحرك + 8 للتطبيق. «تن» (تحديث نيفا،
      * v1.1.4) و«تنظيف» (مسح الشاشة بالاسم الكامل، مهمة 12)
      * كودا تطبيق إضافيان خارج الخمسين المشهورة؛
      * ضغطة زر تُدرج الكود متبوعا بمسافة، ولا تنفذ تلقائيا. */
     private static final String[] KEY_CODES = {
             "ات", "مح", "نم", "شم", "حم", "حف", "سم", "قم", "اف", "شف",
             "عب", "عن", "عس", "عك", "بم", "بع", "عش", "حج", "شر", "اك",
-            "وج", "ام", "عم", "اس", "عر", "مس", "خج", "اص", "طن", "مع",
-            "اد", "اق", "طع", "حع", "مى", "رع", "جذ", "قو", "تا", "وق",
-            "نو", "اج", "اط",
-            "جل", "جد", "مش", "تنظيف", "شب", "سش", "مد", "اع", "تن"
+            "وج", "ام", "تم", "عم", "اس", "عر", "مس", "اص", "مع", "اد",
+            "اق", "حع", "مى", "رع", "تا", "وق", "نو", "اج", "اط", "عع",
+            "نب", "اب", "ال", "كا",
+            "جل", "مش", "تنظيف", "شب", "سش", "مد", "اع", "تن"
     };
 
     /** رموز صف المفاتيح الصعبة على لوحة مفاتيح الهاتف. */
@@ -258,6 +463,9 @@ public class MainActivity extends Activity {
         List<String> history = new ArrayList<>();
         int histIdx = -1;
         String draft = "";
+        /** آخر نص محذوف بأزرار الحذف (مفاتيح التحكم
+         * المعربة v1.2.1): يستعيده زر «استعد». */
+        String killedText = "";
         // الشبكة تلقائية (أمر المالك 2026-11-06 «المفروض
         // الشبكه تكون شغاله بشكل تلقائي زي ترمكس»): كل
         // جلسة جديدة تبدأ مفتوحة، بلا سؤال إذن أول مرة
@@ -269,6 +477,36 @@ public class MainActivity extends Activity {
         boolean ended = false;
         long startTime = System.currentTimeMillis();
         String pendingLine = null;
+        /** حوار جهاز.حوار المفتوح حاليا لهذه الجلسة
+         * (المهمة 20)؛ null = لا حوار مفتوح. */
+        AlertDialog dialog;
+        /** طلب حوار معلّق لجلسة خلفية — يُعرض حين
+         * تصير الجلسة نشطة (المهمة 20). */
+        String pendingDialog;
+        /** ملف برنامج .نيفا الذي تشغّله هذه الجلسة
+         * (المهمة 28): null = جلسة REPL عادية؛ وإلا
+         * جلسة برنامج — ملفها نسخة في مجلد المؤقت،
+         * ولا تُعاد عند الاستعادة (الملف ذهب مع
+         * الخروج). */
+        File programFile;
+        /** اسم البرنامج للعرض (ملف .نيفا المختار). */
+        String programName;
+        /** طلب SAF معلّق لجلسة خلفية (المهمة 28) —
+         * يُنفَّذ حين تصير الجلسة نشطة (نمط الحوار). */
+        String pendingSaf;
+        /** انتظار SAF جارٍ لهذه الجلسة (طلب أُرسل
+         * والنتيجة لم تُرسَل بعد) — لالتقاط ضغطة
+         * «ألغِ الأمر» في أثنائه. */
+        boolean safWaitPending = false;
+        /** ضغطة إلغاء وصلت أثناء انتظار SAF (أو قبله
+         * بقليل) — نتيجته التالية شاردة فتُسقَط. */
+        boolean safCancelArmed = false;
+        /** خريطة معرّفات تنبيهات الجلسة (المهمة 21):
+         * معرّف المحرك ← معرّف نظام أندرويد الفريد.
+         * تُمسح عند موت العملية/إعادة التشغيل (محرك
+         * جديد = عدّاد جديد) — والمنشور يبقى في
+         * الشريط حتى يمسحه المستخدم. */
+        HashMap<Long, Integer> notifySystemIds = new HashMap<>();
         /** السطر معلّق لإعادة إرساله بعد إعادة التشغيل. */
         boolean awaitingRestartResend = false;
         /** إعادة تشغيل جارية (فلا تُطلب ثانية). */
@@ -538,6 +776,19 @@ public class MainActivity extends Activity {
     /** صف المفاتيح فوق لوحة المفاتيح (أمر المالك
      * 2026-11-05 ~23:02): يظهر مع الكيبورد ويختفي معه. */
     private HorizontalScrollView keyRow;
+    /** صف المفاتيح الثاني (مفاتيح التحكم المعربة
+     * v1.2.1): أزرار لمس واحدة لكل وظيفة — خروج،
+     * حذف، بحث، السابق/التالي، بدّل، استعد — يظهر
+     * مع صف المفاتيح الأول ويختفي معه. */
+    private HorizontalScrollView keyRow2;
+    /** صف البحث في المحفوظات (v1.2.1): حقل بحث
+     * صغير + نتائج؛ يظهر بزر «بحث» فقط. */
+    private LinearLayout searchRow;
+    private EditText searchField;
+    private ListView searchList;
+    private ArrayAdapter<String> searchAdapter;
+    private final ArrayList<String> searchItems = new ArrayList<>();
+    private boolean searchOpen = false;
     /** زر «بديل» كمعدِّل للسهم التالي (ALT + سهم). */
     private Button altButton;
     private boolean altNext = false;
@@ -569,9 +820,6 @@ public class MainActivity extends Activity {
     private int marginV = 8;
     /** سقف أسطر السجل القابل للضبط (v1.1.6 بند 12). */
     private int maxTranscriptLines = MAX_LINES;
-    /** حذف الجلسة المنتهية تلقائيا (v1.1.6 بند 10) —
-     * الافتراضي معطّل. */
-    private boolean autoDeleteEndedSession = false;
     /** ملء الشاشة (v1.1.7 بند 30) — الافتراضي معطّل. */
     private boolean fullscreen = false;
     /** بديل ملء الشاشة (v1.1.7 بند 51) — الافتراضي
@@ -595,6 +843,15 @@ public class MainActivity extends Activity {
      * المحرك وتفقد متغيراته)؛ يُفعَّل من niva.properties
      * بالمفتاح «مفاتيح_الصوت=تحكم». */
     private boolean volumeKeysCtrl = false;
+    /** استقبال الملفات (المهمة 28 — CATALOG-19 §13):
+     * تعطيل استقبال المشاركة / العرض من
+     * niva.properties (نعم = معطّل)؛ الافتراضي مفعّل. */
+    private boolean disableReceiveShare = false;
+    private boolean disableReceiveView = false;
+    /** عمر المؤقت عند الخروج (المهمة 28 — CATALOG-19
+     * §12): سالب = لا حذف أبدا، 0 = الكل (الافتراضي)،
+     * موجب N = الأقدم من N أيام. */
+    private int tempAgeDays = 0;
     /** اكتمل إنشاء النشاط واستعادة الجلسات (بند 9):
      * تنبيه التبديل لا يظهر أثناء الاستعادة. */
     private boolean startupDone = false;
@@ -687,6 +944,9 @@ public class MainActivity extends Activity {
         connectivityManager =
                 (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
         loadSettings();
+        // سجل المنح (المهمة 28): يُحمَّل بعد الإعدادات —
+        // والميتة تُقلم بصمت عند البدء.
+        loadGrants();
 
         LinearLayout root = new LinearLayout(this);
         rootLayout = root;
@@ -956,7 +1216,9 @@ public class MainActivity extends Activity {
                     return true;
                 }
                 if (keyCode == KeyEvent.KEYCODE_C) {
-                    createSession();
+                    if (!createSession()) {
+                        toast("وصلت إلى الحد الأقصى (٨ جلسات)");
+                    }
                     return true;
                 }
                 if (keyCode == KeyEvent.KEYCODE_V) {
@@ -984,6 +1246,33 @@ public class MainActivity extends Activity {
                     int idx = keyCode - KeyEvent.KEYCODE_1;
                     if (idx < sessions.size()) switchTo(idx);
                     return true;
+                }
+            }
+            // لوحة مفاتيح مادية: تحكم + حرف عربي (مفاتيح
+            // التحكم المعربة v1.2.1) — مفتاح CTRL الحقيقي
+            // هو «تحكم»؛ والحرف هو الحرف العربي الذي
+            // ينتجه المفتاح على التخطيط العربي. لا يمس
+            // اختصارات Ctrl+Alt أعلاه ولا سلوك أندرويد
+            // الافتراضي خارج القائمة. «ع» (تعليق) مستبعد
+            // عمدا: يحتاج سطح محرك جديد وقرارا منفصلا.
+            if (event.isCtrlPressed() && !event.isAltPressed()) {
+                char ch = (char) event.getUnicodeChar(0);
+                switch (ch) {
+                    case 'خ': doExit(); return true;
+                    case 'م':
+                        if (terminalView.inputStart >= 0) clearDisplayOnly(active());
+                        return true;
+                    case 'ب': moveCursorToLineStart(); return true;
+                    case 'ن': moveCursorToLineEnd(); return true;
+                    case 'ح': deleteToLineEnd(); return true;
+                    case 'ل': deleteToLineStart(); return true;
+                    case 'ك': deletePreviousWord(); return true;
+                    case 'س': toggleHistorySearch(); return true;
+                    case 'ق': historyNav(-1); return true;
+                    case 'ت': historyNav(+1); return true;
+                    case 'ا': swapLastTwoChars(); return true;
+                    case 'ر': restoreKilledText(); return true;
+                    default: break;
                 }
             }
             if (keyCode == KeyEvent.KEYCODE_ENTER) {
@@ -1017,6 +1306,20 @@ public class MainActivity extends Activity {
         keyRow = buildKeyRow();
         keyRow.setVisibility(View.GONE);
         root.addView(keyRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // صف البحث في المحفوظات (v1.2.1): مخفي حتى
+        // يطلبه زر «بحث»؛ وفوق صف المفاتيح.
+        searchRow = buildHistorySearchRow();
+        searchRow.setVisibility(View.GONE);
+        root.addView(searchRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // صف المفاتيح الثاني (v1.2.1): أزرار التحكم
+        // المعربة؛ يتبع صف المفاتيح الأول ظهورا واختفاء.
+        keyRow2 = buildKeyRow2();
+        keyRow2.setVisibility(View.GONE);
+        root.addView(keyRow2, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         // درج الجلسات (من جهة البداية: اليمين في RTL):
@@ -1103,6 +1406,10 @@ public class MainActivity extends Activity {
                         if (keyRow.getVisibility() != want) {
                             keyRow.setVisibility(want);
                         }
+                        if (keyRow2 != null && keyRow2.getVisibility() != want) {
+                            keyRow2.setVisibility(want);
+                        }
+                        updateSearchRowVisibility();
                     }
                 });
 
@@ -1188,6 +1495,11 @@ public class MainActivity extends Activity {
     private void handleShortcutIntent(Intent intent) {
         if (intent == null || intent.getAction() == null) return;
         String action = intent.getAction();
+        if (Intent.ACTION_SEND.equals(action) || Intent.ACTION_VIEW.equals(action)) {
+            // استقبال ملف .نيفا (المهمة 28 — CATALOG-19 §13).
+            handleReceivedFile(intent);
+            return;
+        }
         if ("com.rio4140.niva.NEW_SESSION".equals(action)) {
             if (!createSession()) {
                 toast("وصلت إلى الحد الأقصى (٨ جلسات)");
@@ -1475,6 +1787,245 @@ public class MainActivity extends Activity {
         terminalView.setSelection(end, end);
     }
 
+    // ---------- صف المفاتيح الثاني: مفاتيح التحكم المعربة (v1.2.1) ----------
+
+    /** صف المفاتيح الثاني: زر لمس واحد لكل وظيفة
+     * بمسماها العربي — ضغطة واحدة = الفعل، بلا حالة
+     * معدِّل يتعلمها المستخدم. «بداية» و«نهاية»
+     * و«تنظيف» و«تحكم» موجودة في الصف الأول فلا
+     * تُكرَّر هنا. */
+    private HorizontalScrollView buildKeyRow2() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        row.setBackgroundColor(colorPanel);
+        row.setPadding(4, 4, 4, 4);
+        row.addView(keyButton("ألغِ الأمر", v -> onCancelCommand()));
+        row.addView(keyButton("خروج", v -> doExit()));
+        row.addView(keyButton("احذف للنهاية", v -> deleteToLineEnd()));
+        row.addView(keyButton("احذف للبداية", v -> deleteToLineStart()));
+        row.addView(keyButton("احذف الكلمة", v -> deletePreviousWord()));
+        row.addView(keyButton("بحث", v -> toggleHistorySearch()));
+        row.addView(keyButton("السابق", v -> historyNav(-1)));
+        row.addView(keyButton("التالي", v -> historyNav(1)));
+        row.addView(keyButton("بدّل", v -> swapLastTwoChars()));
+        row.addView(keyButton("استعد", v -> restoreKilledText()));
+        HorizontalScrollView scroll = new HorizontalScrollView(this);
+        scroll.setHorizontalScrollBarEnabled(false);
+        scroll.addView(row, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return scroll;
+    }
+
+    /** خروج: يرسل «:خروج» نفسه كما يكتبه المستخدم —
+     * فيُسجَّل في المحفوظات ويخرج المحرك، بلا مسار
+     * جديد. ولا شيء أثناء تشغيل برنامج (الموجّه
+     * غائب) — قاطعه أولا بزر «تحكم». */
+    private void doExit() {
+        if (terminalView.inputStart < 0) return;
+        setCurrentLine(":خروج");
+        submitLine();
+    }
+
+    /** مؤشر الإدخال مقصورا على سطر الإدخال: المؤشر
+     * قد يقف في السجل (وضع التحديد) فيُقصر على نهاية
+     * السطر — كما تفعل insertAtCursor. */
+    private int clampInputCursor() {
+        int pos = terminalView.getSelectionStart();
+        int len = terminalView.getText().length();
+        if (pos < terminalView.inputStart || pos > len) pos = len;
+        return pos;
+    }
+
+    /** حذف من المؤشر لنهاية السطر: يحفظ المحذوف
+     * لزر «استعد». */
+    private void deleteToLineEnd() {
+        if (terminalView.inputStart < 0) return;
+        Editable text = terminalView.getText();
+        int len = text.length();
+        int pos = clampInputCursor();
+        if (pos >= len) return;
+        active().killedText = text.toString().substring(pos, len);
+        terminalView.programmatic = true;
+        text.delete(pos, len);
+        terminalView.programmatic = false;
+        terminalView.setSelection(pos, pos);
+    }
+
+    /** حذف من المؤشر لبداية السطر: يحفظ المحذوف
+     * لزر «استعد». */
+    private void deleteToLineStart() {
+        if (terminalView.inputStart < 0) return;
+        Editable text = terminalView.getText();
+        int start = terminalView.inputStart;
+        int pos = clampInputCursor();
+        if (pos <= start) return;
+        active().killedText = text.toString().substring(start, pos);
+        terminalView.programmatic = true;
+        text.delete(start, pos);
+        terminalView.programmatic = false;
+        terminalView.setSelection(start, start);
+    }
+
+    /** حذف الكلمة السابقة للمؤشر (حد الكلمة = فراغ):
+     * يحفظ المحذوف لزر «استعد». */
+    private void deletePreviousWord() {
+        if (terminalView.inputStart < 0) return;
+        Editable text = terminalView.getText();
+        int start = terminalView.inputStart;
+        int pos = clampInputCursor();
+        if (pos <= start) return;
+        int i = pos;
+        while (i > start && Character.isWhitespace(text.charAt(i - 1))) i--;
+        while (i > start && !Character.isWhitespace(text.charAt(i - 1))) i--;
+        if (i >= pos) return;
+        active().killedText = text.toString().substring(i, pos);
+        terminalView.programmatic = true;
+        text.delete(i, pos);
+        terminalView.programmatic = false;
+        terminalView.setSelection(i, i);
+    }
+
+    /** تبديل آخر حرفين قبل المؤشر (داخل سطر الإدخال). */
+    private void swapLastTwoChars() {
+        if (terminalView.inputStart < 0) return;
+        Editable text = terminalView.getText();
+        int start = terminalView.inputStart;
+        int pos = clampInputCursor();
+        if (pos - start < 2) return;
+        char a = text.charAt(pos - 2);
+        char b = text.charAt(pos - 1);
+        terminalView.programmatic = true;
+        text.replace(pos - 2, pos, "" + b + a);
+        terminalView.programmatic = false;
+        terminalView.setSelection(pos, pos);
+    }
+
+    /** استعادة آخر نص محذوف بأزرار الحذف. */
+    private void restoreKilledText() {
+        if (terminalView.inputStart < 0) return;
+        String killed = active().killedText;
+        if (killed == null || killed.isEmpty()) return;
+        insertAtCursor(killed);
+    }
+
+    // ---------- البحث في المحفوظات (v1.2.1) ----------
+
+    /** صف البحث: حقل بحث صغير + قائمة نتائج (الأحدث
+     * أولا)؛ الضغط على نتيجة يضعها في سطر الإدخال. */
+    private LinearLayout buildHistorySearchRow() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        col.setBackgroundColor(colorPanel);
+        col.setPadding(8, 8, 8, 8);
+        searchField = new EditText(this);
+        searchField.setHint("ابحث في المحفوظات");
+        searchField.setTextColor(colorText);
+        searchField.setHintTextColor(colorSubtitle);
+        searchField.setSingleLine(true);
+        searchField.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
+        searchField.setBackgroundColor(colorBtn);
+        searchField.setPadding(16, 12, 16, 12);
+        searchField.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int st, int c, int a) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int st, int b, int c) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                filterHistorySearch(s.toString());
+            }
+        });
+        searchField.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                if (searchAdapter != null && searchAdapter.getCount() > 0) {
+                    applySearchResult(searchAdapter.getItem(0));
+                } else {
+                    hideHistorySearch();
+                }
+                return true;
+            }
+            return false;
+        });
+        col.addView(searchField, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        searchList = new ListView(this);
+        searchAdapter = new ArrayAdapter<String>(this,
+                android.R.layout.simple_list_item_1, searchItems) {
+            @Override
+            public View getView(int position, View convertView, ViewGroup parent) {
+                View v = super.getView(position, convertView, parent);
+                TextView tv = (TextView) v.findViewById(android.R.id.text1);
+                tv.setTextColor(colorText);
+                return v;
+            }
+        };
+        searchList.setAdapter(searchAdapter);
+        searchList.setBackgroundColor(colorPanel);
+        int listH = (int) (180 * getResources().getDisplayMetrics().density);
+        col.addView(searchList, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, listH));
+        searchList.setOnItemClickListener((parent, view, pos, id) -> {
+            String item = searchAdapter.getItem(pos);
+            if (item != null) applySearchResult(item);
+        });
+        return col;
+    }
+
+    /** إظهار/إخفاء البحث: لا يفتح أثناء تشغيل برنامج
+     * (بلا سطر إدخال يتلقى النتيجة). */
+    private void toggleHistorySearch() {
+        if (searchOpen) {
+            hideHistorySearch();
+            return;
+        }
+        if (terminalView.inputStart < 0) return;
+        searchOpen = true;
+        updateSearchRowVisibility();
+        filterHistorySearch(searchField.getText().toString());
+        searchField.requestFocus();
+        showKeyboard();
+    }
+
+    private void hideHistorySearch() {
+        searchOpen = false;
+        if (searchField != null) searchField.setText("");
+        updateSearchRowVisibility();
+        if (terminalView != null) terminalView.requestFocus();
+    }
+
+    private void updateSearchRowVisibility() {
+        if (searchRow == null) return;
+        searchRow.setVisibility((searchOpen && showKeyRowPref && isKeyboardVisible())
+                ? View.VISIBLE : View.GONE);
+    }
+
+    /** تصفية المحفوظات أثناء الكتابة: مطابقة جزئية،
+     * الأحدث أولا، بحد 50 نتيجة؛ وبحث فارغ يعرض
+     * الأحدث كما هي. */
+    private void filterHistorySearch(String query) {
+        if (searchAdapter == null) return;
+        searchItems.clear();
+        Session s = active();
+        String q = query == null ? "" : query.trim();
+        for (int i = s.history.size() - 1; i >= 0 && searchItems.size() < 50; i--) {
+            String h = s.history.get(i);
+            if (q.isEmpty() || h.contains(q)) searchItems.add(h);
+        }
+        searchAdapter.notifyDataSetChanged();
+    }
+
+    private void applySearchResult(String item) {
+        setCurrentLine(item);
+        hideHistorySearch();
+        terminalView.requestFocus();
+    }
+
     private void pageScroll(int direction) {
         terminalView.scrollBy(0, direction * terminalView.getHeight() * 4 / 5);
     }
@@ -1529,6 +2080,27 @@ public class MainActivity extends Activity {
             setCurrentLine("");
         }
         clearAlt();
+    }
+
+    /** «ألغِ الأمر» (المهمة 22 — شبكة.نزّل): يرسل
+     * سطر الإلغاء «\u0001نيفا-إلغاء» إلى محرك الجلسة
+     * النشطة عبر stdin — فيلغي المحرك الجلب الجاري
+     * بلطف (خطأ «أُلغي الأمر» يُمسك بـحاول/ماعدا)
+     * ويعود الموجّه، بلا قتل ولا إعادة تشغيل (ذلك
+     * زر «تحكم»). وبلا جلب جارٍ لا أثر له. ولا شيء
+     * يُرسل حين لا عملية أو جلسة منتهية؛ والسطر
+     * ليس أمر جلب (لا يطابق isFetchCommand) فلا
+     * فحص اتصال ولا قفل استيقاظ. */
+    private void onCancelCommand() {
+        Session s = active();
+        if (s == null || s.process == null || s.ended) return;
+        if (s.safWaitPending) {
+            // إلغاء أثناء انتظار SAF (المهمة 28): المحرك
+            // يجهض انتظاره؛ ونتيجته التالية — إن وصلت —
+            // شاردة فتُسقَط (علم safCancelArmed).
+            s.safCancelArmed = true;
+        }
+        sendLineToEngine(s, "\u0001نيفا-إلغاء");
     }
 
     private void arrowUp() {
@@ -1590,6 +2162,12 @@ public class MainActivity extends Activity {
     /** إنشاء جلسة باسم اختياري (v1.1.6 بند 3: من حوار
      * الضغطة الطويلة على زر «جلسة جديدة»). */
     private boolean createSession(String name) {
+        return createSession(name, null, null);
+    }
+
+    /** إنشاء جلسة برنامج (المهمة 28): تشغّل ملف
+     * .نيفا من المؤقت في جلسة جديدة باسم الملف. */
+    private boolean createSession(String name, File programFile, String programName) {
         if (sessions.size() >= MAX_SESSIONS) {
             return false;
         }
@@ -1597,6 +2175,8 @@ public class MainActivity extends Activity {
         if (name != null && !name.trim().isEmpty()) {
             s.customName = name.trim();
         }
+        s.programFile = programFile;
+        s.programName = programName;
         sessions.add(s);
         startProcess(s);
         rebuildSessionList();
@@ -1613,6 +2193,9 @@ public class MainActivity extends Activity {
             active().composeDraft = composeEdit.getText().toString();
         }
         saveTerminalToSession();
+        // البحث في المحفوظات يخص الجلسة المغادَرة —
+        // يُغلق عند التبديل حتى لا تعرض نتائج قديمة.
+        hideHistorySearch();
         activeIdx = idx;
         syncTerminalFromSession();
         if (composeEdit != null) {
@@ -1682,6 +2265,10 @@ public class MainActivity extends Activity {
         InputMethodManager imm = (InputMethodManager)
                 getSystemService(Context.INPUT_METHOD_SERVICE);
         if (imm != null) imm.restartInput(terminalView);
+        // حوار معلّق لهذه الجلسة (المهمة 20) يُعرض الآن.
+        maybeShowPendingDialog(s);
+        // وطلب SAF معلّق (المهمة 28) يُنفَّذ الآن.
+        maybeShowPendingSaf(s);
     }
 
     private void rebuildSessionList() {
@@ -1820,6 +2407,19 @@ public class MainActivity extends Activity {
         if (s.waiter != null) s.waiter.interrupt();
         s.fetchWakeHeld = false;
         releaseFetchWakeLockIfIdle();
+        // إغلاق حوار الجلسة ومسح تنبيهاتها المعلقة
+        // (إصلاح الجلسات): كإعادة التشغيل وموت العملية —
+        // فلا يبقى حوار بلا محرك ولا تنبيه معلق لجلسة
+        // لم تعد موجودة.
+        dismissSessionDialog(s);
+        dropPendingNotifies(s);
+        // وإيقاف نطق/صوت/حساس/استماع الجلسة (كإعادة
+        // التشغيل وموت العملية) — فلا يبقى نطق أو
+        // استماع أو قراءة معلقة لجلسة لم تعد موجودة.
+        stopSpeakForSession(s);
+        stopAudioForSession(s);
+        stopSensorForSession(s);
+        stopListenForSession(s);
         boolean wasActive = idx == activeIdx;
         sessions.remove(idx);
         deleteSessionFiles(idx);
@@ -1851,6 +2451,7 @@ public class MainActivity extends Activity {
         new File(dir, "session-" + idx + ".txt").delete();
         new File(dir, "session-" + idx + ".meta").delete();
         new File(dir, "session-" + idx + ".compose").delete();
+        new File(dir, "session-" + idx + ".ended").delete();
     }
 
     private void showRenameDialog(final int idx) {
@@ -1913,6 +2514,19 @@ public class MainActivity extends Activity {
         if (s.waiter != null) s.waiter.interrupt();
         s.fetchWakeHeld = false;
         releaseFetchWakeLockIfIdle();
+        // إغلاق حوار الجلسة ومسح تنبيهاتها المعلقة
+        // (إصلاح الجلسات): كإعادة التشغيل وموت العملية —
+        // فلا يبقى حوار بلا محرك ولا تنبيه معلق لجلسة
+        // لم تعد موجودة.
+        dismissSessionDialog(s);
+        dropPendingNotifies(s);
+        // وإيقاف نطق/صوت/حساس/استماع الجلسة (كإعادة
+        // التشغيل وموت العملية) — فلا يبقى نطق أو
+        // استماع أو قراءة معلقة لجلسة لم تعد موجودة.
+        stopSpeakForSession(s);
+        stopAudioForSession(s);
+        stopSensorForSession(s);
+        stopListenForSession(s);
         boolean wasActive = idx == activeIdx;
         sessions.remove(idx);
         if (sessions.isEmpty()) {
@@ -1922,6 +2536,9 @@ public class MainActivity extends Activity {
             if (wasActive) {
                 activeIdx = Math.max(0, Math.min(idx, sessions.size() - 1));
                 syncTerminalFromSession();
+                if (composeEdit != null) {
+                    composeEdit.setText(active().composeDraft);
+                }
                 updateNetState();
                 terminalView.requestFocus();
             } else if (idx < activeIdx) {
@@ -2065,6 +2682,24 @@ public class MainActivity extends Activity {
             } else {
                 composeFile.delete();
             }
+            // جلسة برنامج (المهمة 28): علامة مستقلة
+            // باسم البرنامج — فلا تُعاد عند الاستعادة
+            // (الملف المؤقت ذهب مع الخروج).
+            File progFile = new File(dir, "session-" + idx + ".prog");
+            if (s.programFile != null && s.programName != null) {
+                writeFile(progFile, s.programName);
+            } else {
+                progFile.delete();
+            }
+            // جلسة منتهية (اجتماع 37): علامة مستقلة
+            // فارغة — فتُستعاد منتهية للقراءة فقط ولا
+            // تُبعث حية عند البدء التالي (كما في .prog).
+            File endedFile = new File(dir, "session-" + idx + ".ended");
+            if (s.ended) {
+                writeFile(endedFile, "");
+            } else {
+                endedFile.delete();
+            }
         } catch (IOException ignored) {
         }
     }
@@ -2130,8 +2765,36 @@ public class MainActivity extends Activity {
             } catch (IOException ignored) {
                 s.composeDraft = "";
             }
+            // جلسة برنامج (المهمة 28): تُستعاد منتهية
+            // للقراءة فقط — الملف المؤقت ذهب مع الخروج
+            // فلا تُعاد أبدا (والملف يُبنى كعلامة فقط).
+            boolean isProgram = false;
+            try {
+                File progFile = new File(dir, "session-" + idx + ".prog");
+                if (progFile.isFile()) {
+                    s.programName = readFile(progFile);
+                    s.programFile = new File(tempDir(), s.programName);
+                    isProgram = true;
+                }
+            } catch (IOException ignored) {
+            }
+            // جلسة منتهية (اجتماع 39 — نموذج ترمكس):
+            // علامة .ended تعني أنها أُغلقت نهائيا —
+            // فتُحذف ملفاتها ولا تُستعاد أبدا؛ وجلسة
+            // البرنامج مستثناة (تُستعاد منتهية للقراءة
+            // كما صممت المهمة 28).
+            boolean isEnded = new File(dir, "session-" + idx + ".ended").isFile();
+            if (isEnded && !isProgram) {
+                deleteSessionFiles(idx);
+                continue;
+            }
             sessions.add(s);
-            startProcess(s);
+            if (isProgram || isEnded) {
+                s.ended = true;
+                s.endNotified = true;
+            } else {
+                startProcess(s);
+            }
         }
         if (sessions.isEmpty()) return false;
         int want = 0;
@@ -2184,14 +2847,29 @@ public class MainActivity extends Activity {
         try {
             List<String> cmd = new ArrayList<>();
             cmd.add(binaryPath());
-            cmd.add("--تفاعلي");
-            if (s.networkAllowed) cmd.add("--اسمح-بالشبكة");
+            if (s.programFile != null) {
+                // جلسة برنامج (المهمة 28): تشغيل الملف
+                // لا REPL — ومجلد البرنامج هو المؤقت
+                // (أب الملف) فالسياسة والمسارات كلها
+                // فيه.
+                if (s.networkAllowed) cmd.add("--اسمح-بالشبكة");
+                cmd.add(s.programFile.getAbsolutePath());
+            } else {
+                cmd.add("--تفاعلي");
+                if (s.networkAllowed) cmd.add("--اسمح-بالشبكة");
+            }
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.directory(getFilesDir());
             pb.redirectErrorStream(false);
             // قناة التحكم (م-6): المحرك يرسل إشاراته
             // المنظمة على stderr فقط حين تُطلب.
             pb.environment().put("NIVA_CONTROL_CHANNEL", "stderr");
+            // نسخة الترمنال للمحرك (بلاغ 2026-11-08): `اص`
+            // يعرض نسخة الترمنال الحقيقية لا نسخة المحرك.
+            String terminalVersion = localVersionName();
+            if (terminalVersion != null) {
+                pb.environment().put("NIVA_TERMINAL_VERSION", terminalVersion);
+            }
             s.process = pb.start();
             s.stdin = s.process.getOutputStream();
             s.ended = false;
@@ -2358,7 +3036,2579 @@ public class MainActivity extends Activity {
             s.history.clear();
             s.histIdx = -1;
             s.draft = "";
+        } else if (signal.startsWith("حوار:")) {
+            // طلب حوار من المحرك (المهمة 20): الحمولة JSON.
+            handleDialogRequest(s, signal.substring("حوار:".length()));
+        } else if (signal.startsWith("نبّه:")) {
+            // طلب تنبيه من المحرك (المهمة 21): الحمولة JSON.
+            handleNotifyRequest(s, signal.substring("نبّه:".length()));
+        } else if (signal.startsWith("أزل_تنبيه:")) {
+            // طلب إزالة تنبيه من المحرك (المهمة 21): بلا انتظار.
+            handleRemoveNotify(s, signal.substring("أزل_تنبيه:".length()));
+        } else if (signal.startsWith("انطق:")) {
+            // طلب نطق من المحرك (المهمة 23): الحمولة JSON.
+            handleSpeakRequest(s, signal.substring("انطق:".length()));
+        } else if (signal.startsWith("محركات_النطق:")) {
+            // طلب سرد محركات النطق من المحرك (المهمة 23).
+            handleListEngines(s, signal.substring("محركات_النطق:".length()));
+        } else if (signal.startsWith("شغّل_صوت:")) {
+            // طلب تشغيل صوت من المحرك (المهمة 24): الحمولة JSON.
+            handlePlayAudioRequest(s, signal.substring("شغّل_صوت:".length()));
+        } else if (signal.startsWith("أوقف_صوت:")) {
+            // طلب إيقاف صوت من المحرك (المهمة 24): بلا حمولة تذكر.
+            handleStopAudioRequest(s, signal.substring("أوقف_صوت:".length()));
+        } else if (signal.startsWith("حساس:")) {
+            // طلب قراءة حساس من المحرك (المهمة 25): الحمولة JSON.
+            handleSensorRequest(s, signal.substring("حساس:".length()));
+        } else if (signal.startsWith("اسمع:")) {
+            // طلب استماع من المحرك (المهمة 26): الحمولة JSON.
+            handleListenRequest(s, signal.substring("اسمع:".length()));
+        } else if (signal.startsWith("بطارية:")) {
+            // طلب قراءة بطارية من المحرك (المهمة 26): الحمولة JSON.
+            handleBatteryRequest(s, signal.substring("بطارية:".length()));
+        } else if (signal.startsWith("ملف-ممنوح:")) {
+            // طلب SAF من المحرك (المهمة 28): الحمولة JSON.
+            handleSafControl(s, signal.substring("ملف-ممنوح:".length()));
         }
+    }
+
+    // ===== تنبيه جهاز.نبّه + أزل_تنبيه (المهمة 21) =====
+    // المحرك يطلب عبر قناة التحكم (stderr) وينتظر سطر
+    // نتيجة واحدا على stdin: {"قيمة": <معرف>} أو
+    // {"خطأ": "..."} — كما الحوار تماما (البادئة
+    // نفسها). والإزالة بلا انتظار: إلغاء النظام
+    // متزامن ولا يفشل فشلا ذا معنى حين يكون المعرّف
+    // حيّا. القناة تُنشأ تلقائيا عند أول نبّه (لا دالة
+    // قناة للمستخدم). التنبيه في شريط النظام لا في
+    // واجهة جلسة — فيعمل للنشطة والخلفية معا، ويعيش
+    // بعد البرنامج حتى يُمسح أو يُزال بالمعرّف.
+    // بوابة الإذن: POST_NOTIFICATIONS (أندرويد 13+)
+    // يُطلب عند أول نبّه بلا إذن فقط — لا عند الفتح
+    // ولا عند بدء جلسة.
+
+    /** هل إذن الإشعارات ممنوح (دون 13: وقت التثبيت)؟ */
+    private boolean notifyPermissionGranted() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return true;
+        return checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** إنشاء قناة تنبيهات البرامج كسولا (أندرويد 8+). */
+    private void ensureNotifyChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        NotificationManager nm = (NotificationManager)
+                getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) return;
+        NotificationChannel channel = new NotificationChannel(
+                NOTIFY_CHANNEL_ID, "تنبيهات نيفا",
+                NotificationManager.IMPORTANCE_DEFAULT);
+        channel.setDescription("تنبيهات برامج نيفا");
+        nm.createNotificationChannel(channel);
+    }
+
+    /** استقبال طلب تنبيه من قناة التحكم. */
+    private void handleNotifyRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendNotifyError(s, "طلب تنبيه غير صالح");
+            return;
+        }
+        long id = req.optLong("معرف", -1);
+        String title = req.optString("عنوان", "");
+        String text = req.optString("نص", "");
+        if (id < 1 || title.isEmpty() || text.isEmpty()) {
+            sendNotifyError(s, "طلب تنبيه غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendNotifyError(s, "التطبيق غير متاح");
+            return;
+        }
+        if (notifyPermissionGranted()) {
+            postNotify(s, id, title, text);
+            sendNotifyValue(s, id);
+            return;
+        }
+        // بلا إذن: يُحفظ ويُطلب الإذن بحوار النظام؛
+        // وإن كان طلب جاريا يُكتفى بالطابور (لا حوار
+        // ثان فوق الأول).
+        pendingNotifies.add(new PendingNotify(s, id, title, text));
+        if (!notifyPermissionRequestInFlight) {
+            notifyPermissionRequestInFlight = true;
+            requestPermissions(
+                    new String[]{"android.permission.POST_NOTIFICATIONS"},
+                    REQ_NOTIFY_PERMISSION);
+        }
+    }
+
+    /** جواب منتقيي SAF (المهمة 28): المنح (معرف جديد
+     * أو إلغاء) والتشغيل (تحقق ثم نسخ ثم جلسة جديدة). */
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_SAF_GRANT) {
+            Session s = safGrantSession;
+            safGrantSession = null;
+            if (s == null) return;
+            if (s.safCancelArmed) {
+                // إلغاء مسلّح — المحرك أجهض الانتظار؛
+                // فلا نتيجة تُرسَل (سطر شارد).
+                s.safCancelArmed = false;
+                s.safWaitPending = false;
+                return;
+            }
+            if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+                sendSafError(s, "ألغى المستخدم اختيار المجلد");
+                return;
+            }
+            Uri treeUri = data.getData();
+            try {
+                getContentResolver().takePersistableUriPermission(treeUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+            } catch (Exception e) {
+                sendSafError(s, "تعذّر حفظ المنحة");
+                return;
+            }
+            long id = nextGrantId++;
+            grants.add(new Grant(id, safTreeDisplayName(treeUri), treeUri));
+            saveGrants();
+            // الجلسة ماتت أثناء المنتقي؟ المنحة تُحفظ
+            // (اختارها المستخدم) لكن بلا نتيجة تُرسَل.
+            if (s.process == null || s.ended) return;
+            sendSafValue(s, id);
+            return;
+        }
+        if (requestCode == REQ_SAF_RUN) {
+            if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+                // إلغاء المنتقي: لا شيء إطلاقا.
+                return;
+            }
+            runChosenNivaFile(data.getData());
+            return;
+        }
+    }
+
+    /** جواب المستخدم على حوار إذن الإشعارات: يُفرَّغ
+     * الطابور — منح: نشر + نتائج قيم؛ رفض: نتائج
+     * أخطاء (فيعلم البرنامج ويقرر بديله). */
+    @Override
+    public void onRequestPermissionsResult(int requestCode,
+            String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_NOTIFY_PERMISSION) {
+            notifyPermissionRequestInFlight = false;
+            boolean granted = grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            drainPendingNotifies(granted);
+            return;
+        }
+        if (requestCode == REQ_LISTEN_PERMISSION) {
+            listenPermissionRequestInFlight = false;
+            if (listeningNow == null) return;
+            boolean granted = grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (granted) {
+                startListening();
+            } else {
+                Session s = listeningNow.session;
+                listeningNow = null;
+                sendListenError(s, "رفض إذن الميكروفون — فعّل الإذن من إعدادات التطبيق");
+            }
+            return;
+        }
+    }
+
+    /** تفريغ طابور التنبيهات المعلّقة بإذن. */
+    private void drainPendingNotifies(boolean granted) {
+        ArrayList<PendingNotify> queued = new ArrayList<>(pendingNotifies);
+        pendingNotifies.clear();
+        for (PendingNotify p : queued) {
+            if (granted) {
+                postNotify(p.session, p.id, p.title, p.text);
+                sendNotifyValue(p.session, p.id);
+            } else {
+                sendNotifyError(p.session,
+                        "الإشعارات مرفوضة — فعّلها من إعدادات التطبيق");
+            }
+        }
+    }
+
+    /** نشر التنبيه في شريط النظام (معرّف نظام فريد
+     * يُسجَّل في خريطة الجلسة للإزالة لاحقا). */
+    private void postNotify(Session s, long id, String title, String text) {
+        ensureNotifyChannel();
+        NotificationManager nm = (NotificationManager)
+                getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) return;
+        int systemId = nextSystemNotifyId++;
+        s.notifySystemIds.put(id, systemId);
+        Intent open = new Intent(this, MainActivity.class);
+        open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent openPi = PendingIntent.getActivity(this, systemId, open,
+                PendingIntent.FLAG_UPDATE_CURRENT
+                        | PendingIntent.FLAG_IMMUTABLE);
+        Notification.Builder builder;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder = new Notification.Builder(this, NOTIFY_CHANNEL_ID);
+        } else {
+            builder = new Notification.Builder(this);
+            builder.setPriority(Notification.PRIORITY_DEFAULT);
+        }
+        builder.setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setContentIntent(openPi)
+                .setAutoCancel(true);
+        nm.notify(systemId, builder.build());
+    }
+
+    /** استقبال طلب إزالة تنبيه (بلا انتظار — بلا نتيجة). */
+    private void handleRemoveNotify(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            return;
+        }
+        long id = req.optLong("معرف", -1);
+        if (id < 1) return;
+        // معلّق بإذن؟ يُحذف من الطابور فلا يظهر أبدا
+        // (بدلا من نشره ثم إلغائه).
+        for (int i = pendingNotifies.size() - 1; i >= 0; i--) {
+            if (pendingNotifies.get(i).id == id
+                    && pendingNotifies.get(i).session == s) {
+                pendingNotifies.remove(i);
+                return;
+            }
+        }
+        Integer systemId = s.notifySystemIds.remove(id);
+        if (systemId == null) return;
+        NotificationManager nm = (NotificationManager)
+                getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm != null) nm.cancel(systemId);
+    }
+
+    /** إسقاط تنبيهات الجلسة المعلّقة بإذن — عند إعادة
+     * التشغيل أو موت العملية (المحرك ميت فلا نتيجة
+     * تُرسل)؛ ومسح خريطتها (محرك جديد = عدّاد جديد).
+     * والمنشور يبقى عمدا — حتى يمسحه المستخدم. */
+    private void dropPendingNotifies(Session s) {
+        for (int i = pendingNotifies.size() - 1; i >= 0; i--) {
+            if (pendingNotifies.get(i).session == s) pendingNotifies.remove(i);
+        }
+        s.notifySystemIds.clear();
+    }
+
+    /** إرسال نتيجة تنبيه واحدة إلى المحرك (قيمة أو
+     * خطأ) عبر الطابور المحدود — البادئة نفسها
+     * كالحوار. */
+    private void sendNotifyResult(Session s, JSONObject result) {
+        sendLineToEngine(s, DIALOG_RESULT_PREFIX + result.toString());
+    }
+
+    private void sendNotifyValue(Session s, long id) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("قيمة", id);
+            sendNotifyResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    private void sendNotifyError(Session s, String message) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("خطأ", message);
+            sendNotifyResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    // ===== نطق جهاز.انطق + محركات_النطق (المهمة 23) =====
+    // المحرك يطلب عبر قناة التحكم (stderr) وينتظر سطر
+    // نتيجة واحدا على stdin: {"قيمة": true} عند انتهاء
+    // النطق، أو {"قيمة": [...]} لقائمة المحركات، أو
+    // {"خطأ": "..."} — كما الحوار والتنبيه تماما
+    // (البادئة نفسها). كائن TextToSpeech واحد على
+    // مستوى النشاط (تهيئة كسولة عند أول طلب)؛ واللغة
+    // عربية دائما في v1؛ والنطق بلا إذن نظام (البوابة
+    // توفر محرك نطق وصوت عربي)؛ ونطق واحد جارٍ في
+    // كل التطبيق (طلب ثانٍ متزامن يرفض فورا)؛
+    // والجلسة الخلفية تنطق فورا كالنشطة (النطق صوت
+    // لا واجهة). إعادة تشغيل جلسة أو موتها أثناء
+    // نطقها توقف الصوت وتمسح السجل (المحرك مات فلا
+    // نتيجة تُرسَل إليه).
+
+    /** تهيئة TTS كسولة (مرة واحدة): عند النجاح تُضبط
+     * العربية ويُفرَّغ طابور المعلّق؛ وعند الفشل
+     * يُفرَّغ بأخطاء. */
+    private void ensureTts() {
+        if (ttsInitStarted) return;
+        ttsInitStarted = true;
+        try {
+            tts = new TextToSpeech(this, status -> {
+                runOnUiThread(() -> {
+                    if (status == TextToSpeech.SUCCESS) {
+                        ttsReady = true;
+                        try {
+                            tts.setOnUtteranceProgressListener(
+                                    new UtteranceProgressListener() {
+                                @Override
+                                public void onStart(String id) {
+                                }
+
+                                @Override
+                                public void onDone(String id) {
+                                    runOnUiThread(() -> onSpeakDone(id));
+                                }
+
+                                @Override
+                                public void onError(String id) {
+                                    runOnUiThread(() -> onSpeakError(id));
+                                }
+
+                                @Override
+                                public void onError(String id, int code) {
+                                    runOnUiThread(() -> onSpeakError(id));
+                                }
+
+                                @Override
+                                public void onStop(String id, boolean interrupted) {
+                                    runOnUiThread(() -> onSpeakStopped(id));
+                                }
+                            });
+                            int lang = tts.setLanguage(new Locale("ar"));
+                            ttsArabicOk = lang != TextToSpeech.LANG_MISSING_DATA
+                                    && lang != TextToSpeech.LANG_NOT_SUPPORTED;
+                        } catch (Exception ignored) {
+                            ttsArabicOk = false;
+                        }
+                        drainPendingSpeaks();
+                    } else {
+                        ttsInitFailed = true;
+                        drainPendingSpeaks();
+                    }
+                });
+            });
+        } catch (Exception ignored) {
+            ttsInitFailed = true;
+            drainPendingSpeaks();
+        }
+    }
+
+    /** تفريغ طابور طلبات النطق المعلّقة بالتهيئة:
+     * الأول ينطق، والباقي «نطق آخر جارٍ»؛ وعند فشل
+     * التهيئة الكل «تعذّر تهيئة محرك النطق». */
+    private void drainPendingSpeaks() {
+        ArrayList<PendingSpeak> queued = new ArrayList<>(pendingSpeaks);
+        pendingSpeaks.clear();
+        for (PendingSpeak p : queued) {
+            if (p.session.process == null) continue;
+            if (ttsInitFailed) {
+                sendSpeakError(p.session, "تعذّر تهيئة محرك النطق");
+            } else if (!ttsArabicOk) {
+                sendSpeakError(p.session,
+                        "الصوت العربي غير متاح على هذا الجهاز — ثبّت بيانات الصوت العربية من إعدادات النطق");
+            } else if (speakingNow != null) {
+                sendSpeakError(p.session, "نطق آخر جارٍ — انتظر انتهاءه");
+            } else {
+                startSpeak(p.session, p.text);
+            }
+        }
+    }
+
+    /** استقبال طلب نطق من قناة التحكم. */
+    private void handleSpeakRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendSpeakError(s, "طلب نطق غير صالح");
+            return;
+        }
+        String text = req.optString("نص", "");
+        if (text.isEmpty()) {
+            sendSpeakError(s, "طلب نطق غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendSpeakError(s, "التطبيق غير متاح");
+            return;
+        }
+        if (speakingNow != null) {
+            sendSpeakError(s, "نطق آخر جارٍ — انتظر انتهاءه");
+            return;
+        }
+        if (ttsInitFailed) {
+            sendSpeakError(s, "تعذّر تهيئة محرك النطق");
+            return;
+        }
+        if (!ttsReady) {
+            pendingSpeaks.add(new PendingSpeak(s, text));
+            ensureTts();
+            return;
+        }
+        if (!ttsArabicOk) {
+            sendSpeakError(s,
+                    "الصوت العربي غير متاح على هذا الجهاز — ثبّت بيانات الصوت العربية من إعدادات النطق");
+            return;
+        }
+        startSpeak(s, text);
+    }
+
+    /** بدء نطق نص لجلسة (بعد كل الفحوص): يسجّل
+     * النطق الجاري ثم ينطق بـ QUEUE_FLUSH. */
+    private void startSpeak(Session s, String text) {
+        if (tts == null) {
+            sendSpeakError(s, "تعذّر تهيئة محرك النطق");
+            return;
+        }
+        String id = "niva-" + (nextSpeakUtterance++);
+        speakingNow = new PendingSpeak(s, text);
+        speakingUtteranceId = id;
+        int rc;
+        try {
+            rc = tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, id);
+        } catch (Exception ignored) {
+            rc = TextToSpeech.ERROR;
+        }
+        if (rc == TextToSpeech.ERROR) {
+            speakingNow = null;
+            speakingUtteranceId = null;
+            sendSpeakError(s, "تعذّر النطق");
+        }
+    }
+
+    /** انتهى النطق الجاري بنجاح: مسح السجل + نتيجة
+     * صحيح للجلسة الناطقة. الردود القديمة تُتجاهل. */
+    private void onSpeakDone(String id) {
+        if (speakingNow == null || !id.equals(speakingUtteranceId)) return;
+        Session s = speakingNow.session;
+        speakingNow = null;
+        speakingUtteranceId = null;
+        sendSpeakValue(s);
+    }
+
+    /** خطأ نطق: مسح السجل + نتيجة خطأ للجلسة. */
+    private void onSpeakError(String id) {
+        if (speakingNow == null || !id.equals(speakingUtteranceId)) return;
+        Session s = speakingNow.session;
+        speakingNow = null;
+        speakingUtteranceId = null;
+        sendSpeakError(s, "تعذّر النطق");
+    }
+
+    /** أُوقف النطق (stop): مسح السجل + نتيجة خطأ
+     * للجلسة — إلا إن كان السجل ممسوحا أصلا (إيقاف
+     * من إعادة تشغيل الجلسة نفسها فلا مجيب). */
+    private void onSpeakStopped(String id) {
+        if (speakingNow == null || !id.equals(speakingUtteranceId)) return;
+        Session s = speakingNow.session;
+        speakingNow = null;
+        speakingUtteranceId = null;
+        sendSpeakError(s, "أُوقف النطق");
+    }
+
+    /** إيقاف نطق جلسة تموت ومسح معلّقاتها (المحرك
+     * مات فلا نتيجة تُرسَل إليه) — يُستدعى من
+     * restartProcess وonProcessEnded. */
+    private void stopSpeakForSession(Session s) {
+        if (speakingNow != null && speakingNow.session == s) {
+            if (tts != null) {
+                try {
+                    tts.stop();
+                } catch (Exception ignored) {
+                }
+            }
+            speakingNow = null;
+            speakingUtteranceId = null;
+        }
+        for (int i = pendingSpeaks.size() - 1; i >= 0; i--) {
+            if (pendingSpeaks.get(i).session == s) pendingSpeaks.remove(i);
+        }
+    }
+
+    /** استقبال طلب سرد محركات النطق من قناة التحكم:
+     * بلا انتظار تهيئة (getEngines استعلام مدير حزم)
+     * — ويرجع قائمة قواميس {اسم، وصف} (فارغة إن لم
+     * يوجد محرك). */
+    private void handleListEngines(Session s, String payload) {
+        if (isFinishing() || isDestroyed()) {
+            sendSpeakError(s, "التطبيق غير متاح");
+            return;
+        }
+        ensureTts();
+        if (tts == null) {
+            sendSpeakError(s, "تعذّر تهيئة محرك النطق");
+            return;
+        }
+        try {
+            JSONArray arr = new JSONArray();
+            java.util.List<TextToSpeech.EngineInfo> engines = tts.getEngines();
+            if (engines != null) {
+                for (TextToSpeech.EngineInfo e : engines) {
+                    JSONObject o = new JSONObject();
+                    o.put("اسم", e.name == null ? "" : e.name);
+                    o.put("وصف", e.label == null ? "" : e.label);
+                    arr.put(o);
+                }
+            }
+            JSONObject r = new JSONObject();
+            r.put("قيمة", arr);
+            sendLineToEngine(s, DIALOG_RESULT_PREFIX + r.toString());
+        } catch (Exception ignored) {
+            sendSpeakError(s, "تعذّر تهيئة محرك النطق");
+        }
+    }
+
+    /** إرسال نتيجة نطق واحدة إلى المحرك (قيمة أو
+     * خطأ) عبر الطابور المحدود — البادئة نفسها
+     * كالحوار والتنبيه. */
+    private void sendSpeakResult(Session s, JSONObject result) {
+        sendLineToEngine(s, DIALOG_RESULT_PREFIX + result.toString());
+    }
+
+    private void sendSpeakValue(Session s) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("قيمة", true);
+            sendSpeakResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    private void sendSpeakError(Session s, String message) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("خطأ", message);
+            sendSpeakResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    // ===== تشغيل صوت جهاز.شغّل_صوت + أوقف_صوت (المهمة 24) =====
+    // المحرك يطلب عبر قناة التحكم (stderr) وينتظر سطر
+    // نتيجة واحدا على stdin: {"قيمة": true} عند بدء
+    // التشغيل أو عند الإيقاف، أو {"خطأ": "..."} — كما
+    // الحوار والتنبيه والنطق تماما (البادئة نفسها).
+    // التشغيل غير حاجب: يرجع فورا ويكمل الصوت في
+    // الخلفية (عكس النطق) — وإلا ما استطاع البرنامج
+    // استدعاء أوقف_صوت أبدا. مشغّل واحد في كل
+    // التطبيق؛ وتشغيل جديد يوقف الجاري ويستبدله
+    // (آمن لأن التشغيل لا ينتظر أحد انتهاءه — على
+    // عكس النطق الذي يرفض الثاني). والجلسة الخلفية
+    // تشغّل فورا كالنشطة (الصوت لا واجهة). والمسار
+    // مطلق محلول من المحرك عبر FilePolicy (التطبيق
+    // لا يعرف مجلد البرنامج). بلا إذن نظام (ملف
+    // محلي في مجلد البرنامج). والاكتمال والخطأ
+    // أثناء التشغيل صمت (لا نتيجة معلّقة أصلا).
+
+    /** إيقاف الصوت الجاري وتحرير المشغّل ومسح
+     * السجل — بلا نتيجة (داخلي). */
+    private void releaseAudio() {
+        if (audioPlayer != null) {
+            try {
+                audioPlayer.stop();
+            } catch (Exception ignored) {
+            }
+            try {
+                audioPlayer.release();
+            } catch (Exception ignored) {
+            }
+            audioPlayer = null;
+        }
+        audioPlayingSession = null;
+    }
+
+    /** استقبال طلب تشغيل صوت من قناة التحكم. */
+    private void handlePlayAudioRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendAudioError(s, "طلب صوت غير صالح");
+            return;
+        }
+        String path = req.optString("مسار", "");
+        if (path.isEmpty()) {
+            sendAudioError(s, "طلب صوت غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendAudioError(s, "التطبيق غير متاح");
+            return;
+        }
+        // تشغيل جديد يستبدل الجاري (بلا رفض — انظر
+        // CATALOG-16): إيقافه وتحريره أولا.
+        releaseAudio();
+        MediaPlayer player = new MediaPlayer();
+        try {
+            player.setDataSource(path);
+        } catch (java.io.FileNotFoundException e) {
+            try {
+                player.release();
+            } catch (Exception ignored) {
+            }
+            sendAudioError(s, "ملف الصوت غير موجود");
+            return;
+        } catch (Exception e) {
+            try {
+                player.release();
+            } catch (Exception ignored) {
+            }
+            sendAudioError(s, "ملف الصوت غير مدعوم أو تالف");
+            return;
+        }
+        player.setOnCompletionListener(mp -> {
+            runOnUiThread(() -> {
+                if (audioPlayer == mp) releaseAudio();
+            });
+        });
+        player.setOnErrorListener((mp, what, extra) -> {
+            runOnUiThread(() -> {
+                if (audioPlayer == mp) releaseAudio();
+            });
+            return true;
+        });
+        try {
+            // تجهيز متزامن على خيط الواجهة — ملف
+            // محلي سريع عادة؛ والحد الصادق: ملف شاذ
+            // قد يجمّد الواجهة لحظة (وprepareAsync
+            // خطوة لاحقة).
+            player.prepare();
+            player.start();
+        } catch (Exception e) {
+            try {
+                player.release();
+            } catch (Exception ignored) {
+            }
+            sendAudioError(s, "ملف الصوت غير مدعوم أو تالف");
+            return;
+        }
+        audioPlayer = player;
+        audioPlayingSession = s;
+        sendAudioValue(s);
+    }
+
+    /** استقبال طلب إيقاف صوت من قناة التحكم — بلا
+     * حمولة تذكر: إيقاف الجاري (إن وُجد) ثم نتيجة
+     * صحيح دائما (بلا صوت جارٍ نجاح صامت). */
+    private void handleStopAudioRequest(Session s, String payload) {
+        if (isFinishing() || isDestroyed()) {
+            sendAudioError(s, "التطبيق غير متاح");
+            return;
+        }
+        releaseAudio();
+        sendAudioValue(s);
+    }
+
+    /** إيقاف صوت جلسة تموت ومسح سجلها (المحرك مات
+     * فلا نتيجة تُرسَل إليه) — يُستدعى من
+     * restartProcess وonProcessEnded بجانب
+     * stopSpeakForSession. وموت جلسة أخرى لا يوقف
+     * صوت الأولى (السجل يخص جلسة واحدة فقط). */
+    private void stopAudioForSession(Session s) {
+        if (audioPlayingSession == s) {
+            releaseAudio();
+        }
+    }
+
+    /** إرسال نتيجة صوت واحدة إلى المحرك (قيمة أو
+     * خطأ) عبر الطابور المحدود — البادئة نفسها
+     * كالحوار والتنبيه والنطق. */
+    private void sendAudioResult(Session s, JSONObject result) {
+        sendLineToEngine(s, DIALOG_RESULT_PREFIX + result.toString());
+    }
+
+    private void sendAudioValue(Session s) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("قيمة", true);
+            sendAudioResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    private void sendAudioError(Session s, String message) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("خطأ", message);
+            sendAudioResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    // ===== قراءة حساس جهاز.حساس (المهمة 25) =====
+    // المحرك يطلب عبر قناة التحكم (stderr) وينتظر سطر
+    // نتيجة واحدا على stdin: {"قيمة": {"قيم": [...],
+    // "دقة": n}} أو {"خطأ": "..."} — كما الحوار تماما
+    // (البادئة نفسها). القراءة لمرة واحدة: مستمع
+    // يسجَّل وينتظر أول حدث ثم يلغي تسجيله؛ ومهلة
+    // 5 ثوان تجيب بخطأ إن لم يصل حدث — فكل طلب يجيب
+    // بنتيجة واحدة بالضبط، فلا يعلق المحرك أبدا.
+    // بلا إذن نظام (الحساسات الثمانية بلا إذن).
+
+    /** نوع حساس أندرويد لاسم نيفا — الثمانية في v1
+     * (القائمة نفسها في المحرك SENSOR_NAMES)؛ و-1
+     * لاسم غير معروف (لا يصل عمليا — المحرك يفحص
+     * الاسم أولا). */
+    private static int sensorTypeForName(String name) {
+        switch (name) {
+            case "تسارع": return Sensor.TYPE_ACCELEROMETER;
+            case "جيروسكوب": return Sensor.TYPE_GYROSCOPE;
+            case "ضوء": return Sensor.TYPE_LIGHT;
+            case "قرب": return Sensor.TYPE_PROXIMITY;
+            case "مغناطيسي": return Sensor.TYPE_MAGNETIC_FIELD;
+            case "ضغط": return Sensor.TYPE_PRESSURE;
+            case "رطوبة": return Sensor.TYPE_RELATIVE_HUMIDITY;
+            case "حرارة": return Sensor.TYPE_AMBIENT_TEMPERATURE;
+            default: return -1;
+        }
+    }
+
+    /** استقبال طلب قراءة حساس من قناة التحكم. */
+    private void handleSensorRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendSensorError(s, "طلب حساس غير صالح");
+            return;
+        }
+        String name = req.optString("اسم", "");
+        if (name.isEmpty()) {
+            sendSensorError(s, "طلب حساس غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendSensorError(s, "التطبيق غير متاح");
+            return;
+        }
+        int type = sensorTypeForName(name);
+        if (type < 0) {
+            sendSensorError(s, "حساس غير معروف: " + name);
+            return;
+        }
+        if (sensorManager == null) {
+            sensorManager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
+        }
+        if (sensorManager == null) {
+            sendSensorError(s, "الحساس غير متاح على هذا الجهاز");
+            return;
+        }
+        Sensor sensor = sensorManager.getDefaultSensor(type);
+        if (sensor == null) {
+            sendSensorError(s, "الحساس غير متاح على هذا الجهاز");
+            return;
+        }
+        // مستمع لمرة واحدة: أول حدث يجيب ويلغي
+        // التسجيل؛ ومهلة 5 ثوان تجيب بخطأ إن لم
+        // يصل حدث — وfinishSensor تحرس الإجابة
+        // الواحدة (حدث ومهلة معا).
+        final PendingSensor pending = new PendingSensor(s);
+        SensorEventListener listener = new SensorEventListener() {
+            @Override
+            public void onSensorChanged(SensorEvent event) {
+                float[] values = event.values.clone();
+                int accuracy = event.accuracy;
+                finishSensor(pending, values, accuracy);
+            }
+
+            @Override
+            public void onAccuracyChanged(Sensor sensor, int accuracy) {
+                // الدقة تُؤخذ من الحدث نفسه — لا تجيب.
+            }
+        };
+        pending.listener = listener;
+        pending.timeout = new Runnable() {
+            @Override
+            public void run() {
+                finishSensor(pending, null, 0);
+            }
+        };
+        pendingSensors.add(pending);
+        sensorManager.registerListener(listener, sensor, SensorManager.SENSOR_DELAY_NORMAL);
+        new Handler(Looper.getMainLooper()).postDelayed(pending.timeout, 5000);
+    }
+
+    /** إنهاء طلب قراءة معلّق بنتيجة واحدة بالضبط:
+     * قيم غير null ← قيمة القراءة؛ وnull ← خطأ
+     * المهلة. يلغي التسجيل والمهلة ويمسح السجل. */
+    private void finishSensor(PendingSensor pending, float[] values, int accuracy) {
+        if (pending.answered) return;
+        pending.answered = true;
+        pendingSensors.remove(pending);
+        if (sensorManager != null && pending.listener != null) {
+            try {
+                sensorManager.unregisterListener(pending.listener);
+            } catch (Exception ignored) {
+            }
+        }
+        if (pending.timeout != null) {
+            new Handler(Looper.getMainLooper()).removeCallbacks(pending.timeout);
+        }
+        if (values == null) {
+            sendSensorError(pending.session, "تعذّر قراءة الحساس — لم تصل قراءة");
+            return;
+        }
+        sendSensorValue(pending.session, values, accuracy);
+    }
+
+    /** إلغاء قراءات حساس معلقة لجلسة تموت (المحرك
+     * مات فلا نتيجة تُرسَل إليها) — يُستدعى من
+     * restartProcess وonProcessEnded بجانب
+     * stopSpeakForSession وstopAudioForSession. */
+    private void stopSensorForSession(Session s) {
+        ArrayList<PendingSensor> copy = new ArrayList<>(pendingSensors);
+        for (PendingSensor p : copy) {
+            if (p.session == s) {
+                p.answered = true;
+                pendingSensors.remove(p);
+                if (sensorManager != null && p.listener != null) {
+                    try {
+                        sensorManager.unregisterListener(p.listener);
+                    } catch (Exception ignored) {
+                    }
+                }
+                if (p.timeout != null) {
+                    new Handler(Looper.getMainLooper()).removeCallbacks(p.timeout);
+                }
+            }
+        }
+    }
+
+    /** إلغاء كل قراءات الحساس المعلقة (موت التطبيق). */
+    private void stopAllSensors() {
+        ArrayList<PendingSensor> copy = new ArrayList<>(pendingSensors);
+        for (PendingSensor p : copy) {
+            stopSensorForSession(p.session);
+        }
+    }
+
+    /** إرسال نتيجة حساس واحدة إلى المحرك (قيمة أو
+     * خطأ) عبر الطابور المحدود — البادئة نفسها
+     * كالحوار والتنبيه والنطق والصوت. */
+    private void sendSensorResult(Session s, JSONObject result) {
+        sendLineToEngine(s, DIALOG_RESULT_PREFIX + result.toString());
+    }
+
+    private void sendSensorValue(Session s, float[] values, int accuracy) {
+        try {
+            JSONObject r = new JSONObject();
+            JSONObject reading = new JSONObject();
+            JSONArray arr = new JSONArray();
+            for (float v : values) arr.put((double) v);
+            reading.put("قيم", arr);
+            reading.put("دقة", accuracy);
+            r.put("قيمة", reading);
+            sendSensorResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    private void sendSensorError(Session s, String message) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("خطأ", message);
+            sendSensorResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    // ===== استماع جهاز.اسمع + بطارية جهاز.بطارية (المهمة 26) =====
+    // المحرك يطلب عبر قناة التحكم (stderr) وينتظر سطر
+    // نتيجة واحدا على stdin: {"قيمة": "..."} لنص الكلام،
+    // أو {"قيمة": {...}} لقاموس البطارية، أو
+    // {"خطأ": "..."} — كما الحوار والتنبيه والنطق
+    // والصوت والحساس تماما (البادئة نفسها).
+    // بوابة الإذن (مكتوبة أولا): حوار إفصاح — الصوت
+    // يذهب لخدمة تعرف صوتي خارجية — مرة في كل تشغيل؛
+    // ثم إذن الميكروفون RECORD_AUDIO (يُطلب عند أول
+    // اسمع بلا إذن فقط). واستماع واحد جارٍ في كل
+    // التطبيق (طلب ثانٍ متزامن يرفض فورا). والبطارية
+    // بلا إذن نظام (قراءة بث لاصق). والبصمة مؤجلة
+    // صراحة في v1 (لا قفل تطبيق ولا قفل جلسة بعد).
+
+    /** هل إذن الميكروفون ممنوح؟ */
+    private boolean recordAudioGranted() {
+        return checkSelfPermission("android.permission.RECORD_AUDIO")
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** استقبال طلب استماع من قناة التحكم. */
+    private void handleListenRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendListenError(s, "طلب استماع غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendListenError(s, "التطبيق غير متاح");
+            return;
+        }
+        if (listeningNow != null) {
+            sendListenError(s, "استماع آخر جارٍ — انتظر انتهاءه");
+            return;
+        }
+        listeningNow = new PendingListen(s);
+        if (!speechDisclosureAccepted) {
+            showListenDisclosure();
+            return;
+        }
+        proceedToListen();
+    }
+
+    /** حوار الإفصاح عن التعرف الصوتي (مرة في كل
+     * تشغيل): الصوت يذهب لخدمة خارجية — «موافق»
+     * يقبل ويتابع؛ و«إلغاء» يرفع خطأ ويفرغ الخانة. */
+    private void showListenDisclosure() {
+        if (listeningNow == null) return;
+        listenDisclosureDialog = new AlertDialog.Builder(this)
+                .setTitle("التعرف الصوتي")
+                .setMessage("سيُرسل صوتك إلى خدمة التعرف الصوتي من النظام — وهي خدمة خارجية قد تعالج الصوت على خوادمها — وذلك فقط ليعيد البرنامج النص الذي قلته. هل توافق؟")
+                .setCancelable(false)
+                .setPositiveButton("موافق", (d, w) -> {
+                    listenDisclosureDialog = null;
+                    speechDisclosureAccepted = true;
+                    proceedToListen();
+                })
+                .setNegativeButton("إلغاء", (d, w) -> {
+                    listenDisclosureDialog = null;
+                    PendingListen p = listeningNow;
+                    listeningNow = null;
+                    if (p != null) {
+                        sendListenError(p.session,
+                                "ألغى المستخدم التعرف الصوتي");
+                    }
+                })
+                .show();
+    }
+
+    /** متابعة الاستماع بعد الإفصاح: إذن الميكروفون
+     * أولا (طابور واحد بلا حوار ثان)، ثم بدء الاستماع. */
+    private void proceedToListen() {
+        if (listeningNow == null) return;
+        if (!recordAudioGranted()) {
+            if (!listenPermissionRequestInFlight) {
+                listenPermissionRequestInFlight = true;
+                requestPermissions(
+                        new String[]{"android.permission.RECORD_AUDIO"},
+                        REQ_LISTEN_PERMISSION);
+            }
+            return;
+        }
+        startListening();
+    }
+
+    /** بدء الاستماع بعد كل الفحوص: توفر الخدمة
+     * أولا، ثم نيّة التعرف (نموذج حر، اللغة
+     * عربية مصرية، نتيجة قصوى 1). */
+    private void startListening() {
+        if (listeningNow == null) return;
+        Session s = listeningNow.session;
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            listeningNow = null;
+            sendListenError(s, "خدمة التعرف الصوتي غير متاحة على هذا الجهاز");
+            return;
+        }
+        try {
+            if (speechRecognizer == null) {
+                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this);
+                speechRecognizer.setRecognitionListener(new RecognitionListener() {
+                    @Override
+                    public void onReadyForSpeech(Bundle params) {
+                    }
+
+                    @Override
+                    public void onBeginningOfSpeech() {
+                    }
+
+                    @Override
+                    public void onRmsChanged(float rmsdB) {
+                    }
+
+                    @Override
+                    public void onBufferReceived(byte[] buffer) {
+                    }
+
+                    @Override
+                    public void onEndOfSpeech() {
+                    }
+
+                    @Override
+                    public void onError(int error) {
+                        runOnUiThread(() -> onListenError(error));
+                    }
+
+                    @Override
+                    public void onResults(Bundle results) {
+                        ArrayList<String> list = results.getStringArrayList(
+                                SpeechRecognizer.RESULTS_RECOGNITION);
+                        runOnUiThread(() -> onListenResults(list));
+                    }
+
+                    @Override
+                    public void onPartialResults(Bundle partialResults) {
+                        // النتائج الجزئية تُتجاهل في v1.
+                    }
+
+                    @Override
+                    public void onEvent(int eventType, Bundle params) {
+                    }
+                });
+            }
+            Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, "ar-EG");
+            intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+            speechRecognizer.startListening(intent);
+        } catch (Exception ignored) {
+            listeningNow = null;
+            sendListenError(s, "تعذّر بدء الاستماع");
+        }
+    }
+
+    /** نتيجة التعرف: أول نص يرجع للجلسة المنتظرة؛
+     * وقائمة فارغة خطأ «لم يُسمع كلام واضح». */
+    private void onListenResults(ArrayList<String> list) {
+        if (listeningNow == null) return;
+        Session s = listeningNow.session;
+        listeningNow = null;
+        destroyRecognizer();
+        if (list == null || list.isEmpty() || list.get(0) == null
+                || list.get(0).isEmpty()) {
+            sendListenError(s, "تعذّر التعرّف على الكلام — لم يُسمع كلام واضح");
+            return;
+        }
+        sendListenValue(s, list.get(0));
+    }
+
+    /** خطأ التعرف: ترجمة الرمز إلى عربي + مسح
+     * الخانة + نتيجة خطأ للجلسة. */
+    private void onListenError(int error) {
+        if (listeningNow == null) return;
+        Session s = listeningNow.session;
+        listeningNow = null;
+        destroyRecognizer();
+        String message;
+        switch (error) {
+            case SpeechRecognizer.ERROR_NO_MATCH:
+                message = "تعذّر التعرّف على الكلام — لم يُسمع كلام واضح";
+                break;
+            case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
+                message = "انتهت مهلة الاستماع — لم يُسمع كلام";
+                break;
+            case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS:
+                message = "رفض إذن الميكروفون — فعّل الإذن من إعدادات التطبيق";
+                break;
+            case SpeechRecognizer.ERROR_RECOGNIZER_BUSY:
+                message = "خدمة التعرف مشغولة";
+                break;
+            case SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED:
+            case SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE:
+                message = "اللغة العربية غير مدعومة في خدمة التعرف على هذا الجهاز";
+                break;
+            default:
+                message = "تعذّر التعرّف على الكلام";
+                break;
+        }
+        sendListenError(s, message);
+    }
+
+    /** تدمير كائن التعرف (بعد نتيجة أو إيقاف). */
+    private void destroyRecognizer() {
+        if (speechRecognizer != null) {
+            try {
+                speechRecognizer.destroy();
+            } catch (Exception ignored) {
+            }
+            speechRecognizer = null;
+        }
+    }
+
+    /** إيقاف استماع جلسة تموت ومسح خانته (المحرك
+     * مات فلا نتيجة تُرسَل إليه) — يُستدعى من
+     * restartProcess وonProcessEnded. */
+    private void stopListenForSession(Session s) {
+        if (listeningNow != null && listeningNow.session == s) {
+            listeningNow = null;
+            if (speechRecognizer != null) {
+                try {
+                    speechRecognizer.cancel();
+                } catch (Exception ignored) {
+                }
+            }
+            destroyRecognizer();
+            if (listenDisclosureDialog != null) {
+                try {
+                    listenDisclosureDialog.dismiss();
+                } catch (Exception ignored) {
+                }
+                listenDisclosureDialog = null;
+            }
+        }
+    }
+
+    /** إيقاف أي استماع معلق (موت التطبيق). */
+    private void stopAllListens() {
+        if (listeningNow != null) {
+            stopListenForSession(listeningNow.session);
+        }
+    }
+
+    /** إرسال نتيجة استماع واحدة إلى المحرك (قيمة أو
+     * خطأ) عبر الطابور المحدود — البادئة نفسها
+     * كالحوار والتنبيه والنطق والصوت والحساس. */
+    private void sendListenResult(Session s, JSONObject result) {
+        sendLineToEngine(s, DIALOG_RESULT_PREFIX + result.toString());
+    }
+
+    private void sendListenValue(Session s, String text) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("قيمة", text);
+            sendListenResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    private void sendListenError(Session s, String message) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("خطأ", message);
+            sendListenResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    /** استقبال طلب قراءة بطارية من قناة التحكم:
+     * بث لاصق جاهز — بلا إذن وبلا انتظار. */
+    private void handleBatteryRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendBatteryError(s, "طلب بطارية غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendBatteryError(s, "التطبيق غير متاح");
+            return;
+        }
+        Intent battery = null;
+        try {
+            battery = registerReceiver(null,
+                    new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        } catch (Exception ignored) {
+        }
+        if (battery == null) {
+            sendBatteryError(s, "تعذّر قراءة البطارية");
+            return;
+        }
+        int level = battery.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+        int scale = battery.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+        int percent = (level >= 0 && scale > 0) ? (level * 100 / scale) : 0;
+        int status = battery.getIntExtra(BatteryManager.EXTRA_STATUS, -1);
+        String state;
+        switch (status) {
+            case BatteryManager.BATTERY_STATUS_CHARGING:
+                state = "يشحن";
+                break;
+            case BatteryManager.BATTERY_STATUS_DISCHARGING:
+                state = "يفرغ";
+                break;
+            case BatteryManager.BATTERY_STATUS_FULL:
+                state = "ممتلئ";
+                break;
+            case BatteryManager.BATTERY_STATUS_NOT_CHARGING:
+                state = "لا يشحن";
+                break;
+            default:
+                state = "غير معروف";
+                break;
+        }
+        int health = battery.getIntExtra(BatteryManager.EXTRA_HEALTH, -1);
+        String healthText;
+        switch (health) {
+            case BatteryManager.BATTERY_HEALTH_GOOD:
+                healthText = "جيدة";
+                break;
+            case BatteryManager.BATTERY_HEALTH_OVERHEAT:
+                healthText = "ساخنة";
+                break;
+            case BatteryManager.BATTERY_HEALTH_DEAD:
+                healthText = "تالفة";
+                break;
+            case BatteryManager.BATTERY_HEALTH_OVER_VOLTAGE:
+                healthText = "جهد زائد";
+                break;
+            case BatteryManager.BATTERY_HEALTH_UNSPECIFIED_FAILURE:
+                healthText = "فشل غير محدد";
+                break;
+            case BatteryManager.BATTERY_HEALTH_COLD:
+                healthText = "باردة";
+                break;
+            default:
+                healthText = "غير معروفة";
+                break;
+        }
+        int tempTenths = battery.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1);
+        double temp = tempTenths >= 0 ? tempTenths / 10.0 : 0.0;
+        int voltage = battery.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1);
+        if (voltage < 0) voltage = 0;
+        int plugged = battery.getIntExtra(BatteryManager.EXTRA_PLUGGED, -1);
+        String source;
+        switch (plugged) {
+            case BatteryManager.BATTERY_PLUGGED_AC:
+                source = "تيار متردد";
+                break;
+            case BatteryManager.BATTERY_PLUGGED_USB:
+                source = "يواسبي";
+                break;
+            case BatteryManager.BATTERY_PLUGGED_WIRELESS:
+                source = "لاسلكي";
+                break;
+            default:
+                source = "لا شيء";
+                break;
+        }
+        try {
+            JSONObject r = new JSONObject();
+            JSONObject dict = new JSONObject();
+            dict.put("مستوى", percent);
+            dict.put("حالة", state);
+            dict.put("صحة", healthText);
+            dict.put("حرارة", temp);
+            dict.put("جهد", voltage);
+            dict.put("مصدر", source);
+            r.put("قيمة", dict);
+            sendBatteryResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    /** إرسال نتيجة بطارية واحدة إلى المحرك (قيمة أو
+     * خطأ) عبر الطابور المحدود — البادئة نفسها. */
+    private void sendBatteryResult(Session s, JSONObject result) {
+        sendLineToEngine(s, DIALOG_RESULT_PREFIX + result.toString());
+    }
+
+    private void sendBatteryError(Session s, String message) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("خطأ", message);
+            sendBatteryResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    // ===== ملفات في شجرة ممنوحة SAF (المهمة 28، CATALOG-19) =====
+    // المحرك يطلب والتطبيق ينفّذ — شجرة SAF عناوين
+    // `content://` لا يفتحها `std::fs` إطلاقا. بادئة
+    // واحدة (`ملف-ممنوح:`) والتفريع على حقل `عملية`.
+    // والنتيجة سطر واحد `نيفا-نتيجة:` كما الحوار
+    // والتنبيه (البادئة نفسها). والمنحة ملك التطبيق:
+    // معرّفات رتيبة من 1، سقف 64، والإبطال من إعدادات
+    // النظام فقط. والطلب لجلسة خلفية يُحفَظ ويُنفَّذ
+    // عند التبديل إليها (نمط الحوار). وإلغاء قراءة
+    // SAF جارية بزر «ألغِ الأمر» يجهض انتظار المحرك
+    // (انتظار SAF قابل للإلغاء في المحرك) — ونتيجة
+    // تصل بعده تُسقَط صامتا (علم safCancelArmed)
+    // فلا يبقى سطر نتيجة شارد يفسد القراءة التالية.
+
+    /** خطأ SAF عربي واحد — يحمله `SafFailure` من
+     * العمق إلى المرسل. */
+    private static class SafFailure extends Exception {
+        SafFailure(String message) {
+            super(message);
+        }
+    }
+
+    /** معلومات مستند واحدة (نوع وحجم وتاريخ). */
+    private static class SafInfo {
+        String mime;
+        long size;
+        long lastModified;
+    }
+
+    /** استقبال طلب SAF من قناة التحكم. */
+    private void handleSafControl(Session s, String payload) {
+        if (isFinishing() || isDestroyed()) {
+            sendSafError(s, "التطبيق غير متاح");
+            return;
+        }
+        if (s.process == null || s.ended) {
+            // بلا محرك حي فلا طالب — لا نتيجة تُرسَل.
+            return;
+        }
+        if (s != active()) {
+            // جلسة خلفية: يُحفَظ حتى تصير نشطة.
+            s.pendingSaf = payload;
+            return;
+        }
+        runSafRequest(s, payload);
+    }
+
+    /** تنفيذ طلب SAF معلّق حين تصير جلسته نشطة. */
+    private void maybeShowPendingSaf(Session s) {
+        if (s.pendingSaf != null && s.process != null && !s.ended) {
+            String payload = s.pendingSaf;
+            s.pendingSaf = null;
+            runSafRequest(s, payload);
+        }
+    }
+
+    /** تنفيذ طلب SAF واحد: إلغاء مسلّح يُسقِط الطلب
+     * بلا نتيجة (المحرك أجهض الانتظار على سطر
+     * الإلغاء)؛ وإلا يُنفَّذ وتُرسَل نتيجة واحدة. */
+    private void runSafRequest(Session s, String payload) {
+        if (s.safCancelArmed) {
+            // ضغطة إلغاء سبقت الطلب — المحرك أجهض
+            // انتظاره؛ فلا نتيجة تُرسَل أبدا (سطر
+            // شارد)، ويُمسح العلم.
+            s.safCancelArmed = false;
+            s.safWaitPending = false;
+            return;
+        }
+        s.safWaitPending = true;
+        try {
+            JSONObject req = new JSONObject(payload);
+            String op = req.optString("عملية", "");
+            switch (op) {
+                case "امنح_مجلد":
+                    handleSafGrantTree(s);
+                    break;
+                case "سرد_ممنوح": {
+                    Grant g = safLiveGrant(req.getLong("معرف"));
+                    Uri doc = safResolveDocument(g, req.optString("مسار", ""));
+                    sendSafValue(s, safListChildren(g, doc));
+                    break;
+                }
+                case "اقرأ_ممنوح": {
+                    Grant g = safLiveGrant(req.getLong("معرف"));
+                    String path = req.optString("مسار", "");
+                    Uri doc = safResolveDocument(g, path);
+                    sendSafValue(s, safReadText(doc, path));
+                    break;
+                }
+                case "اكتب_ممنوح": {
+                    Grant g = safLiveGrant(req.getLong("معرف"));
+                    String path = req.optString("مسار", "");
+                    Uri doc = safResolveDocument(g, path);
+                    safWriteText(doc, req.optString("نص", ""), path);
+                    sendSafValue(s, true);
+                    break;
+                }
+                case "أنشئ_ملف_ممنوح": {
+                    Grant g = safLiveGrant(req.getLong("معرف"));
+                    String path = req.optString("مسار", "");
+                    safCreateDocument(g, path, false);
+                    sendSafValue(s, true);
+                    break;
+                }
+                case "أنشئ_مجلد_ممنوح": {
+                    Grant g = safLiveGrant(req.getLong("معرف"));
+                    String path = req.optString("مسار", "");
+                    safCreateDocument(g, path, true);
+                    sendSafValue(s, true);
+                    break;
+                }
+                case "تفاصيل_ممنوح": {
+                    Grant g = safLiveGrant(req.getLong("معرف"));
+                    String path = req.optString("مسار", "");
+                    Uri doc = safResolveDocument(g, path);
+                    sendSafValue(s, safStatDict(doc, path));
+                    break;
+                }
+                case "احذف_ممنوح": {
+                    Grant g = safLiveGrant(req.getLong("معرف"));
+                    String path = req.optString("مسار", "");
+                    safDeleteDocument(g, path);
+                    sendSafValue(s, true);
+                    break;
+                }
+                case "الممنوح":
+                    sendSafValue(s, safListGrantsJson());
+                    break;
+                default:
+                    sendSafError(s, "عملية غير معروفة: " + op);
+                    break;
+            }
+        } catch (JSONException e) {
+            sendSafError(s, "طلب ملف-ممنوح غير صالح");
+        } catch (SafFailure e) {
+            sendSafError(s, e.getMessage());
+        }
+    }
+
+    /** إرسال نتيجة SAF واحدة إلى المحرك عبر الطابور
+     * المحدود — البادئة نفسها. ونتيجة تصل بعد إلغاء
+     * مسلّح تُسقَط صامتا (لا سطر شارد). */
+    private void sendSafResult(Session s, JSONObject result) {
+        if (s.safCancelArmed) {
+            s.safCancelArmed = false;
+            s.safWaitPending = false;
+            return;
+        }
+        s.safWaitPending = false;
+        sendLineToEngine(s, DIALOG_RESULT_PREFIX + result.toString());
+    }
+
+    private void sendSafValue(Session s, Object value) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("قيمة", value);
+            sendSafResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    private void sendSafError(Session s, String message) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("خطأ", message);
+            sendSafResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    // ----- سجل المنح -----
+
+    /** تحميل سجل المنح من الإعدادات عند البدء، مع
+     * تقليم المنح الميتة بصمت (CATALOG-19 §3). */
+    private void loadGrants() {
+        if (prefs == null) return;
+        nextGrantId = prefs.getLong("منحة_أخير", 1);
+        if (nextGrantId < 1) nextGrantId = 1;
+        grants.clear();
+        for (long id = 1; id < nextGrantId; id++) {
+            String uriStr = prefs.getString("منحة_عنوان_" + id, null);
+            String name = prefs.getString("منحة_اسم_" + id, null);
+            if (uriStr == null || name == null) continue;
+            grants.add(new Grant(id, name, Uri.parse(uriStr)));
+        }
+        pruneGrantsAtStart();
+    }
+
+    /** حفظ سجل المنح: تُمسح مفاتيح المنح القديمة كلها
+     * ثم تُكتب الحية — فالمحذوفة لا تبقى شبحا. */
+    private void saveGrants() {
+        if (prefs == null) return;
+        SharedPreferences.Editor e = prefs.edit();
+        e.putLong("منحة_أخير", nextGrantId);
+        for (long id = 1; id < nextGrantId; id++) {
+            e.remove("منحة_عنوان_" + id);
+            e.remove("منحة_اسم_" + id);
+        }
+        for (Grant g : grants) {
+            e.putString("منحة_عنوان_" + g.id, g.uri.toString());
+            e.putString("منحة_اسم_" + g.id, g.name);
+        }
+        e.apply();
+    }
+
+    /** تقليم المنح الميتة عند البدء (CATALOG-19 §3). */
+    private void pruneGrantsAtStart() {
+        boolean changed = false;
+        java.util.Iterator<Grant> it = grants.iterator();
+        while (it.hasNext()) {
+            if (!safGrantAlive(it.next())) {
+                it.remove();
+                changed = true;
+            }
+        }
+        if (changed) saveGrants();
+    }
+
+    /** هل المنحة ما زالت ممنوحة من النظام (قراءة
+     * وكتابة)؟ */
+    private boolean safGrantAlive(Grant g) {
+        try {
+            for (UriPermission p
+                    : getContentResolver().getPersistedUriPermissions()) {
+                if (p.getUri().equals(g.uri) && p.isReadPermission()
+                        && p.isWritePermission()) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    /** منحة حية بالمعرف — أو رفض عربي (غير معروفة /
+     * مبطلة من إعدادات النظام). والمبطلة تُقلم من
+     * السجل بصمت عند اكتشافها. */
+    private Grant safLiveGrant(long id) throws SafFailure {
+        Grant found = null;
+        for (Grant g : grants) {
+            if (g.id == id) {
+                found = g;
+                break;
+            }
+        }
+        if (found == null) {
+            throw new SafFailure("الشجرة غير معروفة: " + id);
+        }
+        if (!safGrantAlive(found)) {
+            grants.remove(found);
+            saveGrants();
+            throw new SafFailure("الشجرة غير متاحة — أُبطلت المنحة من إعدادات النظام");
+        }
+        return found;
+    }
+
+    /** قائمة المنح الحية بصيغة JSON (تُقلم الميتة
+     * بصمت قبل السرد). */
+    private JSONArray safListGrantsJson() {
+        pruneGrantsAtStart();
+        JSONArray arr = new JSONArray();
+        try {
+            for (Grant g : grants) {
+                JSONObject d = new JSONObject();
+                d.put("معرف", g.id);
+                d.put("اسم", g.name);
+                arr.put(d);
+            }
+        } catch (JSONException ignored) {
+        }
+        return arr;
+    }
+
+    // ----- منتقي المنح -----
+
+    /** طلب منح مجلد: يفتح منتقي النظام؛ والنتيجة في
+     * onActivityResult (معرف جديد أو إلغاء). */
+    private void handleSafGrantTree(Session s) {
+        if (grants.size() >= MAX_GRANTS) {
+            sendSafError(s, "بلغت الحد الأقصى للشجرات الممنوحة (٦٤)");
+            return;
+        }
+        safGrantSession = s;
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        try {
+            startActivityForResult(intent, REQ_SAF_GRANT);
+        } catch (Exception e) {
+            safGrantSession = null;
+            sendSafError(s, "تعذّر فتح منتقي المجلدات");
+        }
+    }
+
+    /** اسم الشجرة للعرض (DISPLAY_NAME للمستند الجذر،
+     * أو آخر مقطع من العنوان عند الفشل). */
+    private String safTreeDisplayName(Uri treeUri) {
+        try {
+            String docId = DocumentsContract.getTreeDocumentId(treeUri);
+            Uri docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId);
+            try (Cursor c = getContentResolver().query(docUri,
+                    new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME},
+                    null, null, null)) {
+                if (c != null && c.moveToFirst()) {
+                    String name = c.getString(0);
+                    if (name != null && !name.isEmpty()) return name;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        String last = treeUri.getLastPathSegment();
+        return last != null ? last : "مجلد ممنوح";
+    }
+
+    // ----- حل المسارات -----
+
+    /** مقاطع المسار بعد الفحص المعجمي: `..` والفارغ
+     * (مسار مطلق أو //) مرفوضة «خارج الشجرة»؛ و`.`
+     * تُتخطى؛ والفارغ هو الجذر نفسه. */
+    private List<String> safPathSegments(String path) throws SafFailure {
+        if (path == null) throw new SafFailure("المسار غير صالح");
+        if (path.isEmpty()) return new ArrayList<>();
+        String p = path;
+        if (p.endsWith("/")) p = p.substring(0, p.length() - 1);
+        if (p.isEmpty()) return new ArrayList<>();
+        String[] parts = p.split("/", -1);
+        List<String> out = new ArrayList<>();
+        for (String part : parts) {
+            if (part.isEmpty() || "..".equals(part)) {
+                throw new SafFailure("المسار خارج الشجرة الممنوحة");
+            }
+            if (".".equals(part)) continue;
+            out.add(part);
+        }
+        return out;
+    }
+
+    /** عنوان مستند ابن بالاسم تحت أب — أو null إن لم
+     * يوجد. */
+    private Uri safChildUri(Uri treeUri, String parentDocId, String name) {
+        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(
+                treeUri, parentDocId);
+        try (Cursor c = getContentResolver().query(children,
+                new String[]{DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME},
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME + "=?",
+                new String[]{name}, null)) {
+            if (c != null) {
+                while (c.moveToNext()) {
+                    if (name.equals(c.getString(1))) {
+                        return DocumentsContract.buildDocumentUriUsingTree(
+                                treeUri, c.getString(0));
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    /** عنوان مستند المسار داخل الشجرة — أو رفض «غير
+     * موجود». */
+    private Uri safResolveDocument(Grant g, String path) throws SafFailure {
+        List<String> segments = safPathSegments(path);
+        String docId = DocumentsContract.getTreeDocumentId(g.uri);
+        Uri doc = DocumentsContract.buildDocumentUriUsingTree(g.uri, docId);
+        for (String seg : segments) {
+            Uri child = safChildUri(g.uri, docId, seg);
+            if (child == null) {
+                throw new SafFailure("المسار غير موجود: " + path);
+            }
+            docId = DocumentsContract.getDocumentId(child);
+            doc = child;
+        }
+        return doc;
+    }
+
+    /** معلومات مستند (نوع وحجم وتاريخ) باستعلام واحد. */
+    private SafInfo safDocInfo(Uri doc) throws SafFailure {
+        try (Cursor c = getContentResolver().query(doc,
+                new String[]{DocumentsContract.Document.COLUMN_MIME_TYPE,
+                        DocumentsContract.Document.COLUMN_SIZE,
+                        DocumentsContract.Document.COLUMN_LAST_MODIFIED},
+                null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                SafInfo info = new SafInfo();
+                info.mime = c.getString(0);
+                info.size = c.isNull(1) ? 0 : c.getLong(1);
+                info.lastModified = c.isNull(2) ? 0 : c.getLong(2);
+                return info;
+            }
+        } catch (Exception ignored) {
+        }
+        throw new SafFailure("تعذّر قراءة معلومات المسار");
+    }
+
+    private static boolean safIsDir(SafInfo info) {
+        return DocumentsContract.Document.MIME_TYPE_DIR.equals(info.mime);
+    }
+
+    // ----- العمليات -----
+
+    /** سرد أسماء أبناء مجلد. */
+    private JSONArray safListChildren(Grant g, Uri doc) throws SafFailure {
+        SafInfo info = safDocInfo(doc);
+        if (!safIsDir(info)) {
+            throw new SafFailure("المسار ليس مجلدا");
+        }
+        String docId = DocumentsContract.getDocumentId(doc);
+        Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(
+                g.uri, docId);
+        JSONArray names = new JSONArray();
+        try (Cursor c = getContentResolver().query(children,
+                new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME},
+                null, null, null)) {
+            if (c != null) {
+                while (c.moveToNext()) {
+                    String name = c.getString(0);
+                    if (name != null) names.put(name);
+                }
+            }
+        } catch (Exception e) {
+            throw new SafFailure("تعذّر سرد المجلد");
+        }
+        return names;
+    }
+
+    /** قراءة نص ملف (UTF-8 صارم، سقف 5 ميغابايت). */
+    private String safReadText(Uri doc, String path) throws SafFailure {
+        SafInfo info = safDocInfo(doc);
+        if (safIsDir(info)) {
+            throw new SafFailure("المسار ليس ملفا: " + path);
+        }
+        byte[] bytes;
+        try (InputStream in = getContentResolver().openInputStream(doc)) {
+            if (in == null) throw new SafFailure("تعذّر قراءة الملف");
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            int total = 0;
+            while ((n = in.read(buf)) != -1) {
+                total += n;
+                if (total > SAF_READ_CAP) {
+                    throw new SafFailure("الملف أكبر من الحد الأقصى (5 ميغابايت)");
+                }
+                out.write(buf, 0, n);
+            }
+            bytes = out.toByteArray();
+        } catch (SafFailure e) {
+            throw e;
+        } catch (java.io.FileNotFoundException e) {
+            throw new SafFailure("المسار غير موجود: " + path);
+        } catch (Exception e) {
+            throw new SafFailure("تعذّر قراءة الملف");
+        }
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes)).toString();
+        } catch (CharacterCodingException e) {
+            throw new SafFailure("الملف ليس نصا صالحا");
+        }
+    }
+
+    /** كتابة نص ملف (استبدال كامل — بلا إلحاق في v1). */
+    private void safWriteText(Uri doc, String text, String path) throws SafFailure {
+        SafInfo info = safDocInfo(doc);
+        if (safIsDir(info)) {
+            throw new SafFailure("المسار ليس ملفا: " + path);
+        }
+        try (OutputStream out = getContentResolver().openOutputStream(doc, "wt")) {
+            if (out == null) throw new SafFailure("تعذّر كتابة الملف");
+            out.write(text.getBytes(StandardCharsets.UTF_8));
+        } catch (SafFailure e) {
+            throw e;
+        } catch (java.io.FileNotFoundException e) {
+            throw new SafFailure("المسار غير موجود: " + path);
+        } catch (Exception e) {
+            throw new SafFailure("تعذّر كتابة الملف");
+        }
+    }
+
+    /** نوع MIME من الامتداد (`.نيفا` نص عادي). */
+    private static String safMimeForName(String name) {
+        String lower = name.toLowerCase(Locale.US);
+        if (lower.endsWith(".json")) return "application/json";
+        if (lower.endsWith(".md")) return "text/markdown";
+        if (lower.endsWith(".html") || lower.endsWith(".htm")) return "text/html";
+        if (lower.endsWith(".xml")) return "text/xml";
+        if (lower.endsWith(".csv")) return "text/csv";
+        return "text/plain";
+    }
+
+    /** إنشاء ملف نصي فارغ أو مجلد تحت أبيه. */
+    private void safCreateDocument(Grant g, String path, boolean dir)
+            throws SafFailure {
+        List<String> segments = safPathSegments(path);
+        if (segments.isEmpty()) {
+            throw new SafFailure("المسار غير صالح");
+        }
+        String name = segments.get(segments.size() - 1);
+        List<String> parentSegs = segments.subList(0, segments.size() - 1);
+        String parentPath = String.join("/", parentSegs);
+        Uri parent = safResolveDocument(g, parentPath);
+        SafInfo parentInfo = safDocInfo(parent);
+        if (!safIsDir(parentInfo)) {
+            throw new SafFailure("المسار الأب ليس مجلدا");
+        }
+        String parentId = DocumentsContract.getDocumentId(parent);
+        if (safChildUri(g.uri, parentId, name) != null) {
+            throw new SafFailure("الملف موجود أصلا: " + path);
+        }
+        String mime = dir ? DocumentsContract.Document.MIME_TYPE_DIR
+                : safMimeForName(name);
+        Uri created;
+        try {
+            created = DocumentsContract.createDocument(
+                    getContentResolver(), parent, mime, name);
+        } catch (Exception e) {
+            throw new SafFailure("تعذّر إنشاء الملف");
+        }
+        if (created == null) {
+            throw new SafFailure("تعذّر إنشاء الملف");
+        }
+    }
+
+    /** تفاصيل مستند بصيغة قاموس {نوع، حجم، تاريخ UTC}. */
+    private JSONObject safStatDict(Uri doc, String path) throws SafFailure {
+        SafInfo info = safDocInfo(doc);
+        boolean dir = safIsDir(info);
+        SimpleDateFormat fmt = new SimpleDateFormat(
+                "yyyy-MM-dd HH:mm:ss", Locale.US);
+        fmt.setTimeZone(TimeZone.getTimeZone("UTC"));
+        try {
+            JSONObject d = new JSONObject();
+            d.put("نوع", dir ? "مجلد" : "ملف");
+            d.put("حجم", dir ? 0 : info.size);
+            d.put("تاريخ", fmt.format(new Date(info.lastModified)));
+            return d;
+        } catch (JSONException e) {
+            throw new SafFailure("تعذّر قراءة معلومات المسار");
+        }
+    }
+
+    /** حذف ملف (ومجلد فارغ) مع التحقق بعد الحذف. */
+    private void safDeleteDocument(Grant g, String path) throws SafFailure {
+        List<String> segments = safPathSegments(path);
+        if (segments.isEmpty()) {
+            throw new SafFailure("لا يمكن حذف جذر الشجرة");
+        }
+        String name = segments.get(segments.size() - 1);
+        String parentPath = String.join("/",
+                segments.subList(0, segments.size() - 1));
+        Uri doc = safResolveDocument(g, path);
+        SafInfo info = safDocInfo(doc);
+        if (safIsDir(info)) {
+            JSONArray children = safListChildren(g, doc);
+            if (children.length() > 0) {
+                throw new SafFailure("المجلد غير فارغ — احذف محتوياته أولا");
+            }
+        }
+        boolean deleted;
+        try {
+            deleted = DocumentsContract.deleteDocument(
+                    getContentResolver(), doc);
+        } catch (Exception e) {
+            throw new SafFailure("تعذّر حذف الملف");
+        }
+        if (!deleted) {
+            throw new SafFailure("تعذّر حذف الملف");
+        }
+        // التحقق بعد الحذف: ما زال موجودا = فشل.
+        Uri parent = safResolveDocument(g, parentPath);
+        String parentId = DocumentsContract.getDocumentId(parent);
+        if (safChildUri(g.uri, parentId, name) != null) {
+            throw new SafFailure("تعذّر حذف الملف — ما زال موجودا");
+        }
+    }
+
+    // ----- المؤقت وتشغيل ملف .نيفا (CATALOG-19 §8) -----
+
+    /** مجلد المؤقت (getFilesDir()/tmp — لا getCacheDir). */
+    private File tempDir() {
+        File tmp = new File(getFilesDir(), TEMP_DIR_NAME);
+        if (!tmp.isDirectory()) tmp.mkdirs();
+        return tmp;
+    }
+
+    /** ملاحظة داخل جلسة (سطر + موجّه جديد — نمط
+     * فشل بدء المحرك). */
+    private void noteInSession(Session s, String msg) {
+        String full = msg + "\n" + s.lastPrompt;
+        appendSessionText(s, full);
+        if (s == active()) {
+            appendToTerminal(full);
+            s.inputStart = s.text.length();
+            terminalView.inputStart = s.inputStart;
+            paintPrompt();
+            scrollToBottomIfAuto();
+        } else {
+            s.inputStart = s.text.length();
+        }
+    }
+
+    /** فشل تشغيل: تنبيه + سطر في الجلسة الحالية
+     * (CATALOG-19 §8) — بلا جلسة جديدة وبلا نسخ. */
+    private void noteSafFailure(String msg) {
+        toast(msg);
+        if (!sessions.isEmpty()) noteInSession(active(), msg);
+    }
+
+    /** اسم مستند للعرض (DISPLAY_NAME أو آخر مقطع). */
+    private String safDocumentDisplayName(Uri uri) {
+        try (Cursor c = getContentResolver().query(uri,
+                new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME},
+                null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                String name = c.getString(0);
+                if (name != null && !name.isEmpty()) return name;
+            }
+        } catch (Exception ignored) {
+        }
+        return uri.getLastPathSegment();
+    }
+
+    /** هل المستند مجلد (MIME_TYPE_DIR)؟ */
+    private boolean safDocumentIsDir(Uri uri) {
+        try (Cursor c = getContentResolver().query(uri,
+                new String[]{DocumentsContract.Document.COLUMN_MIME_TYPE},
+                null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                return DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(0));
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    /** ملف مؤقت فريد: تعارض الاسم → لاحقة رقمية
+     * (بلا كتابة فوق الأصل أبدا). */
+    private File safUniqueTempFile(File dir, String name) {
+        File dest = new File(dir, name);
+        if (!dest.exists()) return dest;
+        int dot = name.lastIndexOf('.');
+        String base = dot >= 0 ? name.substring(0, dot) : name;
+        String ext = dot >= 0 ? name.substring(dot) : "";
+        for (int i = 2; i < 1000; i++) {
+            File cand = new File(dir, base + "-" + arabicDigits(i) + ext);
+            if (!cand.exists()) return cand;
+        }
+        return null;
+    }
+
+    /** فتح منتقي تشغيل ملف .نيفا (StorageGet). */
+    private void launchRunPicker() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("text/plain");
+        try {
+            startActivityForResult(intent, REQ_SAF_RUN);
+        } catch (Exception e) {
+            toast("تعذّر فتح منتقي الملفات");
+        }
+    }
+
+    /** تشغيل ملف .نيفا مختار/مستقبَل (CATALOG-19 §8):
+     * تحقق قبل التشغيل، نسخ إلى المؤقت، جلسة جديدة
+     * مجلدها المؤقت — والأصل لا يُمس أبدا. */
+    private void runChosenNivaFile(Uri uri) {
+        String name = safDocumentDisplayName(uri);
+        if (name == null || name.isEmpty()) {
+            noteSafFailure("تعذّر تشغيل الملف: تعذّر قراءة اسم الملف");
+            return;
+        }
+        if (!name.endsWith(".نيفا")) {
+            noteSafFailure("تعذّر تشغيل الملف: الملف ليس ملف نيفا");
+            return;
+        }
+        if (safDocumentIsDir(uri)) {
+            noteSafFailure("تعذّر تشغيل الملف: الملف ليس ملفا");
+            return;
+        }
+        // الجلسات قبل أي نسخ — فلا ملف يتيم عند الامتلاء.
+        if (sessions.size() >= MAX_SESSIONS) {
+            noteSafFailure("وصلت إلى الحد الأقصى (٨ جلسات)");
+            return;
+        }
+        byte[] bytes;
+        try (InputStream in = getContentResolver().openInputStream(uri)) {
+            if (in == null) {
+                noteSafFailure("تعذّر قراءة الملف المختار");
+                return;
+            }
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            int total = 0;
+            while ((n = in.read(buf)) != -1) {
+                total += n;
+                if (total > SAF_READ_CAP) {
+                    noteSafFailure("تعذّر تشغيل الملف: الملف أكبر من الحد الأقصى (5 ميغابايت)");
+                    return;
+                }
+                out.write(buf, 0, n);
+            }
+            bytes = out.toByteArray();
+        } catch (Exception e) {
+            noteSafFailure("تعذّر قراءة الملف المختار");
+            return;
+        }
+        try {
+            StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes));
+        } catch (CharacterCodingException e) {
+            noteSafFailure("تعذّر تشغيل الملف: الملف ليس نصا صالحا");
+            return;
+        }
+        File dest = safUniqueTempFile(tempDir(), name);
+        if (dest == null) {
+            noteSafFailure("تعذّر تشغيل الملف: تعذّر إنشاء نسخة مؤقتة");
+            return;
+        }
+        try (FileOutputStream fos = new FileOutputStream(dest)) {
+            fos.write(bytes);
+        } catch (Exception e) {
+            dest.delete();
+            noteSafFailure("تعذّر تشغيل الملف: تعذّر نسخ الملف");
+            return;
+        }
+        if (!createSession(name, dest, name)) {
+            dest.delete();
+            noteSafFailure("وصلت إلى الحد الأقصى (٨ جلسات)");
+        }
+    }
+
+    // ----- متصفح الشجرات (CATALOG-19 §10) -----
+
+    /** قائمة «ملفات ممنوحة»: بلا منح → تنبيه؛ واحدة
+     * → متصفحها؛ عدة → منتقي منح أولا. */
+    private void showGrantedFilesMenu() {
+        pruneGrantsAtStart();
+        if (grants.isEmpty()) {
+            toast("لا توجد شجرات ممنوحة — امنح مجلدا من برنامج نيفا أولا");
+            return;
+        }
+        if (grants.size() == 1) {
+            showSafBrowser(grants.get(0), "");
+            return;
+        }
+        String[] names = new String[grants.size()];
+        for (int i = 0; i < grants.size(); i++) names[i] = grants.get(i).name;
+        new AlertDialog.Builder(this)
+                .setTitle("اختر شجرة")
+                .setItems(names, (d, which) -> showSafBrowser(grants.get(which), ""))
+                .setNegativeButton("إغلاق", null)
+                .show();
+    }
+
+    /** متصفح شجرة (قراءة فقط — بلا فتح وبلا تشغيل
+     * من داخله في v1): النقر على مجلد يتنقل فيه،
+     * وعلى ملف يبلّغ بعدم الإتاحة؛ والضغطة الطويلة
+     * على ملف تحذفه بحوار تأكيد، وعلى مجلد تبلّغ
+     * بعدم الإتاحة (حذف المجلدات برمجيا فقط). */
+    private void showSafBrowser(final Grant g, final String path) {
+        JSONArray children;
+        try {
+            Uri doc = safResolveDocument(g, path);
+            children = safListChildren(g, doc);
+        } catch (SafFailure e) {
+            toast(e.getMessage());
+            return;
+        }
+        int count = children.length();
+        String[] names = new String[count];
+        for (int i = 0; i < count; i++) names[i] = children.optString(i, "");
+        String title = g.name + (path.isEmpty() ? "" : " / " + path);
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setItems(names, (d, which) -> {
+                    String child = names[which];
+                    String childPath = path.isEmpty() ? child : path + "/" + child;
+                    try {
+                        Uri doc = safResolveDocument(g, childPath);
+                        if (safIsDir(safDocInfo(doc))) {
+                            showSafBrowser(g, childPath);
+                        } else {
+                            toast("فتح الملفات من المتصفح غير متاح في v1");
+                        }
+                    } catch (SafFailure e) {
+                        toast(e.getMessage());
+                    }
+                })
+                .setNegativeButton("إغلاق", null);
+        if (!path.isEmpty()) {
+            String parent = path.contains("/")
+                    ? path.substring(0, path.lastIndexOf('/')) : "";
+            b.setNeutralButton("رجوع", (d, w) -> showSafBrowser(g, parent));
+        }
+        AlertDialog dialog = b.show();
+        ListView list = dialog.getListView();
+        if (list != null) {
+            list.setOnItemLongClickListener((parent, view, pos, id) -> {
+                String child = names[pos];
+                String childPath = path.isEmpty() ? child : path + "/" + child;
+                try {
+                    Uri doc = safResolveDocument(g, childPath);
+                    if (safIsDir(safDocInfo(doc))) {
+                        toast("حذف المجلدات من المتصفح غير متاح — احذفها من البرنامج");
+                    } else {
+                        showSafDeleteDialog(g, childPath, child, path);
+                    }
+                } catch (SafFailure e) {
+                    toast(e.getMessage());
+                }
+                return true;
+            });
+        }
+    }
+
+    /** حوار تأكيد الحذف من المتصفح + تحقق بعد الحذف. */
+    private void showSafDeleteDialog(final Grant g, final String childPath,
+            final String name, final String parentPath) {
+        new AlertDialog.Builder(this)
+                .setTitle("احذف الملف؟")
+                .setMessage("سيُحذف «" + name + "» نهائيا — لا تراجع.")
+                .setPositiveButton("احذف", (d, w) -> {
+                    try {
+                        safDeleteDocument(g, childPath);
+                        toast("حُذف الملف");
+                        showSafBrowser(g, parentPath);
+                    } catch (SafFailure e) {
+                        toast(e.getMessage());
+                    }
+                })
+                .setNegativeButton("إلغاء", null)
+                .setCancelable(false)
+                .show();
+    }
+
+    // ----- استقبال ملفات .نيفا (CATALOG-19 §13) -----
+
+    /** حوار الاستقبال المعطّل (من niva.properties). */
+    private void showReceiveDisabledDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("استقبال الملفات")
+                .setMessage("استقبال الملفات معطّل — فعّله من `niva.properties`.")
+                .setPositiveButton("حسنا", null)
+                .show();
+    }
+
+    /** اسم التطبيق المرسل (تسمية الحزمة أو «تطبيق
+     * آخر» عند الجهل) — لا يُخمن أبدا. */
+    private String senderName() {
+        try {
+            Uri ref = getReferrer();
+            if (ref != null) {
+                String pkg = ref.getAuthority();
+                if (pkg != null && !pkg.isEmpty()) {
+                    PackageInfo info = getPackageManager().getPackageInfo(pkg, 0);
+                    CharSequence label = getPackageManager()
+                            .getApplicationLabel(info.applicationInfo);
+                    if (label != null) return label.toString();
+                    return pkg;
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return "تطبيق آخر";
+    }
+
+    /** استقبال ملف .نيفا (ACTION_SEND / ACTION_VIEW):
+     * لا تشغيل صامت أبدا — حوار تأكيد أولا، والتجاهل
+     * لا ينسخ شيئا. */
+    private void handleReceivedFile(Intent intent) {
+        String action = intent.getAction();
+        boolean isShare = Intent.ACTION_SEND.equals(action);
+        boolean isView = Intent.ACTION_VIEW.equals(action);
+        if (!isShare && !isView) return;
+        if (isShare && disableReceiveShare) {
+            showReceiveDisabledDialog();
+            return;
+        }
+        if (isView && disableReceiveView) {
+            showReceiveDisabledDialog();
+            return;
+        }
+        Uri uri = isShare
+                ? (Uri) intent.getParcelableExtra(Intent.EXTRA_STREAM)
+                : intent.getData();
+        if (uri == null) {
+            toast("لم يصل ملف");
+            return;
+        }
+        String name = safDocumentDisplayName(uri);
+        if (name == null || name.isEmpty()) {
+            String last = uri.getLastPathSegment();
+            name = last != null ? last : "ملف";
+        }
+        if (!name.endsWith(".نيفا")) {
+            new AlertDialog.Builder(this)
+                    .setTitle("ملف غير مدعوم")
+                    .setMessage("وصل ملف «" + name + "» — التطبيق يستقبل ملفات .نيفا فقط.")
+                    .setPositiveButton("حسنا", null)
+                    .show();
+            return;
+        }
+        final String fileName = name;
+        final Uri fileUri = uri;
+        new AlertDialog.Builder(this)
+                .setTitle("شغّل هذا الملف؟")
+                .setMessage("وصل ملف نيفا «" + fileName + "» من " + senderName() + ".")
+                .setPositiveButton("شغّل", (d, w) -> runChosenNivaFile(fileUri))
+                .setNegativeButton("تجاهل", null)
+                .setCancelable(false)
+                .show();
+    }
+
+    // ===== حوار جهاز.حوار (المهمة 20) =====
+    // المحرك يطلب عبر قناة التحكم (stderr) وينتظر سطر
+    // نتيجة واحدا على stdin: {"قيمة": ...} أو
+    // {"ألغي": true} أو {"خطأ": "..."}. كل حوار غير
+    // قابل للإلغاء بزر الرجوع (setCancelable(false))
+    // وله زر «إلغاء» صريح؛ وكل مسار زر يرسل نتيجة
+    // واحدة بالضبط — فلا يعلق المحرك أبدا في انتظار.
+    // الطلب لجلسة خلفية يُحفَظ ويُعرض عند التبديل إليها.
+
+    /** استقبال طلب حوار من قناة التحكم. */
+    private void handleDialogRequest(Session s, String payload) {
+        if (isFinishing() || isDestroyed()) {
+            sendDialogError(s, "التطبيق غير متاح");
+            return;
+        }
+        if (s != active()) {
+            // جلسة خلفية: يُحفَظ حتى تصير نشطة.
+            s.pendingDialog = payload;
+            return;
+        }
+        showDialogRequest(s, payload);
+    }
+
+    /** عرض طلب معلّق حين تصير جلسته نشطة. */
+    private void maybeShowPendingDialog(Session s) {
+        if (s.pendingDialog != null && s.dialog == null
+                && s.process != null && !s.ended) {
+            String payload = s.pendingDialog;
+            s.pendingDialog = null;
+            showDialogRequest(s, payload);
+        }
+    }
+
+    /** إغلاق حوار الجلسة المفتوح ومسح المعلّق — عند
+     * إعادة التشغيل أو موت العملية (المحرك ميت فلا
+     * نتيجة تُرسل). */
+    private void dismissSessionDialog(Session s) {
+        if (s.dialog != null) {
+            try {
+                s.dialog.dismiss();
+            } catch (Exception ignored) {
+            }
+            s.dialog = null;
+        }
+        s.pendingDialog = null;
+        // وطلب SAF معلّق (المهمة 28) — كالحوار: المحرك
+        // ميت فلا نتيجة تُرسَل.
+        s.pendingSaf = null;
+        s.safWaitPending = false;
+        s.safCancelArmed = false;
+    }
+
+    /** توزيع طلب الحوار حسب النوع (v1 = 9 أنواع؛
+     * «صوتي» يرفضه المحرك نفسه قبل الوصول هنا). */
+    private void showDialogRequest(Session s, String payload) {
+        if (s.dialog != null) {
+            // حوار آخر مفتوح (لا يصل عمليا — المحرك
+            // ينتظر إجابة الأول) — خطأ بدلا من التعليق.
+            sendDialogError(s, "حوار آخر مفتوح");
+            return;
+        }
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDialogError(s, "طلب حوار غير صالح");
+            return;
+        }
+        String kind = req.optString("نوع", "");
+        String title = req.optString("عنوان", "");
+        try {
+            switch (kind) {
+                case "تأكيد":
+                    showConfirmDialog(s, title);
+                    break;
+                case "نص":
+                    showTextDialog(s, title);
+                    break;
+                case "رقم":
+                    showNumberDialog(s, title);
+                    break;
+                case "اختيار واحد":
+                    showSingleChoiceDialog(s, title,
+                            jsonStringArray(req.getJSONArray("خيارات")));
+                    break;
+                case "اختيارات":
+                    showMultiChoiceDialog(s, title,
+                            jsonStringArray(req.getJSONArray("خيارات")));
+                    break;
+                case "قائمة":
+                    showListDialog(s, title,
+                            jsonStringArray(req.getJSONArray("خيارات")));
+                    break;
+                case "عداد":
+                    showCounterDialog(s, title, req.getLong("أدنى"),
+                            req.getLong("أقصى"),
+                            req.optLong("افتراضي", req.getLong("أدنى")));
+                    break;
+                case "تاريخ":
+                    showDateDialog(s, title);
+                    break;
+                case "وقت":
+                    showTimeDialog(s, title);
+                    break;
+                default:
+                    sendDialogError(s, "نوع حوار غير معروف: " + kind);
+                    break;
+            }
+        } catch (JSONException e) {
+            sendDialogError(s, "طلب حوار غير صالح");
+        }
+    }
+
+    /** تسجيل الحوار المفتوح في الجلسة وعرضه. */
+    private void trackDialog(Session s, AlertDialog d) {
+        s.dialog = d;
+        d.setOnDismissListener(dlg -> {
+            if (s.dialog == dlg) s.dialog = null;
+        });
+        d.show();
+    }
+
+    /** إرسال نتيجة حوار واحدة إلى المحرك عبر طابور
+     * الإدخال المحدود (ليست أمر جلب — تمر مباشرة). */
+    private void sendDialogResult(Session s, JSONObject result) {
+        sendLineToEngine(s, DIALOG_RESULT_PREFIX + result.toString());
+    }
+
+    private void sendDialogValue(Session s, Object value) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("قيمة", value);
+            sendDialogResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    private void sendDialogCancel(Session s) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("ألغي", true);
+            sendDialogResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    private void sendDialogError(Session s, String message) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("خطأ", message);
+            sendDialogResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    private static String[] jsonStringArray(JSONArray arr) throws JSONException {
+        String[] out = new String[arr.length()];
+        for (int i = 0; i < arr.length(); i++) out[i] = arr.getString(i);
+        return out;
+    }
+
+    /** تأكيد: نعم / لا / إلغاء. */
+    private void showConfirmDialog(Session s, String title) {
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setPositiveButton("نعم",
+                        (dlg, w) -> sendDialogValue(s, true))
+                .setNegativeButton("لا",
+                        (dlg, w) -> sendDialogValue(s, false))
+                .setNeutralButton("إلغاء",
+                        (dlg, w) -> sendDialogCancel(s))
+                .setCancelable(false)
+                .create();
+        trackDialog(s, d);
+    }
+
+    /** نص: سطر واحد. */
+    private void showTextDialog(Session s, String title) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_TEXT);
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(input)
+                .setPositiveButton("موافق",
+                        (dlg, w) -> sendDialogValue(s,
+                                input.getText().toString()))
+                .setNegativeButton("إلغاء",
+                        (dlg, w) -> sendDialogCancel(s))
+                .setCancelable(false)
+                .create();
+        trackDialog(s, d);
+    }
+
+    /** رقم: إدخال عشري بإشارة؛ الأرقام العربية
+     * (٠-٩) والفاصلة العربية (٫) تُحوَّل قبل التحليل،
+     * والفارغ أو غير الرقم خطأ عربي يصل البرنامج. */
+    private void showNumberDialog(Session s, String title) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER
+                | InputType.TYPE_NUMBER_FLAG_DECIMAL
+                | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(input)
+                .setPositiveButton("موافق", (dlg, w) -> {
+                    Double v = parseArabicNumber(
+                            input.getText().toString());
+                    if (v == null) {
+                        sendDialogError(s, "أدخل رقما");
+                    } else {
+                        sendDialogValue(s, v);
+                    }
+                })
+                .setNegativeButton("إلغاء",
+                        (dlg, w) -> sendDialogCancel(s))
+                .setCancelable(false)
+                .create();
+        trackDialog(s, d);
+    }
+
+    /** تحليل رقم يقبل الأرقام العربية والفاصلة
+     * العربية؛ null = ليس رقما. */
+    private static Double parseArabicNumber(String text) {
+        if (text == null) return null;
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c >= '٠' && c <= '٩') {
+                sb.append((char) ('0' + (c - '٠')));
+            } else if (c == '٫') {
+                sb.append('.');
+            } else if (c == '٬') {
+                // فاصل آلاف عربي — يُتجاهل.
+            } else {
+                sb.append(c);
+            }
+        }
+        String t = sb.toString().trim();
+        if (t.isEmpty()) return null;
+        try {
+            return Double.parseDouble(t);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** اختيار واحد: قائمة radio + موافق/إلغاء؛ بلا
+     * اختيار عند «موافق» خطأ عربي. */
+    private void showSingleChoiceDialog(Session s, String title,
+            String[] options) {
+        final int[] sel = {-1};
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setSingleChoiceItems(options, -1,
+                        (dlg, which) -> sel[0] = which)
+                .setPositiveButton("موافق", (dlg, w) -> {
+                    if (sel[0] < 0) {
+                        sendDialogError(s, "اختر خيارا");
+                    } else {
+                        sendDialogValue(s, options[sel[0]]);
+                    }
+                })
+                .setNegativeButton("إلغاء",
+                        (dlg, w) -> sendDialogCancel(s))
+                .setCancelable(false)
+                .create();
+        trackDialog(s, d);
+    }
+
+    /** اختيارات: قائمة multi-choice؛ قد ترجع قائمة
+     * فارغة (اختيار لا شيء اختيار صالح). */
+    private void showMultiChoiceDialog(Session s, String title,
+            String[] options) {
+        final boolean[] checked = new boolean[options.length];
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMultiChoiceItems(options, null,
+                        (dlg, which, isChecked) -> checked[which] = isChecked)
+                .setPositiveButton("موافق", (dlg, w) -> {
+                    JSONArray arr = new JSONArray();
+                    for (int i = 0; i < options.length; i++) {
+                        if (checked[i]) arr.put(options[i]);
+                    }
+                    sendDialogValue(s, arr);
+                })
+                .setNegativeButton("إلغاء",
+                        (dlg, w) -> sendDialogCancel(s))
+                .setCancelable(false)
+                .create();
+        trackDialog(s, d);
+    }
+
+    /** قائمة: النقر على عنصر يرجع فورا بلا زر موافق. */
+    private void showListDialog(Session s, String title,
+            String[] options) {
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setItems(options,
+                        (dlg, which) -> sendDialogValue(s, options[which]))
+                .setNegativeButton("إلغاء",
+                        (dlg, w) -> sendDialogCancel(s))
+                .setCancelable(false)
+                .create();
+        trackDialog(s, d);
+    }
+
+    /** عدّاد: NumberPicker بلا التفاف؛ نطاق خارج int
+     * خطأ عربي (المحرك يقبل أعدادا أكبر من int). */
+    private void showCounterDialog(Session s, String title,
+            long min, long max, long def) {
+        if (min < Integer.MIN_VALUE || max > Integer.MAX_VALUE) {
+            sendDialogError(s, "نطاق العداد كبير جدا");
+            return;
+        }
+        NumberPicker picker = new NumberPicker(this);
+        picker.setMinValue((int) min);
+        picker.setMaxValue((int) max);
+        picker.setValue((int) def);
+        picker.setWrapSelectorWheel(false);
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(picker)
+                .setPositiveButton("موافق",
+                        (dlg, w) -> sendDialogValue(s, picker.getValue()))
+                .setNegativeButton("إلغاء",
+                        (dlg, w) -> sendDialogCancel(s))
+                .setCancelable(false)
+                .create();
+        trackDialog(s, d);
+    }
+
+    /** تاريخ: منتقي تاريخ؛ الشهر يُرجع 1-12 (أندرويد
+     * 0-11) في {سنة، شهر، يوم}. */
+    private void showDateDialog(Session s, String title) {
+        Calendar now = Calendar.getInstance();
+        DatePicker picker = new DatePicker(this);
+        picker.init(now.get(Calendar.YEAR), now.get(Calendar.MONTH),
+                now.get(Calendar.DAY_OF_MONTH), null);
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(picker)
+                .setPositiveButton("موافق", (dlg, w) -> {
+                    try {
+                        JSONObject r = new JSONObject();
+                        r.put("سنة", picker.getYear());
+                        r.put("شهر", picker.getMonth() + 1);
+                        r.put("يوم", picker.getDayOfMonth());
+                        sendDialogValue(s, r);
+                    } catch (JSONException ignored) {
+                    }
+                })
+                .setNegativeButton("إلغاء",
+                        (dlg, w) -> sendDialogCancel(s))
+                .setCancelable(false)
+                .create();
+        trackDialog(s, d);
+    }
+
+    /** وقت: منتقي وقت 24 ساعة؛ يرجع {ساعة، دقيقة}. */
+    private void showTimeDialog(Session s, String title) {
+        Calendar now = Calendar.getInstance();
+        TimePicker picker = new TimePicker(this);
+        picker.setIs24HourView(true);
+        picker.setHour(now.get(Calendar.HOUR_OF_DAY));
+        picker.setMinute(now.get(Calendar.MINUTE));
+        AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(picker)
+                .setPositiveButton("موافق", (dlg, w) -> {
+                    try {
+                        JSONObject r = new JSONObject();
+                        r.put("ساعة", picker.getHour());
+                        r.put("دقيقة", picker.getMinute());
+                        sendDialogValue(s, r);
+                    } catch (JSONException ignored) {
+                    }
+                })
+                .setNegativeButton("إلغاء",
+                        (dlg, w) -> sendDialogCancel(s))
+                .setCancelable(false)
+                .create();
+        trackDialog(s, d);
     }
 
     /** هل ينتهي النص المتراكم بموجّه؟ (السطر الجزئي
@@ -2382,6 +5632,44 @@ public class MainActivity extends Activity {
 
     private void restartProcess(Session s) {
         if (s.restarting) return;
+        if (s.programFile != null && !s.programFile.isFile()) {
+            // جلسة برنامج ذهب ملفها المؤقت (المهمة 28):
+            // لا إعادة تشغيل — خطأ عربي داخل الجلسة،
+            // بلا مسار داخلي أبدا.
+            String prompt = CONT_PROMPT_TEXT.equals(s.lastPrompt) ? "~ $ " : s.lastPrompt;
+            s.lastPrompt = prompt;
+            String msg = "تعذّر إعادة تشغيل البرنامج — الملف المؤقت غير موجود.\n" + prompt;
+            appendSessionText(s, msg);
+            if (s == active()) {
+                appendToTerminal(msg);
+                s.inputStart = s.text.length();
+                terminalView.inputStart = s.inputStart;
+                paintPrompt();
+                scrollToBottomIfAuto();
+            } else {
+                s.inputStart = s.text.length();
+            }
+            return;
+        }
+        // إعادة التشغيل تقتل أي حوار مفتوح أو معلّق
+        // (المهمة 20) — المحرك الجديد يبدأ بلا انتظار.
+        dismissSessionDialog(s);
+        // وتُسقَط تنبيهات الجلسة المعلّقة بإذن وتُمسح
+        // خريطتها (المهمة 21) — والمنشور يبقى عمدا.
+        dropPendingNotifies(s);
+        // ويُوقَف نطق الجلسة الجاري وتُمسح معلّقاته
+        // (المهمة 23) — المحرك مات فلا نتيجة تُرسَل.
+        stopSpeakForSession(s);
+        // ويُوقَف صوت الجلسة الجاري (المهمة 24) —
+        // المحرك مات فلا نتيجة تُرسَل.
+        stopAudioForSession(s);
+        // وتُلغى قراءات حساس الجلسة المعلقة (المهمة 25) —
+        // المحرك مات فلا نتيجة تُرسَل.
+        stopSensorForSession(s);
+        // ويُوقَف استماع الجلسة الجاري ويُغلق حوار
+        // الإفصاح إن عُرض (المهمة 26) — المحرك مات
+        // فلا نتيجة تُرسَل.
+        stopListenForSession(s);
         // إغلاق stdin القديم وانتظار القارئين على خيط
         // عامل (م-4) — لا يُجمَّد خيط الواجهة أبدا — ثم
         // بدء العملية الجديدة على خيط الواجهة.
@@ -2458,8 +5746,29 @@ public class MainActivity extends Activity {
         if (s.endNotified) return;
         s.endNotified = true;
         s.ended = true;
+        // موت العملية يغلق أي حوار مفتوح أو معلّق
+        // (المهمة 20) — فلا يبقى حوار بلا محرك.
+        dismissSessionDialog(s);
+        // وتُسقَط تنبيهات الجلسة المعلّقة بإذن وتُمسح
+        // خريطتها (المهمة 21) — والمنشور يبقى عمدا.
+        dropPendingNotifies(s);
+        // ويُوقَف نطق الجلسة الجاري وتُمسح معلّقاته
+        // (المهمة 23) — المحرك مات فلا نتيجة تُرسَل.
+        stopSpeakForSession(s);
+        // ويُوقَف صوت الجلسة الجاري (المهمة 24) —
+        // المحرك مات فلا نتيجة تُرسَل.
+        stopAudioForSession(s);
+        // وتُلغى قراءات حساس الجلسة المعلقة (المهمة 25) —
+        // المحرك مات فلا نتيجة تُرسَل.
+        stopSensorForSession(s);
+        // ويُوقَف استماع الجلسة الجاري ويُغلق حوار
+        // الإفصاح إن عُرض (المهمة 26) — المحرك مات
+        // فلا نتيجة تُرسَل.
+        stopListenForSession(s);
         // رمز الخروج: -1 تعني «من مسار EOF، غير معروف» —
-        // يُحلّ عبر exitValue إن أمكن.
+        // يُحلّ عبر exitValue إن أمكن. (صعد قبل فحص
+        // «أثناء الخروج» — اجتماع 39: الإزالة الفورية
+        // يجب أن تتم حتى أثناء التدمير.)
         int code = exitCode;
         if (code < 0) {
             try {
@@ -2471,6 +5780,40 @@ public class MainActivity extends Activity {
         s.endedWithError = code != 0;
         s.fetchWakeHeld = false;
         releaseFetchWakeLockIfIdle();
+        // نموذج ترمكس (اجتماع 39): الخروج النظيف (0 أو
+        // 130) يزيل الجلسة العادية فورا من القائمة
+        // والقرص — بلا خيار وبلا رجعة؛ وجلسة البرنامج
+        // مستثناة (مخرجاتها هي قيمتها).
+        if ((code == 0 || code == 130) && s.programName == null) {
+            int idx = sessions.indexOf(s);
+            if (idx >= 0) {
+                if (isFinishing() || isDestroyed()) {
+                    // إزالة صامتة أثناء التدمير: قائمة +
+                    // ملفات + حفظ — بلا واجهة وبلا إشعار
+                    // (إعادة النشر هنا كانت تعيد تشغيل
+                    // الخدمة بعد إيقافها).
+                    sessions.remove(idx);
+                    deleteSessionFiles(idx);
+                    if (activeIdx >= sessions.size()) {
+                        activeIdx = Math.max(0, sessions.size() - 1);
+                    }
+                    saveAllSessions();
+                } else {
+                    deleteSession(idx, true);
+                    toast("حُذفت الجلسة المنتهية");
+                }
+            }
+            return;
+        }
+        // حفظ فوري (اجتماع 37): حالة «منتهية» تُكتب
+        // الآن في ملف العلامة — فلا تُبعث الجلسة حية
+        // إن قُتل التطبيق قبل onPause.
+        saveAllSessions();
+        // أثناء الخروج/التدمير: التنظيف أعلاه يتم،
+        // لكن بلا واجهة وبلا إعادة نشر إشعار — فإعادة
+        // النشر هنا كانت تعيد تشغيل الخدمة بعد إيقافها
+        // (خلل إعادة الفتح من درج الإشعارات).
+        if (isFinishing() || isDestroyed()) return;
         // موجّه الاستكمال لا يصلح لمحرك ميت (الكتلة ذهبت
         // معه) — الموجّه الوهمي موجّه عادي.
         String prompt = CONT_PROMPT_TEXT.equals(s.lastPrompt) ? "~ $ " : s.lastPrompt;
@@ -2491,16 +5834,6 @@ public class MainActivity extends Activity {
         // اهتزاز عند انتهاء برنامج (v1.1.6 بند 26):
         // المدة الافتراضية 1000ms.
         vibrateDefault();
-        // حذف تلقائي للجلسة المنتهية برمز 0 (v1.1.6
-        // بند 10): خيار في niva.properties، افتراضيا
-        // معطّل؛ وبرمز غير صفر تبقى مشطوبة للقراءة.
-        if (autoDeleteEndedSession && code == 0) {
-            int idx = sessions.indexOf(s);
-            if (idx >= 0) {
-                deleteSession(idx, true);
-                toast("حُذفت الجلسة المنتهية تلقائيا");
-            }
-        }
     }
 
     // ---------- الإخراج ----------
@@ -2727,6 +6060,15 @@ public class MainActivity extends Activity {
         String line = currentLine();
         // أزل سطرا فارغا ألصقه المستخدم (لا يؤثر في الأمر).
         if (line.endsWith("\n")) line = line.substring(0, line.length() - 1);
+        // نموذج ترمكس (اجتماع 39): Enter على سطر فارغ
+        // في جلسة منتهية يصرفها نهائيا من القائمة
+        // والقرص؛ والسطر غير الفارغ يبقي سلوك الإحياء
+        // الحالي (اع / إعادة التشغيل).
+        if (s.ended && line.trim().isEmpty()) {
+            int idx = sessions.indexOf(s);
+            if (idx >= 0) deleteSession(idx, true);
+            return;
+        }
         // سقف سطر الإدخال (م-10).
         if (line.length() > MAX_LINE_CHARS) {
             appLine(s, "السطر أطول من الحد الأقصى (64 كيلوبايت)");
@@ -2913,6 +6255,14 @@ public class MainActivity extends Activity {
     /** إرسال سطر إلى المحرك عبر الطابور المحدود (بند 15)،
      * مع فحص الشبكة وقفل الاستيقاظ للجلب (بند 11 + 12). */
     private void sendLineToEngine(Session s, String line) {
+        if (!"\u0001نيفا-إلغاء".equals(line)) {
+            // أي سطر غير الإلغاء يضمن استهلاك سطر إلغاء
+            // سابق (المهمة 28): حلقة الإدخال تتخطاه،
+            // وانتظار التحكم يتخطاه أو يجهض عليه —
+            // فيُمسح علم الإلغاء المسلّح ولا تُسقَط
+            // نتيجة SAF لاحقة ظلما.
+            s.safCancelArmed = false;
+        }
         if (isFetchCommand(line.trim())) {
             if (!isOnline()) {
                 // دون اتصال: لا إرسال ولا انتظار مهلة DNS —
@@ -2981,7 +6331,7 @@ public class MainActivity extends Activity {
         setCurrentLine(s.histIdx == -1 ? s.draft : s.history.get(s.histIdx));
     }
 
-    // ---------- اختصارات التطبيق (7 من الـ50) ----------
+    // ---------- اختصارات التطبيق (6 من الـ50) ----------
 
     private static boolean isAppCode(String word) {
         for (String code : APP_CODES) {
@@ -3011,24 +6361,6 @@ public class MainActivity extends Activity {
                 openDrawer();
                 // لا مخرجات: الدرج نفسه هو الرد. أعد الموجّه.
                 appLine(s, "");
-                break;
-            case "جد":
-                // إصلاح عطل التبديل (مهمة 12): dispatchLine
-                // أغلق سطر الإدخال (inputStart=-1) قبل
-                // التوجيه، وإنشاء الجلسة بدّل العرض — فبقيت
-                // الجلسة القديمة بلا موجّه وبلا إدخال،
-                // فيرفض الكتابة عند العودة إليها. يُعاد
-                // الموجّه إلى نموذج الجلسة القديمة فقط
-                // (العرض يعرض الجلسة الجديدة الآن)؛ أما
-                // عند بلوغ الحد الأقصى فـappLine تعيد
-                // الموجّه كالمعتاد.
-                Session prev = s;
-                if (!createSession()) {
-                    appLine(s, "وصلت إلى الحد الأقصى (٨ جلسات)");
-                } else {
-                    appendSessionText(prev, prev.lastPrompt);
-                    prev.inputStart = prev.text.length();
-                }
                 break;
             case "مش":
                 // مسح الشاشة فقط (مثل clear في أي ترمنال):
@@ -3489,6 +6821,21 @@ public class MainActivity extends Activity {
                 }
             }
         }
+        // إيقاف محرك النطق مع التطبيق (المهمة 23).
+        if (tts != null) {
+            try {
+                tts.stop();
+                tts.shutdown();
+            } catch (Exception ignored) {
+            }
+            tts = null;
+        }
+        // إيقاف الصوت الجاري مع التطبيق (المهمة 24).
+        releaseAudio();
+        // إلغاء قراءات الحساس المعلقة مع التطبيق (المهمة 25).
+        stopAllSensors();
+        // إيقاف أي استماع معلق مع التطبيق (المهمة 26).
+        stopAllListens();
         super.onDestroy();
     }
 
@@ -3638,8 +6985,6 @@ public class MainActivity extends Activity {
                     if (v >= MIN_TRANSCRIPT_LINES && v <= MAX_TRANSCRIPT_LINES) {
                         maxTranscriptLines = v;
                     }
-                } else if ("حذف_الجلسة_المنتهية_تلقائيا".equals(key)) {
-                    autoDeleteEndedSession = "نعم".equals(value);
                 } else if ("ملء_الشاشة".equals(key)) {
                     // v1.1.7 بند 30.
                     fullscreen = "نعم".equals(value);
@@ -3658,6 +7003,17 @@ public class MainActivity extends Activity {
                     // تحكم (كما في Termux)؛ أي قيمة أخرى =
                     // مفاتيح صوت عادية (الافتراضي).
                     volumeKeysCtrl = "تحكم".equals(value);
+                } else if ("تعطيل_استقبال_المشاركة".equals(key)) {
+                    // المهمة 28: نعم = استقبال المشاركة معطّل.
+                    disableReceiveShare = "نعم".equals(value);
+                } else if ("تعطيل_استقبال_العرض".equals(key)) {
+                    // المهمة 28: نعم = استقبال العرض معطّل.
+                    disableReceiveView = "نعم".equals(value);
+                } else if ("حذف_المؤقت_الأقدم_من".equals(key)) {
+                    // المهمة 28: سالب = لا حذف أبدا، 0 =
+                    // الكل (الافتراضي)، موجب N = الأقدم
+                    // من N أيام.
+                    tempAgeDays = parseTempAgeDays(value);
                 }
             }
         } catch (IOException ignored) {
@@ -3672,13 +7028,15 @@ public class MainActivity extends Activity {
         boolean hasSize = false, hasKeep = false, hasRow = false, hasTheme = false;
         boolean hasHideKb = false, hasSoftKb = false;
         boolean hasMarginH = false, hasMarginV = false;
-        boolean hasRows = false, hasAutoDel = false;
+        boolean hasRows = false;
         // v1.1.7: ملء الشاشة + بديله + الخط المخصص +
         // تنبيه تبديل الجلسة.
         boolean hasFull = false, hasFullAlt = false;
         boolean hasFont = false, hasSessToast = false;
         // مهمة 12: مفاتيح الصوت كتحكم.
         boolean hasVolKeys = false;
+        // المهمة 28: استقبال الملفات + عمر المؤقت.
+        boolean hasRecvShare = false, hasRecvView = false, hasTempAge = false;
         if (f.isFile()) {
             try (BufferedReader br = new BufferedReader(
                     new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
@@ -3719,9 +7077,6 @@ public class MainActivity extends Activity {
                     } else if ("أسطر_السجل".equals(key)) {
                         lines.add("أسطر_السجل=" + arabicDigits(maxTranscriptLines));
                         hasRows = true;
-                    } else if ("حذف_الجلسة_المنتهية_تلقائيا".equals(key)) {
-                        lines.add("حذف_الجلسة_المنتهية_تلقائيا=" + (autoDeleteEndedSession ? "نعم" : "لا"));
-                        hasAutoDel = true;
                     } else if ("ملء_الشاشة".equals(key)) {
                         // v1.1.7 بند 30.
                         lines.add("ملء_الشاشة=" + (fullscreen ? "نعم" : "لا"));
@@ -3742,6 +7097,18 @@ public class MainActivity extends Activity {
                         // مهمة 12.
                         lines.add("مفاتيح_الصوت=" + (volumeKeysCtrl ? "تحكم" : "لا شيء"));
                         hasVolKeys = true;
+                    } else if ("تعطيل_استقبال_المشاركة".equals(key)) {
+                        // المهمة 28.
+                        lines.add("تعطيل_استقبال_المشاركة=" + (disableReceiveShare ? "نعم" : "لا"));
+                        hasRecvShare = true;
+                    } else if ("تعطيل_استقبال_العرض".equals(key)) {
+                        // المهمة 28.
+                        lines.add("تعطيل_استقبال_العرض=" + (disableReceiveView ? "نعم" : "لا"));
+                        hasRecvView = true;
+                    } else if ("حذف_المؤقت_الأقدم_من".equals(key)) {
+                        // المهمة 28.
+                        lines.add("حذف_المؤقت_الأقدم_من=" + tempAgeDaysText());
+                        hasTempAge = true;
                     } else {
                         lines.add(line);
                     }
@@ -3758,12 +7125,14 @@ public class MainActivity extends Activity {
         if (!hasMarginH) lines.add("هامش_أفقي=" + arabicDigits(marginH));
         if (!hasMarginV) lines.add("هامش_عمودي=" + arabicDigits(marginV));
         if (!hasRows) lines.add("أسطر_السجل=" + arabicDigits(maxTranscriptLines));
-        if (!hasAutoDel) lines.add("حذف_الجلسة_المنتهية_تلقائيا=" + (autoDeleteEndedSession ? "نعم" : "لا"));
         if (!hasFull) lines.add("ملء_الشاشة=" + (fullscreen ? "نعم" : "لا"));
         if (!hasFullAlt) lines.add("بديل_ملء_الشاشة=" + (fullscreenWorkaroundAlt ? "نعم" : "لا"));
         if (!hasFont) lines.add("خط_مخصص=" + customFontPath);
         if (!hasSessToast) lines.add("تنبيه_تبديل_الجلسة=" + (sessionChangeToast ? "نعم" : "لا"));
         if (!hasVolKeys) lines.add("مفاتيح_الصوت=" + (volumeKeysCtrl ? "تحكم" : "لا شيء"));
+        if (!hasRecvShare) lines.add("تعطيل_استقبال_المشاركة=" + (disableReceiveShare ? "نعم" : "لا"));
+        if (!hasRecvView) lines.add("تعطيل_استقبال_العرض=" + (disableReceiveView ? "نعم" : "لا"));
+        if (!hasTempAge) lines.add("حذف_المؤقت_الأقدم_من=" + tempAgeDaysText());
         StringBuilder sb = new StringBuilder();
         for (String l : lines) sb.append(l).append('\n');
         try {
@@ -3786,6 +7155,30 @@ public class MainActivity extends Activity {
         } catch (NumberFormatException e) {
             return -1;
         }
+    }
+
+    /** عدد صحيح بإشارة من نص عربي أو غربي («-٥» أو
+     * «-5» أو «٧»): arabicToInt يسقط الإشارة فلا يصلح
+     * هنا — سالب = لا حذف أبدا في مفتاح عمر المؤقت
+     * (المهمة 28). وبلا أرقام = الافتراضي 0. عام
+     * لتقرأه الخدمة عند الخروج أيضا. */
+    public static int parseTempAgeDays(String value) {
+        if (value == null) return 0;
+        String v = value.trim();
+        boolean negative = v.startsWith("-") || v.startsWith("−");
+        if (negative) v = v.substring(1);
+        int n = arabicToInt(v);
+        if (n < 0) return 0;
+        return negative ? -n : n;
+    }
+
+    /** عمر المؤقت للكتابة في niva.properties (سالب =
+     * شرطة لاتينية + أرقام عربية — فـarabicDigits لا
+     * تعرف السالب). */
+    private String tempAgeDaysText() {
+        return tempAgeDays < 0
+                ? "-" + arabicDigits(-tempAgeDays)
+                : arabicDigits(tempAgeDays);
     }
 
     private void saveSettings() {
@@ -3828,6 +7221,11 @@ public class MainActivity extends Activity {
             keyRow.setVisibility((show && isKeyboardVisible())
                     ? View.VISIBLE : View.GONE);
         }
+        if (keyRow2 != null) {
+            keyRow2.setVisibility((show && isKeyboardVisible())
+                    ? View.VISIBLE : View.GONE);
+        }
+        updateSearchRowVisibility();
         saveSettings();
     }
 
@@ -4146,7 +7544,6 @@ public class MainActivity extends Activity {
         marginH = 16;
         marginV = 8;
         maxTranscriptLines = MAX_LINES;
-        autoDeleteEndedSession = false;
         // v1.1.7: ملء الشاشة + بديله + الخط المخصص +
         // تنبيه تبديل الجلسة — كلها للافتراضي.
         fullscreen = false;
@@ -4204,6 +7601,9 @@ public class MainActivity extends Activity {
         full.setChecked(fullscreen);
         menu.add(Menu.NONE, 13, Menu.NONE, "حول");
         menu.add(Menu.NONE, 14, Menu.NONE, "خط مخصص…");
+        // المهمة 28: تشغيل ملف .نيفا + ملفات ممنوحة.
+        menu.add(Menu.NONE, 15, Menu.NONE, "شغّل ملف .نيفا");
+        menu.add(Menu.NONE, 16, Menu.NONE, "ملفات ممنوحة");
         popup.setOnMenuItemClickListener(item -> {
             int id = item.getItemId();
             if (id == 1) {
@@ -4260,6 +7660,14 @@ public class MainActivity extends Activity {
             }
             if (id == 14) {
                 showCustomFontDialog();
+                return true;
+            }
+            if (id == 15) {
+                launchRunPicker();
+                return true;
+            }
+            if (id == 16) {
+                showGrantedFilesMenu();
                 return true;
             }
             return false;
@@ -4716,6 +8124,10 @@ public class MainActivity extends Activity {
 
     /** تحديث إشعار الخدمة بعدد الجلسات وحالة القفل. */
     private void refreshServiceNotification() {
+        // أثناء الخروج/التدمير: لا تعيد نشر الإشعار —
+        // فإعادة النشر هنا كانت تعيد تشغيل الخدمة بعد
+        // إيقافها (خلل إعادة الفتح من درج الإشعارات).
+        if (isFinishing() || isDestroyed()) return;
         try {
             Intent intent = new Intent(this, NivaService.class);
             intent.setAction(NivaService.ACTION_REFRESH);

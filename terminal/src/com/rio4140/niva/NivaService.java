@@ -84,7 +84,76 @@ public class NivaService extends Service {
         }
         manualWakeHeld = false;
         stopForeground(true);
+        // مسح المؤقت عند الخروج فقط (المهمة 28 —
+        // CATALOG-19 §12): محتويات tmp لا المجلد نفسه،
+        // وحسب مفتاح `حذف_المؤقت_الأقدم_من` في
+        // niva.properties (سالب = لا حذف أبدا، 0 = الكل،
+        // موجب N = الأقدم من N أيام). وإن قُتلت العملية
+        // بلا onDestroy يبقى المؤقت حتى الخروج التالي
+        // (بلا مسح عند البدء في v1).
+        clearTempDir();
         super.onDestroy();
+    }
+
+    /** قراءة مفتاح عمر المؤقت من niva.properties
+     * (الخدمة تقرأ الملف بنفسها — فالنشاط قد يكون
+     * ميتا عند الخروج). */
+    private int readTempAgeDays() {
+        java.io.File props = new java.io.File(getFilesDir(), "niva.properties");
+        if (!props.isFile()) return 0;
+        try (java.io.BufferedReader br = new java.io.BufferedReader(
+                new java.io.InputStreamReader(
+                        new java.io.FileInputStream(props),
+                        java.nio.charset.StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = br.readLine()) != null) {
+                line = line.trim();
+                if (line.isEmpty() || line.startsWith("#")) continue;
+                int eq = line.indexOf('=');
+                if (eq < 0) continue;
+                if ("حذف_المؤقت_الأقدم_من".equals(line.substring(0, eq).trim())) {
+                    return MainActivity.parseTempAgeDays(
+                            line.substring(eq + 1).trim());
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return 0;
+    }
+
+    /** مسح محتويات مجلد المؤقت حسب العمر: سالب = لا
+     * شيء؛ 0 = الكل؛ موجب N = الأقدم من N أيام.
+     * والمجلد نفسه يبقى؛ ورابط رمزي لا يُمس إطلاقا
+     * (فحص المسار القانوني قبل المسح). */
+    private void clearTempDir() {
+        try {
+            java.io.File tmp = new java.io.File(getFilesDir(), "tmp");
+            if (!tmp.isDirectory()) return;
+            // رابط رمزي: المسار القانوني يختلف عن المطلق.
+            if (!tmp.getCanonicalFile().equals(tmp.getAbsoluteFile())) return;
+            int ageDays = readTempAgeDays();
+            if (ageDays < 0) return;
+            long cutoff = ageDays == 0 ? Long.MAX_VALUE
+                    : System.currentTimeMillis()
+                            - (long) ageDays * 24L * 60L * 60L * 1000L;
+            java.io.File[] entries = tmp.listFiles();
+            if (entries == null) return;
+            for (java.io.File e : entries) {
+                if (e.lastModified() < cutoff) deleteRecursively(e);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** حذف ملف أو مجلد بمحتوياته (للمؤقت فقط). */
+    private static void deleteRecursively(java.io.File f) {
+        if (f.isDirectory()) {
+            java.io.File[] children = f.listFiles();
+            if (children != null) {
+                for (java.io.File c : children) deleteRecursively(c);
+            }
+        }
+        f.delete();
     }
 
     @Override
