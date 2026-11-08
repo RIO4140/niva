@@ -6,7 +6,7 @@
 
 ## تنزيل ترمنال نيفا
 
-- أندرويد: [niva-terminal-1.2.10.apk](https://github.com/RIO4140/niva/releases/download/v1.2.10/niva-terminal-1.2.10.apk)
+- أندرويد: [niva-terminal-1.2.11.apk](https://github.com/RIO4140/niva/releases/download/v1.2.11/niva-terminal-1.2.11.apk)
 - ويندوز: قريبا
 - ماك: قريبا
 
