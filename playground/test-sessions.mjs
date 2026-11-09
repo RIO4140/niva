@@ -1,4 +1,4 @@
-// Node verification of Termux-style sessions in the Niva
+// Node verification of terminal-style sessions in the Niva
 // console (owner's order 2026-11-05 ~21:03, overruling
 // Meeting 23 on the multiplexer core). Usage:
 // node test-sessions.mjs

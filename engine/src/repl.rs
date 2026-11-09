@@ -1631,7 +1631,7 @@ pub fn version() -> &'static str {
 /// The greeting printed when a REPL session starts — the same
 /// text the WASM console shows on load. Minimal by the owner's
 /// no-explanation rule (2026-11-05): name + version only, like
-/// Termux/Linux — no teaching, no how-to, no docs links.
+/// terminal/Linux — no teaching, no how-to, no docs links.
 /// نسخة الترمنال المضيف (بلاغ 2026-11-08: `اص` يعرض
 /// نسخة المحرك ١٫٠٫٠ لا نسخة الترمنال الحقيقية).
 /// التطبيق يمرّر نسخته في `NIVA_TERMINAL_VERSION`
@@ -1702,7 +1702,7 @@ pub enum ReplCommand {
     /// history lines — variables and functions stay. The
     /// app's own :امسح-المحفوظات (v1.1.6) clears the app's
     /// arrow-key history; the engine honors the same name
-    /// here for its own history (desktop / Termux / WASM).
+    /// here for its own history (desktop / terminal / WASM).
     ClearHistory,
     Clear,
     /// Audit م-2: allow the network inside the running
@@ -2271,7 +2271,7 @@ pub fn run_repl(
         let result = repl.feed(&line);
         // Audit م-6: structured control signals on stderr,
         // only when the host opts in (NIVA_CONTROL_CHANNEL
-        // =stderr) — the desktop/Termux REPL never shows them.
+        // =stderr) — the desktop/terminal REPL never shows them.
         // The \u{0001} prefix keeps a control line distinct
         // from any other stderr text (panics included).
         if std::env::var("NIVA_CONTROL_CHANNEL")

@@ -164,7 +164,7 @@ import java.util.regex.Pattern;
  *
  * كل جلسة عملية محرك نيفا مستقلة (stdin/stdout عبر أنابيب)
  * مع سجلها ومحفوظاتها. والشبكة تلقائية في كل الجلسات
- * (أمر المالك 2026-11-06) — كما في Termux، بلا سؤال
+ * (أمر المالك 2026-11-06) — كما في الطرفية، بلا سؤال
  * إذن وبلا تفعيل يدوي لكل جلسة.
  */
 public class MainActivity extends Activity {
@@ -702,7 +702,7 @@ public class MainActivity extends Activity {
         // الشبكه تكون شغاله بشكل تلقائي زي ترمكس»): كل
         // جلسة جديدة تبدأ مفتوحة، بلا سؤال إذن أول مرة
         // وبلا تفعيل يدوي — الشبكة قدرة جهاز وليست سرا
-        // لكل جلسة، كما في Termux. حمايات المحرك
+        // لكل جلسة، كما في الطرفية. حمايات المحرك
         // (فحص IP والحدود) تبقى كما هي — الذي رُفع
         // بوابة الموافقة في التطبيق فقط.
         boolean networkAllowed = true;
@@ -1093,7 +1093,7 @@ public class MainActivity extends Activity {
     /** تنبيه تبديل الجلسة (v1.1.7 بنود 9 + 50) —
      * الافتراضي مفعّل. */
     private boolean sessionChangeToast = true;
-    /** مفاتيح الصوت كتحكم (مهمة 12 — كما في Termux:
+    /** مفاتيح الصوت كتحكم (مهمة 12 — كما في الطرفية:
      * خفض الصوت = تحكم): الافتراضي معطّل، لأن ضغطة
      * صوت عارضة أثناء تشغيل برنامج تقاطعه (تعيد تشغيل
      * المحرك وتفقد متغيراته)؛ يُفعَّل من niva.properties
@@ -1196,7 +1196,7 @@ public class MainActivity extends Activity {
     }
 
     private void openDrawer() {
-        // الدرج مقفل أثناء التحديد (بند 1، كما في Termux:
+        // الدرج مقفل أثناء التحديد (بند 1، كما في الطرفية:
         // لا يفتح الدرج ومقابض التحديد ظاهرة).
         if (terminalView != null && terminalView.selecting) return;
         scrim.setVisibility(View.VISIBLE);
@@ -1271,7 +1271,7 @@ public class MainActivity extends Activity {
         // MULTI_LINE هو إصلاح v1.1.1 لخطأ السطر الواحد
         // (رأى المالك الأوامر متراكمة على سطر واحد): بدونه
         // يطوي EditText كل \n على سطر بصري واحد. معه يبدأ
-        // كل سطر جديد سطرا خاصا به، مثل Termux. وإنتر نفسه
+        // كل سطر جديد سطرا خاصا به، مثل الطرفية. وإنتر نفسه
         // يُعترض في onCreateInputConnection (أعلاه) فلا
         // يُدرج سطرا جديدا أبدا.
         terminalView.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
@@ -1469,7 +1469,7 @@ public class MainActivity extends Activity {
         terminalView.setOnKeyListener((v, keyCode, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
             // لوحة مفاتيح مادية: تحكم+بديل+ (+/−) يغيّر حجم
-            // الخط (بند 3)؛ ومجموعة Termux للتحكم بالجلسات
+            // الخط (بند 3)؛ ومجموعة الطرفية للتحكم بالجلسات
             // (مهمة 12): التالية/السابقة، جديدة، لصق،
             // كيبورد، قائمة، تسمية، روابط، 1–9 للتبديل.
             if (!disableHardwareShortcuts
@@ -1875,7 +1875,7 @@ public class MainActivity extends Activity {
         moveTaskToBack(true);
     }
 
-    /** مفاتيح الصوت كتحكم (مهمة 12 — كما في Termux:
+    /** مفاتيح الصوت كتحكم (مهمة 12 — كما في الطرفية:
      * خفض الصوت = تحكم): مفعّلة فقط بالمفتاح
      * «مفاتيح_الصوت=تحكم» في niva.properties؛
      * والافتراضي أنها مفاتيح صوت عادية. لا تُسرق من
@@ -1951,7 +1951,7 @@ public class MainActivity extends Activity {
         row.setBackgroundColor(colorPanel);
         row.setPadding(4, 4, 4, 4);
 
-        // مفاتيح التحكم والأسهم (من صورة Termux، معرّبة —
+        // مفاتيح التحكم والأسهم (من صورة الطرفية، معرّبة —
         // لا كلمات لاتينية في الواجهة).
         row.addView(keyButton("إلغاء", v -> onEsc()));
         row.addView(keyButton("إزاحة", v -> insertAtCursor("    ")));
@@ -2643,7 +2643,7 @@ public class MainActivity extends Activity {
     /** تبديل الجلسة التالية/السابقة مع الالتفاف من
      * الأخيرة إلى الأولى وبالعكس (مهمة 12: اختصارات
      * لوحة المفاتيح المادية Ctrl+Alt+N/P وCtrl+Alt+↓/↑
-     * كما في Termux). */
+     * كما في الطرفية). */
     private void switchToAdjacentSession(boolean forward) {
         if (sessions.isEmpty()) return;
         int next = activeIdx + (forward ? 1 : -1);
@@ -2954,7 +2954,7 @@ public class MainActivity extends Activity {
 
     private void showCloseSessionDialog(final int idx) {
         if (idx < 0 || idx >= sessions.size()) return;
-        // مهمة 12 — كما في Termux (حوار القتل يسمّي
+        // مهمة 12 — كما في الطرفية (حوار القتل يسمّي
         // العملية): الحوار يسمّي الجلسة، ورقم العملية
         // حين يتوفر (API 26+)، فلا تُنهى جلسة بالخطأ.
         Session s = sessions.get(idx);
@@ -2977,7 +2977,7 @@ public class MainActivity extends Activity {
     /** إنهاء جلسة (بند 6): تُقتل عمليتها وتُزال؛ إن كانت
      * الأخيرة أُنشئت جلسة جديدة بدلا منها، فلا يبقى
      * التطبيق بلا جلسة أبدا. القتل بـSIGKILL مباشرة
-     * (مهمة 12 — كما في Termux finishIfRunning):
+     * (مهمة 12 — كما في الطرفية finishIfRunning):
      * بلا مهلة إغلاق لطيف، فالمستخدم أكّد الحوار. */
     private void closeSession(int idx) {
         if (idx < 0 || idx >= sessions.size()) return;
@@ -3504,7 +3504,7 @@ public class MainActivity extends Activity {
     private void handleControl(Session s, String signal) {
         if ("شبكة".equals(signal)) {
             // الشبكة تلقائية (أمر المالك 2026-11-06): لا
-            // سؤال إذن أبدا — كما في Termux. المحرك يبدأ
+            // سؤال إذن أبدا — كما في الطرفية. المحرك يبدأ
             // دائما بعلم الشبكة، فلا تصل هذه الإشارة في
             // العادة؛ وإن وصلت (محرك قديم أو حالة حدّية)
             // تُثبَّت الموافقة ويُعاد إرسال السطر المعلق
@@ -9296,7 +9296,7 @@ public class MainActivity extends Activity {
                 // أمر التنظيف بالاسم الكامل (مهمة 12 — أمر
                 // المالك): نفس «امسح الشاشة» تماما — مسح الشاشة
                 // فقط، والمحرك ومحفوظات الأسهم و:اعرض تبقى.
-                // سلوك Termux في clear (CSI 2J) يمسح
+                // سلوك الطرفية في clear (CSI 2J) يمسح
                 // الشاشة الظاهرة ويُبقي السجل؛ أما عندنا
                 // فالشاشة والسجل حقل نص واحد، فمسح العرض
                 // هو مسح السجل المعروض — والفرق موثّق في
@@ -9395,7 +9395,7 @@ public class MainActivity extends Activity {
     // ---------- الشبكة ----------
 
     // (حوار إذن الشبكة أُزيل 2026-11-06: الشبكة تلقائية
-    // بأمر المالك — كما في Termux، بلا سؤال إذن أبدا.
+    // بأمر المالك — كما في الطرفية، بلا سؤال إذن أبدا.
     // انظر handleControl: إشارة «شبكة» تُثبَّت تلقائيا.)
 
     private void updateNetState() {
@@ -10117,7 +10117,7 @@ public class MainActivity extends Activity {
                     sessionChangeToast = !"لا".equals(value);
                 } else if ("مفاتيح_الصوت".equals(key)) {
                     // مهمة 12: «تحكم» تجعل خفض الصوت =
-                    // تحكم (كما في Termux)؛ أي قيمة أخرى =
+                    // تحكم (كما في الطرفية)؛ أي قيمة أخرى =
                     // مفاتيح صوت عادية (الافتراضي).
                     volumeKeysCtrl = "تحكم".equals(value);
                 } else if ("تعطيل_استقبال_المشاركة".equals(key)) {
@@ -10900,7 +10900,7 @@ public class MainActivity extends Activity {
     /** نسخ السطر (مهمة 12): السطر كله — أو كل الأسطر
      * التي يمسها التحديد — بلا الموجّه البادئ، فيُلصق
      * أمرا جاهزا للتنفيذ. فراغات نهاية السطر تُقصّ
-     * كما في نسخ Termux. */
+     * كما في نسخ الطرفية. */
     private void copyLineAtSelection() {
         Editable text = terminalView.getText();
         if (text == null) return;
@@ -11092,7 +11092,7 @@ public class MainActivity extends Activity {
     // ---------- الروابط (بند 7) ----------
 
     /** كل الروابط في نص ما، بلا تكرار، مع قصّ علامات
-     * الترقيم اللاحقة (من تنفيذنا، لا نسخ من Termux). */
+     * الترقيم اللاحقة (من تنفيذنا، لا نسخ من الطرفية). */
     private static List<String> extractUrls(String text) {
         List<String> out = new ArrayList<>();
         if (text == null) return out;

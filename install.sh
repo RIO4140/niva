@@ -109,8 +109,8 @@ if command -v cc > /dev/null 2>&1; then
 else
     echo ""
     echo "تنبيه: مترجم C (cc) غير موجود — البناء الأصلي (نيفا ابن --أصلي) لن يعمل حتى تثبّته."
-    if [ -n "$PREFIX" ] && case "$PREFIX" in *com.termux*) true;; *) false;; esac; then
-        echo "في Termux ثبّته بالأمر: pkg install clang"
+    if [ -n "$PREFIX" ] && case "$PREFIX" in */files/usr) true;; *) false;; esac; then
+        echo "في بيئة طرفية على أندرويد ثبّته بالأمر: pkg install clang"
     elif [ "$OS" = "Darwin" ]; then
         echo "على macOS ثبّته بالأمر: xcode-select --install"
     elif command -v apt > /dev/null 2>&1; then

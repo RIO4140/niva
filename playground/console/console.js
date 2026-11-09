@@ -7,7 +7,7 @@
 // time, block continuation with the > prompt, :خروج ends
 // the session (tap the restart bar for a fresh console).
 //
-// Sessions (owner's order 2026-11-05 ~21:03, Termux-style):
+// Sessions (owner's order 2026-11-05 ~21:03, terminal-style):
 // numbered sessions in a drawer, tap to switch, + to add.
 // Each session is its own NivaConsole with its own scrollback,
 // prompt and network decision — switching never leaks state
@@ -26,7 +26,7 @@
 // when switching away and is restored on switching back.
 //
 // No demo, no tutorial, no docs links: this is a terminal
-// only, like Termux/Linux (owner's no-explanation rule).
+// only, like terminal/Linux (owner's no-explanation rule).
 import init, { NivaConsole } from '../pkg/niva_playground.js';
 
 const scrollwrap = document.getElementById('scrollwrap');
@@ -251,7 +251,7 @@ document.getElementById('add-session').addEventListener('click', () => {
 });
 
 document.getElementById('keyboard-toggle').addEventListener('click', () => {
-  // Termux-style keyboard toggle: hide the soft keyboard when
+  // terminal-style keyboard toggle: hide the soft keyboard when
   // it is up, show it when it is down.
   if (document.activeElement === input) input.blur();
   else input.focus();

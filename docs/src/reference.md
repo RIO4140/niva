@@ -167,7 +167,7 @@
 بالعربي نفسها (المخرج ورسائل الأخطاء ورمز الخروج
 مطابقة للمفسر في كل حالات المطابقة).
 
-- يحتاج مترجم C في نظامك: في Termux `pkg install clang`،
+- يحتاج مترجم C في نظامك: في بيئة طرفية على أندرويد `pkg install clang`،
   وعلى Debian/Ubuntu `apt install gcc`، وعلى macOS
   `xcode-select --install`، وعلى Windows MinGW.
   وإن غاب المترجم فالأمر يشرح التثبيت بالعربي ولا يبني.

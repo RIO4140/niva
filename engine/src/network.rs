@@ -16,7 +16,7 @@
 //! consoles use to offer the first-use permission prompt.
 //!
 //! Platform split:
-//! - Native (desktop / Termux / Android app): hand-rolled
+//! - Native (desktop / terminal / Android app): hand-rolled
 //!   HTTP/1.1 over std TcpStream. Plain HTTP directly; HTTPS
 //!   wraps the connected TcpStream in rustls (Meeting 26,
 //!   §41): the one audited TLS stack (rustls 0.23 + ring +
