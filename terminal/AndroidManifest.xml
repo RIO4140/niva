@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.rio4140.niva"
-    android:versionCode="28"
-    android:versionName="1.2.15">
+    android:versionCode="29"
+    android:versionName="1.2.16">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- قفل الاستيقاظ أثناء الجلب (بند 11): إذن عادي، بلا حوار. -->
@@ -26,6 +26,33 @@
          وقت التشغيل؛ يُطلب عند أول اسمع بلا إذن فقط، بعد
          حوار إفصاح أن الصوت يذهب لخدمة تعرف صوتي خارجية. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- الكاميرا (الدفعة 4أ — جهاز.التقط_صورة؛ الدفعة
+         4ب — جهاز.مصباح): إذن خطر وقت التشغيل؛ يُطلب
+         عند أول التقاط أو مصباح بلا إذن فقط. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- الموقع الدقيق (الدفعة 4أ — جهاز.موقع وموقع_حي
+         ومسح_واي_فاي): إذن خطر وقت التشغيل؛ يُطلب عند
+         أول استعمال بلا إذن فقط. لمسح واي فاي هو إذن
+         مسح لا تتبع. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- حالة واي فاي (الدفعة 4أ — جهاز.واي_فاي
+         ومسح_واي_فاي): إذن عادي، بلا حوار. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- تعديل إعدادات الصوت (الدفعة 4ب —
+         جهاز.اضبط_مستوى_الصوت): إذن عادي، يُمنح عند
+         التثبيت. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- الكتابة في إعدادات النظام (الدفعة 4ب —
+         جهاز.سطوع): إذن خاص؛ بلا منح يفتح التطبيق
+         شاشة إعدادات النظام ويخبر المستخدم أن يعيد
+         المحاولة بعد المنح. -->
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+    <!-- إدارة كل الملفات (الدفعة 5 — البندان 94 و96):
+         إذن خاص؛ يُطلب عند أول «اكشف التخزين» فقط،
+         من شاشة إعدادات النظام؛ وبلا منح يبقى
+         تخزين/تنزيلات مغلقا، ولا يُطلب عند الفتح
+         ولا عند بدء جلسة أبدا. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <uses-sdk
         android:minSdkVersion="24"
@@ -52,7 +79,12 @@
             <!-- استقبال ملفات .نيفا (المهمة 28 — CATALOG-19
                  §13): مشاركة نص وعرض ملف نصي — والفحص
                  (الامتداد .نيفا) في الكود لا هنا، فلا
-                 ملف غير نيفا يُشغَّل أبدا. -->
+                 ملف غير نيفا يُشغَّل أبدا. فلتر العرض
+                 مقسوم: content بلا نمط مسار — مسارات
+                 موفري المستندات معتمة فلا تحمل الاسم
+                 (الفحص في الكود على اسم العرض + حوار
+                 تأكيد)؛ وfile مقيد بنمط `.*[.]نيفا`
+                 (المسار هنا يحمل الاسم الحقيقي). -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <category android:name="android.intent.category.DEFAULT" />
@@ -62,8 +94,14 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:scheme="content" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
                 <data android:scheme="file" />
                 <data android:mimeType="text/plain" />
+                <data android:pathPattern=".*[.]نيفا" />
             </intent-filter>
             <!-- اختصارات المشغّل (v1.1.6 بند 2): «جلسة
                  جديدة» و«فتح الإعدادات» من الضغطة الطويلة
@@ -84,6 +122,16 @@
         <provider
             android:name=".ApkProvider"
             android:authorities="com.rio4140.niva.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+        <!-- مزوّد ملفات البرنامج (الدفعة 4أ — البنود 22
+             و23 و32): يخدم ملفات مجلد البرنامج قراءة
+             فقط لتطبيقات خارجية (مشاركة وفتح وكتابة
+             صورة ملتقطة)، ويرفض niva.properties دائما؛
+             لا يُصدَّر، ويعمل بمنح لمرة واحدة فقط. -->
+        <provider
+            android:name=".NivaFileProvider"
+            android:authorities="com.rio4140.niva.files"
             android:exported="false"
             android:grantUriPermissions="true" />
     </application>

@@ -2,12 +2,15 @@ package com.rio4140.niva;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.DownloadManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
 import android.content.ClipData;
+import android.content.ClipDescription;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
@@ -20,6 +23,7 @@ import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.database.Cursor;
 import android.provider.DocumentsContract;
+import android.provider.MediaStore;
 import android.provider.Settings;
 import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
@@ -27,6 +31,7 @@ import android.speech.SpeechRecognizer;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.Typeface;
@@ -34,17 +39,31 @@ import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
+import android.hardware.camera2.CameraCharacteristics;
+import android.hardware.camera2.CameraManager;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
+import android.media.AudioManager;
+import android.media.AudioTrack;
+import android.media.MediaMetadataRetriever;
 import android.media.MediaPlayer;
+import android.media.MediaRecorder;
 import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
 import android.net.Uri;
+import android.net.wifi.ScanResult;
+import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.BatteryManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PersistableBundle;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.text.Editable;
@@ -72,6 +91,7 @@ import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputConnectionWrapper;
 import android.view.inputmethod.InputMethodManager;
+import android.webkit.MimeTypeMap;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.DatePicker;
@@ -171,6 +191,17 @@ public class MainActivity extends Activity {
      * علم الشبكة في العملية نفسها — بلا إعادة تشغيل وبلا
      * فقدان حالة الجلسة. */
     private static final String ALLOW_NETWORK_COMMAND = ":اسمح-بالشبكة";
+    /** بادئة أمر كشف التنزيلات داخل المحرك (الدفعة 5 —
+     * البندان 94 و96): تضبط جذر التنزيلات للقراءة فقط
+     * في العملية نفسها — بلا إعادة تشغيل وبلا فقدان
+     * حالة الجلسة. */
+    private static final String SET_DOWNLOADS_PREFIX = ":تنزيلات ";
+    /** قناة تقارير الأعطال الصامتة (الدفعة 5 — البند
+     * 107): أهمية منخفضة — فلا صوت ولا اهتزاز ولا
+     * ظهور فوق التطبيق؛ ومعرّف نظام ثابت واحد
+     * (فالتقرير الأحدث يحل محل السابق). */
+    private static final String CRASH_CHANNEL_ID = "niva_crash";
+    private static final int CRASH_NOTIFICATION_ID = 9101;
 
     /** بادئة إشارات التحكم على stderr (تدقيق م-6): سطر
      * يبدأ بهذا الحرف لا يظهر أبدا للمستخدم، ولا يمكن
@@ -189,6 +220,42 @@ public class MainActivity extends Activity {
     private static final String NOTIFY_CHANNEL_ID = "niva_notify";
     /** رمز طلب إذن الإشعارات (أندرويد 13+). */
     private static final int REQ_NOTIFY_PERMISSION = 2101;
+    /** رموز طلبات أذونات الدفعة 4أ: الموقع (آخر
+     * ومباشر)، الكاميرا (التقاط)، ومسح واي فاي. */
+    private static final int REQ_LOCATION_PERMISSION = 2103;
+    private static final int REQ_CAPTURE_PERMISSION = 2104;
+    private static final int REQ_WIFI_SCAN_PERMISSION = 2106;
+    /** رموز طلبات أذونات الدفعة 4ب: الكاميرا
+     * (المصباح)، والميكروفون (التسجيل). */
+    private static final int REQ_TORCH_PERMISSION = 2105;
+    private static final int REQ_RECORD_PERMISSION = 2107;
+    /** رموز نتائج نوايا الدفعة 4أ: منتقي ملف عام،
+     * والتقاط صورة. */
+    private static final int REQ_PICK_FILE = 3103;
+    private static final int REQ_CAPTURE_PHOTO = 3104;
+    /** رموز نتائج نوايا الدفعة 5 (البنود 94 و96 و98
+     * و99 خطوة 1): قراءة مستند، وعرض مجلد، وشاشة
+     * إعدادات إذن التخزين. */
+    private static final int REQ_READ_DOCUMENT = 3105;
+    private static final int REQ_LIST_FOLDER = 3106;
+    private static final int REQ_STORAGE_SETTINGS = 3107;
+    /** سقف قراءة المستند (البند 99 خطوة 1) — كما
+     * سقف منتقي الملفات العام: 5 ميغابايت. */
+    private static final int READ_DOCUMENT_CAP = 5 * 1024 * 1024;
+    /** مهلة قراءة الموقع المباشرة ومسح واي فاي (10
+     * ثوان — كما مهلة الحساس 5 ثوان: كل طلب يجيب
+     * بنتيجة واحدة بالضبط، فلا يعلق المحرك أبدا). */
+    private static final int DEVICE_LOCATION_TIMEOUT_MS = 10_000;
+    private static final int DEVICE_WIFI_SCAN_TIMEOUT_MS = 10_000;
+    /** سقف نسخ منتقي الملفات العام (البند 28) — كما
+     * سقف SAF: 5 ميغابايت. */
+    private static final int PICK_FILE_CAP = 5 * 1024 * 1024;
+    /** سقف نص الجلسة المشارك (البند 62 — الدفعة 4ب):
+     * آخر 100 ألف حرف فقط، بلا تجاوز حد المعاملة. */
+    private static final int SESSION_SHARE_CAP = 100_000;
+    /** سقف نص الحافظة المكتوب من برنامج (H5): 100
+     * ألف حرف — بلا تجاوز حد معاملة بايندر. */
+    private static final int CLIPBOARD_CAP = 100_000;
 
     // ===== خطوة ملفات .نيفا (المهمة 28، CATALOG-19) =====
     /** رمزا منتقيي SAF: المنح والتشغيل. */
@@ -344,6 +411,140 @@ public class MainActivity extends Activity {
     private boolean speechDisclosureAccepted = false;
     private AlertDialog listenDisclosureDialog = null;
 
+    /** واجهة الجهاز من البرنامج (الدفعة 4أ — البنود
+     * 22–34): طلب موقع معلّق واحد (آخر أو مباشر)
+     * بمستمعه ومهلته وعلامة إجابته وجلسته؛ وطلب
+     * ثانٍ يُجاب بخطأ «طلب آخر جارٍ» بدلا من طابور
+     * — فكل طلب يجيب بنتيجة واحدة بالضبط، فلا يعلق
+     * المحرك أبدا. وطلب إذن موقع جارٍ (فلا حوار ثان
+     * فوق الأول). */
+    private static class PendingLocation {
+        final Session session;
+        final boolean once;
+        LocationListener listener;
+        Handler handler;
+        Runnable timeout;
+        boolean answered;
+
+        PendingLocation(Session s, boolean o) {
+            session = s;
+            once = o;
+            answered = false;
+        }
+    }
+
+    private PendingLocation pendingLocation = null;
+    private boolean locationPermissionRequestInFlight = false;
+
+    /** مسح واي فاي (البند 34): طلب واحد بمستقبله
+     * ومهلته وعلامة إجابته وجلسته؛ وطلب إذن مسح
+     * جارٍ (فلا حوار ثان فوق الأول). */
+    private static class PendingWifiScan {
+        final Session session;
+        BroadcastReceiver receiver;
+        Handler handler;
+        Runnable timeout;
+        boolean answered;
+
+        PendingWifiScan(Session s) {
+            session = s;
+            answered = false;
+        }
+    }
+
+    private PendingWifiScan pendingWifiScan = null;
+    private boolean wifiScanPermissionRequestInFlight = false;
+
+    /** منتقي ملف عام (البند 28): الجلسة الطالبة
+     * فقط — طلب واحد في كل التطبيق. */
+    private Session pickFileSession = null;
+
+    /** الدفعة 5 (البنود 94 و96 و98 و99 خطوة 1):
+     * قراءة مستند وعرض مجلد لمرة واحدة — الجلسة
+     * الطالبة فقط، طلب واحد من كل نوع في كل التطبيق؛
+     * وجلسة «اكشف التخزين» المعلقة بانتظار جواب
+     * شاشة إعدادات الإذن. */
+    private Session readDocumentSession = null;
+    private Session listFolderSession = null;
+    private Session pendingStorageSession = null;
+
+    /** هل إذن إدارة كل الملفات ممنوح (أندرويد 11+
+     * فقط — دونه لا وجود للإذن أصلا)؟ */
+    private static boolean storageManagerGranted() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false;
+        return Environment.isExternalStorageManager();
+    }
+
+    /** مسار مجلد التنزيلات المشترك — يُمرَّر للمحرك
+     * براية --تنزيلات أو بأمر :تنزيلات. */
+    private static String downloadsPath() {
+        return Environment.getExternalStoragePublicDirectory(
+                Environment.DIRECTORY_DOWNLOADS).getAbsolutePath();
+    }
+
+    /** التقاط صورة (البند 32): الجلسة الطالبة +
+     * ملف الصورة الهدف؛ وطلب إذن كاميرا جارٍ (فلا
+     * حوار ثان فوق الأول). */
+    private Session pendingCaptureSession = null;
+    private File pendingCaptureFile = null;
+    private boolean capturePermissionRequestInFlight = false;
+
+    /** واجهة الجهاز من البرنامج (الدفعة 4ب — البنود
+     * 61 و62 و66–72 و79 و105 و106 و119):
+     * - إيقاف مؤقت للصوت (البند 66): علم واحد — فلا
+     * خانة معلّقة؛ والتشغيل الجديد والإيقاف يصفّرانه
+     * عبر releaseAudio.
+     * - توست واحد محتفظ به (البند 106 — قاعدة
+     * التوست 196-1: إلغاء السابق قبل عرض الجديد).
+     * - مصباح (البند 72): الجلسة المشغّلة + الحالة
+     * + معرّف الكاميرا؛ وطلب إذن كاميرا جارٍ (فلا
+     * حوار ثان فوق الأول)؛ وموت الجلسة المشغّلة
+     * يطفئ المصباح.
+     * - تسجيل صوت (البند 79): مسجّل واحد + الجلسة
+     * + الملف + المدة + مهلة إيقاف تلقائي؛ وطلب
+     * إذن ميكروفون جارٍ (فلا حوار ثان فوق الأول)؛
+     * وحوار تنبيه «يُحفظ محليا فقط» قبل أول طلب
+     * إذن؛ وموت الجلسة يوقف التسجيل صامتا. */
+    private boolean audioPaused = false;
+    private Toast currentToast = null;
+    private Session torchSession = null;
+    private boolean torchOn = false;
+    private String torchCameraId = null;
+    private boolean torchPermissionRequestInFlight = false;
+
+    private static class PendingTorch {
+        final Session session;
+        final boolean on;
+
+        PendingTorch(Session s, boolean o) {
+            session = s;
+            on = o;
+        }
+    }
+
+    private PendingTorch pendingTorch = null;
+
+    private static class PendingRecord {
+        final Session session;
+        final File file;
+        final int seconds;
+
+        PendingRecord(Session s, File f, int sec) {
+            session = s;
+            file = f;
+            seconds = sec;
+        }
+    }
+
+    private MediaRecorder audioRecorder = null;
+    private Session recordingSession = null;
+    private File recordingFile = null;
+    private Handler recordingTimeoutHandler = null;
+    private Runnable recordingTimeout = null;
+    private boolean recordPermissionRequestInFlight = false;
+    private PendingRecord pendingRecord = null;
+    private AlertDialog recordDisclosureDialog = null;
+
     /** إعدادات محفوظة (SharedPreferences) + ملف
      * niva.properties في مجلد المحرك (قابل للتحرير من
      * الترمنال نفسه؛ الملف يغلب عند التعارض). */
@@ -352,6 +553,10 @@ public class MainActivity extends Activity {
     private static final String PREF_KEEP_SCREEN = "keep_screen_on";
     private static final String PREF_ACTIVE_SESSION = "active_session";
     private static final String NIVA_PROPS_FILE = "niva.properties";
+    /** مجلد البيت تحت مجلد البرنامج (اجتماع 45 §59). */
+    private static final String HOME_DIR_NAME = "home";
+    /** مجلد الإعدادات الظاهر تحت البيت (اجتماع 45 §59). */
+    private static final String SETTINGS_DIR_NAME = "إعدادات";
     private static final float DEFAULT_FONT_SP = 16f;
     private static final float MIN_FONT_SP = 10f;
     private static final float MAX_FONT_SP = 32f;
@@ -382,6 +587,10 @@ public class MainActivity extends Activity {
     private static final String RELEASES_URL =
             "https://api.github.com/repos/RIO4140/niva/releases/latest";
     private static final String UPDATE_APK_NAME = "niva-update.apk";
+    /** لاحقة ملف التجهيز لتنزيل التحديث (53ب): يُنزَّل
+     * الجديد إلى ملف تجهيز، ويُتحقق منه، ثم يُبدَّل مع
+     * النهائي — فتنزيل فاشل لا يمس ملفا صالحا أبدا. */
+    private static final String UPDATE_STAGING_SUFFIX = ".جديد";
     /** سقف حجم التحديث: رفض ما زاد عنه (APK نحو 1.2MB). */
     private static final long MAX_UPDATE_BYTES = 50L * 1024 * 1024;
     /** علامات خطأ جلب من المحرك (بند 12، النصف الثاني):
@@ -420,6 +629,13 @@ public class MainActivity extends Activity {
     private static final int BLACK_ACTIVE = 0xFF1A1A1A;
     private static final int BLACK_PROMPT = 0xFF00E676;
     private static final int ERROR_RED = 0xFFFF5252;
+    /** ألوان سطور عرض الملفات (`ات`): المجلد أزرق والرابط
+     * الفيروزي سماوي، والتنفيذي أخضر بلون نجاح التثبيت
+     * نفسه (promptColor) — مثل ألوان `ls` الافتراضية.
+     * الأزرق والسماوي مقروءان على الخلفيتين الداكنة
+     * والفاتحة معا. */
+    private static final int LS_DIR_BLUE = 0xFF1E88E5;
+    private static final int LS_LINK_CYAN = 0xFF00ACC1;
     /** بادئات سطور المخرجات الملوّنة (أمر المالك 2026-11-08):
      * سطر يبدأ بـ«خطأ» أو فيه «تعذّر» فهو خطأ (أحمر)،
      * وسطر يبدأ بـ«ثُبّت» فهو نجاح تثبيت (أخضر)؛ فتُقرأ
@@ -456,9 +672,9 @@ public class MainActivity extends Activity {
      * كودا تطبيق إضافيان خارج الجدول السبعة والثلاثين؛
      * ضغطة زر تُدرج الكود متبوعا بمسافة، ولا تنفذ تلقائيا. */
     private static final String[] KEY_CODES = {
-            "ات", "مح", "نم", "شم", "حم", "حف", "سم", "قم", "اف", "شف",
+            "ات", "مح", "شم", "حم", "حف", "اف", "شف",
             "عب", "عن", "عس", "عك", "عش", "حج", "شر", "اك",
-            "وج", "ام", "تم", "عم", "اس", "عر", "اص", "رع", "تا", "وق", "نو", "اج", "اط", "عع",
+            "ام", "تم", "عم", "اس", "اص", "رع", "تا", "وق", "نو", "اج", "عع",
             "نب", "اب",
             "جل", "تنظيف", "مد", "اع", "تن"
     };
@@ -491,6 +707,10 @@ public class MainActivity extends Activity {
         // بوابة الموافقة في التطبيق فقط.
         boolean networkAllowed = true;
         boolean ended = false;
+        /** قُبل إفصاح قراءة الحافظة في هذه الجلسة (H4):
+         * أول قراءة من برنامج تطلب موافقة المستخدم،
+         * وبعدها تقرأ بقية طلبات الجلسة بلا حوار. */
+        boolean clipboardReadDisclosed = false;
         long startTime = System.currentTimeMillis();
         String pendingLine = null;
         /** حوار جهاز.حوار المفتوح حاليا لهذه الجلسة
@@ -805,6 +1025,12 @@ public class MainActivity extends Activity {
     private ArrayAdapter<String> searchAdapter;
     private final ArrayList<String> searchItems = new ArrayList<>();
     private boolean searchOpen = false;
+    /** صف البحث في المخرجات (الدفعة 3، البند 60): حقل
+     * كلمة + زر «التالي»؛ يظهر من القائمة فقط. */
+    private LinearLayout outputSearchRow;
+    private EditText outputSearchField;
+    private boolean outputSearchOpen = false;
+    private int outputSearchFrom = 0;
     /** زر «بديل» كمعدِّل للسهم التالي (ALT + سهم). */
     private Button altButton;
     private boolean altNext = false;
@@ -814,11 +1040,25 @@ public class MainActivity extends Activity {
     private int currentPromptStart = -1;
     /** لون الموجّه الحالي (يتغير مع المظهر — بند 9). */
     private int promptColor = DARK_PROMPT;
+    /** الجرس (الدفعة 3، البند 57): آخر اهتزاز خطأ،
+     * وهل التطبيق مرئي الآن. */
+    private long lastBellTime = 0;
+    private boolean appVisible = false;
 
     /** الإعدادات (بند 3 + 4 + 9). */
     private SharedPreferences prefs;
     private float fontSizeSp = DEFAULT_FONT_SP;
     private boolean keepScreenOn = false;
+    /** تعطيل اختصارات لوحة المفاتيح المادية (الدفعة 3،
+     * البند 74) — الافتراضي لا. */
+    private boolean disableHardwareShortcuts = false;
+    /** لون الخطأ ولون النجاح من niva.properties (الدفعة 3،
+     * البند 63)؛ 0 للنجاح = لون الموجّه حسب المظهر. */
+    private int errorColor = ERROR_RED;
+    private int successColor = 0;
+    /** لون المؤشر الصريح من niva.properties (الدفعة 3،
+     * البند 64)؛ 0 = تلقائي من سطوع الخلفية. */
+    private int cursorColor = 0;
     private boolean lightTheme = false;
     private boolean showKeyRowPref = true;
     /** المظهر (v1.1.6 بند 10): 0 داكن دائما، 1 فاتح
@@ -910,6 +1150,10 @@ public class MainActivity extends Activity {
     /** استقبال أمر الخروج من إشعار الخدمة (بند 13). */
     private BroadcastReceiver exitReceiver;
 
+    // خروج إشعار الخدمة ألغى كل الجلسات (أمر المالك
+    // 2026-11-09) — فيُمنع أي حفظ بعدها يعيد بناءها.
+    private boolean exitFromNotification = false;
+
     /** لوحة كتابة البرنامج (بند 10). */
     private View composePanel;
     private EditText composeEdit;
@@ -940,6 +1184,17 @@ public class MainActivity extends Activity {
         vibrate(1000);
     }
 
+    /** الجرس (الدفعة 3، البند 57): اهتزاز 50ms واحد عند
+     * سطر خطأ أحمر جديد، مخنوق بفاصل أدنى 150ms، ولا
+     * يعمل إطلاقا إن كان التطبيق غير مرئي. */
+    private void bellOnErrorLine() {
+        if (!appVisible) return;
+        long now = SystemClock.uptimeMillis();
+        if (now - lastBellTime < 150) return;
+        lastBellTime = now;
+        vibrate(50);
+    }
+
     private void openDrawer() {
         // الدرج مقفل أثناء التحديد (بند 1، كما في Termux:
         // لا يفتح الدرج ومقابض التحديد ظاهرة).
@@ -959,6 +1214,7 @@ public class MainActivity extends Activity {
         prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
         connectivityManager =
                 (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+        ensureDefaultProperties();
         loadSettings();
         // سجل المنح (المهمة 28): يُحمَّل بعد الإعدادات —
         // والميتة تُقلم بصمت عند البدء.
@@ -1179,7 +1435,13 @@ public class MainActivity extends Activity {
                 new ScaleGestureDetector.SimpleOnScaleGestureListener() {
                     @Override
                     public boolean onScale(ScaleGestureDetector detector) {
-                        setFontSize(fontSizeSp * detector.getScaleFactor());
+                        // الدفعة 3، البند 20: القرص يبدّل
+                        // الخطوة نقطتين — التقريب لأقرب
+                        // عدد زوجي يجعل القرص البطيء بلا
+                        // أثر حتى يتجاوز 10% تقريبا.
+                        float stepped = Math.round(fontSizeSp
+                                * detector.getScaleFactor() / 2f) * 2f;
+                        setFontSize(stepped);
                         return true;
                     }
                 });
@@ -1210,7 +1472,8 @@ public class MainActivity extends Activity {
             // الخط (بند 3)؛ ومجموعة Termux للتحكم بالجلسات
             // (مهمة 12): التالية/السابقة، جديدة، لصق،
             // كيبورد، قائمة، تسمية، روابط، 1–9 للتبديل.
-            if (event.isCtrlPressed() && event.isAltPressed()) {
+            if (!disableHardwareShortcuts
+                    && event.isCtrlPressed() && event.isAltPressed()) {
                 if (keyCode == KeyEvent.KEYCODE_EQUALS
                         || keyCode == KeyEvent.KEYCODE_NUMPAD_ADD) {
                     setFontSize(fontSizeSp + 2);
@@ -1233,7 +1496,7 @@ public class MainActivity extends Activity {
                 }
                 if (keyCode == KeyEvent.KEYCODE_C) {
                     if (!createSession()) {
-                        toast("وصلت إلى الحد الأقصى (٨ جلسات)");
+                        showSessionCapDialog();
                     }
                     return true;
                 }
@@ -1271,7 +1534,8 @@ public class MainActivity extends Activity {
             // اختصارات Ctrl+Alt أعلاه ولا سلوك أندرويد
             // الافتراضي خارج القائمة. «ع» (تعليق) مستبعد
             // عمدا: يحتاج سطح محرك جديد وقرارا منفصلا.
-            if (event.isCtrlPressed() && !event.isAltPressed()) {
+            if (!disableHardwareShortcuts
+                    && event.isCtrlPressed() && !event.isAltPressed()) {
                 char ch = (char) event.getUnicodeChar(0);
                 switch (ch) {
                     case 'خ': doExit(); return true;
@@ -1331,6 +1595,13 @@ public class MainActivity extends Activity {
         root.addView(searchRow, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        // صف البحث في المخرجات (الدفعة 3، البند 60):
+        // مخفي حتى يطلبه عنصر القائمة؛ وفوق صف المفاتيح.
+        outputSearchRow = buildOutputSearchRow();
+        outputSearchRow.setVisibility(View.GONE);
+        root.addView(outputSearchRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
         // صف المفاتيح الثاني (v1.2.1): أزرار التحكم
         // المعربة؛ يتبع صف المفاتيح الأول ظهورا واختفاء.
         keyRow2 = buildKeyRow2();
@@ -1361,7 +1632,7 @@ public class MainActivity extends Activity {
             if (createSession()) {
                 closeDrawer();
             } else {
-                Toast.makeText(this, "وصلت إلى الحد الأقصى (٨ جلسات)", Toast.LENGTH_SHORT).show();
+                showSessionCapDialog();
             }
         });
         // الضغطة الطويلة على «+» تفتح حوار إنشاء جلسة
@@ -1426,6 +1697,7 @@ public class MainActivity extends Activity {
                             keyRow2.setVisibility(want);
                         }
                         updateSearchRowVisibility();
+                        updateOutputSearchRowVisibility();
                     }
                 });
 
@@ -1482,7 +1754,7 @@ public class MainActivity extends Activity {
             @Override
             public void onReceive(Context context, Intent intent) {
                 if (NivaService.ACTION_EXIT.equals(intent.getAction())) {
-                    finish();
+                    exitFromNotification();
                 }
             }
         };
@@ -1518,7 +1790,7 @@ public class MainActivity extends Activity {
         }
         if ("com.rio4140.niva.NEW_SESSION".equals(action)) {
             if (!createSession()) {
-                toast("وصلت إلى الحد الأقصى (٨ جلسات)");
+                showSessionCapDialog();
             }
         } else if ("com.rio4140.niva.OPEN_SETTINGS".equals(action)) {
             showTopMenu();
@@ -1552,6 +1824,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        appVisible = false;
         // إيقاف تكرار الأزرار (v1.1.6 بند 1) قبل كل شيء.
         stopRepeat();
         // القفل مقصور على الجلب نفسه (بند 11): يُحرَّر
@@ -1565,6 +1838,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        appVisible = true;
         // أشرطة النظام قد تعود بعد مغادرة التطبيق؛ أعد
         // إخفاءها إن كان ملء الشاشة مفعّلا (v1.1.7 بند 30).
         applyFullscreen();
@@ -2048,6 +2322,124 @@ public class MainActivity extends Activity {
         terminalView.requestFocus();
     }
 
+    // ---------- البحث في المخرجات (الدفعة 3، البند 60) ----------
+
+    /** صف البحث في المخرجات: حقل كلمة + «التالي» +
+     * «✕»؛ الكتابة تقفز لأول تطابق حيا، و«التالي»
+     * للتالي مع التفاف للبداية. */
+    private LinearLayout buildOutputSearchRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setLayoutDirection(View.LAYOUT_DIRECTION_RTL);
+        row.setBackgroundColor(colorPanel);
+        row.setPadding(8, 8, 8, 8);
+        outputSearchField = new EditText(this);
+        outputSearchField.setHint("ابحث في المخرجات");
+        outputSearchField.setTextColor(colorText);
+        outputSearchField.setHintTextColor(colorSubtitle);
+        outputSearchField.setSingleLine(true);
+        outputSearchField.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
+        outputSearchField.setBackgroundColor(colorBtn);
+        outputSearchField.setPadding(16, 12, 16, 12);
+        outputSearchField.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int st, int c, int a) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int st, int b, int c) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                outputSearchFrom = 0;
+                findOutputNext(false);
+            }
+        });
+        outputSearchField.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                findOutputNext(true);
+                return true;
+            }
+            return false;
+        });
+        row.addView(outputSearchField, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        Button nextBtn = new Button(this);
+        nextBtn.setText("التالي");
+        nextBtn.setTextColor(colorText);
+        nextBtn.setBackgroundColor(colorBtn);
+        nextBtn.setOnClickListener(v -> findOutputNext(true));
+        row.addView(nextBtn, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        Button closeBtn = new Button(this);
+        closeBtn.setText("✕");
+        closeBtn.setTextColor(colorText);
+        closeBtn.setBackgroundColor(colorBtn);
+        closeBtn.setOnClickListener(v -> hideOutputSearch());
+        row.addView(closeBtn, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return row;
+    }
+
+    /** إظهار/إخفاء البحث في المخرجات. */
+    private void toggleOutputSearch() {
+        if (outputSearchOpen) {
+            hideOutputSearch();
+            return;
+        }
+        outputSearchOpen = true;
+        updateOutputSearchRowVisibility();
+        outputSearchFrom = 0;
+        outputSearchField.requestFocus();
+        showKeyboard();
+    }
+
+    private void hideOutputSearch() {
+        outputSearchOpen = false;
+        if (outputSearchField != null) outputSearchField.setText("");
+        updateOutputSearchRowVisibility();
+        if (terminalView != null) {
+            moveCursorToEnd();
+            terminalView.requestFocus();
+        }
+    }
+
+    private void updateOutputSearchRowVisibility() {
+        if (outputSearchRow == null) return;
+        outputSearchRow.setVisibility((outputSearchOpen && showKeyRowPref && isKeyboardVisible())
+                ? View.VISIBLE : View.GONE);
+    }
+
+    /** القفز للتطابق التالي لكلمة البحث في المخرجات:
+     * من الموضع الحالي، مع التفاف للبداية. */
+    private void findOutputNext(boolean fromButton) {
+        if (outputSearchField == null || terminalView == null) return;
+        String q = outputSearchField.getText().toString();
+        if (q.isEmpty()) return;
+        Editable text = terminalView.getText();
+        if (text == null) return;
+        String all = text.toString();
+        int start = fromButton ? outputSearchFrom : 0;
+        int found = all.indexOf(q, start);
+        boolean wrapped = false;
+        if (found < 0 && start > 0) {
+            found = all.indexOf(q, 0);
+            wrapped = found >= 0;
+        }
+        if (found < 0) {
+            toast("لا توجد نتائج");
+            return;
+        }
+        int end = found + q.length();
+        outputSearchFrom = end;
+        terminalView.programmatic = true;
+        terminalView.setSelection(found, end);
+        terminalView.programmatic = false;
+        terminalView.bringPointIntoView(found);
+        if (wrapped) toast("عاد إلى البداية");
+    }
+
     private void pageScroll(int direction) {
         terminalView.scrollBy(0, direction * terminalView.getHeight() * 4 / 5);
     }
@@ -2207,6 +2599,17 @@ public class MainActivity extends Activity {
         return true;
     }
 
+    /** حوار بلوغ سقف الجلسات 8 (الدفعة 3، البند 65):
+     * رفض صريح بدلا من الصمت — المستخدم يعرف أن الزر
+     * يعمل وأن السقف هو السبب. */
+    private void showSessionCapDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("بلغت الحد الأقصى")
+                .setMessage("ثماني جلسات كحد أقصى — احذف جلسة منتهية أو قديمة لتفتح جديدة.")
+                .setPositiveButton("حسنا", null)
+                .show();
+    }
+
     private void switchTo(int idx) {
         // مسودة لوحة الكتابة تتبع جلستها (v1.1.6 بند 13):
         // تُحفظ للمغادِرة وتُحمَّل للداخلة.
@@ -2218,6 +2621,8 @@ public class MainActivity extends Activity {
         // البحث في المحفوظات يخص الجلسة المغادَرة —
         // يُغلق عند التبديل حتى لا تعرض نتائج قديمة.
         hideHistorySearch();
+        // والبحث في المخرجات كذلك (الدفعة 3، البند 60).
+        hideOutputSearch();
         activeIdx = idx;
         syncTerminalFromSession();
         if (composeEdit != null) {
@@ -2317,7 +2722,7 @@ public class MainActivity extends Activity {
             String title = s.customName != null ? s.customName
                     : "جلسة " + arabicDigits(i + 1);
             name.setText(title);
-            name.setTextColor(s.endedWithError ? ERROR_RED : colorText);
+            name.setTextColor(s.endedWithError ? errorColor : colorText);
             name.setTextSize(16);
             if (s.ended) {
                 name.setPaintFlags(name.getPaintFlags()
@@ -2394,7 +2799,7 @@ public class MainActivity extends Activity {
                     if (createSession(name.isEmpty() ? null : name)) {
                         closeDrawer();
                     } else {
-                        toast("وصلت إلى الحد الأقصى (٨ جلسات)");
+                        showSessionCapDialog();
                     }
                 })
                 .setNegativeButton("إلغاء", null)
@@ -2442,13 +2847,14 @@ public class MainActivity extends Activity {
         // لم تعد موجودة.
         dismissSessionDialog(s);
         dropPendingNotifies(s);
-        // وإيقاف نطق/صوت/حساس/استماع الجلسة (كإعادة
+        // وإيقاف نطق/صوت/حساس/استماع/جهاز الجلسة (كإعادة
         // التشغيل وموت العملية) — فلا يبقى نطق أو
         // استماع أو قراءة معلقة لجلسة لم تعد موجودة.
         stopSpeakForSession(s);
         stopAudioForSession(s);
         stopSensorForSession(s);
         stopListenForSession(s);
+        cancelDeviceRequestsForSession(s);
         boolean wasActive = idx == activeIdx;
         sessions.remove(idx);
         deleteSessionFiles(idx);
@@ -2473,6 +2879,48 @@ public class MainActivity extends Activity {
         if (!silent) toast("تم حذف الجلسة");
     }
 
+    /** خروج إشعار الخدمة (أمر المالك 2026-11-09): إلغاء
+     * كل الجلسات تماما — إيقاف العمليات وحذف كل ملفات
+     * الجلسات (كل لاحقة session-N.* وملف active) ومسح
+     * علامة النشطة — ثم إنهاء التطبيق، فيفتح بعدها بلا
+     * أي جلسة. والخروج العادي لا يمر من هنا إطلاقا
+     * فتبقى جلساته محفوظة وتُستعاد (الاجتماع 39). */
+    /** خروج من إشعار الخدمة: يغلق كل الجلسات فقط
+     * ويخرج من التطبيق — بلا حذف أي ملف إطلاقا
+     * لحظة الخروج (لا ملفات تطبيق ولا أدوات ولا
+     * جلسات). كل جلسة تُعلَّم منتهية بكتابة علامة
+     * `.ended` الخاصة بها (آلية الإنهاء القائمة):
+     * فلا تُستعاد حية عند الفتح التالي، وتُنظَّف
+     * بمنطق المنتهية القائم. */
+    private void exitFromNotification() {
+        exitFromNotification = true;
+        File dir = sessionsDir();
+        for (int i = 0; i < sessions.size(); i++) {
+            Session s = sessions.get(i);
+            if (s.process != null) {
+                try {
+                    s.process.destroy();
+                } catch (Exception ignored) {
+                }
+            }
+            s.ended = true;
+            try {
+                writeFile(new File(dir, "session-" + i + ".ended"), "");
+            } catch (IOException ignored) {
+            }
+        }
+        if (prefs != null) {
+            prefs.edit().remove(PREF_ACTIVE_SESSION).apply();
+        }
+        sessions.clear();
+        activeIdx = 0;
+        try {
+            stopService(new Intent(this, NivaService.class));
+        } catch (Exception ignored) {
+        }
+        finish();
+    }
+
     /** حذف ملفات جلسة بعينها (سجل + محفوظات + مسودة
      * الكتابة) من مجلد الجلسات. */
     private void deleteSessionFiles(int idx) {
@@ -2480,6 +2928,7 @@ public class MainActivity extends Activity {
         new File(dir, "session-" + idx + ".txt").delete();
         new File(dir, "session-" + idx + ".meta").delete();
         new File(dir, "session-" + idx + ".compose").delete();
+        new File(dir, "session-" + idx + ".prog").delete();
         new File(dir, "session-" + idx + ".ended").delete();
     }
 
@@ -2549,13 +2998,14 @@ public class MainActivity extends Activity {
         // لم تعد موجودة.
         dismissSessionDialog(s);
         dropPendingNotifies(s);
-        // وإيقاف نطق/صوت/حساس/استماع الجلسة (كإعادة
+        // وإيقاف نطق/صوت/حساس/استماع/جهاز الجلسة (كإعادة
         // التشغيل وموت العملية) — فلا يبقى نطق أو
         // استماع أو قراءة معلقة لجلسة لم تعد موجودة.
         stopSpeakForSession(s);
         stopAudioForSession(s);
         stopSensorForSession(s);
         stopListenForSession(s);
+        cancelDeviceRequestsForSession(s);
         boolean wasActive = idx == activeIdx;
         sessions.remove(idx);
         if (sessions.isEmpty()) {
@@ -2598,6 +3048,9 @@ public class MainActivity extends Activity {
     }
 
     private void saveAllSessions() {
+        // خروج إشعار الخدمة أغلق كل الجلسات — فلا حفظ
+        // بعدها يعيد إحياء ما أُغلق.
+        if (exitFromNotification) return;
         if (sessions.isEmpty()) return;
         // مسودة لوحة الكتابة للجلسة النشطة (v1.1.6 بند 13).
         if (composeEdit != null) {
@@ -2887,6 +3340,14 @@ public class MainActivity extends Activity {
                 cmd.add("--تفاعلي");
                 if (s.networkAllowed) cmd.add("--اسمح-بالشبكة");
             }
+            // الدفعة 5 (البندان 94 و96): كشف مجلد
+            // التنزيلات للقراءة فقط باسم
+            // تخزين/تنزيلات — عند المنح فقط، ومن
+            // المشغّل لا من ملف قابل للتحرير.
+            if (storageManagerGranted()) {
+                cmd.add("--تنزيلات");
+                cmd.add(downloadsPath());
+            }
             ProcessBuilder pb = new ProcessBuilder(cmd);
             pb.directory(getFilesDir());
             pb.redirectErrorStream(false);
@@ -3065,6 +3526,21 @@ public class MainActivity extends Activity {
             s.history.clear();
             s.histIdx = -1;
             s.draft = "";
+        } else if ("إعدادات".equals(signal)) {
+            // أعد-الإعدادات (اجتماع 45 §59): إعادة قراءة
+            // الملف وتطبيق ما له مسار حي فورا؛ وما يحتاج
+            // إعادة تشغيل (إخفاء لوحة المفاتيح عند البدء،
+            // الخط المخصص، ملء الشاشة) يسمّيه المحرك في
+            // سطر تأكيده ولا يُطبَّق هنا.
+            loadSettings();
+            applyThemeColors();
+            applyMargins();
+            applyKeepScreenFlag();
+            if (terminalView != null) terminalView.setTextSize(fontSizeSp);
+            if (keyRow != null) {
+                keyRow.setVisibility((showKeyRowPref && isKeyboardVisible())
+                        ? View.VISIBLE : View.GONE);
+            }
         } else if (signal.startsWith("حوار:")) {
             // طلب حوار من المحرك (المهمة 20): الحمولة JSON.
             handleDialogRequest(s, signal.substring("حوار:".length()));
@@ -3095,6 +3571,96 @@ public class MainActivity extends Activity {
         } else if (signal.startsWith("بطارية:")) {
             // طلب قراءة بطارية من المحرك (المهمة 26): الحمولة JSON.
             handleBatteryRequest(s, signal.substring("بطارية:".length()));
+        } else if (signal.startsWith("شارك_ملف:")) {
+            // مشاركة ملف من البرنامج (الدفعة 4أ — البند 22).
+            handleShareFileRequest(s, signal.substring("شارك_ملف:".length()));
+        } else if (signal.startsWith("شارك_نص:")) {
+            // مشاركة نص من البرنامج (الدفعة 4أ — البند 22).
+            handleShareTextRequest(s, signal.substring("شارك_نص:".length()));
+        } else if (signal.startsWith("افتح_ملف:")) {
+            // فتح ملف بتطبيق خارجي (الدفعة 4أ — البند 23).
+            handleOpenFileRequest(s, signal.substring("افتح_ملف:".length()));
+        } else if (signal.startsWith("افتح_رابط:")) {
+            // فتح رابط في المتصفح (الدفعة 4أ — البند 23).
+            handleOpenUrlRequest(s, signal.substring("افتح_رابط:".length()));
+        } else if (signal.startsWith("انسخ_للحافظة:")) {
+            // كتابة نص في الحافظة (الدفعة 4أ — البند 24).
+            handleClipboardSetRequest(s, signal.substring("انسخ_للحافظة:".length()));
+        } else if (signal.startsWith("الحافظة:")) {
+            // قراءة نص الحافظة (الدفعة 4أ — البند 25).
+            handleClipboardGetRequest(s, signal.substring("الحافظة:".length()));
+        } else if (signal.startsWith("اختر_ملف:")) {
+            // منتقي ملف عام (الدفعة 4أ — البند 28).
+            handlePickFileRequest(s, signal.substring("اختر_ملف:".length()));
+        } else if (signal.startsWith("موقع:")) {
+            // آخر موقع معروف (الدفعة 4أ — البند 29).
+            handleLocationRequest(s, signal.substring("موقع:".length()), false);
+        } else if (signal.startsWith("موقع_حي:")) {
+            // قراءة موقع مباشرة بمهلة (الدفعة 4أ — البند 30).
+            handleLocationRequest(s, signal.substring("موقع_حي:".length()), true);
+        } else if (signal.startsWith("كاميرات:")) {
+            // سرد الكاميرات (الدفعة 4أ — البند 31).
+            handleCamerasRequest(s, signal.substring("كاميرات:".length()));
+        } else if (signal.startsWith("التقط_صورة:")) {
+            // التقاط صورة إلى ملف (الدفعة 4أ — البند 32).
+            handleCapturePhotoRequest(s, signal.substring("التقط_صورة:".length()));
+        } else if (signal.startsWith("واي_فاي:")) {
+            // معلومات اتصال واي فاي الحالي (الدفعة 4أ — البند 33).
+            handleWifiInfoRequest(s, signal.substring("واي_فاي:".length()));
+        } else if (signal.startsWith("مسح_واي_فاي:")) {
+            // مسح الشبكات القريبة (الدفعة 4أ — البند 34).
+            handleWifiScanRequest(s, signal.substring("مسح_واي_فاي:".length()));
+        } else if (signal.startsWith("انسخ_آخر_خطأ:")) {
+            // نسخ آخر سطر خطأ (الدفعة 4ب — البند 61).
+            handleCopyLastErrorRequest(s, signal.substring("انسخ_آخر_خطأ:".length()));
+        } else if (signal.startsWith("شارك_الجلسة:")) {
+            // مشاركة نص الجلسة الحالية (الدفعة 4ب — البند 62).
+            handleShareSessionRequest(s, signal.substring("شارك_الجلسة:".length()));
+        } else if (signal.startsWith("أوقف_صوت_مؤقتا:")) {
+            // إيقاف الصوت مؤقتا (الدفعة 4ب — البند 66).
+            handlePauseAudioRequest(s, signal.substring("أوقف_صوت_مؤقتا:".length()));
+        } else if (signal.startsWith("استأنف_صوت:")) {
+            // استئناف الصوت الموقوف مؤقتا (الدفعة 4ب — البند 66).
+            handleResumeAudioRequest(s, signal.substring("استأنف_صوت:".length()));
+        } else if (signal.startsWith("معلومات_صوت:")) {
+            // معلومات ملف صوت قبل تشغيله (الدفعة 4ب — البند 67).
+            handleAudioInfoRequest(s, signal.substring("معلومات_صوت:".length()));
+        } else if (signal.startsWith("حساسات:")) {
+            // سرد الحساسات الموجودة (الدفعة 4ب — البند 68).
+            handleListSensorsRequest(s, signal.substring("حساسات:".length()));
+        } else if (signal.startsWith("مستوى_الصوت:")) {
+            // قراءة مستوى الصوت (الدفعة 4ب — البند 69).
+            handleVolumeLevelRequest(s, signal.substring("مستوى_الصوت:".length()));
+        } else if (signal.startsWith("اضبط_مستوى_الصوت:")) {
+            // ضبط مستوى الصوت (الدفعة 4ب — البند 70).
+            handleSetVolumeRequest(s, signal.substring("اضبط_مستوى_الصوت:".length()));
+        } else if (signal.startsWith("اهتز:")) {
+            // اهتزاز من البرنامج (الدفعة 4ب — البند 71).
+            handleVibrateRequest(s, signal.substring("اهتز:".length()));
+        } else if (signal.startsWith("مصباح:")) {
+            // مصباح من البرنامج (الدفعة 4ب — البند 72).
+            handleTorchRequest(s, signal.substring("مصباح:".length()));
+        } else if (signal.startsWith("سجل_صوت:")) {
+            // تسجيل صوت إلى ملف (الدفعة 4ب — البند 79).
+            handleRecordAudioRequest(s, signal.substring("سجل_صوت:".length()));
+        } else if (signal.startsWith("سطوع:")) {
+            // سطوع من البرنامج (الدفعة 4ب — البند 105).
+            handleBrightnessRequest(s, signal.substring("سطوع:".length()));
+        } else if (signal.startsWith("توست:")) {
+            // توست من البرنامج (الدفعة 4ب — البند 106).
+            handleToastRequest(s, signal.substring("توست:".length()));
+        } else if (signal.startsWith("معلومات_الصوت:")) {
+            // معلومات الصوت (الدفعة 4ب — البند 119).
+            handleAudioDeviceInfoRequest(s, signal.substring("معلومات_الصوت:".length()));
+        } else if (signal.startsWith("نزل:")) {
+            // تنزيل نظامي (الدفعة 5 — البند 98).
+            handleDownloadRequest(s, signal.substring("نزل:".length()));
+        } else if (signal.startsWith("اقرأ_مستند:")) {
+            // قراءة مستند لمرة واحدة (الدفعة 5 — البند 99 خطوة 1).
+            handleReadDocumentRequest(s, signal.substring("اقرأ_مستند:".length()));
+        } else if (signal.startsWith("اعرض_مجلد:")) {
+            // عرض مجلد لمرة واحدة (الدفعة 5 — البند 99 خطوة 1).
+            handleListFolderRequest(s, signal.substring("اعرض_مجلد:".length()));
         } else if (signal.startsWith("ملف-ممنوح:")) {
             // طلب SAF من المحرك (المهمة 28): الحمولة JSON.
             handleSafControl(s, signal.substring("ملف-ممنوح:".length()));
@@ -3218,6 +3784,44 @@ public class MainActivity extends Activity {
             runChosenNivaFile(data.getData());
             return;
         }
+        if (requestCode == REQ_PICK_FILE) {
+            // جواب منتقي الملف العام (الدفعة 4أ — البند 28).
+            onPickFileResult(resultCode, data);
+            return;
+        }
+        if (requestCode == REQ_CAPTURE_PHOTO) {
+            // جواب نية الكاميرا (الدفعة 4أ — البند 32).
+            onCapturePhotoResult(resultCode);
+            return;
+        }
+        if (requestCode == REQ_READ_DOCUMENT) {
+            // جواب منتقي المستند (الدفعة 5 — البند 99 خطوة 1).
+            onReadDocumentResult(resultCode, data);
+            return;
+        }
+        if (requestCode == REQ_LIST_FOLDER) {
+            // جواب منتقي المجلد (الدفعة 5 — البند 99 خطوة 1).
+            onListFolderResult(resultCode, data);
+            return;
+        }
+        if (requestCode == REQ_STORAGE_SETTINGS) {
+            // جواب شاشة إعدادات إذن التخزين (الدفعة 5 —
+            // البندان 94 و96): منح — يُكشف جذر
+            // التنزيلات في الجلسة الجارية بلا إعادة
+            // تشغيل؛ رفض — سطر عربي فقط، بلا إعادة
+            // فتح الشاشة.
+            Session s = pendingStorageSession;
+            pendingStorageSession = null;
+            if (s == null) return;
+            if (s.process == null || s.ended) return;
+            if (storageManagerGranted()) {
+                sendToEngine(s, SET_DOWNLOADS_PREFIX + downloadsPath());
+                appLine(s, "التخزين مكشوف: تخزين/تنزيلات");
+            } else {
+                appLine(s, "لم يُمنح إذن التخزين");
+            }
+            return;
+        }
     }
 
     /** جواب المستخدم على حوار إذن الإشعارات: يُفرَّغ
@@ -3245,6 +3849,90 @@ public class MainActivity extends Activity {
                 Session s = listeningNow.session;
                 listeningNow = null;
                 sendListenError(s, "رفض إذن الميكروفون — فعّل الإذن من إعدادات التطبيق");
+            }
+            return;
+        }
+        if (requestCode == REQ_LOCATION_PERMISSION) {
+            // جواب إذن الموقع (الدفعة 4أ — البندان 29 و30):
+            // منح: نفّذ المعلّق؛ رفض: خطأ عربي واضح.
+            locationPermissionRequestInFlight = false;
+            if (pendingLocation == null) return;
+            boolean granted = grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (granted) {
+                runLocationRequest(pendingLocation);
+            } else {
+                PendingLocation p = pendingLocation;
+                pendingLocation = null;
+                p.answered = true;
+                sendDeviceError(p.session,
+                        "رفض إذن الموقع — فعّل الإذن من إعدادات التطبيق");
+            }
+            return;
+        }
+        if (requestCode == REQ_CAPTURE_PERMISSION) {
+            // جواب إذن الكاميرا (الدفعة 4أ — البند 32).
+            capturePermissionRequestInFlight = false;
+            if (pendingCaptureSession == null) return;
+            boolean granted = grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (granted) {
+                launchCapturePhoto();
+            } else {
+                Session s = pendingCaptureSession;
+                pendingCaptureSession = null;
+                pendingCaptureFile = null;
+                sendDeviceError(s,
+                        "رفض إذن الكاميرا — فعّل الإذن من إعدادات التطبيق");
+            }
+            return;
+        }
+        if (requestCode == REQ_WIFI_SCAN_PERMISSION) {
+            // جواب إذن مسح واي فاي (الدفعة 4أ — البند 34).
+            wifiScanPermissionRequestInFlight = false;
+            if (pendingWifiScan == null) return;
+            boolean granted = grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            if (granted) {
+                runWifiScan(pendingWifiScan);
+            } else {
+                PendingWifiScan p = pendingWifiScan;
+                pendingWifiScan = null;
+                p.answered = true;
+                sendDeviceError(p.session,
+                        "رفض إذن الموقع — فعّل الإذن من إعدادات التطبيق");
+            }
+            return;
+        }
+        if (requestCode == REQ_TORCH_PERMISSION) {
+            // جواب إذن الكاميرا للمصباح (الدفعة 4ب — البند 72).
+            torchPermissionRequestInFlight = false;
+            if (pendingTorch == null) return;
+            boolean granted = grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            PendingTorch p = pendingTorch;
+            pendingTorch = null;
+            if (granted) {
+                setTorchMode(p.session, p.on);
+            } else {
+                sendDeviceError(p.session,
+                        "رفض إذن الكاميرا — فعّل الإذن من إعدادات التطبيق");
+            }
+            return;
+        }
+        if (requestCode == REQ_RECORD_PERMISSION) {
+            // جواب إذن الميكروفون للتسجيل (الدفعة 4ب — البند 79).
+            recordPermissionRequestInFlight = false;
+            if (pendingRecord == null) return;
+            boolean granted = grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED;
+            PendingRecord p = pendingRecord;
+            pendingRecord = null;
+            if (granted) {
+                startRecording(p);
+            } else {
+                sendDeviceError(p.session,
+                        "رفض إذن الميكروفون — فعّل الإذن من إعدادات التطبيق");
             }
             return;
         }
@@ -3293,6 +3981,52 @@ public class MainActivity extends Activity {
                 .setContentIntent(openPi)
                 .setAutoCancel(true);
         nm.notify(systemId, builder.build());
+    }
+
+    /** إنشاء قناة تقارير الأعطال الصامتة كسولا
+     * (الدفعة 5 — البند 107): أهمية منخفضة — فلا
+     * صوت ولا اهتزاز ولا ظهور فوق التطبيق. */
+    private void ensureCrashChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
+        NotificationManager nm = (NotificationManager)
+                getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) return;
+        NotificationChannel channel = new NotificationChannel(
+                CRASH_CHANNEL_ID, "تقارير الأعطال",
+                NotificationManager.IMPORTANCE_LOW);
+        channel.setDescription("تقارير فشل تحديث نيفا");
+        nm.createNotificationChannel(channel);
+    }
+
+    /** تقرير عطل صامت (الدفعة 5 — البند 107): إشعار
+     * واحد بمعرّف ثابت (فالأحدث يحل محل السابق)،
+     * والضغط عليه يفتح التطبيق، ويختفي وحده عند
+     * الضغط. */
+    private void postCrashNotification(String msg) {
+        ensureCrashChannel();
+        NotificationManager nm = (NotificationManager)
+                getSystemService(Context.NOTIFICATION_SERVICE);
+        if (nm == null) return;
+        Intent open = new Intent(this, MainActivity.class);
+        open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        PendingIntent openPi = PendingIntent.getActivity(this,
+                CRASH_NOTIFICATION_ID, open,
+                PendingIntent.FLAG_UPDATE_CURRENT
+                        | PendingIntent.FLAG_IMMUTABLE);
+        Notification.Builder builder;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            builder = new Notification.Builder(this, CRASH_CHANNEL_ID);
+        } else {
+            builder = new Notification.Builder(this);
+            builder.setPriority(Notification.PRIORITY_LOW);
+        }
+        builder.setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle("تعذّر تحديث نيفا")
+                .setContentText(msg)
+                .setContentIntent(openPi)
+                .setAutoCancel(true);
+        nm.notify(CRASH_NOTIFICATION_ID, builder.build());
     }
 
     /** استقبال طلب إزالة تنبيه (بلا انتظار — بلا نتيجة). */
@@ -3651,6 +4385,7 @@ public class MainActivity extends Activity {
             audioPlayer = null;
         }
         audioPlayingSession = null;
+        audioPaused = false;
     }
 
     /** استقبال طلب تشغيل صوت من قناة التحكم. */
@@ -4332,6 +5067,1904 @@ public class MainActivity extends Activity {
             JSONObject r = new JSONObject();
             r.put("خطأ", message);
             sendBatteryResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    // ===== واجهة الجهاز من البرنامج (الدفعة 4أ —
+    // البنود 22–34) =====
+    // المحرك يطلب عبر قناة التحكم (stderr) وينتظر سطر
+    // نتيجة واحدا على stdin: {"قيمة": ...} أو
+    // {"خطأ": "..."} — كما الحوار تماما (البادئة
+    // نفسها). وكل طلب يجيب بنتيجة واحدة بالضبط، فلا
+    // يعلق المحرك أبدا — حتى طلبات الأذونات والنوايا
+    // المعلّقة (موقع/مسح/التقاط/منتقي) لها مهلة أو
+    // جواب إلغاء. والمشاركة والفتح والتوست بلا نتيجة
+    // نظام (fire-and-forget): النتيجة تُرسَل فور
+    // إطلاق النية — فالمشاركة لا ردّ لها أصلا.
+    // والملفات لا تغادر مجلد البرنامج أبدا
+    // (المحرك يحلّ المسار داخل سياسته، والتطبيق
+    // يعيد الفحص، والمزوّد يرفض ما خرج عنه)؛
+    // وniva.properties مرفوض في الطبقات الثلاث.
+
+    /** إرسال نتيجة جهاز واحدة إلى المحرك (قيمة أو
+     * خطأ) عبر الطابور المحدود — البادئة نفسها
+     * كالحوار والتنبيه والصوت. */
+    private void sendDeviceResult(Session s, JSONObject result) {
+        sendLineToEngine(s, DIALOG_RESULT_PREFIX + result.toString());
+    }
+
+    private void sendDeviceValue(Session s, Object value) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("قيمة", value);
+            sendDeviceResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    private void sendDeviceError(Session s, String message) {
+        try {
+            JSONObject r = new JSONObject();
+            r.put("خطأ", message);
+            sendDeviceResult(s, r);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    /** نوع MIME لملف من امتداده؛ مجهول → نوع عام. */
+    private String mimeTypeForFile(File f) {
+        String name = f.getName();
+        int dot = name.lastIndexOf('.');
+        if (dot >= 0 && dot + 1 < name.length()) {
+            String mime = MimeTypeMap.getSingleton()
+                    .getMimeTypeFromExtension(
+                            name.substring(dot + 1).toLowerCase());
+            if (mime != null) return mime;
+        }
+        return "application/octet-stream";
+    }
+
+    /** ملف داخل مجلد البرنامج؟ (إعادة فحص — المحرك
+     * حلّ المسار داخل سياسته أولا؛ والرابط قانونيا
+     * داخل المجلد؛ وniva.properties مرفوض.) */
+    private File deviceFileInsideProgramDir(String path) {
+        File base = getFilesDir();
+        File file = new File(path);
+        try {
+            File canonBase = base.getCanonicalFile();
+            File canon = file.getCanonicalFile();
+            String basePath = canonBase.getAbsolutePath() + File.separator;
+            if (!canon.getAbsolutePath().startsWith(basePath)) return null;
+            if (NivaFileProvider.PROPERTIES_NAME.equals(canon.getName())) return null;
+            return canon;
+        } catch (IOException e) {
+            return null;
+        }
+    }
+
+    /** استقبال طلب مشاركة ملف (البند 22): رابط
+     * محتوى للقراءة فقط + نية مشاركة + منتقي
+     * النظام؛ والنتيجة فور الإطلاق. */
+    private void handleShareFileRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب مشاركة غير صالح");
+            return;
+        }
+        String path = req.optString("مسار", "");
+        if (path.isEmpty()) {
+            sendDeviceError(s, "طلب مشاركة غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        File file = deviceFileInsideProgramDir(path);
+        if (file == null || !file.isFile()) {
+            sendDeviceError(s, "الملف غير موجود أو خارج مجلد البرنامج");
+            return;
+        }
+        Uri uri = NivaFileProvider.getUriForFile(this, file);
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType(mimeTypeForFile(file));
+        intent.putExtra(Intent.EXTRA_STREAM, uri);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivity(Intent.createChooser(intent, "مشاركة ملف"));
+        } catch (ActivityNotFoundException e) {
+            sendDeviceError(s, "لا يوجد تطبيق للمشاركة");
+            return;
+        }
+        sendDeviceValue(s, true);
+    }
+
+    /** استقبال طلب مشاركة نص (البند 22): نية مشاركة
+     * + منتقي النظام؛ والنتيجة فور الإطلاق. */
+    private void handleShareTextRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب مشاركة غير صالح");
+            return;
+        }
+        String text = req.optString("نص", "");
+        if (text.isEmpty()) {
+            sendDeviceError(s, "طلب مشاركة غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        Intent intent = new Intent(Intent.ACTION_SEND);
+        intent.setType("text/plain");
+        intent.putExtra(Intent.EXTRA_TEXT, text);
+        try {
+            startActivity(Intent.createChooser(intent, "مشاركة نص"));
+        } catch (ActivityNotFoundException e) {
+            sendDeviceError(s, "لا يوجد تطبيق للمشاركة");
+            return;
+        }
+        sendDeviceValue(s, true);
+    }
+
+    /** استقبال طلب فتح ملف بتطبيق خارجي (البند 23):
+     * رابط محتوى للقراءة فقط + نية عرض؛ والنتيجة
+     * فور الإطلاق. */
+    private void handleOpenFileRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب فتح غير صالح");
+            return;
+        }
+        String path = req.optString("مسار", "");
+        if (path.isEmpty()) {
+            sendDeviceError(s, "طلب فتح غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        File file = deviceFileInsideProgramDir(path);
+        if (file == null || !file.isFile()) {
+            sendDeviceError(s, "الملف غير موجود أو خارج مجلد البرنامج");
+            return;
+        }
+        Uri uri = NivaFileProvider.getUriForFile(this, file);
+        Intent intent = new Intent(Intent.ACTION_VIEW);
+        intent.setDataAndType(uri, mimeTypeForFile(file));
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivity(intent);
+        } catch (ActivityNotFoundException e) {
+            sendDeviceError(s, "لا يوجد تطبيق لفتح هذا الملف");
+            return;
+        }
+        sendDeviceValue(s, true);
+    }
+
+    /** استقبال طلب فتح رابط في المتصفح (البند 23):
+     * نية عرض مباشرة بلا منتقي — المحرك فحص أنه
+     * رابط http(s) أولا؛ والنتيجة فور الإطلاق. */
+    private void handleOpenUrlRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب فتح غير صالح");
+            return;
+        }
+        String url = req.optString("رابط", "");
+        if (url.isEmpty()) {
+            sendDeviceError(s, "طلب فتح غير صالح");
+            return;
+        }
+        // قائمة سماح المخططات (H3): http وhttps فقط —
+        // دفاع في طبقة التطبيق لا يعتمد على فحص المحرك
+        // وحده؛ فـintent: وtel: وsmsto: ونحوها مرفوضة.
+        String scheme = Uri.parse(url).getScheme();
+        if (scheme == null
+                || (!scheme.equalsIgnoreCase("http")
+                        && !scheme.equalsIgnoreCase("https"))) {
+            sendDeviceError(s, "المخطط غير مسموح — http وhttps فقط");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+        try {
+            startActivity(intent);
+        } catch (ActivityNotFoundException e) {
+            sendDeviceError(s, "لا يوجد متصفح لفتح الرابط");
+            return;
+        }
+        sendDeviceValue(s, true);
+    }
+
+    /** استقبال طلب كتابة نص في الحافظة (البند 24):
+     * حوار تأكيد قبل كل كتابة (H5) — الكتابة تستبدل
+     * ما نسخه المستخدم؛ وسقف طول؛ ووسم حساسية. */
+    private void handleClipboardSetRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب حافظة غير صالح");
+            return;
+        }
+        String text = req.optString("نص", "");
+        if (text.isEmpty()) {
+            sendDeviceError(s, "طلب حافظة غير صالح");
+            return;
+        }
+        if (text.length() > CLIPBOARD_CAP) {
+            sendDeviceError(s, "النص طويل جدا");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        final String clipText = text;
+        String preview = clipText.length() > 100
+                ? clipText.substring(0, 100) + "…"
+                : clipText;
+        new AlertDialog.Builder(this)
+                .setTitle("نسخ إلى الحافظة؟")
+                .setMessage("برنامج في هذه الجلسة يطلب نسخ نص إلى الحافظة — وسيستبدل ما نسخته حاليا.\n\n«" + preview + "»")
+                .setCancelable(false)
+                .setPositiveButton("موافق", (d, w) -> {
+                    ClipboardManager cm = (ClipboardManager)
+                            getSystemService(Context.CLIPBOARD_SERVICE);
+                    if (cm == null) {
+                        sendDeviceError(s, "الحافظة غير متاحة");
+                        return;
+                    }
+                    ClipData clip = ClipData.newPlainText("نيفا", clipText);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        PersistableBundle extras = new PersistableBundle();
+                        extras.putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true);
+                        clip.getDescription().setExtras(extras);
+                    }
+                    cm.setPrimaryClip(clip);
+                    sendDeviceValue(s, true);
+                })
+                .setNegativeButton("إلغاء", (d, w) ->
+                        sendDeviceError(s, "ألغى المستخدم النسخ إلى الحافظة"))
+                .show();
+    }
+
+    /** استقبال طلب قراءة نص الحافظة (البند 25): حوار
+     * إفصاح قبل أول قراءة في الجلسة (H4) — الحافظة
+     * قد تحوي كلمة مرور أو رمزا؛ وفارغة → نص فارغ
+     * صادق. ملاحظة: أندرويد 12+ يعرض إشعار نظام
+     * عند قراءة الحافظة — سلوك النظام لا عيب في
+     * نيفا. */
+    private void handleClipboardGetRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب حافظة غير صالح");
+            return;
+        }
+        if (!s.clipboardReadDisclosed) {
+            if (isFinishing() || isDestroyed()) {
+                sendDeviceError(s, "التطبيق غير متاح");
+                return;
+            }
+            new AlertDialog.Builder(this)
+                    .setTitle("قراءة الحافظة؟")
+                    .setMessage("برنامج في هذه الجلسة يطلب قراءة الحافظة — وقد تحوي كلمة مرور أو رمزا نسخته من تطبيق آخر. السماح بالقراءة في هذه الجلسة؟")
+                    .setCancelable(false)
+                    .setPositiveButton("موافق", (d, w) -> {
+                        s.clipboardReadDisclosed = true;
+                        doClipboardGet(s);
+                    })
+                    .setNegativeButton("إلغاء", (d, w) ->
+                            sendDeviceError(s, "ألغى المستخدم قراءة الحافظة"))
+                    .show();
+            return;
+        }
+        doClipboardGet(s);
+    }
+
+    /** قراءة الحافظة الفعلية بعد الإفصاح (H4). */
+    private void doClipboardGet(Session s) {
+        ClipboardManager cm = (ClipboardManager)
+                getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm == null || !cm.hasPrimaryClip()) {
+            sendDeviceValue(s, "");
+            return;
+        }
+        ClipData clip = cm.getPrimaryClip();
+        if (clip == null || clip.getItemCount() == 0) {
+            sendDeviceValue(s, "");
+            return;
+        }
+        CharSequence text = clip.getItemAt(0).coerceToText(this);
+        sendDeviceValue(s, text == null ? "" : text.toString());
+    }
+
+    /** استقبال طلب منتقي ملف عام (البند 28): نية
+     * مستندات النظام؛ والنسخ إلى مجلد البرنامج
+     * عند الجواب (سقف 5 ميغابايت كما SAF)، باسم
+     * فريد بلا كتابة فوق ملف موجود. */
+    private void handlePickFileRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب اختيار غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        if (s.process == null || s.ended) return;
+        if (pickFileSession != null) {
+            sendDeviceError(s, "اختيار ملف آخر جارٍ");
+            return;
+        }
+        pickFileSession = s;
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        try {
+            startActivityForResult(intent, REQ_PICK_FILE);
+        } catch (ActivityNotFoundException e) {
+            pickFileSession = null;
+            sendDeviceError(s, "لا يوجد منتقي ملفات");
+        }
+    }
+
+    /** اسم فريد داخل مجلد — بلا كتابة فوق ملف موجود
+     * (يضيف « (2)» وهكذا قبل الامتداد). */
+    private String uniqueNameInDir(File dir, String name) {
+        name = name.replace('/', '_').replace('\\', '_');
+        if (name.isEmpty()) name = "ملف";
+        if (!new File(dir, name).exists()) return name;
+        int dot = name.lastIndexOf('.');
+        String base = dot > 0 ? name.substring(0, dot) : name;
+        String ext = dot > 0 ? name.substring(dot) : "";
+        int n = 2;
+        while (true) {
+            String cand = base + " (" + n + ")" + ext;
+            if (!new File(dir, cand).exists()) return cand;
+            n++;
+        }
+    }
+
+    /** جواب منتقي الملف العام: نسخ إلى مجلد
+     * البرنامج بسقف 5 ميغابايت، ثم الاسم النسبي. */
+    private void onPickFileResult(int resultCode, Intent data) {
+        Session s = pickFileSession;
+        pickFileSession = null;
+        if (s == null) return;
+        if (s.process == null || s.ended) return;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            sendDeviceError(s, "ألغى المستخدم اختيار الملف");
+            return;
+        }
+        Uri uri = data.getData();
+        String name = safDocumentDisplayName(uri);
+        if (name == null || name.isEmpty()) {
+            String last = uri.getLastPathSegment();
+            name = last != null ? last : "ملف";
+        }
+        name = uniqueNameInDir(getFilesDir(), name);
+        File dest = new File(getFilesDir(), name);
+        try (InputStream in = getContentResolver().openInputStream(uri);
+             FileOutputStream out = new FileOutputStream(dest)) {
+            if (in == null) {
+                sendDeviceError(s, "تعذّر فتح الملف المختار");
+                return;
+            }
+            byte[] buf = new byte[8192];
+            int n;
+            long total = 0;
+            while ((n = in.read(buf)) != -1) {
+                total += n;
+                if (total > PICK_FILE_CAP) {
+                    dest.delete();
+                    sendDeviceError(s, "الملف أكبر من 5 ميغابايت");
+                    return;
+                }
+                out.write(buf, 0, n);
+            }
+        } catch (IOException e) {
+            dest.delete();
+            sendDeviceError(s, "تعذّر نسخ الملف المختار");
+            return;
+        }
+        sendDeviceValue(s, name);
+    }
+
+    // ===== الدفعة 5 (البنود 98 و99 خطوة 1): تنزيل
+    // نظامي وقراءة مستند وعرض مجلد — منتقيات لمرة
+    // واحدة بلا إذن دائم، وطلب واحد من كل نوع في كل
+    // التطبيق (كالمنتقي العام — البند 28). =====
+
+    /** استقبال طلب تنزيل نظامي (البند 98): الحمولة
+     * JSON {رابط، عنوان، وصف، اسم_ملف}؛ والرابط
+     * https فقط، واسم الملف بلا مسار (المحرك نظّفه
+     * أصلا والتطبيق يعيد الفحص)؛ ومدير التنزيلات
+     * يكتب بنفسه في التنزيلات العامة — بلا إذن
+     * تخزين — ويرجع معرّف التنزيل عددا. */
+    private void handleDownloadRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب تنزيل غير صالح");
+            return;
+        }
+        String url = req.optString("رابط", "");
+        String title = req.optString("عنوان", "");
+        String desc = req.optString("وصف", "");
+        String filename = req.optString("اسم_ملف", "");
+        if (url.isEmpty() || title.isEmpty() || desc.isEmpty()
+                || filename.isEmpty() || !url.startsWith("https://")
+                || filename.contains("/") || filename.contains("\\")
+                || filename.equals(".") || filename.equals("..")) {
+            sendDeviceError(s, "طلب تنزيل غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        if (s.process == null || s.ended) return;
+        DownloadManager dm = (DownloadManager)
+                getSystemService(Context.DOWNLOAD_SERVICE);
+        if (dm == null) {
+            sendDeviceError(s, "مدير التنزيلات غير متاح");
+            return;
+        }
+        try {
+            DownloadManager.Request request =
+                    new DownloadManager.Request(Uri.parse(url));
+            request.setTitle(title);
+            request.setDescription(desc);
+            request.setDestinationInExternalPublicDir(
+                    Environment.DIRECTORY_DOWNLOADS, filename);
+            request.setNotificationVisibility(
+                    DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+            long id = dm.enqueue(request);
+            sendDeviceValue(s, id);
+        } catch (Exception e) {
+            sendDeviceError(s, "تعذّر بدء التنزيل");
+        }
+    }
+
+    /** استقبال طلب قراءة مستند (البند 99 خطوة 1):
+     * منتقي مستندات النظام لمرة واحدة — بلا نسخ إلى
+     * مجلد البرنامج وبلا إذن دائم. */
+    private void handleReadDocumentRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب قراءة غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        if (s.process == null || s.ended) return;
+        if (readDocumentSession != null) {
+            sendDeviceError(s, "قراءة مستند أخرى جارية");
+            return;
+        }
+        readDocumentSession = s;
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        try {
+            startActivityForResult(intent, REQ_READ_DOCUMENT);
+        } catch (ActivityNotFoundException e) {
+            readDocumentSession = null;
+            sendDeviceError(s, "لا يوجد منتقي مستندات");
+        }
+    }
+
+    /** جواب منتقي المستند: نصه UTF-8 بسقف 5
+     * ميغابايت؛ والإلغاء «ألغى المستخدم الاختيار». */
+    private void onReadDocumentResult(int resultCode, Intent data) {
+        Session s = readDocumentSession;
+        readDocumentSession = null;
+        if (s == null) return;
+        if (s.process == null || s.ended) return;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            sendDeviceError(s, "ألغى المستخدم الاختيار");
+            return;
+        }
+        try (InputStream in = getContentResolver().openInputStream(data.getData());
+             ByteArrayOutputStream buf = new ByteArrayOutputStream()) {
+            if (in == null) {
+                sendDeviceError(s, "تعذّر فتح المستند");
+                return;
+            }
+            byte[] chunk = new byte[8192];
+            int n;
+            long total = 0;
+            while ((n = in.read(chunk)) != -1) {
+                total += n;
+                if (total > READ_DOCUMENT_CAP) {
+                    sendDeviceError(s, "المستند أكبر من 5 ميغابايت");
+                    return;
+                }
+                buf.write(chunk, 0, n);
+            }
+            sendDeviceValue(s, buf.toString("UTF-8"));
+        } catch (Exception e) {
+            sendDeviceError(s, "تعذّر قراءة المستند");
+        }
+    }
+
+    /** استقبال طلب عرض مجلد (البند 99 خطوة 1):
+     * منتقي مجلدات النظام لمرة واحدة — بلا إذن دائم
+     * وبلا نسخ. */
+    private void handleListFolderRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب عرض غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        if (s.process == null || s.ended) return;
+        if (listFolderSession != null) {
+            sendDeviceError(s, "عرض مجلد آخر جارٍ");
+            return;
+        }
+        listFolderSession = s;
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        try {
+            startActivityForResult(intent, REQ_LIST_FOLDER);
+        } catch (ActivityNotFoundException e) {
+            listFolderSession = null;
+            sendDeviceError(s, "لا يوجد منتقي مجلدات");
+        }
+    }
+
+    /** جواب منتقي المجلد: قائمة أسماء الأبناء (`/`
+     * في نهاية المجلدات — كعلامات `ات`)؛ والإلغاء
+     * «ألغى المستخدم الاختيار». */
+    private void onListFolderResult(int resultCode, Intent data) {
+        Session s = listFolderSession;
+        listFolderSession = null;
+        if (s == null) return;
+        if (s.process == null || s.ended) return;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null) {
+            sendDeviceError(s, "ألغى المستخدم الاختيار");
+            return;
+        }
+        Uri treeUri = data.getData();
+        Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(
+                treeUri, DocumentsContract.getTreeDocumentId(treeUri));
+        JSONArray names = new JSONArray();
+        try (Cursor c = getContentResolver().query(childrenUri,
+                new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        DocumentsContract.Document.COLUMN_MIME_TYPE},
+                null, null, null)) {
+            if (c == null) {
+                sendDeviceError(s, "تعذّر فتح المجلد");
+                return;
+            }
+            while (c.moveToNext()) {
+                String name = c.getString(0);
+                if (name == null) continue;
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(c.getString(1))) {
+                    name = name + "/";
+                }
+                names.put(name);
+            }
+        } catch (Exception e) {
+            sendDeviceError(s, "تعذّر فتح المجلد");
+            return;
+        }
+        sendDeviceValue(s, names);
+    }
+
+    /** إلغاء طلبات الجهاز المعلّقة لجلسة ماتت: المستمعون
+     * والمستقبلون والمهلات تُلغى، والخانات تُمسح —
+     * والمحرك ميت فلا نتيجة تُرسَل. */
+    private void cancelDeviceRequestsForSession(Session s) {
+        if (pendingLocation != null && pendingLocation.session == s) {
+            PendingLocation p = pendingLocation;
+            pendingLocation = null;
+            p.answered = true;
+            if (p.listener != null) {
+                LocationManager lm = (LocationManager)
+                        getSystemService(Context.LOCATION_SERVICE);
+                if (lm != null) {
+                    try {
+                        lm.removeUpdates(p.listener);
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+            if (p.timeout != null && p.handler != null) {
+                p.handler.removeCallbacks(p.timeout);
+            }
+        }
+        if (pendingWifiScan != null && pendingWifiScan.session == s) {
+            PendingWifiScan p = pendingWifiScan;
+            pendingWifiScan = null;
+            p.answered = true;
+            if (p.receiver != null) {
+                try {
+                    unregisterReceiver(p.receiver);
+                } catch (Exception ignored) {
+                }
+            }
+            if (p.timeout != null && p.handler != null) {
+                p.handler.removeCallbacks(p.timeout);
+            }
+        }
+        if (pickFileSession == s) pickFileSession = null;
+        // (الدفعة 5): منتقي مستند أو مجلد أو شاشة
+        // إعدادات التخزين من هذه الجلسة تُلغى خانته —
+        // فلا جواب يصل إلى جلسة ميتة.
+        if (readDocumentSession == s) readDocumentSession = null;
+        if (listFolderSession == s) listFolderSession = null;
+        if (pendingStorageSession == s) pendingStorageSession = null;
+        if (pendingCaptureSession == s) {
+            pendingCaptureSession = null;
+            pendingCaptureFile = null;
+        }
+        // (الدفعة 4ب): مصباح مشتغل من هذه الجلسة
+        // يُطفأ — فلا يبقى مصباح مضاء بلا برنامج؛
+        // وتسجيل جارٍ يُوقف صامتا.
+        if (torchOn && torchSession == s) {
+            try {
+                CameraManager cm = (CameraManager)
+                        getSystemService(Context.CAMERA_SERVICE);
+                if (cm != null && torchCameraId != null) {
+                    cm.setTorchMode(torchCameraId, false);
+                }
+            } catch (Exception ignored) {
+            }
+            torchOn = false;
+            torchSession = null;
+        }
+        if (pendingTorch != null && pendingTorch.session == s) {
+            pendingTorch = null;
+        }
+        stopRecordingForSession(s);
+    }
+
+    /** هل إذن الموقع الدقيق ممنوح؟ */
+    private boolean locationPermissionGranted() {
+        return checkSelfPermission("android.permission.ACCESS_FINE_LOCATION")
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** استقبال طلب موقع (البندان 29 و30): آخر معروف
+     * فوري، أو قراءة مباشرة أول إصلاح يفوز بمهلة
+     * 10 ثوان. الإذن يُطلب عند أول استعمال فقط —
+     * والرفض خطأ عربي واضح. */
+    private void handleLocationRequest(Session s, String payload, boolean once) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب موقع غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        if (s.process == null || s.ended) return;
+        if (pendingLocation != null) {
+            sendDeviceError(s, "طلب موقع آخر جارٍ");
+            return;
+        }
+        pendingLocation = new PendingLocation(s, once);
+        if (locationPermissionGranted()) {
+            runLocationRequest(pendingLocation);
+            return;
+        }
+        if (!locationPermissionRequestInFlight) {
+            locationPermissionRequestInFlight = true;
+            requestPermissions(
+                    new String[]{"android.permission.ACCESS_FINE_LOCATION"},
+                    REQ_LOCATION_PERMISSION);
+        }
+        // وإن كان طلب إذن جاريا، يبقى المعلّق حتى
+        // جواب الإذن — فرع onRequestPermissionsResult
+        // ينفّذه أو يخطئه.
+    }
+
+    /** تنفيذ طلب الموقع المعلّق بعد منح الإذن. */
+    private void runLocationRequest(PendingLocation p) {
+        LocationManager lm = (LocationManager)
+                getSystemService(Context.LOCATION_SERVICE);
+        if (lm == null) {
+            answerLocationError(p, "خدمة الموقع غير متاحة");
+            return;
+        }
+        if (!p.once) {
+            // آخر معروف: GPS أولا ثم الشبكة — فوري،
+            // بلا انتظار GPS وبلا بث.
+            Location best = null;
+            try {
+                best = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+            } catch (SecurityException ignored) {
+            }
+            if (best == null) {
+                try {
+                    best = lm.getLastKnownLocation(
+                            LocationManager.NETWORK_PROVIDER);
+                } catch (SecurityException ignored) {
+                }
+            }
+            if (best == null) {
+                answerLocationError(p,
+                        "لا يوجد موقع محفوظ — فعّل الموقع ثم أعد المحاولة");
+                return;
+            }
+            answerLocationValue(p, best);
+            return;
+        }
+        // مباشر: أول إصلاح من أي مزوّد يفوز؛ ومهلة
+        // 10 ثوان تجيب بخطأ إن لم يصل إصلاح.
+        Handler handler = new Handler(Looper.getMainLooper());
+        p.handler = handler;
+        LocationListener listener = new LocationListener() {
+            @Override
+            public void onLocationChanged(Location location) {
+                answerLocationValue(p, location);
+            }
+
+            @Override
+            public void onStatusChanged(String provider, int status,
+                                        Bundle extras) {
+            }
+
+            @Override
+            public void onProviderEnabled(String provider) {
+            }
+
+            @Override
+            public void onProviderDisabled(String provider) {
+            }
+        };
+        p.listener = listener;
+        p.timeout = () -> answerLocationError(p, "انتهت مهلة قراءة الموقع");
+        handler.postDelayed(p.timeout, DEVICE_LOCATION_TIMEOUT_MS);
+        try {
+            lm.requestLocationUpdates(LocationManager.GPS_PROVIDER,
+                    0, 0, listener, Looper.getMainLooper());
+        } catch (Exception ignored) {
+        }
+        try {
+            lm.requestLocationUpdates(LocationManager.NETWORK_PROVIDER,
+                    0, 0, listener, Looper.getMainLooper());
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** جواب موقع واحد — قيمة؛ ويلغي المستمع
+     * والمهلة ويمسح الخانة. */
+    private void answerLocationValue(PendingLocation p, Location loc) {
+        if (p.answered) return;
+        p.answered = true;
+        if (p.listener != null) {
+            LocationManager lm = (LocationManager)
+                    getSystemService(Context.LOCATION_SERVICE);
+            if (lm != null) {
+                try {
+                    lm.removeUpdates(p.listener);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        if (p.timeout != null && p.handler != null) {
+            p.handler.removeCallbacks(p.timeout);
+        }
+        if (pendingLocation == p) pendingLocation = null;
+        try {
+            JSONObject v = new JSONObject();
+            v.put("خط_العرض", loc.getLatitude());
+            v.put("خط_الطول", loc.getLongitude());
+            v.put("دقة", (double) loc.getAccuracy());
+            v.put("ارتفاع", loc.hasAltitude() ? loc.getAltitude() : 0.0);
+            v.put("اتجاه", loc.hasBearing() ? (double) loc.getBearing() : 0.0);
+            v.put("سرعة", loc.hasSpeed() ? (double) loc.getSpeed() : 0.0);
+            v.put("وقت", loc.getTime());
+            sendDeviceValue(p.session, v);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    /** جواب موقع واحد — خطأ؛ ويلغي المستمع
+     * والمهلة ويمسح الخانة. */
+    private void answerLocationError(PendingLocation p, String message) {
+        if (p.answered) return;
+        p.answered = true;
+        if (p.listener != null) {
+            LocationManager lm = (LocationManager)
+                    getSystemService(Context.LOCATION_SERVICE);
+            if (lm != null) {
+                try {
+                    lm.removeUpdates(p.listener);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        if (p.timeout != null && p.handler != null) {
+            p.handler.removeCallbacks(p.timeout);
+        }
+        if (pendingLocation == p) pendingLocation = null;
+        sendDeviceError(p.session, message);
+    }
+
+    /** استقبال طلب سرد الكاميرات (البند 31): معرّف
+     * واتجاه لكل كاميرا — بلا إذن (سرد القدرات
+     * فقط). */
+    private void handleCamerasRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب كاميرات غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        CameraManager cm = (CameraManager)
+                getSystemService(Context.CAMERA_SERVICE);
+        if (cm == null) {
+            sendDeviceError(s, "الكاميرا غير متاحة");
+            return;
+        }
+        JSONArray list = new JSONArray();
+        try {
+            for (String id : cm.getCameraIdList()) {
+                CameraCharacteristics c = cm.getCameraCharacteristics(id);
+                Integer facing = c.get(CameraCharacteristics.LENS_FACING);
+                String dir;
+                if (facing != null
+                        && facing == CameraCharacteristics.LENS_FACING_FRONT) {
+                    dir = "أمامية";
+                } else if (facing != null
+                        && facing == CameraCharacteristics.LENS_FACING_BACK) {
+                    dir = "خلفية";
+                } else if (facing != null
+                        && facing == CameraCharacteristics.LENS_FACING_EXTERNAL) {
+                    dir = "خارجية";
+                } else {
+                    dir = "غير معروف";
+                }
+                JSONObject d = new JSONObject();
+                d.put("معرف", id);
+                d.put("اتجاه", dir);
+                list.put(d);
+            }
+        } catch (Exception e) {
+            sendDeviceError(s, "تعذّر سرد الكاميرات");
+            return;
+        }
+        sendDeviceValue(s, list);
+    }
+
+    /** هل إذن الكاميرا ممنوح؟ */
+    private boolean cameraPermissionGranted() {
+        return checkSelfPermission("android.permission.CAMERA")
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** استقبال طلب التقاط صورة (البند 32): ملف داخل
+     * مجلد البرنامج عبر نية كاميرا النظام (أبسط
+     * وأوثق على كل الأجهزة) — بلا معاينة حية داخل
+     * الترمنال؛ والصورة ملف يعرضه المستخدم بتطبيق
+     * خارجي (البند 23). الإذن يُطلب عند أول
+     * استعمال فقط. */
+    private void handleCapturePhotoRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب التقاط غير صالح");
+            return;
+        }
+        String path = req.optString("مسار", "");
+        if (path.isEmpty()) {
+            sendDeviceError(s, "طلب التقاط غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        if (s.process == null || s.ended) return;
+        if (pendingCaptureSession != null) {
+            sendDeviceError(s, "التقاط آخر جارٍ");
+            return;
+        }
+        File file = deviceFileInsideProgramDir(path);
+        if (file == null) {
+            sendDeviceError(s, "مسار الصورة خارج مجلد البرنامج");
+            return;
+        }
+        File parent = file.getParentFile();
+        if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
+            sendDeviceError(s, "تعذّر إنشاء مجلد الصورة");
+            return;
+        }
+        pendingCaptureSession = s;
+        pendingCaptureFile = file;
+        if (cameraPermissionGranted()) {
+            launchCapturePhoto();
+            return;
+        }
+        if (!capturePermissionRequestInFlight) {
+            capturePermissionRequestInFlight = true;
+            requestPermissions(
+                    new String[]{"android.permission.CAMERA"},
+                    REQ_CAPTURE_PERMISSION);
+        }
+    }
+
+    /** إطلاق نية كاميرا النظام بالملف الهدف عبر
+     * رابط المزوّد (كتابة لمرة واحدة). */
+    private void launchCapturePhoto() {
+        Session s = pendingCaptureSession;
+        File file = pendingCaptureFile;
+        if (s == null || file == null) return;
+        Uri uri = NivaFileProvider.getUriForFile(this, file);
+        Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+        intent.putExtra(MediaStore.EXTRA_OUTPUT, uri);
+        intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        try {
+            startActivityForResult(intent, REQ_CAPTURE_PHOTO);
+        } catch (ActivityNotFoundException e) {
+            pendingCaptureSession = null;
+            pendingCaptureFile = null;
+            sendDeviceError(s, "لا يوجد تطبيق كاميرا");
+        } catch (Exception e) {
+            pendingCaptureSession = null;
+            pendingCaptureFile = null;
+            sendDeviceError(s, "تعذّر فتح الكاميرا");
+        }
+    }
+
+    /** جواب نية الكاميرا: نجاح + ملف غير فارغ →
+     * صحيح؛ وإلغاء أو ملف فارغ → خطأ عربي. */
+    private void onCapturePhotoResult(int resultCode) {
+        Session s = pendingCaptureSession;
+        File f = pendingCaptureFile;
+        pendingCaptureSession = null;
+        pendingCaptureFile = null;
+        if (s == null || f == null) return;
+        if (s.process == null || s.ended) return;
+        if (resultCode != RESULT_OK) {
+            sendDeviceError(s, "ألغى المستخدم التقاط الصورة");
+            return;
+        }
+        if (f.isFile() && f.length() > 0) {
+            sendDeviceValue(s, true);
+        } else {
+            sendDeviceError(s, "تعذّر حفظ الصورة");
+        }
+    }
+
+    /** استقبال طلب معلومات واي فاي الحالي (البند 33):
+     * بلا إذن موقع — فالشبكة وعنوان الجهاز يظهران
+     * «غير معروف» بلا إذن موقع ممنوح (سلوك النظام
+     * منذ أندرويد 8: قراءة SSID تحتاج إذن موقع)؛
+     * وباقي الحقول (تردد وقوة وسرعة وعنوان) بلا
+     * إذن. وغير المتصل → خطأ عربي واضح. */
+    private void handleWifiInfoRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب واي فاي غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        WifiManager wm = (WifiManager) getApplicationContext()
+                .getSystemService(Context.WIFI_SERVICE);
+        if (wm == null) {
+            sendDeviceError(s, "واي فاي غير متاح");
+            return;
+        }
+        WifiInfo info = wm.getConnectionInfo();
+        if (info == null || info.getNetworkId() == -1) {
+            sendDeviceError(s, "غير متصل بأي شبكة واي فاي");
+            return;
+        }
+        String ssid = info.getSSID();
+        if (ssid == null || ssid.equals("<unknown ssid>")) {
+            ssid = "غير معروف";
+        } else if (ssid.length() >= 2 && ssid.startsWith("\"")
+                && ssid.endsWith("\"")) {
+            ssid = ssid.substring(1, ssid.length() - 1);
+        }
+        String bssid = info.getBSSID();
+        if (bssid == null) bssid = "غير معروف";
+        int ip = info.getIpAddress();
+        String ipStr = (ip & 0xff) + "." + ((ip >> 8) & 0xff) + "."
+                + ((ip >> 16) & 0xff) + "." + ((ip >> 24) & 0xff);
+        try {
+            JSONObject v = new JSONObject();
+            v.put("شبكة", ssid);
+            v.put("عنوان_الجهاز", bssid);
+            v.put("تردد", info.getFrequency());
+            v.put("عنوان", ipStr);
+            v.put("قوة_الإشارة", info.getRssi());
+            v.put("سرعة", info.getLinkSpeed());
+            v.put("متصل", true);
+            sendDeviceValue(s, v);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    /** استقبال طلب مسح واي فاي (البند 34): الإذن
+     * هنا إذن مسح لا تتبع — يُطلب عند أول استعمال
+     * فقط؛ والنتائج عبر مستقبل بث بمهلة 10 ثوان
+     * (فشل بدء المسح لا يفشل فورا — المهلة تجيب
+     * بالنتائج الموجودة، ولو فارغة). */
+    private void handleWifiScanRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب مسح غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        if (s.process == null || s.ended) return;
+        if (pendingWifiScan != null) {
+            sendDeviceError(s, "مسح آخر جارٍ");
+            return;
+        }
+        pendingWifiScan = new PendingWifiScan(s);
+        if (locationPermissionGranted()) {
+            runWifiScan(pendingWifiScan);
+            return;
+        }
+        if (!wifiScanPermissionRequestInFlight) {
+            wifiScanPermissionRequestInFlight = true;
+            requestPermissions(
+                    new String[]{"android.permission.ACCESS_FINE_LOCATION"},
+                    REQ_WIFI_SCAN_PERMISSION);
+        }
+    }
+
+    /** تنفيذ المسح المعلّق بعد منح الإذن. */
+    private void runWifiScan(PendingWifiScan p) {
+        WifiManager wm = (WifiManager) getApplicationContext()
+                .getSystemService(Context.WIFI_SERVICE);
+        if (wm == null) {
+            answerWifiScanError(p, "واي فاي غير متاح");
+            return;
+        }
+        Handler handler = new Handler(Looper.getMainLooper());
+        p.handler = handler;
+        BroadcastReceiver receiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                answerWifiScanResults(p, wm);
+            }
+        };
+        p.receiver = receiver;
+        registerReceiver(receiver,
+                new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION));
+        p.timeout = () -> answerWifiScanResults(p, wm);
+        handler.postDelayed(p.timeout, DEVICE_WIFI_SCAN_TIMEOUT_MS);
+        try {
+            wm.startScan();
+        } catch (Exception ignored) {
+            // فشل البدء (خنق النظام مثلا): المهلة
+            // تجيب بالنتائج الموجودة بدلا من الفشل
+            // الفوري.
+        }
+    }
+
+    /** جواب مسح واحد — النتائج؛ ويلغي المستقبل
+     * والمهلة ويمسح الخانة. */
+    private void answerWifiScanResults(PendingWifiScan p, WifiManager wm) {
+        if (p.answered) return;
+        p.answered = true;
+        if (p.receiver != null) {
+            try {
+                unregisterReceiver(p.receiver);
+            } catch (Exception ignored) {
+            }
+        }
+        if (p.timeout != null && p.handler != null) {
+            p.handler.removeCallbacks(p.timeout);
+        }
+        if (pendingWifiScan == p) pendingWifiScan = null;
+        JSONArray list = new JSONArray();
+        try {
+            for (ScanResult r : wm.getScanResults()) {
+                JSONObject d = new JSONObject();
+                d.put("شبكة",
+                        r.SSID == null || r.SSID.isEmpty() ? "مخفية" : r.SSID);
+                d.put("عنوان_الجهاز",
+                        r.BSSID == null ? "غير معروف" : r.BSSID);
+                d.put("تردد", r.frequency);
+                d.put("قوة_الإشارة", r.level);
+                d.put("قدرات", r.capabilities == null ? "" : r.capabilities);
+                list.put(d);
+            }
+        } catch (SecurityException e) {
+            sendDeviceError(p.session,
+                    "رفض إذن الموقع — فعّل الإذن من إعدادات التطبيق");
+            return;
+        } catch (JSONException ignored) {
+            sendDeviceError(p.session, "تعذّر قراءة نتائج المسح");
+            return;
+        }
+        sendDeviceValue(p.session, list);
+    }
+
+    /** جواب مسح واحد — خطأ؛ ويلغي المستقبل
+     * والمهلة ويمسح الخانة. */
+    private void answerWifiScanError(PendingWifiScan p, String message) {
+        if (p.answered) return;
+        p.answered = true;
+        if (p.receiver != null) {
+            try {
+                unregisterReceiver(p.receiver);
+            } catch (Exception ignored) {
+            }
+        }
+        if (p.timeout != null && p.handler != null) {
+            p.handler.removeCallbacks(p.timeout);
+        }
+        if (pendingWifiScan == p) pendingWifiScan = null;
+        sendDeviceError(p.session, message);
+    }
+
+    // ===== واجهة الجهاز من البرنامج — الدفعة 4ب
+    // (البنود 61 و62 و66–72 و79 و105 و106 و119) =====
+    // النمط نفسه كالدفعة 4أ: طلب JSON عبر قناة
+    // التحكم، ونتيجة واحدة بالضبط (قيمة أو خطأ)
+    // على stdin — فلا يعلق المحرك أبدا. والتسجيل
+    // والمصباح يُنظَّفان عند موت الجلسة (انظر
+    // cancelDeviceRequestsForSession).
+
+    /** استقبال طلب نسخ آخر خطأ (البند 61): آخر سطر
+     * في نص الجلسة يحوي «خطأ» يُنسخ إلى الحافظة
+     * وتُرجع قيمته نصا — وبلا سطر خطأ خطأ عربي
+     * واضح. النسخ اليدوي بالتحديد موجود مجانا من
+     * النظام؛ وهذا للحالة الشائعة: إرسال الخطأ
+     * للدعم بلا تحديد يدوي. */
+    private void handleCopyLastErrorRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب نسخ غير صالح");
+            return;
+        }
+        String text = s.text.toString();
+        String lastError = null;
+        int start = 0;
+        while (true) {
+            int nl = text.indexOf('\n', start);
+            String line = nl < 0 ? text.substring(start)
+                    : text.substring(start, nl);
+            if (line.contains("خطأ")) lastError = line;
+            if (nl < 0) break;
+            start = nl + 1;
+        }
+        if (lastError == null || lastError.isEmpty()) {
+            sendDeviceError(s, "لا يوجد سطر خطأ في الجلسة");
+            return;
+        }
+        ClipboardManager cm = (ClipboardManager)
+                getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm == null) {
+            sendDeviceError(s, "الحافظة غير متاحة");
+            return;
+        }
+        cm.setPrimaryClip(ClipData.newPlainText("نيفا", lastError));
+        sendDeviceValue(s, lastError);
+    }
+
+    /** استقبال طلب مشاركة نص الجلسة (البند 62): آخر
+     * 100 ألف حرف فقط (بلا تجاوز حد المعاملة) عبر
+     * نافذة المشاركة؛ والنتيجة فور الإطلاق. وبلا
+     * تقرير تشخيص تلقائي ولا معلومات جهاز مرفقة —
+     * المستخدم يرسل سطر الخطأ الأحمر بنفسه (البند
+     * 61 يغطي الحالة الشائعة). */
+    private void handleShareSessionRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب مشاركة غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        String text = s.text.toString();
+        if (text.length() > SESSION_SHARE_CAP) {
+            text = text.substring(text.length() - SESSION_SHARE_CAP);
+        }
+        if (text.isEmpty()) {
+            sendDeviceError(s, "نص الجلسة فارغ");
+            return;
+        }
+        final String shareText = text;
+        confirmShareText(shareText, () -> {
+            Intent intent = new Intent(Intent.ACTION_SEND);
+            intent.setType("text/plain");
+            intent.putExtra(Intent.EXTRA_TEXT, shareText);
+            try {
+                startActivity(Intent.createChooser(intent, "مشاركة الجلسة"));
+            } catch (ActivityNotFoundException e) {
+                sendDeviceError(s, "لا يوجد تطبيق للمشاركة");
+                return;
+            }
+            sendDeviceValue(s, true);
+        }, () -> sendDeviceError(s, "ألغى المستخدم مشاركة الجلسة"));
+    }
+
+    /** استقبال طلب إيقاف الصوت مؤقتا (البند 66):
+     * الإيقاف يبقي المشغّل حيا لا يطلقه — فيستأنف
+     * من موضعه؛ وبلا صوت جارٍ نجاح صامت
+     * كـ`أوقف_صوت`. */
+    private void handlePauseAudioRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب إيقاف غير صالح");
+            return;
+        }
+        if (audioPlayer != null && audioPlayingSession == s && !audioPaused) {
+            try {
+                audioPlayer.pause();
+                audioPaused = true;
+            } catch (Exception ignored) {
+            }
+        }
+        sendDeviceValue(s, true);
+    }
+
+    /** استقبال طلب استئناف الصوت (البند 66): يعيد
+     * تشغيل الموقوف مؤقتا من موضعه؛ وبلا صوت موقوف
+     * نجاح صامت. */
+    private void handleResumeAudioRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب استئناف غير صالح");
+            return;
+        }
+        if (audioPlayer != null && audioPlayingSession == s && audioPaused) {
+            try {
+                audioPlayer.start();
+                audioPaused = false;
+            } catch (Exception ignored) {
+            }
+        }
+        sendDeviceValue(s, true);
+    }
+
+    /** استقبال طلب معلومات ملف صوت (البند 67):
+     * قاموس {مدة} بالثواني قبل التشغيل — بلا إذن. */
+    private void handleAudioInfoRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب معلومات غير صالح");
+            return;
+        }
+        String path = req.optString("مسار", "");
+        if (path.isEmpty()) {
+            sendDeviceError(s, "طلب معلومات غير صالح");
+            return;
+        }
+        File file = new File(path);
+        if (!file.isFile()) {
+            sendDeviceError(s, "ملف الصوت غير موجود");
+            return;
+        }
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(path);
+            String ms = retriever.extractMetadata(
+                    MediaMetadataRetriever.METADATA_KEY_DURATION);
+            if (ms == null) {
+                sendDeviceError(s, "ملف الصوت غير مدعوم أو تالف");
+                return;
+            }
+            double seconds = Long.parseLong(ms) / 1000.0;
+            JSONObject v = new JSONObject();
+            v.put("مدة", seconds);
+            sendDeviceValue(s, v);
+        } catch (Exception e) {
+            sendDeviceError(s, "ملف الصوت غير مدعوم أو تالف");
+        } finally {
+            try {
+                retriever.release();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    /** اسم نيفا لنوع حساس أندرويد — عكس
+     * sensorTypeForName؛ وnull لما ليس من الثمانية. */
+    private static String sensorNameForType(int type) {
+        switch (type) {
+            case Sensor.TYPE_ACCELEROMETER: return "تسارع";
+            case Sensor.TYPE_GYROSCOPE: return "جيروسكوب";
+            case Sensor.TYPE_LIGHT: return "ضوء";
+            case Sensor.TYPE_PROXIMITY: return "قرب";
+            case Sensor.TYPE_MAGNETIC_FIELD: return "مغناطيسي";
+            case Sensor.TYPE_PRESSURE: return "ضغط";
+            case Sensor.TYPE_RELATIVE_HUMIDITY: return "رطوبة";
+            case Sensor.TYPE_AMBIENT_TEMPERATURE: return "حرارة";
+            default: return null;
+        }
+    }
+
+    /** استقبال طلب سرد الحساسات (البند 68): أسماء
+     * الحساسات الثمانية الموجودة على الجهاز فقط —
+     * بلا إذن؛ وتساعد البرنامج قبل السؤال عن حساس
+     * غائب. والقراءة المستمرة مرفوضة (البند 143) —
+     * من أراد تكرارا كرر الأمر بنفسه. */
+    private void handleListSensorsRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب حساس غير صالح");
+            return;
+        }
+        if (sensorManager == null) {
+            sensorManager = (SensorManager)
+                    getSystemService(Context.SENSOR_SERVICE);
+        }
+        if (sensorManager == null) {
+            sendDeviceError(s, "الحساسات غير متاحة");
+            return;
+        }
+        java.util.HashSet<String> present = new java.util.HashSet<>();
+        try {
+            for (Sensor sensor : sensorManager.getSensorList(Sensor.TYPE_ALL)) {
+                String name = sensorNameForType(sensor.getType());
+                if (name != null) present.add(name);
+            }
+        } catch (Exception e) {
+            sendDeviceError(s, "تعذّر سرد الحساسات");
+            return;
+        }
+        JSONArray list = new JSONArray();
+        String[] order = {"تسارع", "جيروسكوب", "ضوء", "قرب",
+                "مغناطيسي", "ضغط", "رطوبة", "حرارة"};
+        for (String name : order) {
+            if (present.contains(name)) list.put(name);
+        }
+        sendDeviceValue(s, list);
+    }
+
+    /** مدير الصوت (كسول — بلا إذن للقراءة). */
+    private AudioManager audioManager() {
+        return (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+    }
+
+    /** استقبال طلب قراءة مستوى الصوت (البند 69):
+     * قاموس {مستوى، أقصى} لتيار الموسيقى — بلا إذن. */
+    private void handleVolumeLevelRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب مستوى غير صالح");
+            return;
+        }
+        AudioManager am = audioManager();
+        if (am == null) {
+            sendDeviceError(s, "الصوت غير متاح");
+            return;
+        }
+        try {
+            JSONObject v = new JSONObject();
+            v.put("مستوى", am.getStreamVolume(AudioManager.STREAM_MUSIC));
+            v.put("أقصى", am.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
+            sendDeviceValue(s, v);
+        } catch (JSONException ignored) {
+        }
+    }
+
+    /** استقبال طلب ضبط مستوى الصوت (البند 70):
+     * يُقصّ إلى [0، الأقصى] ويرجع المستوى الجديد.
+     * الإذن MODIFY_AUDIO_SETTINGS إذن عادي يُمنح
+     * عند التثبيت (في البيان) — تحقّق وقت البناء. */
+    private void handleSetVolumeRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب ضبط غير صالح");
+            return;
+        }
+        int level = req.optInt("مستوى", -1);
+        if (level < 0) {
+            sendDeviceError(s, "طلب ضبط غير صالح");
+            return;
+        }
+        AudioManager am = audioManager();
+        if (am == null) {
+            sendDeviceError(s, "الصوت غير متاح");
+            return;
+        }
+        int max = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        if (level > max) level = max;
+        try {
+            am.setStreamVolume(AudioManager.STREAM_MUSIC, level, 0);
+        } catch (Exception e) {
+            sendDeviceError(s, "تعذّر ضبط مستوى الصوت");
+            return;
+        }
+        sendDeviceValue(s, (double) am.getStreamVolume(AudioManager.STREAM_MUSIC));
+    }
+
+    /** استقبال طلب اهتزاز (البند 71): مدة بالمللي
+     * ثانية (المحرك فحص 1–10000) — بلا إذن عمليا. */
+    private void handleVibrateRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب اهتزاز غير صالح");
+            return;
+        }
+        long ms = req.optLong("مدة", -1);
+        if (ms < 1) {
+            sendDeviceError(s, "طلب اهتزاز غير صالح");
+            return;
+        }
+        vibrate(ms);
+        sendDeviceValue(s, true);
+    }
+
+    /** هل إذن الكاميرا ممنوح؟ (للمصباح أيضا — مدير
+     * الكاميرا هو من يشغّله.) */
+    private boolean torchPermissionGranted() {
+        return cameraPermissionGranted();
+    }
+
+    /** استقبال طلب مصباح (البند 72): تشغيل/إيقاف؛
+     * ويرجع الحالة الجديدة. يحتاج إذن الكاميرا في
+     * الحقيقة — يُطلب عند أول تشغيل فقط؛ والإيقاف
+     * بلا إذن جديد (مصباح مطفأ أصلا إن لم يُمنح). */
+    private void handleTorchRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب مصباح غير صالح");
+            return;
+        }
+        boolean on = req.optBoolean("تشغيل", false);
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        if (s.process == null || s.ended) return;
+        if (!on) {
+            // إيقاف: بلا إذن جديد — وإن لم يكن مشتغلا
+            // أصلا نجاح صامت.
+            setTorchMode(s, false);
+            return;
+        }
+        if (pendingTorch != null) {
+            sendDeviceError(s, "طلب مصباح آخر جارٍ");
+            return;
+        }
+        pendingTorch = new PendingTorch(s, true);
+        if (torchPermissionGranted()) {
+            setTorchMode(s, true);
+            pendingTorch = null;
+            return;
+        }
+        if (!torchPermissionRequestInFlight) {
+            torchPermissionRequestInFlight = true;
+            requestPermissions(
+                    new String[]{"android.permission.CAMERA"},
+                    REQ_TORCH_PERMISSION);
+        }
+    }
+
+    /** تنفيذ المصباح (تشغيل/إيقاف) وإرسال الحالة
+     * الجديدة؛ وموت الجلسة المشغّلة يطفئه (انظر
+     * cancelDeviceRequestsForSession). */
+    private void setTorchMode(Session s, boolean on) {
+        CameraManager cm = (CameraManager)
+                getSystemService(Context.CAMERA_SERVICE);
+        if (cm == null) {
+            sendDeviceError(s, "الكاميرا غير متاحة");
+            return;
+        }
+        try {
+            if (on) {
+                String id = torchCameraId;
+                if (id == null) {
+                    for (String cid : cm.getCameraIdList()) {
+                        CameraCharacteristics c =
+                                cm.getCameraCharacteristics(cid);
+                        Boolean flash = c.get(
+                                CameraCharacteristics.FLASH_INFO_AVAILABLE);
+                        if (flash != null && flash) {
+                            id = cid;
+                            break;
+                        }
+                    }
+                }
+                if (id == null) {
+                    sendDeviceError(s, "لا توجد كاميرا بمصباح");
+                    return;
+                }
+                cm.setTorchMode(id, true);
+                torchCameraId = id;
+                torchOn = true;
+                torchSession = s;
+                sendDeviceValue(s, true);
+            } else {
+                if (torchOn && torchCameraId != null) {
+                    try {
+                        cm.setTorchMode(torchCameraId, false);
+                    } catch (Exception ignored) {
+                    }
+                }
+                torchOn = false;
+                torchSession = null;
+                sendDeviceValue(s, false);
+            }
+        } catch (Exception e) {
+            sendDeviceError(s, on ? "تعذّر تشغيل المصباح"
+                    : "تعذّر إيقاف المصباح");
+        }
+    }
+
+    /** استقبال طلب تسجيل صوت (البند 79): ملف داخل
+     * مجلد البرنامج بمدة قصوى (المحرك فحص 1–300،
+     * الافتراضي 60)؛ والتسجيل الواحد في كل التطبيق
+     * (تسجيل ثانٍ يُرفض بخطأ). الإذن يُطلب عند أول
+     * استعمال بعد حوار تنبيه أن الملف يُحفظ محليا
+     * فقط ولا يُرسل إلى أي مكان. */
+    private void handleRecordAudioRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب تسجيل غير صالح");
+            return;
+        }
+        String path = req.optString("مسار", "");
+        int seconds = req.optInt("مدة", -1);
+        if (path.isEmpty() || seconds < 1) {
+            sendDeviceError(s, "طلب تسجيل غير صالح");
+            return;
+        }
+        if (isFinishing() || isDestroyed()) {
+            sendDeviceError(s, "التطبيق غير متاح");
+            return;
+        }
+        if (s.process == null || s.ended) return;
+        if (recordingSession != null || pendingRecord != null) {
+            sendDeviceError(s, "تسجيل آخر جارٍ");
+            return;
+        }
+        File file = deviceFileInsideProgramDir(path);
+        if (file == null) {
+            sendDeviceError(s, "مسار التسجيل خارج مجلد البرنامج");
+            return;
+        }
+        File parent = file.getParentFile();
+        if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
+            sendDeviceError(s, "تعذّر إنشاء مجلد التسجيل");
+            return;
+        }
+        pendingRecord = new PendingRecord(s, file, seconds);
+        if (recordPermissionGranted()) {
+            PendingRecord p = pendingRecord;
+            pendingRecord = null;
+            startRecording(p);
+            return;
+        }
+        // بلا إذن: حوار تنبيه أولا (الملف محلي فقط) —
+        // وطلب ثانٍ أثناء الحوار يرفضه فحص
+        // pendingRecord في الأعلى بخطأ.
+        recordDisclosureDialog = new AlertDialog.Builder(this)
+                .setTitle("تسجيل صوت")
+                .setMessage("سيُسجَّل الصوت من الميكروفون ويُحفظ "
+                        + "ملفا في مجلد البرنامج فقط — ولا يُرسل "
+                        + "إلى أي مكان.")
+                .setPositiveButton("متابعة", (d, w) -> {
+                    recordDisclosureDialog = null;
+                    if (!recordPermissionRequestInFlight) {
+                        recordPermissionRequestInFlight = true;
+                        requestPermissions(
+                                new String[]{"android.permission.RECORD_AUDIO"},
+                                REQ_RECORD_PERMISSION);
+                    }
+                })
+                .setNegativeButton("إلغاء", (d, w) -> {
+                    recordDisclosureDialog = null;
+                    PendingRecord p = pendingRecord;
+                    pendingRecord = null;
+                    if (p != null) {
+                        sendDeviceError(p.session, "ألغى المستخدم التسجيل");
+                    }
+                })
+                .setCancelable(false)
+                .show();
+    }
+
+    /** هل إذن الميكروفون ممنوح؟ */
+    private boolean recordPermissionGranted() {
+        return checkSelfPermission("android.permission.RECORD_AUDIO")
+                == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /** بدء التسجيل الفعلي (بعد الإذن): MPEG_4/AAC،
+     * وإيقاف تلقائي عند المدة القصوى عبر مستمع
+     * المعلومات + مهلة احتياطية. */
+    private void startRecording(PendingRecord p) {
+        MediaRecorder recorder = new MediaRecorder();
+        try {
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+            recorder.setOutputFile(p.file.getAbsolutePath());
+            recorder.setMaxDuration(p.seconds * 1000);
+            recorder.setOnInfoListener((mr, what, extra) -> {
+                if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
+                    runOnUiThread(() -> finishRecording(true, null));
+                }
+            });
+            recorder.setOnErrorListener((mr, what, extra) -> {
+                runOnUiThread(() -> finishRecording(false, "تعذّر التسجيل"));
+            });
+            recorder.prepare();
+            recorder.start();
+        } catch (Exception e) {
+            try {
+                recorder.release();
+            } catch (Exception ignored) {
+            }
+            sendDeviceError(p.session, "تعذّر بدء التسجيل");
+            return;
+        }
+        audioRecorder = recorder;
+        recordingSession = p.session;
+        recordingFile = p.file;
+        Handler handler = new Handler(Looper.getMainLooper());
+        recordingTimeoutHandler = handler;
+        recordingTimeout = () -> finishRecording(true, null);
+        handler.postDelayed(recordingTimeout, (long) p.seconds * 1000 + 1000);
+    }
+
+    /** إنهاء التسجيل (نجاح عند المدة أو خطأ) —
+     * تحرير المسجّل ومسح الخانات وإرسال النتيجة
+     * مرة واحدة. */
+    private void finishRecording(boolean ok, String errorMessage) {
+        Session s = recordingSession;
+        File f = recordingFile;
+        MediaRecorder recorder = audioRecorder;
+        audioRecorder = null;
+        recordingSession = null;
+        recordingFile = null;
+        if (recordingTimeout != null && recordingTimeoutHandler != null) {
+            recordingTimeoutHandler.removeCallbacks(recordingTimeout);
+        }
+        recordingTimeout = null;
+        recordingTimeoutHandler = null;
+        if (recorder != null) {
+            try {
+                recorder.stop();
+            } catch (Exception ignored) {
+            }
+            try {
+                recorder.release();
+            } catch (Exception ignored) {
+            }
+        }
+        if (s == null) return;
+        if (s.process == null || s.ended) return;
+        if (!ok) {
+            if (f != null) f.delete();
+            sendDeviceError(s, errorMessage == null ? "تعذّر التسجيل" : errorMessage);
+            return;
+        }
+        if (f == null || !f.isFile() || f.length() == 0) {
+            if (f != null) f.delete();
+            sendDeviceError(s, "تعذّر حفظ التسجيل");
+            return;
+        }
+        sendDeviceValue(s, true);
+    }
+
+    /** إيقاف تسجيل جلسة تموت صامتا (المحرك مات فلا
+     * نتيجة تُرسَل) — يُستدعى من
+     * cancelDeviceRequestsForSession. */
+    private void stopRecordingForSession(Session s) {
+        if (recordingSession == s) {
+            MediaRecorder recorder = audioRecorder;
+            audioRecorder = null;
+            recordingSession = null;
+            recordingFile = null;
+            if (recordingTimeout != null && recordingTimeoutHandler != null) {
+                recordingTimeoutHandler.removeCallbacks(recordingTimeout);
+            }
+            recordingTimeout = null;
+            recordingTimeoutHandler = null;
+            if (recorder != null) {
+                try {
+                    recorder.stop();
+                } catch (Exception ignored) {
+                }
+                try {
+                    recorder.release();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        if (pendingRecord != null && pendingRecord.session == s) {
+            pendingRecord = null;
+        }
+        if (recordDisclosureDialog != null && recordingSession == null
+                && pendingRecord == null) {
+            try {
+                recordDisclosureDialog.dismiss();
+            } catch (Exception ignored) {
+            }
+            recordDisclosureDialog = null;
+        }
+    }
+
+    /** استقبال طلب سطوع (البند 105): عدد 0–100 أو
+     * «تلقائي»؛ ويرجع قاموس {مستوى، تلقائي}.
+     * الكتابة في إعدادات النظام إذن خاص — بلا منح
+     * يفتح التطبيق شاشة إعدادات النظام ويرجع خطأ
+     * يعيد المحاولة بعد المنح (لا نتيجة معلّقة). */
+    private void handleBrightnessRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب سطوع غير صالح");
+            return;
+        }
+        boolean auto = req.optBoolean("تلقائي", false);
+        int level = req.optInt("مستوى", -1);
+        if (!auto && level < 0) {
+            sendDeviceError(s, "طلب سطوع غير صالح");
+            return;
+        }
+        if (!Settings.System.canWrite(this)) {
+            Intent intent = new Intent(
+                    Settings.ACTION_MANAGE_WRITE_SETTINGS,
+                    Uri.parse("package:" + getPackageName()));
+            try {
+                startActivity(intent);
+            } catch (ActivityNotFoundException ignored) {
+            }
+            sendDeviceError(s,
+                    "افتح إعدادات النظام وامنح إذن الكتابة ثم أعد المحاولة");
+            return;
+        }
+        try {
+            if (auto) {
+                Settings.System.putInt(getContentResolver(),
+                        Settings.System.SCREEN_BRIGHTNESS_MODE,
+                        Settings.System.SCREEN_BRIGHTNESS_MODE_AUTOMATIC);
+                int current = Settings.System.getInt(getContentResolver(),
+                        Settings.System.SCREEN_BRIGHTNESS, 128);
+                JSONObject v = new JSONObject();
+                v.put("مستوى", current * 100 / 255);
+                v.put("تلقائي", true);
+                sendDeviceValue(s, v);
+            } else {
+                Settings.System.putInt(getContentResolver(),
+                        Settings.System.SCREEN_BRIGHTNESS_MODE,
+                        Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL);
+                int value = level * 255 / 100;
+                Settings.System.putInt(getContentResolver(),
+                        Settings.System.SCREEN_BRIGHTNESS, value);
+                JSONObject v = new JSONObject();
+                v.put("مستوى", level);
+                v.put("تلقائي", false);
+                sendDeviceValue(s, v);
+            }
+        } catch (Exception e) {
+            sendDeviceError(s, "تعذّر ضبط السطوع");
+        }
+    }
+
+    /** استقبال طلب توست (البند 106): رسالة عائمة
+     * تختفي وحدها؛ وترجع صحيحا (المحرك يحوّلها إلى
+     * لا شيء). قاعدة التوست 196-1: إلغاء السابق
+     * قبل عرض الجديد — توست واحد ظاهر في كل مرة.
+     * وملاحظة: المساعد الداخلي toast(String) يبقى
+     * لرسائل التطبيق نفسه — بلا تغيير نطاق. */
+    private void handleToastRequest(Session s, String payload) {
+        JSONObject req;
+        try {
+            req = new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب توست غير صالح");
+            return;
+        }
+        String text = req.optString("نص", "");
+        boolean longShow = req.optBoolean("طويل", false);
+        if (text.isEmpty()) {
+            sendDeviceError(s, "طلب توست غير صالح");
+            return;
+        }
+        if (currentToast != null) {
+            try {
+                currentToast.cancel();
+            } catch (Exception ignored) {
+            }
+        }
+        currentToast = Toast.makeText(this, text,
+                longShow ? Toast.LENGTH_LONG : Toast.LENGTH_SHORT);
+        currentToast.show();
+        sendDeviceValue(s, true);
+    }
+
+    /** استقبال طلب معلومات الصوت (البند 119): قاموس
+     * {معدل_العينات، حجم_المخزن، بلوتوث،
+     * سماعة_سلكية} — بلا إذن. */
+    private void handleAudioDeviceInfoRequest(Session s, String payload) {
+        try {
+            new JSONObject(payload);
+        } catch (JSONException e) {
+            sendDeviceError(s, "طلب معلومات غير صالح");
+            return;
+        }
+        AudioManager am = audioManager();
+        if (am == null) {
+            sendDeviceError(s, "الصوت غير متاح");
+            return;
+        }
+        int sampleRate = AudioTrack.getNativeOutputSampleRate(
+                AudioManager.STREAM_MUSIC);
+        int frames = 0;
+        String framesProp = am.getProperty(
+                AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER);
+        if (framesProp != null) {
+            try {
+                frames = Integer.parseInt(framesProp);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        try {
+            JSONObject v = new JSONObject();
+            v.put("معدل_العينات", sampleRate);
+            v.put("حجم_المخزن", frames);
+            v.put("بلوتوث", am.isBluetoothA2dpOn());
+            v.put("سماعة_سلكية", am.isWiredHeadsetOn());
+            sendDeviceValue(s, v);
         } catch (JSONException ignored) {
         }
     }
@@ -5019,7 +7652,7 @@ public class MainActivity extends Activity {
         }
         // الجلسات قبل أي نسخ — فلا ملف يتيم عند الامتلاء.
         if (sessions.size() >= MAX_SESSIONS) {
-            noteSafFailure("وصلت إلى الحد الأقصى (٨ جلسات)");
+            showSessionCapDialog();
             return;
         }
         byte[] bytes;
@@ -5068,7 +7701,7 @@ public class MainActivity extends Activity {
         }
         if (!createSession(name, dest, name)) {
             dest.delete();
-            noteSafFailure("وصلت إلى الحد الأقصى (٨ جلسات)");
+            showSessionCapDialog();
         }
     }
 
@@ -5227,7 +7860,56 @@ public class MainActivity extends Activity {
                 ? (Uri) intent.getParcelableExtra(Intent.EXTRA_STREAM)
                 : intent.getData();
         if (uri == null) {
-            toast("لم يصل ملف");
+            // مشاركة بلا ملف (الدفعة 4أ — البندان 26 و27):
+            // نص عادي → يُحفظ ملفا نصيا بعد تأكيد؛
+            // ورابط وحده → يُفتح في المتصفح بعد تأكيد.
+            // وبلا برامج يكتبها المستخدم أبدا — الفعل
+            // بعد الاستقبال ثابت في التطبيق.
+            if (!isShare) {
+                toast("لم يصل ملف");
+                return;
+            }
+            String text = intent.getStringExtra(Intent.EXTRA_TEXT);
+            if (text == null || text.trim().isEmpty()) {
+                toast("لم يصل ملف");
+                return;
+            }
+            final String sharedText = text;
+            if (looksLikeSingleUrl(sharedText)) {
+                final String url = sharedText.trim();
+                new AlertDialog.Builder(this)
+                        .setTitle("افتح هذا الرابط؟")
+                        .setMessage("وصل رابط «" + url + "» من "
+                                + senderName() + ".")
+                        .setPositiveButton("افتح", (d, w) -> {
+                            Intent browser = new Intent(
+                                    Intent.ACTION_VIEW, Uri.parse(url));
+                            try {
+                                startActivity(browser);
+                            } catch (ActivityNotFoundException e) {
+                                toast("لا يوجد متصفح لفتح الرابط");
+                            }
+                        })
+                        .setNegativeButton("تجاهل", null)
+                        .setCancelable(false)
+                        .show();
+            } else {
+                // معاينة أول 200 حرف في الحوار — المستخدم
+                // يرى ما سيحفظه قبل الموافقة (H2).
+                String preview = sharedText.length() > 200
+                        ? sharedText.substring(0, 200) + "…"
+                        : sharedText;
+                new AlertDialog.Builder(this)
+                        .setTitle("احفظ هذا النص؟")
+                        .setMessage("وصل نص من " + senderName()
+                                + " — يُحفظ ملفا نصيا في مجلد البرنامج.\n\n«"
+                                + preview + "»")
+                        .setPositiveButton("احفظ", (d, w) ->
+                                saveSharedText(sharedText))
+                        .setNegativeButton("تجاهل", null)
+                        .setCancelable(false)
+                        .show();
+            }
             return;
         }
         String name = safDocumentDisplayName(uri);
@@ -5252,6 +7934,35 @@ public class MainActivity extends Activity {
                 .setNegativeButton("تجاهل", null)
                 .setCancelable(false)
                 .show();
+    }
+
+    /** هل النص رابط واحد وحده (البند 27)؟ — يبدأ بـ
+     * http:// أو https:// أو magnet: وبلا فراغات
+     * ولا أسطر؛ وغير ذلك نص عادي (البند 26). */
+    private boolean looksLikeSingleUrl(String text) {
+        String t = text.trim();
+        if (t.indexOf(' ') >= 0 || t.indexOf('\n') >= 0
+                || t.indexOf('\t') >= 0) {
+            return false;
+        }
+        return t.startsWith("http://") || t.startsWith("https://")
+                || t.startsWith("magnet:");
+    }
+
+    /** حفظ نص مشارك ملفا نصيا في مجلد البرنامج
+     * (البند 26): الاسم تلقائي من التاريخ — بلا سؤال
+     * عن اسم أولا؛ ومن أراد اسما آخر ينقله بـ`انقل`. */
+    private void saveSharedText(String text) {
+        String stamp = new SimpleDateFormat("yyyyMMdd-HHmmss",
+                Locale.getDefault()).format(new Date());
+        String fileName = "نص-" + stamp + ".txt";
+        File dest = new File(getFilesDir(), fileName);
+        try (FileOutputStream out = new FileOutputStream(dest)) {
+            out.write(text.getBytes(StandardCharsets.UTF_8));
+            toast("حُفظ النص في " + fileName);
+        } catch (IOException e) {
+            toast("تعذّر حفظ النص");
+        }
     }
 
     // ===== حوار جهاز.حوار (المهمة 20) =====
@@ -5364,6 +8075,8 @@ public class MainActivity extends Activity {
             }
         } catch (JSONException e) {
             sendDialogError(s, "طلب حوار غير صالح");
+        } catch (IllegalArgumentException e) {
+            sendDialogError(s, "نطاق الحوار غير صالح");
         }
     }
 
@@ -5563,28 +8276,40 @@ public class MainActivity extends Activity {
     }
 
     /** عدّاد: NumberPicker بلا التفاف؛ نطاق خارج int
-     * خطأ عربي (المحرك يقبل أعدادا أكبر من int). */
+     * خطأ عربي (المحرك يقبل أعدادا أكبر من int).
+     * التحقق `أدنى <= افتراضي <= أقصى` قبل البناء
+     * (H7): منتقي أندرويد يرمي إن كان الأدنى أكبر
+     * من الأقصى الحالي؛ والترتيب أقصى ثم أدنى ثم
+     * قيمة؛ والتقاط احتياطي حول البناء كله. */
     private void showCounterDialog(Session s, String title,
             long min, long max, long def) {
         if (min < Integer.MIN_VALUE || max > Integer.MAX_VALUE) {
             sendDialogError(s, "نطاق العداد كبير جدا");
             return;
         }
-        NumberPicker picker = new NumberPicker(this);
-        picker.setMinValue((int) min);
-        picker.setMaxValue((int) max);
-        picker.setValue((int) def);
-        picker.setWrapSelectorWheel(false);
-        AlertDialog d = new AlertDialog.Builder(this)
-                .setTitle(title)
-                .setView(picker)
-                .setPositiveButton("موافق",
-                        (dlg, w) -> sendDialogValue(s, picker.getValue()))
-                .setNegativeButton("إلغاء",
-                        (dlg, w) -> sendDialogCancel(s))
-                .setCancelable(false)
-                .create();
-        trackDialog(s, d);
+        if (min > max || def < min || def > max) {
+            sendDialogError(s, "نطاق العداد غير صالح");
+            return;
+        }
+        try {
+            NumberPicker picker = new NumberPicker(this);
+            picker.setMaxValue((int) max);
+            picker.setMinValue((int) min);
+            picker.setValue((int) def);
+            picker.setWrapSelectorWheel(false);
+            AlertDialog d = new AlertDialog.Builder(this)
+                    .setTitle(title)
+                    .setView(picker)
+                    .setPositiveButton("موافق",
+                            (dlg, w) -> sendDialogValue(s, picker.getValue()))
+                    .setNegativeButton("إلغاء",
+                            (dlg, w) -> sendDialogCancel(s))
+                    .setCancelable(false)
+                    .create();
+            trackDialog(s, d);
+        } catch (IllegalArgumentException e) {
+            sendDialogError(s, "نطاق العداد غير صالح");
+        }
     }
 
     /** تاريخ: منتقي تاريخ؛ الشهر يُرجع 1-12 (أندرويد
@@ -5699,6 +8424,9 @@ public class MainActivity extends Activity {
         // الإفصاح إن عُرض (المهمة 26) — المحرك مات
         // فلا نتيجة تُرسَل.
         stopListenForSession(s);
+        // وتُلغى طلبات جهاز الجلسة المعلقة (الدفعة 4أ) —
+        // المحرك مات فلا نتيجة تُرسَل.
+        cancelDeviceRequestsForSession(s);
         // إغلاق stdin القديم وانتظار القارئين على خيط
         // عامل (م-4) — لا يُجمَّد خيط الواجهة أبدا — ثم
         // بدء العملية الجديدة على خيط الواجهة.
@@ -5794,6 +8522,9 @@ public class MainActivity extends Activity {
         // الإفصاح إن عُرض (المهمة 26) — المحرك مات
         // فلا نتيجة تُرسَل.
         stopListenForSession(s);
+        // وتُلغى طلبات جهاز الجلسة المعلقة (الدفعة 4أ) —
+        // المحرك مات فلا نتيجة تُرسَل.
+        cancelDeviceRequestsForSession(s);
         // رمز الخروج: -1 تعني «من مسار EOF، غير معروف» —
         // يُحلّ عبر exitValue إن أمكن. (صعد قبل فحص
         // «أثناء الخروج» — اجتماع 39: الإزالة الفورية
@@ -5847,7 +8578,12 @@ public class MainActivity extends Activity {
         // معه) — الموجّه الوهمي موجّه عادي.
         String prompt = CONT_PROMPT_TEXT.equals(s.lastPrompt) ? "~ $ " : s.lastPrompt;
         s.lastPrompt = prompt;
-        String msg = "\n" + ENDED_MESSAGE + "\n" + prompt;
+        // الدفعة 3، البند 54: صياغة موحدة لسطر نهاية
+        // البرنامج — الرمز يُذكر فقط إن لم يكن صفرا.
+        String endedLine = "[انتهى البرنامج"
+                + (code != 0 ? " (الرمز " + arabicDigits(code) + ")" : "")
+                + " — اضغط إدخال]";
+        String msg = "\n" + endedLine + "\n" + prompt;
         appendSessionText(s, msg);
         if (s == active()) {
             appendToTerminal(msg);
@@ -5892,7 +8628,9 @@ public class MainActivity extends Activity {
     }
 
     /** قصّ رأس السجل عند السقف (م-1): فقط حين لا موجّه
-     * معروضا (فلا يُفقد نص مكتوب)، ومن الرأس إلى حدود سطر. */
+     * معروضا (فلا يُفقد نص مكتوب)، ومن الرأس إلى حدود سطر.
+     * السقف حماية للأداء (الدفعة 3، البند 73): سجل بلا
+     * حد يبطئ العرض والحفظ مع طول الجلسة. */
     private void trimTranscript(Session s) {
         if (s.inputStart >= 0) return;
         while ((s.lineCount > maxTranscriptLines || s.text.length() > MAX_CHARS) && s.lineCount > 100) {
@@ -5999,7 +8737,7 @@ public class MainActivity extends Activity {
         terminalView.programmatic = true;
         int chunkStart = terminalView.getText().length();
         terminalView.getText().append(chunk);
-        colorOutputLines(chunkStart);
+        colorOutputLines(chunkStart, true);
         terminalView.programmatic = false;
     }
 
@@ -6010,8 +8748,10 @@ public class MainActivity extends Activity {
      * سطر ناقص (بلا \n في نهايته) حتى يكتمل بقطعة لاحقة.
      * كل سطر يُلوَّن مرة واحدة فقط: القطعة التالية تبدأ
      * فحصها من سطر لم يُلوَّن بعد. التلوين في terminalView
-     * فقط؛ ونص الجلسة المخزّن يبقى نصا عاديا بلا spans. */
-    private void colorOutputLines(int chunkStart) {
+     * فقط؛ ونص الجلسة المخزّن يبقى نصا عاديا بلا spans.
+     * والجرس (الدفعة 3، البند 57) يرنّ فقط على القطع
+     * الجديدة (ringBell) لا على إعادة التلوين. */
+    private void colorOutputLines(int chunkStart, boolean ringBell) {
         Editable text = terminalView.getText();
         int len = text.length();
         if (len == 0) return;
@@ -6029,34 +8769,45 @@ public class MainActivity extends Activity {
             if (color != 0) {
                 text.setSpan(new ForegroundColorSpan(color), pos, eol,
                         Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                if (ringBell && color == errorColor) bellOnErrorLine();
             }
             pos = eol + 1;
         }
     }
 
     /** لون سطر واحد حسب محتواه: أحمر للخطأ، أخضر لنجاح
-     * التثبيت، 0 بلا لون. المقارنة على النص دون \n النهائية.
-     * سطر الموجّه («~ $ ...») لا يُلوَّن أبدا: موجّهه الأخضر
-     * من paintPrompt، فيبقى كما هو. */
+     * التثبيت، وسماوي لسطر فيه رابط (الدفعة 3، البند 21)،
+     * وألوان عرض الملفات (`ات`): سطر ينتهي بـ`/`
+     * فهو مجلد (أزرق)، وبـ`*` فهو تنفيذي (أخضر)، وبـ`@`
+     * فهو رابط (سماوي)؛ و0 بلا لون. المقارنة على النص دون
+     * \n النهائية. سطر الموجّه («~ $ ...») لا يُلوَّن أبدا:
+     * موجّهه الأخضر من paintPrompt، فيبقى كما هو. لون
+     * الخطأ والنجاح من niva.properties (الدفعة 3، البند 63). */
     private int lineColor(Editable text, int start, int end) {
         String line = text.subSequence(start, end).toString();
         if (line.startsWith("~")) return 0;
         if (line.startsWith(ERROR_PREFIX)
                 || line.contains(CANNOT_WITH_SHADDA)
                 || line.contains(CANNOT_PLAIN)) {
-            return ERROR_RED;
+            return errorColor;
         }
         for (String marker : FETCH_ERROR_MARKERS) {
-            if (line.contains(marker)) return ERROR_RED;
+            if (line.contains(marker)) return errorColor;
         }
-        if (line.startsWith(INSTALL_PREFIX)) return promptColor;
+        if (line.startsWith(INSTALL_PREFIX)) {
+            return successColor != 0 ? successColor : promptColor;
+        }
+        if (URL_PATTERN.matcher(line).find()) return LS_LINK_CYAN;
+        if (line.endsWith("/")) return LS_DIR_BLUE;
+        if (line.endsWith("*")) return promptColor;
+        if (line.endsWith("@")) return LS_LINK_CYAN;
         return 0;
     }
 
     /** إعادة تلوين النص الكامل (عند استعادة الجلسة): setText
      * يمحو كل الـspans، فيُعاد التلوين على السطور المكتملة. */
     private void colorAllOutputLines() {
-        colorOutputLines(0);
+        colorOutputLines(0, false);
     }
 
     /** لون الموجّه الحالي بالأخضر (داخل الترمنال فقط).
@@ -6445,9 +9196,11 @@ public class MainActivity extends Activity {
         String clear = normalizeArabicForMatch("امسح الشاشة");
         String state = normalizeArabicForMatch("حالة الشبكة");
         String allow = normalizeArabicForMatch("اسمح بالشبكة");
+        String storage = normalizeArabicForMatch("اكشف التخزين");
         if (norm.equals(clear) || norm.startsWith(clear + " ")) return "امسح الشاشة";
         if (norm.equals(state) || norm.startsWith(state + " ")) return "حالة الشبكة";
         if (norm.equals(allow) || norm.startsWith(allow + " ")) return "اسمح بالشبكة";
+        if (norm.equals(storage) || norm.startsWith(storage + " ")) return "اكشف التخزين";
         return null;
     }
 
@@ -6465,7 +9218,7 @@ public class MainActivity extends Activity {
                 // السجل يختفي من العرض، لكن محفوظات المحرك
                 // (:اعرض) والمتغيرات تبقى كما هي — فـ
                 // «امسح الشاشة» ليست «امسح الجلسة».
-                // موثّق في SHORTCUTS-37.md (م-11).
+                // موثّق في SHORTCUTS-31.md (م-11).
                 clearDisplayOnly(s);
                 break;
             case "حالة الشبكة":
@@ -6483,6 +9236,33 @@ public class MainActivity extends Activity {
                     s.networkAllowed = true;
                     updateNetState();
                     sendToEngine(s, ALLOW_NETWORK_COMMAND);
+                }
+                break;
+            case "اكشف التخزين":
+                // الدفعة 5 (البندان 94 و96): كشف مجلد
+                // التنزيلات للقراءة فقط بلا إعادة تشغيل —
+                // أمر تحكم داخل العملية نفسها، فتبقى كل
+                // متغيرات الجلسة. والإذن يُطلب عند أول
+                // استعمال فقط (من شاشة الإعدادات — لا
+                // حوار إذن عادي له)، لا عند الفتح ولا
+                // عند بدء جلسة.
+                if (storageManagerGranted()) {
+                    sendToEngine(s, SET_DOWNLOADS_PREFIX + downloadsPath());
+                    appLine(s, "التخزين مكشوف: تخزين/تنزيلات");
+                } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                    appLine(s, "التخزين المشترك غير مدعوم على هذا الإصدار");
+                } else if (isFinishing() || isDestroyed()) {
+                    appLine(s, "التطبيق غير متاح");
+                } else {
+                    pendingStorageSession = s;
+                    Intent intent = new Intent(
+                            Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                    try {
+                        startActivityForResult(intent, REQ_STORAGE_SETTINGS);
+                    } catch (ActivityNotFoundException e) {
+                        pendingStorageSession = null;
+                        appLine(s, "تعذّر فتح إعدادات التخزين");
+                    }
                 }
                 break;
             default:
@@ -6683,6 +9463,18 @@ public class MainActivity extends Activity {
         });
     }
 
+    /** سطر النتيجة الأخير لفشل تحديث (الدفعة 5 —
+     * البند 107): سطر الترمنال نفسه، زائد تقرير
+     * عطل صامت — فقط حين يكون التطبيق في الخلفية
+     * والإذن ممنوحا؛ فالفشل لا يضيع بصمت إن فات
+     * المستخدم سطر الترمنال. */
+    private void finishUpdateFailed(Session s, String msg) {
+        finishUpdate(s, msg);
+        if (!appVisible && notifyPermissionGranted()) {
+            postCrashNotification(msg);
+        }
+    }
+
     /** فحص إصدارات جيت هاب (خيط عامل): أحدث إصدار،
      * ووسمه، وأول أصل .apk فيه. 404 = لا إصدار منشور
      * بعد — ولا إصدار للتطبيق حتى الآن، فالنشر معلّق
@@ -6702,19 +9494,19 @@ public class MainActivity extends Activity {
                 return;
             }
             if (code != 200) {
-                finishUpdate(s, "تعذّر التحقق من التحديث (خطأ " + code + ")");
+                finishUpdateFailed(s, "تعذّر التحقق من التحديث (خطأ " + code + ")");
                 return;
             }
             String body = readAllCapped(conn.getInputStream(), 1024 * 1024);
             String tag = jsonString(body, "tag_name");
             int[] remote = tag == null ? null : parseVersion(tag);
             if (remote == null) {
-                finishUpdate(s, "تعذّر قراءة إصدار التحديث");
+                finishUpdateFailed(s, "تعذّر قراءة إصدار التحديث");
                 return;
             }
             int[] local = parseVersion(localVersionName());
             if (local == null) {
-                finishUpdate(s, "تعذّر قراءة إصدار التحديث");
+                finishUpdateFailed(s, "تعذّر قراءة إصدار التحديث");
                 return;
             }
             if (compareVersion(remote, local) <= 0) {
@@ -6723,7 +9515,7 @@ public class MainActivity extends Activity {
             }
             String assetUrl = findApkAsset(body);
             if (assetUrl == null) {
-                finishUpdate(s, "لا يوجد ملف تثبيت في الإصدار");
+                finishUpdateFailed(s, "لا يوجد ملف تثبيت في الإصدار");
                 return;
             }
             // الإذن قبل التنزيل: بلا سماح لا تنزيل ولا
@@ -6740,19 +9532,22 @@ public class MainActivity extends Activity {
             }
             downloadUpdate(s, assetUrl, tag);
         } catch (Exception e) {
-            finishUpdate(s, "تعذّر التحقق من التحديث");
+            finishUpdateFailed(s, "تعذّر التحقق من التحديث");
         } finally {
             if (conn != null) conn.disconnect();
         }
     }
 
-    /** تنزيل ملف التثبيت إلى الذاكرة المؤقتة الخاصة
-     * (خيط عامل): تقدّم كل 25٪، ثم فتح المثبّت.
-     * التثبيت نفسه يؤكده المستخدم على شاشة النظام —
-     * لا تثبيت صامت أبدا. */
+    /** تنزيل ملف التثبيت إلى ملف تجهيز خاص (خيط
+     * عامل): تقدّم كل 25٪، ثم تحقق وتبديل، ثم فتح
+     * المثبّت. التثبيت نفسه يؤكده المستخدم على شاشة
+     * النظام — لا تثبيت صامت أبدا. (53ب: التجهيز
+     * والتحقق والتبديل — فتنزيل فاشل لا يمس ملف
+     * تثبيت صالحا منزَّلا من قبل أبدا.) */
     private void downloadUpdate(Session s, String url, String tag) {
         postUpdateLine(s, "جارٍ تنزيل التحديث " + tag + "…");
         HttpURLConnection conn = null;
+        File staging = new File(getCacheDir(), UPDATE_APK_NAME + UPDATE_STAGING_SUFFIX);
         File out = new File(getCacheDir(), UPDATE_APK_NAME);
         try {
             conn = (HttpURLConnection) new URL(url).openConnection();
@@ -6762,17 +9557,17 @@ public class MainActivity extends Activity {
             conn.setReadTimeout(60000);
             int code = conn.getResponseCode();
             if (code != 200) {
-                finishUpdate(s, "تعذّر تنزيل التحديث (خطأ " + code + ")");
+                finishUpdateFailed(s, "تعذّر تنزيل التحديث (خطأ " + code + ")");
                 return;
             }
             long total = conn.getContentLengthLong();
             if (total > MAX_UPDATE_BYTES) {
-                finishUpdate(s, "حجم التحديث أكبر من المتوقع");
+                finishUpdateFailed(s, "حجم التحديث أكبر من المتوقع");
                 return;
             }
             int nextMilestone = 25;
             try (InputStream in = new BufferedInputStream(conn.getInputStream());
-                 OutputStream os = new FileOutputStream(out)) {
+                 OutputStream os = new FileOutputStream(staging)) {
                 byte[] buf = new byte[8192];
                 long done = 0;
                 int n;
@@ -6792,17 +9587,38 @@ public class MainActivity extends Activity {
                     }
                 }
             }
-            if (out.length() == 0 || (total > 0 && out.length() != total)) {
-                out.delete();
-                finishUpdate(s, "تعذّر تنزيل التحديث");
+            if (staging.length() == 0 || (total > 0 && staging.length() != total)
+                    || !isApkFile(staging)) {
+                staging.delete();
+                finishUpdateFailed(s, "تعذّر تنزيل التحديث");
+                return;
+            }
+            // التبديل: إعادة التسمية في المجلد نفسه تحل
+            // محل النهائي ذريا — والفشل هنا يبقي القديم
+            // الصالح كما هو.
+            if (!staging.renameTo(out)) {
+                staging.delete();
+                finishUpdateFailed(s, "تعذّر تنزيل التحديث");
                 return;
             }
             launchInstaller(s, out);
         } catch (Exception e) {
-            out.delete();
-            finishUpdate(s, "تعذّر تنزيل التحديث");
+            staging.delete();
+            finishUpdateFailed(s, "تعذّر تنزيل التحديث");
         } finally {
             if (conn != null) conn.disconnect();
+        }
+    }
+
+    /** تحقق سريع من ملف التثبيت: أول 4 بايتات سحر ZIP
+     * (PK\x03\x04) — فملف مقطوع أو صفحة خطأ لا يمر. */
+    private static boolean isApkFile(File f) {
+        try (FileInputStream in = new FileInputStream(f)) {
+            byte[] magic = new byte[4];
+            if (in.read(magic) != 4) return false;
+            return magic[0] == 'P' && magic[1] == 'K' && magic[2] == 3 && magic[3] == 4;
+        } catch (IOException e) {
+            return false;
         }
     }
 
@@ -7062,15 +9878,189 @@ public class MainActivity extends Activity {
         currentPromptSpan = null;
         currentPromptStart = -1;
         paintPrompt();
+        applyCursorColor();
+    }
+
+    /** السطوع المدرك للون (الدفعة 3، البند 64): الجذر
+     * التربيعي الموزون للأحمر والأخضر والأزرق. */
+    private static int perceivedBrightness(int color) {
+        int r = Color.red(color);
+        int g = Color.green(color);
+        int b = Color.blue(color);
+        return (int) Math.sqrt(0.299 * r * r + 0.587 * g * g + 0.114 * b * b);
+    }
+
+    /** لون المؤشر التلقائي لخلفية (الدفعة 3، البند 64):
+     * خلفية داكنة (سطوع أقل من 130) = مؤشر أبيض. */
+    private static int cursorColorForBackground(int bg) {
+        return perceivedBrightness(bg) < 130 ? Color.WHITE : Color.BLACK;
+    }
+
+    /** لون المؤشر (الدفعة 3، البند 64): صريح من الإعدادات
+     * إن وُجد، وإلا أبيض/أسود حسب سطوع الخلفية بعتبة 130 —
+     * فيبقى المؤشر مرئيا على أي سمة. */
+    private void applyCursorColor() {
+        if (terminalView == null) return;
+        if (Build.VERSION.SDK_INT < 29) return;
+        int color = cursorColor != 0 ? cursorColor : cursorColorForBackground(colorBg);
+        try {
+            float density = getResources().getDisplayMetrics().density;
+            GradientDrawable d = new GradientDrawable();
+            d.setShape(GradientDrawable.RECTANGLE);
+            d.setColor(color);
+            d.setSize(Math.max(1, (int) (2 * density + 0.5f)),
+                    Math.max(1, terminalView.getLineHeight()));
+            terminalView.setTextCursorDrawable(d);
+        } catch (Exception ignored) {
+        }
     }
 
     /** قراءة niva.properties (مفتاح=قيمة، UTF-8، مفاتيح
      * عربية): حجم_الخط، ابقاء_الشاشة، اظهار_صف_المفاتيح،
      * المظهر. أسطر # تعليقات؛ المفاتيح المجهولة تُحفظ
      * عند الكتابة ولا تُفسَّر. */
+    /** مجلد الإعدادات: مجلد البرنامج/home/إعدادات
+     * (اجتماع 45 §59 — ظاهر لأن الإعدادات يحررها
+     * المستخدم بنفسه). */
+    private File settingsDir() {
+        return new File(new File(getFilesDir(), HOME_DIR_NAME), SETTINGS_DIR_NAME);
+    }
+
+    /** ملف الإعدادات الجديد؛ وإن غاب ووُجد القديم في
+     * جذر مجلد البرنامج نُقل إليه (بلا كتابة فوق ملف
+     * جديد موجود أبدا). النقل إعادة تسمية، وإن فشلت
+     * نُسخ المحتوى ثم حُذف القديم. */
+    private File nivaPropertiesFile() {
+        File dir = settingsDir();
+        File f = new File(dir, NIVA_PROPS_FILE);
+        if (!f.isFile()) {
+            File old = new File(getFilesDir(), NIVA_PROPS_FILE);
+            if (old.isFile()) {
+                dir.mkdirs();
+                if (!old.renameTo(f)) {
+                    try {
+                        copyFileBytes(old, f);
+                        old.delete();
+                    } catch (IOException ignored) {
+                    }
+                }
+            }
+        }
+        return f;
+    }
+
+    /** نسخ بايتات ملف إلى آخر (للنقل الاحتياطي). */
+    private static void copyFileBytes(File from, File to) throws IOException {
+        try (FileInputStream in = new FileInputStream(from);
+             FileOutputStream out = new FileOutputStream(to)) {
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) >= 0) out.write(buf, 0, n);
+        }
+    }
+
+    /** مفاتيح متقاعدة: القديم → الجديد (القاعدة 75).
+     * فارغة بالتصميم — لم يُعَد تسمية أي مفتاح بعد؛
+     * وأول إعادة تسمية تضيف سطرا هنا. */
+    private static final String[][] RETIRED_KEYS = {};
+
+    /** تحويل المفاتيح المتقاعدة عند القراءة (القاعدة
+     * 75): القديم يصير الجديد، ويُعاد كتابة الملف ذريا
+     * بالمفتاح الجديد. الفشل صامت — القراءة تكمل من
+     * الملف كما هو، وتُعاد المحاولة لاحقا. */
+    private void migrateRetiredKeys(File f) {
+        if (RETIRED_KEYS.length == 0 || !f.isFile()) return;
+        try {
+            List<String> lines = new ArrayList<>();
+            boolean changed = false;
+            try (BufferedReader br = new BufferedReader(
+                    new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = br.readLine()) != null) {
+                    String t = line.trim();
+                    int eq = t.indexOf('=');
+                    if (eq > 0) {
+                        String key = t.substring(0, eq).trim();
+                        for (String[] pair : RETIRED_KEYS) {
+                            if (pair[0].equals(key)) {
+                                line = pair[1] + line.substring(eq);
+                                changed = true;
+                                break;
+                            }
+                        }
+                    }
+                    lines.add(line);
+                }
+            }
+            if (changed) {
+                StringBuilder sb = new StringBuilder();
+                for (String l : lines) sb.append(l).append('\n');
+                writeFileAtomic(f, sb.toString());
+            }
+        } catch (IOException ignored) {
+        }
+    }
+
+    /** الإعدادات الافتراضية (اجتماع 45 §59: البند 48)
+     * — مضمّنة في التطبيق وتُنسخ إلى ~/إعدادات/ عند
+     * أول تشغيل إن غاب الملف، ولا تُكتب فوق ملف موجود
+     * أبدا؛ والمحرك لا ينشئها. */
+    private static final String DEFAULT_NIVA_PROPERTIES =
+            "# إعدادات ترمنال نيفا\n"
+            + "حجم_الخط=١٦\n"
+            + "ابقاء_الشاشة=لا\n"
+            + "اظهار_صف_المفاتيح=نعم\n"
+            + "المظهر=داكن\n"
+            + "إخفاء_لوحة_المفاتيح_عند_البدء=لا\n"
+            + "لوحة_المفاتيح_البرمجية_مفعلة=نعم\n"
+            + "هامش_أفقي=١٦\n"
+            + "هامش_عمودي=٨\n"
+            + "# أسطر_السجل: سقف أسطر الجلسة المحفوظة في العرض — حماية للأداء؛ والقيم الكبيرة قد تبطئ التطبيق\n"
+            + "أسطر_السجل=٢٠٠٠\n"
+            + "ملء_الشاشة=لا\n"
+            + "بديل_ملء_الشاشة=لا\n"
+            + "خط_مخصص=\n"
+            + "تنبيه_تبديل_الجلسة=نعم\n"
+            + "مفاتيح_الصوت=لا شيء\n"
+            + "تعطيل_استقبال_المشاركة=لا\n"
+            + "تعطيل_استقبال_العرض=لا\n"
+            + "حذف_المؤقت_الأقدم_من=٠\n"
+            + "تعطيل_اختصارات_لوحة_المفاتيح=لا\n"
+            + "لون_الخطأ=#FF5252\n"
+            + "لون_النجاح=\n"
+            + "لون_المؤشر=\n";
+
+    /** نسخ الإعدادات الافتراضية عند أول تشغيل إن غاب
+     * الملف (القديم والجديد معا) — بلا كتابة فوق ملف
+     * موجود أبدا. */
+    private void ensureDefaultProperties() {
+        File f = nivaPropertiesFile();
+        if (f.isFile()) return;
+        try {
+            f.getParentFile().mkdirs();
+            writeFile(f, DEFAULT_NIVA_PROPERTIES);
+        } catch (IOException ignored) {
+        }
+    }
+
+    /** كتابة ذرية (البند 47): ملف مؤقت في المجلد نفسه
+     * ثم إعادة تسمية — فانقطاع الكتابة لا يترك ملفا
+     * نصف مكتوب أبدا. */
+    private static void writeFileAtomic(File f, String content) throws IOException {
+        File parent = f.getParentFile();
+        if (parent != null) parent.mkdirs();
+        File tmp = new File(parent, f.getName() + ".جديد");
+        writeFile(tmp, content);
+        if (!tmp.renameTo(f)) {
+            tmp.delete();
+            writeFile(f, content);
+        }
+    }
+
     private void loadNivaProperties() {
-        File f = new File(getFilesDir(), NIVA_PROPS_FILE);
+        File f = nivaPropertiesFile();
         if (!f.isFile()) return;
+        migrateRetiredKeys(f);
         try (BufferedReader br = new BufferedReader(
                 new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
             String line;
@@ -7141,16 +10131,53 @@ public class MainActivity extends Activity {
                     // الكل (الافتراضي)، موجب N = الأقدم
                     // من N أيام.
                     tempAgeDays = parseTempAgeDays(value);
+                } else if ("تعطيل_اختصارات_لوحة_المفاتيح".equals(key)) {
+                    // الدفعة 3، البند 74: نعم = كل اختصارات
+                    // لوحة المفاتيح المادية معطّلة.
+                    disableHardwareShortcuts = "نعم".equals(value);
+                } else if ("لون_الخطأ".equals(key)) {
+                    // الدفعة 3، البند 63: سداسي عشري؛
+                    // فارغ أو فاسد = اللون الحالي.
+                    int c = parseHexColor(value);
+                    if (c != 0) errorColor = c;
+                } else if ("لون_النجاح".equals(key)) {
+                    // الدفعة 3، البند 63: فارغ = لون
+                    // الموجّه (حسب المظهر).
+                    successColor = parseHexColor(value);
+                } else if ("لون_المؤشر".equals(key)) {
+                    // الدفعة 3، البند 64: فارغ = تلقائي
+                    // من سطوع الخلفية.
+                    cursorColor = parseHexColor(value);
                 }
             }
         } catch (IOException ignored) {
         }
     }
 
+    /** تحليل لون سداسي عشري `#RRGGBB` (الدفعة 3، البند 63):
+     * 0 = فارغ أو فاسد — فيسقط على القيمة الحالية. */
+    private static int parseHexColor(String value) {
+        if (value == null) return 0;
+        String v = value.trim();
+        if (v.startsWith("#")) v = v.substring(1);
+        if (v.length() != 6) return 0;
+        try {
+            int rgb = (int) Long.parseLong(v, 16);
+            return 0xFF000000 | rgb;
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /** كتابة لون سداسيا عشريا `#RRGGBB` (الدفعة 3، البند 63). */
+    private static String hexColorText(int color) {
+        return String.format("#%06X", color & 0xFFFFFF);
+    }
+
     /** كتابة niva.properties: تُحفَظ الأسطر المجهولة
      * والتعليقات كما هي، وتُحدَّث المفاتيح الأربعة. */
     private void saveNivaProperties() {
-        File f = new File(getFilesDir(), NIVA_PROPS_FILE);
+        File f = nivaPropertiesFile();
         List<String> lines = new ArrayList<>();
         boolean hasSize = false, hasKeep = false, hasRow = false, hasTheme = false;
         boolean hasHideKb = false, hasSoftKb = false;
@@ -7164,6 +10191,10 @@ public class MainActivity extends Activity {
         boolean hasVolKeys = false;
         // المهمة 28: استقبال الملفات + عمر المؤقت.
         boolean hasRecvShare = false, hasRecvView = false, hasTempAge = false;
+        // الدفعة 3: تعطيل اختصارات لوحة المفاتيح (بند 74)
+        // + ألوان الخطأ والنجاح والمؤشر (بندا 63 و64).
+        boolean hasHwKeys = false, hasErrColor = false;
+        boolean hasOkColor = false, hasCursorColor = false;
         if (f.isFile()) {
             try (BufferedReader br = new BufferedReader(
                     new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
@@ -7236,6 +10267,22 @@ public class MainActivity extends Activity {
                         // المهمة 28.
                         lines.add("حذف_المؤقت_الأقدم_من=" + tempAgeDaysText());
                         hasTempAge = true;
+                    } else if ("تعطيل_اختصارات_لوحة_المفاتيح".equals(key)) {
+                        // الدفعة 3، البند 74.
+                        lines.add("تعطيل_اختصارات_لوحة_المفاتيح=" + (disableHardwareShortcuts ? "نعم" : "لا"));
+                        hasHwKeys = true;
+                    } else if ("لون_الخطأ".equals(key)) {
+                        // الدفعة 3، البند 63.
+                        lines.add("لون_الخطأ=" + hexColorText(errorColor));
+                        hasErrColor = true;
+                    } else if ("لون_النجاح".equals(key)) {
+                        // الدفعة 3، البند 63: فارغ = لون الموجّه.
+                        lines.add("لون_النجاح=" + (successColor == 0 ? "" : hexColorText(successColor)));
+                        hasOkColor = true;
+                    } else if ("لون_المؤشر".equals(key)) {
+                        // الدفعة 3، البند 64: فارغ = تلقائي.
+                        lines.add("لون_المؤشر=" + (cursorColor == 0 ? "" : hexColorText(cursorColor)));
+                        hasCursorColor = true;
                     } else {
                         lines.add(line);
                     }
@@ -7260,10 +10307,14 @@ public class MainActivity extends Activity {
         if (!hasRecvShare) lines.add("تعطيل_استقبال_المشاركة=" + (disableReceiveShare ? "نعم" : "لا"));
         if (!hasRecvView) lines.add("تعطيل_استقبال_العرض=" + (disableReceiveView ? "نعم" : "لا"));
         if (!hasTempAge) lines.add("حذف_المؤقت_الأقدم_من=" + tempAgeDaysText());
+        if (!hasHwKeys) lines.add("تعطيل_اختصارات_لوحة_المفاتيح=" + (disableHardwareShortcuts ? "نعم" : "لا"));
+        if (!hasErrColor) lines.add("لون_الخطأ=" + hexColorText(errorColor));
+        if (!hasOkColor) lines.add("لون_النجاح=" + (successColor == 0 ? "" : hexColorText(successColor)));
+        if (!hasCursorColor) lines.add("لون_المؤشر=" + (cursorColor == 0 ? "" : hexColorText(cursorColor)));
         StringBuilder sb = new StringBuilder();
         for (String l : lines) sb.append(l).append('\n');
         try {
-            writeFile(f, sb.toString());
+            writeFileAtomic(f, sb.toString());
         } catch (IOException ignored) {
         }
     }
@@ -7319,9 +10370,13 @@ public class MainActivity extends Activity {
     }
 
     /** حجم الخط (بند 3): قصّ [10، 32]، تطبيق فوري،
-     * وحفظ في الإعدادات والملف معا. */
+     * وحفظ في الإعدادات والملف معا. بلا تغيير يُحفَظ
+     * شيء (الدفعة 3، البند 20): القرص يستدعيها مرات
+     * كثيرة فلا تُكتب الإعدادات بلا داعٍ. */
     private void setFontSize(float size) {
-        fontSizeSp = Math.max(MIN_FONT_SP, Math.min(MAX_FONT_SP, size));
+        float next = Math.max(MIN_FONT_SP, Math.min(MAX_FONT_SP, size));
+        if (next == fontSizeSp) return;
+        fontSizeSp = next;
         if (terminalView != null) terminalView.setTextSize(fontSizeSp);
         saveSettings();
     }
@@ -7353,6 +10408,7 @@ public class MainActivity extends Activity {
                     ? View.VISIBLE : View.GONE);
         }
         updateSearchRowVisibility();
+        updateOutputSearchRowVisibility();
         saveSettings();
     }
 
@@ -7659,6 +10715,7 @@ public class MainActivity extends Activity {
      * ويعيد تحميل القيم الافتراضية فورا — بلا إعادة
      * كتابة الملف (الملف المفقود = الافتراضي). */
     private void resetSettingsToDefaults() {
+        nivaPropertiesFile().delete();
         new File(getFilesDir(), NIVA_PROPS_FILE).delete();
         if (prefs != null) prefs.edit().clear().apply();
         fontSizeSp = DEFAULT_FONT_SP;
@@ -7731,6 +10788,8 @@ public class MainActivity extends Activity {
         // المهمة 28: تشغيل ملف .نيفا + ملفات ممنوحة.
         menu.add(Menu.NONE, 15, Menu.NONE, "شغّل ملف .نيفا");
         menu.add(Menu.NONE, 16, Menu.NONE, "ملفات ممنوحة");
+        // الدفعة 3، البند 60: بحث في المخرجات.
+        menu.add(Menu.NONE, 17, Menu.NONE, "بحث في المخرجات");
         popup.setOnMenuItemClickListener(item -> {
             int id = item.getItemId();
             if (id == 1) {
@@ -7795,6 +10854,10 @@ public class MainActivity extends Activity {
             }
             if (id == 16) {
                 showGrantedFilesMenu();
+                return true;
+            }
+            if (id == 17) {
+                toggleOutputSearch();
                 return true;
             }
             return false;
@@ -7937,10 +11000,37 @@ public class MainActivity extends Activity {
         shareText(sel);
     }
 
-    /** مشاركة نص الجلسة كله (بند 5). */
+    /** مشاركة نص الجلسة كله (بند 5) — بعد حوار
+     * معاينة وتحذير (H6). */
     private void shareTranscript() {
         Session s = active();
-        shareText(s.text.toString());
+        String text = s.text.toString();
+        confirmShareText(text, () -> shareText(text), null);
+    }
+
+    /** حوار معاينة قبل مشاركة نص جلسة (H6): يبيّن
+     * الحجم وأول 300 حرف ويحذّر أن النص قد يحوي
+     * أسرارا كُتبت في الجلسة؛ فالمستخدم يقرر.
+     * onCancel فارغ = لا فعل عند الإلغاء (مسار
+     * القائمة)؛ ومسار البرنامج يمرر خطأ لئلا يعلق
+     * المحرك في انتظار النتيجة. */
+    private void confirmShareText(String text, Runnable onConfirm,
+            Runnable onCancel) {
+        if (text == null || text.isEmpty()) return;
+        String preview = text.length() > 300
+                ? text.substring(0, 300) + "…"
+                : text;
+        new AlertDialog.Builder(this)
+                .setTitle("مشاركة نص الجلسة؟")
+                .setMessage("ستُشارك " + text.length()
+                        + " حرفا من نص الجلسة — وقد يحوي أسرارا كُتبت فيها.\n\n«"
+                        + preview + "»")
+                .setCancelable(false)
+                .setPositiveButton("شارك", (d, w) -> onConfirm.run())
+                .setNegativeButton("إلغاء", (d, w) -> {
+                    if (onCancel != null) onCancel.run();
+                })
+                .show();
     }
 
     private void shareText(String text) {
