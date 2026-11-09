@@ -605,6 +605,28 @@ pub(crate) fn build_spawn_command(
     Ok((cmd, program_display))
 }
 
+/// ولّد الأمر مع محاولة ثانية عند فشل عابر: على مشغّل
+/// مشترك مثقل قد يرفض fork/posix_spawn لحظيا (EAGAIN)
+/// فيفشل توليد ابن يخرج فورا بينما ينجح توليد ابن طويل
+/// قبله — فأعد المحاولة مرة واحدة بعد مهلة قصيرة.
+/// الفشل الدائم (غير موجود، إذن مرفوض) لا يُعاد إطلاقا.
+/// (CI 2026-11-09: توليد `/bin/true` الخلفي فشل على
+/// macOS بينما توليد `/bin/sleep 30` نفسه نجح.)
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn spawn_with_retry(cmd: &mut Command) -> std::io::Result<Child> {
+    match cmd.spawn() {
+        Ok(child) => Ok(child),
+        Err(e)
+            if e.kind() != std::io::ErrorKind::NotFound
+                && e.kind() != std::io::ErrorKind::PermissionDenied =>
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            cmd.spawn()
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// Spawn a program: `عمليات.أنشئ "أمر وسائط"` — returns the
 /// process id. The command is built by the shared builder
 /// (same rules as `تواصل.أنبوب`); only the stdio differs
@@ -633,8 +655,7 @@ fn spawn_process_native(command: &str, line: usize, col: usize) -> RioResult<u64
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
-    let child = cmd
-        .spawn()
+    let child = spawn_with_retry(&mut cmd)
         .map_err(|e| err_spawn_failed(&e, &program_display, line, col))?;
     let id = register_spawned_child(child, line, col)?;
     // كل إنشاء — أمامي أو خلفي — يضبط آخر خلفية.
@@ -700,7 +721,7 @@ pub fn spawn_niva_file(path: &std::path::Path, line: usize, col: usize) -> RioRe
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::inherit());
     cmd.stderr(Stdio::inherit());
-    let child = cmd.spawn().map_err(|e| {
+    let child = spawn_with_retry(&mut cmd).map_err(|e| {
         RioError::runtime(format!("تعذّر تشغيل برنامج نيفا: {}", e), line, col)
     })?;
     let id = register_spawned_child(child, line, col)?;

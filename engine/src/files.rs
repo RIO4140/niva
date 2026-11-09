@@ -532,15 +532,45 @@ pub(crate) fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
     }
 }
 
+/// اضبط وقتي ملف أو مجلد على `t` (الوصول والتعديل).
+/// ويندوز: المقبض المفتوح للقراءة وحده بلا حق كتابة
+/// السمات (FILE_WRITE_ATTRIBUTES)، فيرفض SetFileTime
+/// به (Access Denied، os error 5) — فافتح بحق السمة
+/// وحده (0x100)، مع علم FILE_FLAG_BACKUP_SEMANTICS
+/// (0x02000000) ليعمل الفتح نفسه على المجلدات أيضا.
+/// يونكس: فتح القراءة يكفي (الملكية وحدها تحدث الوقت).
+pub(crate) fn set_file_times(path: &Path, t: std::time::SystemTime) -> std::io::Result<()> {
+    set_file_times_both(
+        path,
+        std::fs::FileTimes::new()
+            .set_accessed(t)
+            .set_modified(t),
+    )
+}
+
+/// اضبط وقتي ملف أو مجلد من `FileTimes` جاهزة (قد
+/// يختلف الوصول عن التعديل — كما في حفظ وقت المصدر
+/// عند النسخ). المنصة نفسها كـ`set_file_times`.
+fn set_file_times_both(path: &Path, times: std::fs::FileTimes) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let f = std::fs::OpenOptions::new()
+            .access_mode(0x100)
+            .custom_flags(0x02000000)
+            .open(path)?;
+        f.set_times(times)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::File::open(path)?.set_times(times)
+    }
+}
+
 /// حدّث وقتي الوصول والتعديل إلى الآن بلا مساس
-/// بالمحتوى (الميزة 215 — `touch`): `File::set_times`
-/// القياسي، فيعمل للملف والمجلد على يونكس.
+/// بالمحتوى (الميزة 215 — `touch`).
 pub(crate) fn touch_times(path: &Path) -> std::io::Result<()> {
-    let now = std::time::SystemTime::now();
-    let times = std::fs::FileTimes::new()
-        .set_accessed(now)
-        .set_modified(now);
-    std::fs::File::open(path)?.set_times(times)
+    set_file_times(path, std::time::SystemTime::now())
 }
 
 /// المسار النسبي من مجلد إلى هدف (الميزة 213 —
@@ -675,7 +705,7 @@ fn preserve_attrs(meta: &std::fs::Metadata, dst: &Path) {
     if let Ok(m) = meta.modified() {
         times = times.set_modified(m);
     }
-    let _ = std::fs::File::open(dst).and_then(|f| f.set_times(times));
+    let _ = set_file_times_both(dst, times);
 }
 
 /// نسخ أرشيف (الميزة 200، الاجتماع 59 §74):

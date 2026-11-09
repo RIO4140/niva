@@ -8470,13 +8470,7 @@ mod tests {
         {
             let t = std::time::SystemTime::UNIX_EPOCH
                 + std::time::Duration::from_secs(1577836800);
-            let f = std::fs::File::open(home.join("ب.txt")).unwrap();
-            f.set_times(
-                std::fs::FileTimes::new()
-                    .set_accessed(t)
-                    .set_modified(t),
-            )
-            .unwrap();
+            crate::files::set_file_times(&home.join("ب.txt"), t).unwrap();
         }
         std::fs::create_dir_all(home.join("مجلد/فرعي")).unwrap();
         std::fs::write(home.join("مجلد/فرعي/ج.txt"), "ج").unwrap();
@@ -9420,7 +9414,7 @@ mod tests {
                 let o = r.feed("استورد عمليات");
                 assert_eq!(r.last_exit_code(), 0, "got: {}", o.output);
                 let o = r.feed("عمليات.أنشئ \"/bin/true\" &");
-                assert_eq!(r.last_exit_code(), 0);
+                assert_eq!(r.last_exit_code(), 0, "got: {}", o.output);
                 assert!(o.output.starts_with("[١] "), "got: {}", o.output);
                 // انتظر أي: يرجع رمز أول منتهية ويطبع
                 // رقمها (والإشعار قد يسبقه في المخرج
@@ -9529,7 +9523,7 @@ mod tests {
             let o = r.feed("استورد عمليات");
             assert_eq!(r.last_exit_code(), 0, "got: {}", o.output);
             let o = r.feed("عمليات.أنشئ \"/bin/true\" &");
-            assert_eq!(r.last_exit_code(), 0);
+            assert_eq!(r.last_exit_code(), 0, "got: {}", o.output);
             // انتظر خروجها ثم اجمع: سطر واحد يحمل
             // «انتهت (رمز ٠)»، ثم الجمع التالي فراغ.
             let mut first: Vec<String> = Vec::new();

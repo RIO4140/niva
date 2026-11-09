@@ -6075,7 +6075,25 @@ impl Vm {
                             }
                         };
                         #[cfg(not(unix))]
-                        let perms = "—".to_string();
+                        // الاجتماع 70 §85: رموز مشتقة من
+                        // سمة القراءة فقط — بلا `x` أبدا
+                        // (لا بت تنفيذ في القياسية على
+                        // ويندوز، ولا تخمين من الامتداد).
+                        let perms = match smeta.as_ref().or(meta.as_ref()) {
+                            Some(m) => {
+                                let type_c = if m.is_dir() {
+                                    'd'
+                                } else if m.file_type().is_symlink() {
+                                    'l'
+                                } else {
+                                    '-'
+                                };
+                                let triple =
+                                    if m.permissions().readonly() { "r--" } else { "rw-" };
+                                format!("{}{}{}{}", type_c, triple, triple, triple)
+                            }
+                            None => "—".to_string(),
+                        };
                         #[cfg(unix)]
                         let (owner, group) = {
                             use std::os::unix::fs::MetadataExt;
@@ -6095,7 +6113,15 @@ impl Vm {
                             }
                         };
                         #[cfg(not(unix))]
-                        let (owner, group) = ("—".to_string(), "—".to_string());
+                        // الاجتماع 70 §85: المالك اسم
+                        // المستخدم الحالي من `USERNAME`
+                        // (تقريب موثق لا مالك ACL)؛
+                        // والمجموعة بلا مقابل فتبقى «—».
+                        let (owner, group) = (
+                            std::env::var("USERNAME")
+                                .unwrap_or_else(|_| "—".to_string()),
+                            "—".to_string(),
+                        );
                         let accessed = meta
                             .as_ref()
                             .and_then(|m| m.accessed().ok())
@@ -6137,9 +6163,13 @@ impl Vm {
                             }
                         };
                         #[cfg(not(unix))]
+                        // الاجتماع 70 §85: الروابط العدد ١
+                        // دائما (صحيح للملف العادي؛
+                        // والروابط الصلبة النادرة تُحسب ١)؛
+                        // والعقدة بلا مقابل فتبقى «—».
                         let (inode, links) = (
                             Value::Str("—".to_string()),
-                            Value::Str("—".to_string()),
+                            Value::Number(1.0),
                         );
                         let target = if is_link {
                             match std::fs::read_link(&resolved) {

@@ -254,6 +254,23 @@ impl FilePolicy {
         }
     }
 
+    /// Fold a path against one anchor (home, base, or the
+    /// downloads root): the anchor itself, or anything below
+    /// it, in display form. `None` when the path is neither
+    /// the anchor nor below it.
+    fn fold_against(path: &Path, anchor: &Path, label: &str) -> Option<String> {
+        if path == anchor {
+            return Some(label.to_string());
+        }
+        if let Ok(rel) = path.strip_prefix(anchor) {
+            if rel.as_os_str().is_empty() {
+                return Some(label.to_string());
+            }
+            return Some(format!("{}/{}", label, slash_display(rel)));
+        }
+        None
+    }
+
     /// Display a path the terminal way (owner's order
     /// 2026-11-05 ~22:38: paths look like any Unix terminal):
     /// home is `~`, below it `~/...`; the downloads root is
@@ -267,35 +284,51 @@ impl FilePolicy {
     /// separators on every platform (slash_display). The
     /// package name and the /data/data/... prefix can never
     /// reach the display.
+    /// The fold is canonical-aware: the physical cwd is
+    /// canonicalized (macOS `/var` → `/private/var`, the
+    /// Windows `\\?\` prefix), but the stored anchors are
+    /// not — so the same directory has two spellings and a
+    /// raw fold misses (CI 2026-11-09: the physical `مح`
+    /// showed the full temp path instead of `~`, and the
+    /// interpreter/VM parity output differed by one temp
+    /// component). The raw fold runs first (fast path), then
+    /// both sides are canonicalized and folded again; a path
+    /// that does not exist yet cannot be canonicalized, so
+    /// it keeps the raw behaviour below.
     pub fn display_path(&self, path: &Path) -> String {
-        if path == self.home {
-            return "~".to_string();
-        }
-        if let Ok(rel) = path.strip_prefix(&self.home) {
-            if rel.as_os_str().is_empty() {
-                return "~".to_string();
-            }
-            return format!("~/{}", slash_display(rel));
+        if let Some(s) = Self::fold_against(path, &self.home, "~") {
+            return s;
         }
         if let Some(root) = &self.downloads {
-            if path == root {
-                return "تخزين/تنزيلات".to_string();
+            if let Some(s) = Self::fold_against(path, root, "تخزين/تنزيلات") {
+                return s;
             }
-            if let Ok(rel) = path.strip_prefix(root) {
-                if rel.as_os_str().is_empty() {
-                    return "تخزين/تنزيلات".to_string();
+        }
+        if let Some(s) = Self::fold_against(path, &self.base, "$نيفا") {
+            return s;
+        }
+        if path.is_absolute() {
+            if let Ok(canon) = std::fs::canonicalize(path) {
+                if let Ok(home) = std::fs::canonicalize(&self.home) {
+                    if let Some(s) = Self::fold_against(&canon, &home, "~") {
+                        return s;
+                    }
                 }
-                return format!("تخزين/تنزيلات/{}", slash_display(rel));
+                if let Some(root) = &self.downloads {
+                    if let Ok(root_c) = std::fs::canonicalize(root) {
+                        if let Some(s) =
+                            Self::fold_against(&canon, &root_c, "تخزين/تنزيلات")
+                        {
+                            return s;
+                        }
+                    }
+                }
+                if let Ok(base) = std::fs::canonicalize(&self.base) {
+                    if let Some(s) = Self::fold_against(&canon, &base, "$نيفا") {
+                        return s;
+                    }
+                }
             }
-        }
-        if path == self.base {
-            return "$نيفا".to_string();
-        }
-        if let Ok(rel) = path.strip_prefix(&self.base) {
-            if rel.as_os_str().is_empty() {
-                return "$نيفا".to_string();
-            }
-            return format!("$نيفا/{}", slash_display(rel));
         }
         // has_root(), not is_absolute(): on Windows a path
         // like "/data/..." is rooted but has no drive prefix,
