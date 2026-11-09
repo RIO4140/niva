@@ -4,6 +4,20 @@
 
 #include "niva_rt.h"
 #include <stdarg.h>
+// الدفعة 5 — أدوات الملفات (اجتماع 59 §74):
+// `ioctl(FICLONE)` للنسخ الخفيف على لينكس،
+// و`_utime` لتحديث الوقت على ويندوز.
+#ifndef _WIN32
+#include <sys/ioctl.h>
+#ifdef __linux__
+#ifndef FICLONE
+#define FICLONE 0x40049409
+#endif
+#endif
+#endif
+#ifdef _WIN32
+#include <sys/utime.h>
+#endif
 #ifdef __APPLE__
 #include <mach-o/dyld.h> // _NSGetExecutablePath — بلا هذا
 // التضمين تبقى الدالة غير معلنة في clang الحديث
@@ -27,12 +41,43 @@ char *nv_program_dir = NULL;
 char *nv_home_dir = NULL;
 char *nv_cwd = NULL;
 int nv_trusted = 0;
+// اجتماع 56 §71 — الدفعة 2 (التنقل): مكدس المجلدات
+// (الأول = الأحدث المدفوع)، وقائمة بحث CDPATH، وراية
+// الوضع الفيزيائي العام، ونطاق الاستدعاء الحالي
+// (لقراءة قيمة متغير في `انتقل` — الميزة 16).
+// يُضبط في nv_call_ident_at قبل كل مدمجة ويُستعاد
+// بعدها؛ وبعد قفزة خطأ يبقى قديما حتى أول استدعاء
+// تال يضبطه من جديد — ولا مدمجة تُستدعى إلا عبر
+// nv_call_ident_at، فلا قراءة من نطاق قديم أبدا.
+static char **nv_dirstack = NULL;
+static size_t nv_dirstack_len = 0, nv_dirstack_cap = 0;
+static char **nv_cdpath = NULL;
+static size_t nv_cdpath_len = 0, nv_cdpath_cap = 0;
+static int nv_physical_mode = 0;
+static NvScope *nv_current_call_scope = NULL;
+// الدفعة 4 — المتغيرات (اجتماع 58 §73): أسماء
+// المتغيرات المجمدة نهائيا (بلا فك)، وجدول
+// المراجع الاسمية (اسم ← هدف)، وبدء العملية
+// بالثواني (لـ`بيئة("ثواني")`).
+static char **nv_frozen = NULL;
+static size_t nv_frozen_len = 0, nv_frozen_cap = 0;
+static char **nv_nameref_from = NULL;
+static char **nv_nameref_to = NULL;
+static size_t nv_nameref_len = 0, nv_nameref_cap = 0;
+static unsigned long long nv_start_secs = 0;
 int nv_network_allowed = 0;
 int nv_server_allowed = 0;
 char **nv_local_hosts = NULL;
 int nv_n_local_hosts = 0;
 int nv_call_depth = 0;
 unsigned long long nv_alloc_bytes = 0;
+// الدفعة 1 — رموز الخروج (اجتماع 54 §69): رمز آخر
+// أمر مكتمل (0 أولا؛ و1 بعد خطأ ممسوك بـ`ماعدا`)،
+// وطلب خروج معلق برمزه، واسم البرنامج كما استُدعي.
+int nv_last_exit_code = 0;
+int nv_exit_requested = 0;
+int nv_exit_code = 0;
+char *nv_program_name = NULL;
 
 // حد عمق الاستدعاء (interpreter.rs: 500 أصليا).
 #define NV_MAX_CALL_DEPTH 500
@@ -513,6 +558,18 @@ void nv_error(NvErrKind kind, const char *message, int line, int col) {
 
 // أعد رفع الخطأ الحالي (بعد أخيرا) إلى المعالج الأعمق.
 void nv_reraise_current(void) {
+    // الدفعة 1 — رموز الخروج (اجتماع 54 §69): طلب
+    // خروج معلق يصعد كما هو — أخيرا الجارية انتهت،
+    // والخروج يواصل إلى المعالج الأعمق (لا ماعدا
+    // في طريقه أبدا).
+    if (nv_exit_requested) {
+        if (nv_handlers) {
+            NvHandler *h = nv_handlers;
+            nv_handlers = h->prev;
+            longjmp(h->jb, 1);
+        }
+        exit(nv_exit_code);
+    }
     if (!nv_has_error) {
         // بلا خطأ معلق: لا شيء يُرفع — عودة صامتة.
         // (تُستدعى فقط بعد أخيرا بلا معالج أعمق.)
@@ -526,6 +583,21 @@ void nv_reraise_current(void) {
     }
     nv_print_error(e.kind, e.message, e.line, e.col, e.file_idx);
     exit(1);
+}
+
+// الدفعة 1 — رموز الخروج (اجتماع 54 §69): اقفز
+// بطلب الخروج إلى أعمق معالج، بلا ضبط خطأ —
+// فمسار الخطأ في حاول يميّز الخروج فيشغّل أخيرا
+// وحدها (بلا ماعدا) ثم يعيد رفع الطلب.
+void nv_exit_jump(void) {
+    if (nv_handlers) {
+        NvHandler *h = nv_handlers;
+        nv_handlers = h->prev;
+        longjmp(h->jb, 1);
+    }
+    // بلا معالج (لا يحدث داخل الجسم — المعالج
+    // العلوي حاضر دائما): اخرج بالرمز مباشرة.
+    exit(nv_exit_code);
 }
 
 // أضف بادئة إلى رسالة الخطأ الحالي دون تغيير ملفه
@@ -1212,6 +1284,107 @@ char *nv_fmt_value(NvValue v) {
     return buf;
 }
 
+// ---------- الدفعة 4 — المتغيرات (اجتماع 58 §73) ----------
+
+// حلّ المرجع الاسمي إلى هدفه النهائي (بحد 32 —
+// الدورة مستحيلة أصلا لأن `مرجع()` يرفضها).
+// يعيد مؤشرا إلى سلسلة يملكها الجدول أو إلى
+// الاسم نفسه — بلا تخصيص.
+static const char *nv_resolve_name(const char *name) {
+    const char *current = name;
+    for (int i = 0; i < 32; i++) {
+        const char *next = NULL;
+        for (size_t j = 0; j < nv_nameref_len; j++) {
+            if (strcmp(nv_nameref_from[j], current) == 0) { next = nv_nameref_to[j]; break; }
+        }
+        if (!next) break;
+        current = next;
+    }
+    return current;
+}
+
+static int nv_frozen_contains(const char *name) {
+    for (size_t i = 0; i < nv_frozen_len; i++) {
+        if (strcmp(nv_frozen[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
+void nv_check_not_frozen(const char *name, int line, int col) {
+    if (nv_frozen_contains(nv_resolve_name(name))) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "متغير مجمد: %s", name);
+    }
+}
+
+// إزالة ربط اسم من سلسلة النطاقات (أقرب ربط) —
+// لـ`احذف_متغير`.
+static void nv_scope_unbind(NvScope *scope, const char *name) {
+    for (NvScope *s = scope; s; s = s->parent) {
+        NvBinding **link = &s->bindings;
+        while (*link) {
+            if (strcmp((*link)->name, name) == 0) {
+                NvBinding *dead = *link;
+                *link = dead->next;
+                free(dead->name);
+                return;
+            }
+            link = &(*link)->next;
+        }
+    }
+}
+
+// اسم المضيف من `/proc/sys/kernel/hostname`
+// (لينكس/أندرويد) — سابقة `نظام.اسم_النظام`.
+static int nv_read_hostname(char *out, size_t n) {
+#if defined(__linux__) || defined(__ANDROID__)
+    FILE *f = fopen("/proc/sys/kernel/hostname", "r");
+    if (!f) return 0;
+    if (!fgets(out, (int)n, f)) { fclose(f); return 0; }
+    fclose(f);
+    size_t len = strlen(out);
+    while (len && (out[len - 1] == '\n' || out[len - 1] == '\r')) out[--len] = '\0';
+    return len > 0;
+#else
+    (void)out; (void)n;
+    return 0;
+#endif
+}
+
+// اسم المستخدم: رقمه من `/proc/self/status` ثم
+// اسمه من `/etc/passwd` (لينكس/أندرويد).
+static int nv_read_username(char *out, size_t n) {
+#if defined(__linux__) || defined(__ANDROID__)
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) return 0;
+    char line[256];
+    char uid[32] = "";
+    while (fgets(line, sizeof(line), f)) {
+        if (strncmp(line, "Uid:", 4) == 0) {
+            sscanf(line + 4, "%31s", uid);
+            break;
+        }
+    }
+    fclose(f);
+    if (!uid[0]) return 0;
+    f = fopen("/etc/passwd", "r");
+    if (!f) return 0;
+    while (fgets(line, sizeof(line), f)) {
+        char name[128], pass[128], id[32];
+        if (sscanf(line, "%127[^:]:%127[^:]:%31[^:]", name, pass, id) == 3
+            && strcmp(id, uid) == 0 && name[0]) {
+            snprintf(out, n, "%s", name);
+            fclose(f);
+            return 1;
+        }
+    }
+    fclose(f);
+    return 0;
+#else
+    (void)out; (void)n;
+    return 0;
+#endif
+}
+
 // ---------- النطاقات ----------
 NvScope *nv_scope_new(NvScope *parent) {
     NvScope *s = (NvScope *)nv_alloc(sizeof(NvScope), NV_OBJ_SCOPE);
@@ -1221,6 +1394,10 @@ NvScope *nv_scope_new(NvScope *parent) {
 }
 
 NvCell *nv_scope_lookup_cell(NvScope *scope, const char *name) {
+    // الدفعة 4 — المتغيرات (اجتماع 58 §73): حلّ
+    // المرجع الاسمي أولا — فكل قراءة (معرّف،
+    // واستدعاء، وفتحة فهرس) تصل الهدف.
+    name = nv_resolve_name(name);
     for (NvScope *s = scope; s; s = s->parent) {
         for (NvBinding *b = s->bindings; b; b = b->next) {
             if (strcmp(b->name, name) == 0) return b->cell;
@@ -1257,7 +1434,12 @@ NvCell *nv_scope_define(NvScope *scope, const char *name, NvValue v) {
     return cell;
 }
 
-void nv_scope_assign(NvScope *scope, const char *name, NvValue v) {
+void nv_scope_assign(NvScope *scope, const char *name, NvValue v, int line, int col) {
+    // الدفعة 4 — المتغيرات (اجتماع 58 §73):
+    // الكتابة عبر مرجع تصل هدفه، والكتابة في
+    // مجمد مرفوضة قبل أي تغيير.
+    name = nv_resolve_name(name);
+    nv_check_not_frozen(name, line, col);
     for (NvScope *s = scope; s; s = s->parent) {
         for (NvBinding *b = s->bindings; b; b = b->next) {
             if (strcmp(b->name, name) == 0) {
@@ -1308,8 +1490,67 @@ static void nv_mkdir_best_effort(const char *path) {
 #endif
 }
 
+// الاجتماع 53 §67 (الميزة 210): إنشاء متداخل
+// بسلوك `mkdir -p` — كل مكون مفقود يُنشأ،
+// والموجود كمجلد يُتخطى بصمت؛ والموجود كملف
+// خطأ. المسح بايت بايت آمن على UTF-8 لأن
+// `/` (و`\` على ويندوز) لا يظهر داخل تتابع
+// متعدد البايتات.
+static int nv_mkdir_p(const char *path) {
+    size_t len = strlen(path);
+    char *buf = (char *)malloc(len + 1);
+    if (!buf) {
+        errno = ENOMEM;
+        return -1;
+    }
+    memcpy(buf, path, len + 1);
+    for (size_t i = 1; i <= len; i++) {
+#ifdef _WIN32
+        int sep = (buf[i] == '/' || buf[i] == '\\' || buf[i] == '\0');
+#else
+        int sep = (buf[i] == '/' || buf[i] == '\0');
+#endif
+        if (sep) {
+            char save = buf[i];
+            buf[i] = '\0';
+            if (buf[0] != '\0') {
+                int rc;
+#ifdef _WIN32
+                rc = mkdir(buf);
+#else
+                rc = mkdir(buf, 0777);
+#endif
+                if (rc != 0 && errno != EEXIST) {
+                    int e = errno;
+                    free(buf);
+                    errno = e;
+                    return -1;
+                }
+                if (rc != 0) {
+                    struct stat st;
+                    if (stat(buf, &st) != 0 || !S_ISDIR(st.st_mode)) {
+                        int e = errno;
+                        free(buf);
+                        errno = e;
+                        return -1;
+                    }
+                }
+            }
+            buf[i] = save;
+            if (save == '\0') {
+                break;
+            }
+        }
+    }
+    free(buf);
+    return 0;
+}
+
 void nv_init(const char *program_dir) {
     nv_program_dir = nv_strdup(program_dir);
+    // الدفعة 4 — المتغيرات (اجتماع 58 §73): بدء
+    // العملية بالثواني (لـ`بيئة("ثواني")`).
+    nv_start_secs = (unsigned long long)time(NULL);
     // اجتماع 45 §59: البيت هو `program_dir/home`؛
     // يُنشأ بأفضل جهد (بلا رسالة إن نجح، وبلا خطأ
     // إن تعذّر — البرنامج المستقل لا يملك جلسة
@@ -1443,6 +1684,16 @@ NvValue nv_add(NvValue l, NvValue r, int line, int col) {
         NvValue out = nv_list_new();
         for (size_t i = 0; i < l.u.list->len; i++) nv_list_push_raw(out.u.list, l.u.list->items[i]);
         for (size_t i = 0; i < r.u.list->len; i++) nv_list_push_raw(out.u.list, r.u.list->items[i]);
+        return out;
+    }
+    // الدفعة 4 — المتغيرات (اجتماع 58 §73): دمج
+    // قاموسين — اليمين يفوز عند تكرار المفتاح.
+    if (l.tag == NV_DICT && r.tag == NV_DICT) {
+        NvValue out = nv_dict_new();
+        for (size_t i = 0; i < l.u.dict->len; i++)
+            nv_dict_set_raw(out.u.dict, l.u.dict->entries[i].key, l.u.dict->entries[i].val);
+        for (size_t i = 0; i < r.u.dict->len; i++)
+            nv_dict_set_raw(out.u.dict, r.u.dict->entries[i].key, r.u.dict->entries[i].val);
         return out;
     }
     nv_error_fmt(NV_ERR_TYPE, line, col, "لا يمكن جمع %s و %s", nv_type_name(l), nv_type_name(r));
@@ -1817,7 +2068,14 @@ NvValue nv_call_ident_at(NvScope *scope, const char *name, NvValue *args, int na
         return nv_call_at(v, args, nargs, line, col, callee_line, callee_col);
     }
     if (nv_is_builtin(name)) {
-        return nv_call_builtin(name, args, nargs, line, col);
+        // اجتماع 56 §71 (الميزة 16): نطاق الاستدعاء
+        // الحالي للمدمجة (لقراءة قيمة متغير في
+        // `انتقل`)، ويُستعاد بعده.
+        NvScope *prev_scope = nv_current_call_scope;
+        nv_current_call_scope = scope;
+        NvValue r = nv_call_builtin(name, args, nargs, line, col);
+        nv_current_call_scope = prev_scope;
+        return r;
     }
     nv_error_fmt(NV_ERR_RUNTIME, line, col, "دالة غير معرفة: %s", name);
 }
@@ -2227,9 +2485,160 @@ char *nv_display_str(const char *s) {
     return nv_strdup(s);
 }
 
+// ---------- مساعدات التنقل (اجتماع 56 §71 — الدفعة 2) ----------
+
+// فك نقطة شفرة UTF-8 واحدة: ترجع البايتات المستهلكة
+// (1–4)، ونقطة الشفرة في *cp.
+static size_t nv_utf8_decode(const unsigned char *s, unsigned int *cp) {
+    unsigned char c = s[0];
+    if (c < 0x80) {
+        *cp = c;
+        return 1;
+    }
+    if ((c & 0xE0) == 0xC0 && (s[1] & 0xC0) == 0x80) {
+        *cp = ((c & 0x1F) << 6) | (s[1] & 0x3F);
+        return 2;
+    }
+    if ((c & 0xF0) == 0xE0 && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80) {
+        *cp = ((c & 0x0F) << 12) | (((unsigned char)s[1] & 0x3F) << 6) | ((unsigned char)s[2] & 0x3F);
+        return 3;
+    }
+    if ((c & 0xF8) == 0xF0 && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80 && (s[3] & 0xC0) == 0x80) {
+        *cp = ((c & 0x07) << 18) | (((unsigned char)s[1] & 0x3F) << 12) | (((unsigned char)s[2] & 0x3F) << 6) | ((unsigned char)s[3] & 0x3F);
+        return 4;
+    }
+    *cp = c;
+    return 1;
+}
+
+static int nv_is_arabic_digit(unsigned int cp, long *d) {
+    if (cp >= '0' && cp <= '9') {
+        *d = (long)(cp - '0');
+        return 1;
+    }
+    if (cp >= 0x660 && cp <= 0x669) {
+        *d = (long)(cp - 0x660);
+        return 1;
+    }
+    if (cp >= 0x6F0 && cp <= 0x6F9) {
+        *d = (long)(cp - 0x6F0);
+        return 1;
+    }
+    return 0;
+}
+
+// عدد صحيح من نص بأرقام غربية أو عربية مشرقية، مع
+// إشارة سالبة اختيارية. 1 = صالح، 0 = ليس عددا.
+static int nv_parse_arabic_int(const char *s, long *out) {
+    while (*s == ' ') s++;
+    int neg = 0;
+    if (*s == '-') {
+        neg = 1;
+        s++;
+    }
+    if (!*s) return 0;
+    long n = 0;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p && *p != ' ') {
+        unsigned int cp;
+        size_t adv = nv_utf8_decode(p, &cp);
+        long d;
+        if (!nv_is_arabic_digit(cp, &d)) return 0;
+        n = n * 10 + d;
+        if (n > 1000000000L) return 0;
+        p += adv;
+    }
+    while (*p == ' ') p++;
+    if (*p) return 0;
+    *out = neg ? -n : n;
+    return 1;
+}
+
+// عدد طويل بأرقام عربية مشرقية (كـ Value::fmt_value
+// في Rust) لرسائل الخطأ.
+static void nv_fmt_arabic_long(long n, char *buf, size_t bufsz) {
+    char tmp[32];
+    snprintf(tmp, sizeof(tmp), "%ld", n);
+    size_t w = 0;
+    for (size_t i = 0; tmp[i] && w + 2 < bufsz; i++) {
+        if (tmp[i] == '-') {
+            buf[w++] = '-';
+        } else if (tmp[i] >= '0' && tmp[i] <= '9') {
+            buf[w++] = (char)0xD9;
+            buf[w++] = (char)(0xA0 + (tmp[i] - '0'));
+        }
+    }
+    buf[w] = '\0';
+}
+
+// تحليل بادئة `~+`: `~+` و`~+/...` (الحالي)،
+// و`~+N` و`~+N/...` (عنصر المكدس N). 1 = الصيغة
+// `~+`، و*tail_out يشير إلى الباقي بعد البادئة.
+static int nv_parse_tilde_plus(const char *path, long *idx_out, const char **tail_out) {
+    if (strncmp(path, "~+", 2) != 0) return 0;
+    const char *rest = path + 2;
+    if (rest[0] == '\0' || rest[0] == '/') {
+        *idx_out = 0;
+        *tail_out = rest;
+        return 1;
+    }
+    const unsigned char *p = (const unsigned char *)rest;
+    size_t end = 0;
+    while (*p) {
+        unsigned int cp;
+        size_t adv = nv_utf8_decode(p, &cp);
+        long d;
+        if (!nv_is_arabic_digit(cp, &d)) break;
+        end += adv;
+        p += adv;
+    }
+    if (end == 0 || end >= 32) return 0;
+    char numbuf[32];
+    memcpy(numbuf, rest, end);
+    numbuf[end] = '\0';
+    long idx;
+    if (!nv_parse_arabic_int(numbuf, &idx)) return 0;
+    const char *tail = rest + end;
+    if (tail[0] != '\0' && tail[0] != '/') return 0;
+    *idx_out = idx;
+    *tail_out = tail;
+    return 1;
+}
+
+// توسعة `~+` و`~+N` إلى مسار مطلق للنظام، أو NULL
+// إن لم تكن الصيغة `~+`. الفهرس الخارج خطأ عربي
+// (بلا عودة). `~-` ليست هنا: محذوفة بأمر المالك.
+static char *nv_expand_tilde_plus(const char *path, int line, int col) {
+    long idx;
+    const char *tail;
+    if (!nv_parse_tilde_plus(path, &idx, &tail)) return NULL;
+    const char *base;
+    if (idx == 0) {
+        base = nv_cwd;
+    } else {
+        if (idx < 1 || (size_t)(idx - 1) >= nv_dirstack_len) {
+            char numbuf[64];
+            nv_fmt_arabic_long(idx, numbuf, sizeof(numbuf));
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "عنصر المكدس غير موجود: %s", numbuf);
+        }
+        base = nv_dirstack[idx - 1];
+    }
+    size_t n = strlen(base) + strlen(tail) + 1;
+    char *out = (char *)malloc(n);
+    snprintf(out, n, "%s%s", base, tail);
+    return out;
+}
+
 // حل مسار ضد مجلد الجلسة (resolve_in) + فحص السياسة.
-char *nv_resolve_path(const char *path, int line, int col) {
-    char *given = nv_expand_home(path);
+// حل ناعم (اجتماع 56 §71): كـ nv_resolve_path لكن
+// بلا خطأ عند رفض السياسة — يرجع NULL ويضبط
+// *policy_err (0 نجاح، 1 خارج النطاق، 2 عبر رابط
+// رمزي). لسلسلة محاولات `انتقل` التي تتخطى المرشح
+// الفاشل وتجرّب التالي.
+static char *nv_resolve_path_soft(const char *path, int line, int col, int *policy_err) {
+    *policy_err = 0;
+    char *plus = nv_expand_tilde_plus(path, line, col);
+    char *given = plus ? plus : nv_expand_home(path);
     char *joined = NULL;
     if (nv_trusted) {
         if (given[0] == '/') {
@@ -2256,23 +2665,41 @@ char *nv_resolve_path(const char *path, int line, int col) {
     free(joined);
     char *base_norm = nv_normalize_lexical(nv_program_dir);
     if (!nv_path_starts_with(normalized, base_norm)) {
-        char *disp = nv_display_str(path);
-        nv_error_fmt(NV_ERR_IO, line, col,
-                     "الملف %s خارج مجلد البرنامج، والوصول مقيد بمجلد البرنامج افتراضيا (استخدم --اسمح-بالكل للبرامج الموثوقة)",
-                     disp);
+        free(normalized);
+        free(base_norm);
+        *policy_err = 1;
+        return NULL;
     }
     char *canon_cand = nv_canonical_with_suffix(normalized);
     char *canon_base = nv_canonical_with_suffix(base_norm);
     if (!nv_path_starts_with(canon_cand, canon_base)) {
-        char *disp = nv_display_str(path);
-        nv_error_fmt(NV_ERR_IO, line, col,
-                     "الملف %s خارج مجلد البرنامج عبر رابط رمزي، والوصول مقيد بمجلد البرنامج افتراضيا",
-                     disp);
+        free(normalized);
+        free(canon_cand);
+        free(canon_base);
+        free(base_norm);
+        *policy_err = 2;
+        return NULL;
     }
     free(canon_cand);
     free(canon_base);
     free(base_norm);
     return normalized;
+}
+
+char *nv_resolve_path(const char *path, int line, int col) {
+    int policy_err = 0;
+    char *out = nv_resolve_path_soft(path, line, col, &policy_err);
+    if (out) return out;
+    char *disp = nv_display_str(path);
+    if (policy_err == 2) {
+        nv_error_fmt(NV_ERR_IO, line, col,
+                     "الملف %s خارج مجلد البرنامج عبر رابط رمزي، والوصول مقيد بمجلد البرنامج افتراضيا",
+                     disp);
+    }
+    nv_error_fmt(NV_ERR_IO, line, col,
+                 "الملف %s خارج مجلد البرنامج، والوصول مقيد بمجلد البرنامج افتراضيا (استخدم --اسمح-بالكل للبرامج الموثوقة)",
+                 disp);
+    return NULL;
 }
 
 // (اجتماع 49 §63) حل مسار برنامج فرعي `.نيفا` نسبي:
@@ -2910,6 +3337,509 @@ static NvValue nv_install_local(const char *source, int line, int col) {
     return v;
 }
 
+// ---------- مساعدات التنقل (اجتماع 56 §71 — الدفعة 2) ----------
+
+// المسار الفيزيائي لمجلد (حل الروابط)، أو NULL.
+static char *nv_canonical_dir(const char *path) {
+#ifdef _WIN32
+    char *canon = nv_win32_realpath(path);
+#else
+    char *canon = realpath(path, NULL);
+#endif
+    if (!canon) return NULL;
+    struct stat st;
+    if (stat(canon, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        free(canon);
+        return NULL;
+    }
+    return canon;
+}
+
+static void nv_set_cwd_owned(char *owned) {
+    free(nv_cwd);
+    nv_cwd = owned;
+}
+
+static void nv_after_stack_move(void) {
+    if (nv_physical_mode) {
+        char *canon = nv_canonical_dir(nv_cwd);
+        if (canon) {
+            free(nv_cwd);
+            nv_cwd = canon;
+        }
+    }
+}
+
+static char *nv_physical_cwd(void) {
+    char *canon = nv_canonical_dir(nv_cwd);
+    return canon ? canon : nv_strdup(nv_cwd);
+}
+
+// هل يفصل بين الاسمين خطأ داميراو واحد بالضبط
+// (إدراج/حذف/استبدال/تبديل متجاورين)؟ مقارنة على
+// نقاط الشفرة لا البايتات.
+static int nv_edit_distance_one(const char *a, const char *b) {
+    size_t na = strlen(a), nb = strlen(b);
+    unsigned int *ca = (unsigned int *)malloc((na + 1) * sizeof(unsigned int));
+    unsigned int *cb = (unsigned int *)malloc((nb + 1) * sizeof(unsigned int));
+    size_t la = 0, lb = 0;
+    const unsigned char *p = (const unsigned char *)a;
+    while (*p) {
+        unsigned int cp;
+        p += nv_utf8_decode(p, &cp);
+        ca[la++] = cp;
+    }
+    p = (const unsigned char *)b;
+    while (*p) {
+        unsigned int cp;
+        p += nv_utf8_decode(p, &cp);
+        cb[lb++] = cp;
+    }
+    int result = 0;
+    if (la == lb) {
+        size_t diffs[2];
+        size_t nd = 0;
+        for (size_t i = 0; i < la; i++) {
+            if (ca[i] != cb[i]) {
+                if (nd < 2) diffs[nd] = i;
+                nd++;
+            }
+        }
+        if (nd == 1) result = 1;
+        else if (nd == 2) {
+            size_t i = diffs[0], j = diffs[1];
+            result = (j == i + 1 && ca[i] == cb[j] && ca[j] == cb[i]);
+        }
+    } else if (la > lb ? (la - lb == 1) : (lb - la == 1)) {
+        const unsigned int *shorter = la < lb ? ca : cb;
+        const unsigned int *longer = la < lb ? cb : ca;
+        size_t ls = la < lb ? la : lb;
+        size_t i = 0, j = 0;
+        int skipped = 0;
+        result = 1;
+        while (i < ls) {
+            if (shorter[i] == longer[j]) {
+                i++;
+                j++;
+            } else if (!skipped) {
+                skipped = 1;
+                j++;
+            } else {
+                result = 0;
+                break;
+            }
+        }
+    }
+    free(ca);
+    free(cb);
+    return result;
+}
+
+// صلاحية اسم متغير (مرآة env::valid_name في Rust):
+// حروف عربية وأرقام وشرطة سفلية، ولا يبدأ برقم.
+static int nv_valid_var_name(const char *s) {
+    if (!s[0]) return 0;
+    const unsigned char *p = (const unsigned char *)s;
+    int first = 1;
+    while (*p) {
+        unsigned int cp;
+        p += nv_utf8_decode(p, &cp);
+        if (first) {
+            long d;
+            if (nv_is_arabic_digit(cp, &d)) return 0;
+            first = 0;
+        }
+        long d;
+        if (!(cp == '_' || nv_is_arabic_digit(cp, &d)
+              || (cp >= 0x0600 && cp <= 0x06FF) || (cp >= 0x0750 && cp <= 0x077F)
+              || (cp >= 0x08A0 && cp <= 0x08FF) || (cp >= 0xFB50 && cp <= 0xFDFF)
+              || (cp >= 0xFE70 && cp <= 0xFEFF))) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+// حل فهرس مكدس (سالب من النهاية) إلى موضع. 1 = صالح.
+static int nv_stack_index(long idx, size_t len, size_t *pos_out) {
+    if (len == 0) return 0;
+    long l = (long)len;
+    long pos = idx >= 0 ? idx : l + idx;
+    if (pos < 0 || pos >= l) return 0;
+    *pos_out = (size_t)pos;
+    return 1;
+}
+
+// فهرس مكدس من قيمة: عدد صحيح، أو نص رقمي (لعبارة
+// REPL). 1 = فهرس، 0 = ليس فهرسا.
+static int nv_stack_index_value(NvValue *v, long *out) {
+    if (v->tag == NV_NUM) {
+        double n = v->u.num;
+        if (n != trunc(n) || n < -9007199254740992.0 || n > 9007199254740992.0) return 0;
+        *out = (long)n;
+        return 1;
+    }
+    if (v->tag == NV_STR) return nv_parse_arabic_int(v->u.str->data, out);
+    return 0;
+}
+
+static void nv_dirstack_push_front(char *owned) {
+    if (nv_dirstack_len == nv_dirstack_cap) {
+        nv_dirstack_cap = nv_dirstack_cap ? nv_dirstack_cap * 2 : 8;
+        nv_dirstack = (char **)realloc(nv_dirstack, nv_dirstack_cap * sizeof(char *));
+    }
+    memmove(&nv_dirstack[1], &nv_dirstack[0], nv_dirstack_len * sizeof(char *));
+    nv_dirstack[0] = owned;
+    nv_dirstack_len++;
+}
+
+static void nv_dirstack_remove(size_t pos) {
+    free(nv_dirstack[pos]);
+    memmove(&nv_dirstack[pos], &nv_dirstack[pos + 1], (nv_dirstack_len - pos - 1) * sizeof(char *));
+    nv_dirstack_len--;
+}
+
+static void nv_dirstack_clear(void) {
+    for (size_t i = 0; i < nv_dirstack_len; i++) free(nv_dirstack[i]);
+    nv_dirstack_len = 0;
+}
+
+// تدوير إلى الموضع pos: العنصر يصير الحالي،
+// والحالي القديم يدخل مكانه.
+static void nv_dirstack_rotate(size_t pos) {
+    char *target = nv_dirstack[pos];
+    nv_dirstack[pos] = nv_strdup(nv_cwd);
+    free(nv_cwd);
+    nv_cwd = target;
+}
+
+// محاولة واحدة على مسار محلول: 0 نجاح (*out يملكه
+// المتصل)، 1 غائب، 2 موجود ليس مجلدا.
+static int nv_try_resolved(const char *resolved, int physical, char **out) {
+    if (physical) {
+        char *canon = nv_canonical_dir(resolved);
+        if (canon) {
+            *out = canon;
+            return 0;
+        }
+        struct stat st;
+        if (stat(resolved, &st) == 0) return 2;
+        return 1;
+    }
+    struct stat st;
+    if (stat(resolved, &st) != 0) return 1;
+    if (!S_ISDIR(st.st_mode)) return 2;
+    *out = nv_normalize_lexical(resolved);
+    return 0;
+}
+
+// محاولة مرشح نصي واحد: 0 نجاح، 1 غائب، 2 ليس
+// مجلدا، 3 رفض سياسة (يُتخطى في السلسلة).
+// بوابة الوجود (إصلاح انهيار `..` المعجمي — مرآة
+// Rust): يُرفض المرشح إن غاب مساره الموصول كما
+// كُتب قبل أي تطبيع.
+static int nv_try_candidate(const char *raw, int physical, int line, int col, char **out) {
+    int policy_err = 0;
+    char *resolved = nv_resolve_path_soft(raw, line, col, &policy_err);
+    if (!resolved) return 3;
+    char *plus = nv_expand_tilde_plus(raw, line, col);
+    char *gate_given = plus ? plus : nv_expand_home(raw);
+    char *gate_joined;
+    if (gate_given[0] == '/') {
+        gate_joined = gate_given;
+    } else {
+        size_t n = strlen(nv_cwd) + 1 + strlen(gate_given) + 1;
+        gate_joined = (char *)malloc(n);
+        snprintf(gate_joined, n, "%s/%s", nv_cwd, gate_given);
+        free(gate_given);
+    }
+    struct stat gst;
+    int gr = stat(gate_joined, &gst);
+    free(gate_joined);
+    if (gr != 0) {
+        free(resolved);
+        return 1;
+    }
+    if (!S_ISDIR(gst.st_mode)) {
+        free(resolved);
+        return 2;
+    }
+    int r = nv_try_resolved(resolved, physical, out);
+    free(resolved);
+    return r;
+}
+
+// المحاولة الحرفية (الميزة 13): النص كما كُتب بلا
+// تطبيع معجمي، والنجاح من المسار الحقيقي؛ أو NULL.
+static char *nv_resolve_literal_soft(const char *raw) {
+    char *given = nv_expand_home(raw);
+    char *joined;
+    if (given[0] == '/') {
+        joined = given;
+    } else {
+        size_t n = strlen(nv_cwd) + 1 + strlen(given) + 1;
+        joined = (char *)malloc(n);
+        snprintf(joined, n, "%s/%s", nv_cwd, given);
+        free(given);
+    }
+    char *canon;
+#ifdef _WIN32
+    canon = nv_win32_realpath(joined);
+#else
+    canon = realpath(joined, NULL);
+#endif
+    free(joined);
+    if (!canon) return NULL;
+    if (nv_trusted) return canon;
+    char *base_norm = nv_normalize_lexical(nv_program_dir);
+    char *canon_base = nv_canonical_with_suffix(base_norm);
+    int ok = nv_path_starts_with(canon, canon_base);
+    free(base_norm);
+    free(canon_base);
+    if (!ok) {
+        free(canon);
+        return NULL;
+    }
+    return canon;
+}
+
+// تصحيح إملاء المكون الأخير (الميزة 17): 1 نجاح
+// (*out)، 0 بلا تصحيح وحيد.
+static int nv_spell_correct(const char *raw, int physical, int line, int col, char **out) {
+    size_t rl = strlen(raw);
+    if (rl == 0 || raw[rl - 1] == '/') return 0;
+    const char *slash = strrchr(raw, '/');
+    const char *last = slash ? slash + 1 : raw;
+    if (last[0] == '\0' || strcmp(last, ".") == 0 || strcmp(last, "..") == 0) return 0;
+    char *parent_path;
+    if (!slash) {
+        parent_path = nv_strdup(nv_cwd);
+    } else {
+        size_t plen = (size_t)(slash - raw);
+        char *parent = (char *)malloc(plen + 1);
+        memcpy(parent, raw, plen);
+        parent[plen] = '\0';
+        int pe = 0;
+        parent_path = nv_resolve_path_soft(parent, line, col, &pe);
+        free(parent);
+        if (!parent_path) return 0;
+    }
+    DIR *d = opendir(parent_path);
+    if (!d) {
+        free(parent_path);
+        return 0;
+    }
+    char *found = NULL;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        const char *name = e->d_name;
+        if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
+        size_t n = strlen(parent_path) + 1 + strlen(name) + 1;
+        char *child = (char *)malloc(n);
+        snprintf(child, n, "%s/%s", parent_path, name);
+        struct stat st;
+        int is_dir = (stat(child, &st) == 0 && S_ISDIR(st.st_mode));
+        if (is_dir && nv_edit_distance_one(last, name)) {
+            if (found) {
+                free(child);
+                free(found);
+                closedir(d);
+                free(parent_path);
+                return 0;
+            }
+            found = child;
+        } else {
+            free(child);
+        }
+    }
+    closedir(d);
+    free(parent_path);
+    if (!found) return 0;
+    int r = nv_try_resolved(found, physical, out);
+    free(found);
+    return r == 0;
+}
+
+// سلسلة محاولات `انتقل` كاملة (مرآة change_dir في
+// Rust): مطلق، ثم CDPATH، ثم الحالي، ثم الحرفي،
+// ثم قيمة المتغير، ثم تصحيح الإملاء. النجاح يضبط
+// nv_cwd؛ والفشل خطأ عربي (بلا عودة).
+// flag: -1 بلا علم (الوضع العام)، 0 منطقي، 1 فيزيائي.
+static void nv_change_dir(const char *raw, int flag, int line, int col) {
+    int physical = (flag == 1) || (flag == -1 && nv_physical_mode);
+    int is_abs = (raw[0] == '/') || strcmp(raw, "~") == 0 || strncmp(raw, "~/", 2) == 0
+        || strcmp(raw, "$نيفا") == 0 || strncmp(raw, "$نيفا/", 10) == 0;
+    int saw_not_dir = 0;
+    int direct_policy = 0;
+    char *out = NULL;
+    if (is_abs) {
+        int r = nv_try_candidate(raw, physical, line, col, &out);
+        if (r == 0) {
+            nv_set_cwd_owned(out);
+            return;
+        }
+        if (r == 2) saw_not_dir = 1;
+        if (r == 3) direct_policy = 1;
+    } else {
+        /* POSIX (مثبت بفحوص باش 5.2 الحية — مرآة
+           Rust): لا `CDPATH` حين يكون المكون الأول
+           `.` أو `..` (`.` و`..` و`./...` و`../...`). */
+        int use_cdpath = !(strcmp(raw, ".") == 0 || strcmp(raw, "..") == 0
+            || strncmp(raw, "./", 2) == 0 || strncmp(raw, "../", 3) == 0);
+        if (use_cdpath) {
+            for (size_t i = 0; i < nv_cdpath_len; i++) {
+                char *cand;
+                if (nv_cdpath[i][0] == '\0') {
+                    cand = nv_strdup(raw);
+                } else {
+                    size_t n = strlen(nv_cdpath[i]) + 1 + strlen(raw) + 1;
+                    cand = (char *)malloc(n);
+                    snprintf(cand, n, "%s/%s", nv_cdpath[i], raw);
+                }
+                int r = nv_try_candidate(cand, physical, line, col, &out);
+                free(cand);
+                if (r == 0) {
+                    nv_set_cwd_owned(out);
+                    return;
+                }
+                if (r == 2) saw_not_dir = 1;
+            }
+        }
+        int r = nv_try_candidate(raw, physical, line, col, &out);
+        if (r == 0) {
+            nv_set_cwd_owned(out);
+            return;
+        }
+        if (r == 2) saw_not_dir = 1;
+        if (r == 3) direct_policy = 1;
+    }
+    char *lit = nv_resolve_literal_soft(raw);
+    if (lit) {
+        struct stat st;
+        if (stat(lit, &st) == 0 && S_ISDIR(st.st_mode)) {
+            nv_set_cwd_owned(lit);
+            return;
+        }
+        free(lit);
+    }
+    if (nv_valid_var_name(raw) && nv_current_call_scope) {
+        NvCell *cell = nv_scope_lookup_cell(nv_current_call_scope, raw);
+        if (cell && cell->val.tag == NV_STR) {
+            const char *val = cell->val.u.str->data;
+            int r = nv_try_candidate(val, physical, line, col, &out);
+            if (r == 0) {
+                nv_set_cwd_owned(out);
+                return;
+            }
+            if (r == 2) saw_not_dir = 1;
+        }
+    }
+    if (nv_spell_correct(raw, physical, line, col, &out)) {
+        nv_set_cwd_owned(out);
+        return;
+    }
+    if (direct_policy) {
+        // أعد الحل الصلب ليُخرج رسالة السياسة نفسها.
+        char *resolved = nv_resolve_path(raw, line, col);
+        free(resolved);
+    }
+    char *disp = nv_display_str(raw);
+    if (saw_not_dir) nv_error_fmt(NV_ERR_IO, line, col, "ليس مجلدا: %s", disp);
+    nv_error_fmt(NV_ERR_IO, line, col, "المجلد غير موجود: %s", disp);
+}
+
+// ---------- الدفعة 4 — المتغيرات (اجتماع 58 §73) ----------
+
+// مولد عشوائي صغير (xorshift64) لبـ`بيئة("عشوائي")`
+// — بذرة من الوقت ورقم العملية، كمولد Rust.
+static unsigned long long nv_rng_state = 0;
+static unsigned long long nv_rng_next(void) {
+    if (!nv_rng_state) {
+        nv_rng_state = ((unsigned long long)time(NULL) << 1) ^ 0x2545F4914F6CDD1DULL;
+#ifdef _WIN32
+        nv_rng_state ^= (unsigned long long)GetCurrentProcessId() * 0x9E3779B97F4A7C15ULL;
+#else
+        nv_rng_state ^= (unsigned long long)getpid() * 0x9E3779B97F4A7C15ULL;
+#endif
+        if (!nv_rng_state) nv_rng_state = 0x2545F4914F6CDD1DULL;
+    }
+    unsigned long long x = nv_rng_state;
+    x ^= x >> 12; x ^= x << 25; x ^= x >> 27;
+    nv_rng_state = x;
+    return x * 0x2545F4914F6CDD1DULL;
+}
+
+// قراءة متغير بيئة واحد (الثابت + الديناميكي) —
+// يشارك فيه ذراعا `بيئة` و`اعرض_البيئة`.
+static NvValue nv_env_read(const char *n, int line, int col) {
+    if (strcmp(n, "المجلد_الحالي") == 0) {
+        char *disp;
+        if (nv_physical_mode) {
+            char *phys = nv_physical_cwd();
+            disp = nv_display_path(phys);
+            free(phys);
+        } else {
+            disp = nv_display_path(nv_cwd);
+        }
+        return nv_str_take(disp, strlen(disp));
+    }
+    if (strcmp(n, "المستخدم") == 0) {
+        char buf[256];
+#if defined(__linux__) || defined(__ANDROID__)
+        if (!nv_read_username(buf, sizeof(buf))) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر قراءة اسم المستخدم");
+        }
+#else
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "بيئة(\"المستخدم\") غير مدعومة على هذه المنصة");
+#endif
+        return nv_str_cstr(buf);
+    }
+    if (strcmp(n, "اسم_المضيف") == 0) {
+        char buf[256];
+#if defined(__linux__) || defined(__ANDROID__)
+        if (!nv_read_hostname(buf, sizeof(buf))) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر قراءة اسم المضيف");
+        }
+#else
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "بيئة(\"اسم_المضيف\") غير مدعومة على هذه المنصة");
+#endif
+        return nv_str_cstr(buf);
+    }
+    if (strcmp(n, "عشوائي") == 0) {
+        char *s = nv_fmt_number((double)(nv_rng_next() % 32768));
+        NvValue v = nv_str_cstr(s);
+        free(s);
+        return v;
+    }
+    if (strcmp(n, "ثواني") == 0) {
+        unsigned long long now = (unsigned long long)time(NULL);
+        unsigned long long secs = now >= nv_start_secs ? now - nv_start_secs : 0;
+        char *s = nv_fmt_number((double)secs);
+        NvValue v = nv_str_cstr(s);
+        free(s);
+        return v;
+    }
+    if (strcmp(n, "رقم_السطر") == 0) {
+        char *s = nv_fmt_number((double)line);
+        NvValue v = nv_str_cstr(s);
+        free(s);
+        return v;
+    }
+    const char *v = NULL;
+    if (strcmp(n, "البيت") == 0) v = "~";
+    else if (strcmp(n, "مجلد_البرنامج") == 0) v = "$نيفا";
+    else if (strcmp(n, "المسار") == 0) v = "$نيفا";
+    else if (strcmp(n, "إصدار_نيفا") == 0) v = "١٫٠٫٠";
+    else if (strcmp(n, "الطرفية") == 0) v = "نيفا";
+    else if (strcmp(n, "اللغة") == 0) v = "ar_EG.UTF-8";
+    else if (strcmp(n, "المجلد_المؤقت") == 0) v = "$نيفا/tmp";
+    else if (strcmp(n, "الألوان") == 0) v = "truecolor";
+    else {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "متغير بيئة غير معروف: %s", n);
+    }
+    return nv_str_cstr(v);
+}
+
 // ---------- الدوال المدمجة: الجدول والتوزيع ----------
 int nv_is_builtin(const char *name) {
     static const char *names[] = {
@@ -2919,12 +3849,879 @@ int nv_is_builtin(const char *name) {
         "أنشئ_ملف", "اعرض_البداية", "اعرض_النهاية", "عد_الأسطر", "عد_الكلمات",
         "ابحث_في_ملف", "ابحث_عن", "اعرض_الشجرة", "حجم_المسار", "أنشئ_رابط",
         "التاريخ_الآن", "النسخة", "موجود", "نوع_المسار", "تفاصيل_المسار",
-        "تثبيت", "عد_الملفات", "ادخل", "بيئة", NULL
+        "تثبيت", "عد_الملفات", "ادخل", "بيئة",
+        // الدفعة 1 — رموز الخروج (اجتماع 54 §69).
+        "رمز_الخروج", "اسم_البرنامج", "خروج",
+        // اجتماع 56 §71 — الدفعة 2 (التنقل): المكدس
+        // وCDPATH والوضع الفيزيائي.
+        "ادفع_مجلد", "أخرج_مجلد", "اعرض_المكدس", "امسح_المكدس",
+        "مسار_بحث_المجلدات", "الوضع_الفيزيائي",
+        // الدفعة 3 — التشغيل (اجتماع 57 §72): وصف
+        // الأمر ومكان الأداة والاستبدال.
+        "نوع_الامر", "مكان_الاداة", "استبدل_الجلسة",
+        // الدفعة 4 — المتغيرات (اجتماع 58 §73).
+        "جمد", "احذف_متغير", "افحص_متغير", "مرجع", "اعرض_البيئة", "مفاتيح",
+        // الدفعة 5 — أدوات الملفات (اجتماع 59 §74).
+        "انسخ_تكراري", "انسخ_محدث", "انسخ_أرشيف", "انسخ_خفيف", "احذف_تكراري",
+        "أنشئ_رابط_صلب", "أنشئ_رابط_نسبي", NULL
     };
     for (int i = 0; names[i]; i++) {
         if (strcmp(name, names[i]) == 0) return 1;
     }
     return 0;
+}
+
+
+// نسخ ملف واحد (الميزة 204): يشارك فيه `انسخ`
+// ومسار نسخ-ثم-حذف في `انقل`. يرجع 0 عند النجاح،
+// و-1 عند الفشل مع بقاء errno.
+static int nv_copy_file(const char *src, const char *dst) {
+    FILE *in = fopen(src, "rb");
+    FILE *out = in ? fopen(dst, "wb") : NULL;
+    if (!in || !out) {
+        int e = errno;
+        if (in) fclose(in);
+        if (out) fclose(out);
+        errno = e;
+        return -1;
+    }
+    unsigned char buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) {
+            int e = errno;
+            fclose(in);
+            fclose(out);
+            errno = e ? e : EIO;
+            return -1;
+        }
+    }
+    if (ferror(in)) {
+        int e = errno;
+        fclose(in);
+        fclose(out);
+        errno = e ? e : EIO;
+        return -1;
+    }
+    if (fclose(out) != 0) {
+        int e = errno;
+        fclose(in);
+        errno = e;
+        return -1;
+    }
+    fclose(in);
+    return 0;
+}
+// نسخ شجرة تكراريا (الميزة 204): ملف بمحتواه،
+// ومجلد بأبنائه، ورابط رمزي يعاد رابطا بلا اتباع
+// هدفه. ومجلد هدف موجود فارغ يستخدم كما هو.
+static int nv_copy_tree(const char *src, const char *dst) {
+    struct stat st;
+    if (nv_lstat(src, &st) != 0) return -1;
+#ifndef _WIN32
+    if (S_ISLNK(st.st_mode)) {
+        char target[4096];
+        ssize_t n = readlink(src, target, sizeof(target) - 1);
+        if (n < 0) return -1;
+        target[n] = '\0';
+        if (symlink(target, dst) != 0) return -1;
+        return 0;
+    }
+#endif
+    if (S_ISDIR(st.st_mode)) {
+        int rc;
+#ifdef _WIN32
+        rc = mkdir(dst);
+#else
+        rc = mkdir(dst, 0755);
+#endif
+        if (rc != 0) {
+            if (errno != EEXIST) return -1;
+            struct stat dst_st;
+            if (stat(dst, &dst_st) != 0 || !S_ISDIR(dst_st.st_mode)) return -1;
+            DIR *chk = opendir(dst);
+            if (!chk) return -1;
+            struct dirent *ce;
+            int non_empty = 0;
+            while ((ce = readdir(chk)) != NULL) {
+                if (strcmp(ce->d_name, ".") != 0 && strcmp(ce->d_name, "..") != 0) {
+                    non_empty = 1;
+                    break;
+                }
+            }
+            closedir(chk);
+            if (non_empty) {
+                errno = EEXIST;
+                return -1;
+            }
+        }
+        DIR *d = opendir(src);
+        if (!d) return -1;
+        struct dirent *e;
+        int ret = 0;
+        int saved = 0;
+        while ((e = readdir(d)) != NULL) {
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+            size_t ns = strlen(src) + 1 + strlen(e->d_name) + 1;
+            size_t nd = strlen(dst) + 1 + strlen(e->d_name) + 1;
+            char *csrc = (char *)malloc(ns);
+            char *cdst = (char *)malloc(nd);
+            if (!csrc || !cdst) {
+                free(csrc);
+                free(cdst);
+                saved = ENOMEM;
+                ret = -1;
+                break;
+            }
+            snprintf(csrc, ns, "%s/%s", src, e->d_name);
+            snprintf(cdst, nd, "%s/%s", dst, e->d_name);
+            if (nv_copy_tree(csrc, cdst) != 0) {
+                saved = errno;
+                ret = -1;
+                free(csrc);
+                free(cdst);
+                break;
+            }
+            free(csrc);
+            free(cdst);
+        }
+        closedir(d);
+        if (ret != 0) errno = saved;
+        return ret;
+    }
+    return nv_copy_file(src, dst);
+}
+// حذف شجرة (الميزة 204): ملف أو رابط يزال وحده،
+// ومجلد يزال تكراريا.
+static int nv_remove_tree(const char *path) {
+    struct stat st;
+    if (nv_lstat(path, &st) != 0) return -1;
+    if (!S_ISDIR(st.st_mode)) return unlink(path);
+    DIR *d = opendir(path);
+    if (!d) return -1;
+    struct dirent *e;
+    int ret = 0;
+    int saved = 0;
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        size_t n = strlen(path) + 1 + strlen(e->d_name) + 1;
+        char *child = (char *)malloc(n);
+        if (!child) {
+            saved = ENOMEM;
+            ret = -1;
+            break;
+        }
+        snprintf(child, n, "%s/%s", path, e->d_name);
+        if (nv_remove_tree(child) != 0) {
+            saved = errno;
+            ret = -1;
+            free(child);
+            break;
+        }
+        free(child);
+    }
+    closedir(d);
+    if (ret != 0) {
+        errno = saved;
+        return -1;
+    }
+    if (rmdir(path) != 0) return -1;
+    return 0;
+}
+
+// ---------- الدفعة 5 — أدوات الملفات (اجتماع 59 §74) ----------
+// مساعدات الميزات 196 و197 و199 و200 و201 و206 و208
+// و211 و212 و213 و215 — مرآة files.rs في Rust.
+
+// وقت التعديل بدقة النظام (للمقارنة في `انسخ_محدث`):
+// نانو ثانية على يونكس، وثانية على ويندوز.
+#ifdef __APPLE__
+#define NV_MTIME_SEC(st) ((st).st_mtimespec.tv_sec)
+#define NV_MTIME_NSEC(st) ((st).st_mtimespec.tv_nsec)
+#elif defined(_WIN32)
+#define NV_MTIME_SEC(st) ((st).st_mtime)
+#define NV_MTIME_NSEC(st) (0)
+#else
+#define NV_MTIME_SEC(st) ((st).st_mtim.tv_sec)
+#define NV_MTIME_NSEC(st) ((st).st_mtim.tv_nsec)
+#endif
+
+// رفض حذف الجذر نصا (الميزة 208): قاعدة صريحة قبل
+// أي حل ساندبوكس. المكون الأخير `.` أو `..` مرفوض،
+// والجذر `/` مرفوض؛ والمسار الفارغ ليس جذرا.
+// يرجع رسالة الرفض أو NULL.
+static const char *nv_root_refusal_text(const char *path) {
+    if (!path || !path[0]) return NULL;
+    size_t n = strlen(path);
+    while (n > 0 && (path[n - 1] == '/' || path[n - 1] == '\\')) n--;
+    if (n == 0) return "لا يمكن حذف الجذر: /";
+    size_t start = n;
+    while (start > 0 && path[start - 1] != '/' && path[start - 1] != '\\') start--;
+    size_t last_len = n - start;
+    if ((last_len == 1 && path[start] == '.')
+        || (last_len == 2 && path[start] == '.' && path[start + 1] == '.'))
+        return "لا يمكن حذف . أو ..";
+    return NULL;
+}
+
+// هل هذا المسار المحلول هو جذر نظام الملفات `/`
+// نفسه — بما فيه عبر رابط رمزي؟ المقارنة قانونية
+// (تتبع الروابط) وجهاز+عقدة على يونكس، كما في
+// `ROOT_DEV_INO_CHECK` في لينكس (الميزة 208).
+static int nv_is_filesystem_root(const char *path) {
+    char *canon = nv_canonical_with_suffix(path);
+    int root = canon && strcmp(canon, "/") == 0;
+    free(canon);
+#ifndef _WIN32
+    if (!root) {
+        struct stat st, rst;
+        if (stat(path, &st) == 0 && stat("/", &rst) == 0)
+            root = (st.st_dev == rst.st_dev && st.st_ino == rst.st_ino);
+    }
+#endif
+    return root;
+}
+
+// حلل وضع أذونات ثمانيا («755» أو «0755») —
+// 3 أو 4 أرقام 0–7 فقط (الميزة 211). يرجع 0 عند
+// النجاح والوضع في *out، و-1 عند الفشل.
+// هل هدف الحذف هو الجذر؟ فحص قانوني قبل حل
+// الساندبوكس (الميزة 208): يلحق المسار بالمجلد
+// الحالي ثم يقنّن أطول بادئة موجودة — فيكشف
+// الرابط الرمزي إلى الجذر قبل أن يرفضه
+// الساندبوكس برسالة عامة.
+static int nv_delete_target_is_root(const char *path) {
+    char *joined;
+    if (path[0] == '/') {
+        joined = nv_strdup(path);
+    } else {
+        size_t n = strlen(nv_cwd) + 1 + strlen(path) + 1;
+        joined = (char *)malloc(n);
+        snprintf(joined, n, "%s/%s", nv_cwd, path);
+    }
+    char *canon = nv_canonical_with_suffix(joined);
+    int root = nv_is_filesystem_root(canon);
+    free(joined);
+    free(canon);
+    return root;
+}
+
+static int nv_parse_octal(const char *s, unsigned *out) {
+    size_t n = strlen(s);
+    if (n < 3 || n > 4) return -1;
+    unsigned v = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (s[i] < '0' || s[i] > '7') return -1;
+        v = v * 8 + (unsigned)(s[i] - '0');
+    }
+    *out = v;
+    return 0;
+}
+
+// المسار النسبي من مجلد إلى هدف (الميزة 213 —
+// `ln -r`): مكونات مشتركة ثم `..` لكل مكون زائد
+// في مجلد المصدر. والطرفان مطلقان محلولان عند
+// الاستدعاء؛ وبلا بادئة مشتركة (قرصان مختلفان
+// على ويندوز) يبقى الهدف المطلق كما هو. يرجع
+// سلسلة مملوكة للمتصل.
+static char *nv_relative_path(const char *from_dir, const char *to) {
+    // قسّم إلى مكونات على '/'.
+    size_t fn = 0, tn = 0;
+    char **fc = NULL, **tc = NULL;
+    const char *p = from_dir;
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        const char *e = strchr(p, '/');
+        size_t l = e ? (size_t)(e - p) : strlen(p);
+        fc = (char **)realloc(fc, (fn + 1) * sizeof(char *));
+        fc[fn] = (char *)malloc(l + 1);
+        memcpy(fc[fn], p, l);
+        fc[fn][l] = '\0';
+        fn++;
+        p = e ? e : p + l;
+    }
+    p = to;
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        const char *e = strchr(p, '/');
+        size_t l = e ? (size_t)(e - p) : strlen(p);
+        tc = (char **)realloc(tc, (tn + 1) * sizeof(char *));
+        tc[tn] = (char *)malloc(l + 1);
+        memcpy(tc[tn], p, l);
+        tc[tn][l] = '\0';
+        tn++;
+        p = e ? e : p + l;
+    }
+    size_t i = 0;
+    while (i < fn && i < tn && strcmp(fc[i], tc[i]) == 0) i++;
+    if (i == 0) {
+        for (size_t k = 0; k < fn; k++) free(fc[k]);
+        for (size_t k = 0; k < tn; k++) free(tc[k]);
+        free(fc);
+        free(tc);
+        return nv_strdup(to);
+    }
+    size_t total = 1;
+    for (size_t k = i; k < fn; k++) total += 3;
+    for (size_t k = i; k < tn; k++) total += strlen(tc[k]) + 1;
+    char *out = (char *)malloc(total + 1);
+    size_t w = 0;
+    for (size_t k = i; k < fn; k++) {
+        if (w > 0) out[w++] = '/';
+        memcpy(out + w, "..", 2);
+        w += 2;
+    }
+    for (size_t k = i; k < tn; k++) {
+        if (w > 0) out[w++] = '/';
+        size_t l = strlen(tc[k]);
+        memcpy(out + w, tc[k], l);
+        w += l;
+    }
+    if (w == 0) {
+        out[w++] = '.';
+    }
+    out[w] = '\0';
+    for (size_t k = 0; k < fn; k++) free(fc[k]);
+    for (size_t k = 0; k < tn; k++) free(tc[k]);
+    free(fc);
+    free(tc);
+    return out;
+}
+
+// المكونات الناقصة من مسار محلول (من أول سلف موجود
+// إلى المسار نفسه) — لإعلان `mkdir -v` (الميزة
+// 211): تُحسب قبل الإنشاء، فالقائمة الفارغة تعني
+// «موجود أصلا». يرجع مصفوفة مملوكة للمتصل وعددها
+// في *out_n (بالترتيب: الأعلى أولا).
+static char **nv_missing_components(const char *path, size_t *out_n) {
+    char **stack = NULL;
+    size_t n = 0, cap = 0;
+    char *cur = nv_strdup(path);
+    while (1) {
+        struct stat st;
+        if (stat(cur, &st) == 0) break;
+        if (n == cap) {
+            cap = cap ? cap * 2 : 8;
+            stack = (char **)realloc(stack, cap * sizeof(char *));
+        }
+        stack[n++] = nv_strdup(cur);
+        char *slash = strrchr(cur, '/');
+        if (!slash || slash == cur) break;
+        *slash = '\0';
+    }
+    free(cur);
+    // اقلب الترتيب (الأعلى أولا).
+    for (size_t i = 0; i < n / 2; i++) {
+        char *t = stack[i];
+        stack[i] = stack[n - 1 - i];
+        stack[n - 1 - i] = t;
+    }
+    *out_n = n;
+    return stack;
+}
+
+// عرض مسار منشأ لإعلان `mkdir -v` (الميزة 211):
+// نسبي إلى المجلد الحالي إن كان تحته، وإلا بصيغة
+// العرض القائمة — مرآة `display_created` في Rust.
+static char *nv_created_display(const char *path) {
+    size_t cl = strlen(nv_cwd);
+    if (strncmp(path, nv_cwd, cl) == 0 && path[cl] == '/') {
+        return nv_strdup(path + cl + 1);
+    }
+    return nv_display_path(path);
+}
+
+// حدّث وقتي الوصول والتعديل إلى الآن بلا مساس
+// بالمحتوى (الميزة 215 — `touch`).
+static int nv_touch(const char *path) {
+#ifdef _WIN32
+    {
+        struct _utimbuf tb;
+        tb.actime = time(NULL);
+        tb.modtime = tb.actime;
+        return _utime(path, &tb);
+    }
+#else
+    return utimensat(AT_FDCWD, path, NULL, 0);
+#endif
+}
+
+// احفظ أذونات المصدر ووقتي الوصول والتعديل على
+// نسخة (الميزة 200 — الأرشيف). الأذونات على
+// يونكس وحده؛ والأوقات بـ`utimensat` خارجهما
+// أفضل جهد (لا تفشل نسخا ناجحا).
+static void nv_preserve_attrs(const struct stat *sst, const char *dst) {
+#ifndef _WIN32
+    chmod(dst, sst->st_mode & 07777);
+    struct timespec ts[2];
+#ifdef __APPLE__
+    ts[0] = sst->st_atimespec;
+    ts[1] = sst->st_mtimespec;
+#else
+    ts[0] = sst->st_atim;
+    ts[1] = sst->st_mtim;
+#endif
+    utimensat(AT_FDCWD, dst, ts, 0);
+#else
+    (void)sst;
+    (void)dst;
+#endif
+}
+
+// جدول الروابط الصلبة في نسخ الأرشيف (الميزة 200):
+// جهاز+عقدة → أول هدف منسوخ (يونكس وحده؛ وعلى
+// ويندوز بلا تتبع فينسخ المكرر عاديا).
+#ifndef _WIN32
+typedef struct {
+    dev_t dev;
+    ino_t ino;
+    char *dst;
+} NvLinkMap;
+#endif
+
+// نسخ أرشيف (الميزة 200): تكراري مع حفظ الروابط
+// الرمزية روابط والروابط الصلبة روابط صلبة
+// والأذونات والأوقات. الملكية وسياق الأمان
+// والسمات الموسعة لا تُحفظ (مسجل في §74).
+#ifndef _WIN32
+static int nv_copy_archive_inner(
+    const char *src,
+    const char *dst,
+    NvLinkMap **map,
+    size_t *map_len,
+    size_t *map_cap
+) {
+    struct stat st;
+    if (nv_lstat(src, &st) != 0) return -1;
+    if (S_ISLNK(st.st_mode)) {
+        char target[4096];
+        ssize_t n = readlink(src, target, sizeof(target) - 1);
+        if (n < 0) return -1;
+        target[n] = '\0';
+        if (symlink(target, dst) != 0) return -1;
+        return 0;
+    }
+    if (S_ISDIR(st.st_mode)) {
+        int rc = mkdir(dst, 0755);
+        if (rc != 0) {
+            if (errno != EEXIST) return -1;
+            struct stat dst_st;
+            if (stat(dst, &dst_st) != 0 || !S_ISDIR(dst_st.st_mode)) return -1;
+            DIR *chk = opendir(dst);
+            if (!chk) return -1;
+            struct dirent *ce;
+            int non_empty = 0;
+            while ((ce = readdir(chk)) != NULL) {
+                if (strcmp(ce->d_name, ".") != 0 && strcmp(ce->d_name, "..") != 0) {
+                    non_empty = 1;
+                    break;
+                }
+            }
+            closedir(chk);
+            if (non_empty) {
+                errno = EEXIST;
+                return -1;
+            }
+        }
+        DIR *d = opendir(src);
+        if (!d) return -1;
+        struct dirent *e;
+        int ret = 0;
+        int saved = 0;
+        while ((e = readdir(d)) != NULL) {
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+            size_t ns = strlen(src) + 1 + strlen(e->d_name) + 1;
+            size_t nd = strlen(dst) + 1 + strlen(e->d_name) + 1;
+            char *csrc = (char *)malloc(ns);
+            char *cdst = (char *)malloc(nd);
+            if (!csrc || !cdst) {
+                free(csrc);
+                free(cdst);
+                saved = ENOMEM;
+                ret = -1;
+                break;
+            }
+            snprintf(csrc, ns, "%s/%s", src, e->d_name);
+            snprintf(cdst, nd, "%s/%s", dst, e->d_name);
+            if (nv_copy_archive_inner(csrc, cdst, map, map_len, map_cap) != 0) {
+                saved = errno;
+                ret = -1;
+                free(csrc);
+                free(cdst);
+                break;
+            }
+            free(csrc);
+            free(cdst);
+        }
+        closedir(d);
+        if (ret != 0) {
+            errno = saved;
+            return ret;
+        }
+        nv_preserve_attrs(&st, dst);
+        return 0;
+    }
+    if (st.st_nlink > 1) {
+        for (size_t i = 0; i < *map_len; i++) {
+            if ((*map)[i].dev == st.st_dev && (*map)[i].ino == st.st_ino) {
+                if (link((*map)[i].dst, dst) != 0) return -1;
+                return 0;
+            }
+        }
+    }
+    if (nv_copy_file(src, dst) != 0) return -1;
+    if (st.st_nlink > 1) {
+        if (*map_len == *map_cap) {
+            *map_cap = *map_cap ? *map_cap * 2 : 16;
+            *map = (NvLinkMap *)realloc(*map, *map_cap * sizeof(NvLinkMap));
+        }
+        (*map)[*map_len].dev = st.st_dev;
+        (*map)[*map_len].ino = st.st_ino;
+        (*map)[*map_len].dst = nv_strdup(dst);
+        (*map_len)++;
+    }
+    nv_preserve_attrs(&st, dst);
+    return 0;
+}
+#endif
+
+static int nv_copy_archive(const char *src, const char *dst) {
+#ifdef _WIN32
+    // ويندوز: بلا `link` ولا `utimensat` — نسخ شجرة
+    // عادي (المحتوى والروابط الرمزية كما في
+    // `nv_copy_tree`)؛ والقيد مسجل.
+    return nv_copy_tree(src, dst);
+#else
+    NvLinkMap *map = NULL;
+    size_t map_len = 0, map_cap = 0;
+    int rc = nv_copy_archive_inner(src, dst, &map, &map_len, &map_cap);
+    for (size_t i = 0; i < map_len; i++) free(map[i].dst);
+    free(map);
+    return rc;
+#endif
+}
+
+#ifdef __linux__
+// انسخ ملفا متناثرا بـ`SEEK_DATA`/`SEEK_HOLE`
+// (الميزة 201): الامتدادات الحقيقية فقط تنسخ،
+// والثقوب تبقى ثقوبا. يرجع 0 إن وجد ثقبا واحدا
+// على الأقل، و1 إن كان بلا ثقوب أصلا، و-2 إن كان
+// نظام الملفات بلا دعم للمسح (فيتراجع المتصل
+// إلى النسخ العادي)، و-1 عند خطأ حقيقي.
+static int nv_copy_sparse(int sfd, const char *dst, off_t len) {
+    int dfd = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (dfd < 0) return -1;
+    if (len == 0) {
+        close(dfd);
+        return 1;
+    }
+    unsigned char buf[65536];
+    off_t pos = 0;
+    int had_hole = 0;
+    int ret = 0;
+    while (1) {
+        off_t data = lseek(sfd, pos, SEEK_DATA);
+        if (data < 0) {
+            if (errno == ENXIO) break;
+            ret = -2;
+            break;
+        }
+        if (data > pos) had_hole = 1;
+        off_t hole = lseek(sfd, data, SEEK_HOLE);
+        if (hole < 0) {
+            ret = -2;
+            break;
+        }
+        off_t off = data;
+        while (off < hole) {
+            size_t want = (size_t)((hole - off) < (off_t)sizeof(buf)
+                ? (hole - off)
+                : (off_t)sizeof(buf));
+            ssize_t n = pread(sfd, buf, want, off);
+            if (n < 0) {
+                ret = -1;
+                break;
+            }
+            if (n == 0) break;
+            if (pwrite(dfd, buf, (size_t)n, off) != n) {
+                ret = -1;
+                break;
+            }
+            off += n;
+        }
+        if (ret != 0) break;
+        pos = hole;
+        if (pos >= len) break;
+    }
+    if (ret == 0) {
+        if (ftruncate(dfd, len) != 0) ret = -1;
+        else ret = (had_hole || pos < len) ? 0 : 1;
+    }
+    close(dfd);
+    return ret;
+}
+#endif
+
+// نسخ خفيف (الميزة 201): يرجع 0 مستنسخا، و1
+// متناثرا، و2 عاديا، و-1 عند الفشل مع بقاء errno.
+static int nv_copy_light(const char *src, const char *dst) {
+#ifdef __linux__
+    int sfd = open(src, O_RDONLY);
+    if (sfd < 0) return -1;
+    struct stat sst;
+    if (fstat(sfd, &sst) != 0) {
+        int e = errno;
+        close(sfd);
+        errno = e;
+        return -1;
+    }
+    int dfd = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+    if (dfd < 0) {
+        int e = errno;
+        close(sfd);
+        errno = e;
+        return -1;
+    }
+    // الاستنساخ: `ioctl(FICLONE)` عملية O(1) بلا
+    // نسخ بيانات حيث يدعمها نظام الملفات؛ والفشل
+    // هنا تراجع لا خطأ.
+    if (ioctl(dfd, FICLONE, sfd) == 0) {
+        fchmod(dfd, sst.st_mode & 07777);
+        close(sfd);
+        close(dfd);
+        return 0;
+    }
+    close(dfd);
+    int rc = nv_copy_sparse(sfd, dst, (off_t)sst.st_size);
+    close(sfd);
+    if (rc == 0 || rc == 1) {
+        chmod(dst, sst.st_mode & 07777);
+        return rc == 0 ? 1 : 2;
+    }
+    if (rc == -2) {
+        if (nv_copy_file(src, dst) != 0) return -1;
+        return 2;
+    }
+    return -1;
+#else
+    if (nv_copy_file(src, dst) != 0) return -1;
+    return 2;
+#endif
+}
+
+// ---------- الدفعة 3 — التشغيل (اجتماع 57 §72) ----------
+// وصف الأمر ومكان الأداة: طبقات البحث ومساعد البحث
+// عن ملف أداة — مرآة command_names.rs وfiles.rs
+// في Rust.
+
+// ترميز نقطة شفرة إلى UTF-8 في out؛ يعيد عدد البايتات.
+static int nv_utf8_encode(char *out, unsigned int cp) {
+    if (cp < 0x80) { out[0] = (char)cp; return 1; }
+    if (cp < 0x800) {
+        out[0] = (char)(0xC0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3F));
+        return 2;
+    }
+    if (cp < 0x10000) {
+        out[0] = (char)(0xE0 | (cp >> 12));
+        out[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[2] = (char)(0x80 | (cp & 0x3F));
+        return 3;
+    }
+    out[0] = (char)(0xF0 | (cp >> 18));
+    out[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+    out[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+    out[3] = (char)(0x80 | (cp & 0x3F));
+    return 4;
+}
+
+// تطبيع كلمة كما يفعل normalize_cli_word في Rust:
+// تجريد التشكيل (U+064B–U+0652 وU+0670) والتطويل
+// (U+0640)، وتوحيد الهمزات والتاء المربوطة والألف
+// المقصورة؛ وطي الفراغات (كلمة كلمة بفاصل واحد،
+// بلا فراغ بادئ أو لاحق). يعيد سلسلة مخصصة
+// يحررها المتصل.
+static char *nv_normalize_word(const char *s) {
+    size_t len = strlen(s);
+    char *out = (char *)malloc(len + 1);
+    size_t w = 0;
+    int last_space = 1;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') {
+            if (!last_space) {
+                out[w++] = ' ';
+                last_space = 1;
+            }
+            p++;
+            continue;
+        }
+        unsigned int cp = 0;
+        // فك UTF-8 الموجود (مساعدات التنقل، الدفعة 2).
+        size_t adv = nv_utf8_decode(p, &cp);
+        p += adv;
+        if ((cp >= 0x064B && cp <= 0x0652) || cp == 0x0670 || cp == 0x0640) continue;
+        if (cp == 0x0622 || cp == 0x0623 || cp == 0x0625) cp = 0x0627;
+        else if (cp == 0x0624) cp = 0x0648;
+        else if (cp == 0x0626) cp = 0x064A;
+        else if (cp == 0x0629) cp = 0x0647;
+        else if (cp == 0x0649) cp = 0x064A;
+        char buf[4];
+        int m = nv_utf8_encode(buf, cp);
+        memcpy(out + w, buf, (size_t)m);
+        w += (size_t)m;
+        last_space = 0;
+    }
+    if (w > 0 && out[w - 1] == ' ') w--;
+    out[w] = '\0';
+    return out;
+}
+
+// أمر طرفي (بالصيغة المطبَّعة) — مرآة
+// REPL_COMMANDS في command_names.rs.
+static int nv_is_repl_command(const char *norm) {
+    static const char *names[] = {
+        "شغل", "استبدل", "تثبيت", "تن", "معلومات",
+        "اعد-الاعدادات", "اعد-الضبط", "خروج", "عكس",
+        ":مساعده", ":اعرض", ":امسح-المحفوظات", ":مسح",
+        ":اسمح-بالشبكه", ":اسمح-بالخادم", ":تنزيلات", ":خروج",
+        "ارجع للبيت", "كرر الاخير", "امسح الجلسه", NULL
+    };
+    for (int i = 0; names[i]; i++) {
+        if (strcmp(norm, names[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+// الدالة المدمجة التي تمرر إليها هذه العبارة
+// الطرفية (بالصيغة المطبَّعة)، أو NULL.
+static const char *nv_phrase_builtin(const char *norm) {
+    static const char *pairs[][2] = {
+        {"ادفع مجلد", "ادفع_مجلد"},
+        {"اخرج مجلد", "أخرج_مجلد"},
+        {"اعرض المكدس", "اعرض_المكدس"},
+        {"امسح المكدس", "امسح_المكدس"},
+        {"ابحث في ملف", "ابحث_في_ملف"},
+        {"ابحث عن ملف", "ابحث_عن"},
+        {"حول الي عدد", "عدد"},
+        {"انتقل", "انتقل"},
+        {"انسخ", "انسخ"},
+        {"انقل", "انقل"},
+        {"موجود", "موجود"},
+        {NULL, NULL}
+    };
+    for (int i = 0; pairs[i][0]; i++) {
+        if (strcmp(norm, pairs[i][0]) == 0) return pairs[i][1];
+    }
+    return NULL;
+}
+
+// اختصار طرفي معروف — مصدر الحقيقة الوحيد جدول
+// shortcut_def في repl.rs (28 رمزا).
+static int nv_is_shortcut_code(const char *norm) {
+    static const char *codes[] = {
+        "ات", "مح", "شم", "حم", "حف", "اف", "شف", "عب",
+        "عن", "عس", "عك", "عش", "حج", "شر", "اك", "ام",
+        "تم", "عم", "اس", "اص", "رع", "تا", "وق", "نو",
+        "اج", "عع", "نب", "اب", NULL
+    };
+    for (int i = 0; codes[i]; i++) {
+        if (strcmp(norm, codes[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+// كلمة محجوزة (بالتهجئة المطبَّعة كما في
+// keyword_spelling في lexer.rs).
+static int nv_is_keyword_word(const char *norm) {
+    static const char *words[] = {
+        "اطبع", "اذا", "والا", "بينما", "لكل", "في",
+        "داله", "داله_مجهوله", "ارجع", "و", "او", "ليس",
+        "صحيح", "خطا", "لاشيء", "اكسر", "تابع", "مرر",
+        "حاول", "ماعدا", "اخيرا", "فيه", "انشي", "ورث",
+        "واجهه", "استورد", "صدر", "باسم", "من", "كرر",
+        "مرات", "طالما", "اكبر", "اصغر", "يساوي", "لا", NULL
+    };
+    for (int i = 0; words[i]; i++) {
+        if (strcmp(norm, words[i]) == 0) return 1;
+    }
+    return 0;
+}
+
+// اسم الملف الكامل لأداة (يلحق `.نيفا` عند غيابه)
+// — سلسلة مخصصة يحررها المتصل.
+static char *nv_tool_file_name(const char *name) {
+    static const char *ext = ".نيفا";
+    size_t nlen = strlen(name);
+    size_t elen = strlen(ext);
+    if (nlen >= elen && strcmp(name + nlen - elen, ext) == 0) {
+        return nv_strdup(name);
+    }
+    char *out = (char *)malloc(nlen + elen + 1);
+    memcpy(out, name, nlen);
+    memcpy(out + nlen, ext, elen + 1);
+    return out;
+}
+
+// ابحث عن ملف أداة في `$نيفا` ثم البيت — مرآة
+// find_tool_file: المجلد وغير المقروء يُتخطيان
+// (بت القراءة 0444). يعيد مسارا مخصصا يحرره
+// المتصل، أو NULL؛ ويضبط *in_home (1 إن كان في
+// البيت).
+static char *nv_locate_tool(const char *file_name, int *in_home) {
+    const char *bases[2];
+    bases[0] = nv_program_dir;
+    bases[1] = nv_home_dir;
+    for (int i = 0; i < 2; i++) {
+        if (!bases[i]) continue;
+        size_t n = strlen(bases[i]) + 1 + strlen(file_name) + 1;
+        char *cand = (char *)malloc(n);
+        snprintf(cand, n, "%s/%s", bases[i], file_name);
+        struct stat st;
+        if (stat(cand, &st) == 0 && S_ISREG(st.st_mode)
+            && (st.st_mode & 0444) != 0) {
+            *in_home = (i == 1);
+            return cand;
+        }
+        free(cand);
+    }
+    return NULL;
+}
+
+// طبقة الأداة في الوصف: مكانها أو «غير موجود».
+// الاسم الحاوي مسارا لا يُبحث في القرص إطلاقا.
+static const char *nv_describe_tool(const char *name) {
+    if (strchr(name, '/') || strchr(name, '\\') || strstr(name, "..")) {
+        return "غير موجود";
+    }
+    char *file_name = nv_tool_file_name(name);
+    int in_home = 0;
+    char *path = nv_locate_tool(file_name, &in_home);
+    free(file_name);
+    if (!path) return "غير موجود";
+    free(path);
+    return in_home ? "اداة في ~" : "اداة في $نيفا";
+}
+
+// صف أمرا باسمه بترتيب الطبقات — مرآة
+// describe_command في Rust. يعيد سلسلة ثابتة.
+static const char *nv_describe_command(const char *name) {
+    char *norm = nv_normalize_word(name);
+    NvCell *cell = NULL;
+    if (nv_current_call_scope) {
+        cell = nv_scope_lookup_cell(nv_current_call_scope, name);
+    }
+    const char *result;
+    if (nv_is_repl_command(norm)) result = "امر طرفي";
+    else if (!strchr(norm, ' ') && nv_is_shortcut_code(norm)) result = "اختصار";
+    else if (!strchr(norm, ' ') && nv_is_keyword_word(norm)) result = "كلمة محجوزة";
+    else if (cell && cell->val.tag == NV_FUNC) result = "دالة معرفة";
+    else if (nv_is_builtin(name) || nv_phrase_builtin(norm) != NULL) result = "دالة مدمجة";
+    else result = nv_describe_tool(name);
+    free(norm);
+    return result;
 }
 
 NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, int col) {
@@ -3127,8 +4924,30 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
         return out;
     }
     if (strcmp(name, "المجلد_الحالي") == 0) {
-        nv_arity(args, nargs, 0, name, line, col);
-        char *disp = nv_display_path(nv_cwd);
+        // اجتماع 56 §71 (الميزتان 9 و12): 0 أو 1
+        // معاملات — بلا معامل حسب الوضع العام للجلسة،
+        // و«منطقي»/«فيزيائي» صريحا.
+        if (nargs > 1) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة المدمجة %s تتوقع 0 أو 1 معاملات لكن أعطيت %d", name, nargs);
+        }
+        int physical = nv_physical_mode;
+        if (nargs == 1) {
+            if (args[0].tag != NV_STR) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "المجلد_الحالي يتطلب علما نصيا، وليس %s", nv_type_name(args[0]));
+            }
+            const char *f = args[0].u.str->data;
+            if (strcmp(f, "منطقي") == 0) physical = 0;
+            else if (strcmp(f, "فيزيائي") == 0) physical = 1;
+            else nv_error_fmt(NV_ERR_RUNTIME, line, col, "علم المجلد_الحالي غير معروف: %s — العلم الصالح: منطقي أو فيزيائي", f);
+        }
+        char *disp;
+        if (physical) {
+            char *phys = nv_physical_cwd();
+            disp = nv_display_path(phys);
+            free(phys);
+        } else {
+            disp = nv_display_path(nv_cwd);
+        }
         NvValue v = nv_str_take(disp, strlen(disp));
         return v;
     }
@@ -3163,78 +4982,523 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
                 nv_error_fmt(NV_ERR_RUNTIME, line, col, "اسم متغير البيئة غير صالح: %s", n);
             }
         }
-        const char *v = NULL;
-        if (strcmp(n, "البيت") == 0) v = "~";
-        else if (strcmp(n, "مجلد_البرنامج") == 0) v = "$نيفا";
-        else if (strcmp(n, "المسار") == 0) v = "$نيفا";
-        else if (strcmp(n, "إصدار_نيفا") == 0) v = "١٫٠٫٠";
-        else if (strcmp(n, "الطرفية") == 0) v = "نيفا";
-        else if (strcmp(n, "اللغة") == 0) v = "ar_EG.UTF-8";
-        else if (strcmp(n, "المجلد_المؤقت") == 0) v = "$نيفا/tmp";
-        else if (strcmp(n, "الألوان") == 0) v = "truecolor";
-        else {
-            nv_error_fmt(NV_ERR_RUNTIME, line, col, "متغير بيئة غير معروف: %s", n);
-        }
-        return nv_str_cstr(v);
+        // الدفعة 4 — المتغيرات (اجتماع 58 §73):
+        // الثابت والديناميكي بالمساعد المشترك.
+        return nv_env_read(n, line, col);
     }
-    if (strcmp(name, "انتقل") == 0) {
+    // الدفعة 4 — المتغيرات (اجتماع 58 §73): التجميد
+    // والحذف والفحص والمرجع وعرض البيئة ومفاتيح
+    // القاموس — مرآة أذرع المفسر نفسها.
+    if (strcmp(name, "جمد") == 0) {
         nv_arity(args, nargs, 1, name, line, col);
         if (args[0].tag != NV_STR) {
-            nv_error_fmt(NV_ERR_TYPE, line, col, "انتقل يتطلب مسارا نصيا، وليس %s", nv_type_name(args[0]));
+            nv_error_fmt(NV_ERR_TYPE, line, col, "جمد يتطلب نصا، وليس %s", nv_type_name(args[0]));
         }
-        char *resolved = nv_resolve_path(args[0].u.str->data, line, col);
-        struct stat st;
-        if (stat(resolved, &st) != 0) {
-            char *disp = nv_display_str(args[0].u.str->data);
-            nv_error_fmt(NV_ERR_IO, line, col, "المجلد غير موجود: %s", disp);
+        const char *nm = args[0].u.str->data;
+        const char *resolved = nv_resolve_name(nm);
+        if (!nv_current_call_scope || !nv_scope_lookup_cell(nv_current_call_scope, resolved)) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "متغير غير معرف: %s", nm);
         }
-        if (!S_ISDIR(st.st_mode)) {
-            char *disp = nv_display_str(args[0].u.str->data);
-            nv_error_fmt(NV_ERR_IO, line, col, "ليس مجلدا: %s", disp);
+        if (!nv_frozen_contains(resolved)) {
+            if (nv_frozen_len == nv_frozen_cap) {
+                nv_frozen_cap = nv_frozen_cap ? nv_frozen_cap * 2 : 8;
+                nv_frozen = (char **)realloc(nv_frozen, nv_frozen_cap * sizeof(char *));
+            }
+            nv_frozen[nv_frozen_len++] = nv_strdup(resolved);
         }
-        char *norm = nv_normalize_lexical(resolved);
-        free(nv_cwd);
-        nv_cwd = norm;
-        free(resolved);
         return nv_nil();
     }
-    if (strcmp(name, "أنشئ_مجلد") == 0) {
+    if (strcmp(name, "احذف_متغير") == 0) {
         nv_arity(args, nargs, 1, name, line, col);
+        if (args[0].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "احذف_متغير يتطلب نصا، وليس %s", nv_type_name(args[0]));
+        }
+        const char *nm = args[0].u.str->data;
+        for (size_t i = 0; i < nv_nameref_len; i++) {
+            if (strcmp(nv_nameref_from[i], nm) == 0) {
+                free(nv_nameref_from[i]);
+                free(nv_nameref_to[i]);
+                for (size_t j = i + 1; j < nv_nameref_len; j++) {
+                    nv_nameref_from[j - 1] = nv_nameref_from[j];
+                    nv_nameref_to[j - 1] = nv_nameref_to[j];
+                }
+                nv_nameref_len--;
+                return nv_nil();
+            }
+        }
+        const char *resolved = nv_resolve_name(nm);
+        if (nv_frozen_contains(resolved)) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "متغير مجمد: %s", nm);
+        }
+        if (nv_current_call_scope) nv_scope_unbind(nv_current_call_scope, resolved);
+        return nv_nil();
+    }
+    if (strcmp(name, "افحص_متغير") == 0) {
+        nv_arity(args, nargs, 1, name, line, col);
+        if (args[0].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "افحص_متغير يتطلب نصا، وليس %s", nv_type_name(args[0]));
+        }
+        const char *nm = args[0].u.str->data;
+        for (size_t i = 0; i < nv_nameref_len; i++) {
+            if (strcmp(nv_nameref_from[i], nm) == 0) {
+                size_t n = strlen(nm) + strlen(nv_nameref_to[i]) + 32;
+                char *buf = (char *)malloc(n);
+                snprintf(buf, n, "متغير %s: مرجع إلى %s", nm, nv_nameref_to[i]);
+                return nv_str_take(buf, strlen(buf));
+            }
+        }
+        const char *resolved = nv_resolve_name(nm);
+        NvCell *cell = nv_current_call_scope
+            ? nv_scope_lookup_cell(nv_current_call_scope, resolved)
+            : NULL;
+        if (!cell) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "متغير غير معرف: %s", nm);
+        }
+        char *val = nv_fmt_value(cell->val);
+        const char *tn = nv_type_name(cell->val);
+        char *shown;
+        if (cell->val.tag == NV_STR) {
+            size_t n = strlen(val) + 3;
+            shown = (char *)malloc(n);
+            snprintf(shown, n, "\"%s\"", val);
+            free(val);
+        } else {
+            shown = val;
+        }
+        int frozen = nv_frozen_contains(resolved);
+        size_t n = strlen(nm) + strlen(tn) + strlen(shown) + 32;
+        char *buf = (char *)malloc(n);
+        snprintf(buf, n, "متغير %s: %s = %s%s", nm, tn, shown, frozen ? " مجمد" : "");
+        free(shown);
+        return nv_str_take(buf, strlen(buf));
+    }
+    if (strcmp(name, "مرجع") == 0) {
+        nv_arity(args, nargs, 2, name, line, col);
+        if (args[0].tag != NV_STR || args[1].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "مرجع يتطلب نصين");
+        }
+        const char *nw = args[0].u.str->data;
+        const char *tg = args[1].u.str->data;
+        if (!nv_valid_var_name(nw) || !nv_valid_var_name(tg)) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "اسم مرجع غير صالح: %s أو %s", nw, tg);
+        }
+        if (!nv_current_call_scope) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "متغير غير معرف: %s", tg);
+        }
+        if (nv_scope_lookup_cell(nv_current_call_scope, nw)) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الاسم مستخدم: %s", nw);
+        }
+        for (size_t i = 0; i < nv_nameref_len; i++) {
+            if (strcmp(nv_nameref_from[i], nw) == 0) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الاسم مستخدم: %s", nw);
+            }
+        }
+        if (!nv_scope_lookup_cell(nv_current_call_scope, tg)) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "متغير غير معرف: %s", tg);
+        }
+        const char *cur = tg;
+        for (int i = 0; i < 32; i++) {
+            if (strcmp(cur, nw) == 0) {
+                nv_error(NV_ERR_RUNTIME, "مرجع دائري", line, col);
+            }
+            const char *next = NULL;
+            for (size_t j = 0; j < nv_nameref_len; j++) {
+                if (strcmp(nv_nameref_from[j], cur) == 0) { next = nv_nameref_to[j]; break; }
+            }
+            if (!next) break;
+            cur = next;
+        }
+        if (nv_nameref_len == nv_nameref_cap) {
+            nv_nameref_cap = nv_nameref_cap ? nv_nameref_cap * 2 : 8;
+            nv_nameref_from = (char **)realloc(nv_nameref_from, nv_nameref_cap * sizeof(char *));
+            nv_nameref_to = (char **)realloc(nv_nameref_to, nv_nameref_cap * sizeof(char *));
+        }
+        nv_nameref_from[nv_nameref_len] = nv_strdup(nw);
+        nv_nameref_to[nv_nameref_len] = nv_strdup(tg);
+        nv_nameref_len++;
+        return nv_nil();
+    }
+    if (strcmp(name, "اعرض_البيئة") == 0) {
+        nv_arity(args, nargs, 0, name, line, col);
+        static const char *names[] = {
+            "البيت", "مجلد_البرنامج", "المسار", "إصدار_نيفا",
+            "الطرفية", "اللغة", "المجلد_المؤقت", "الألوان",
+            "المجلد_الحالي", "المستخدم", "اسم_المضيف",
+            "عشوائي", "ثواني", "رقم_السطر",
+        };
+        NvValue list = nv_list_new();
+        for (int i = 0; i < 14; i++) {
+            const char *nm = names[i];
+            NvValue v;
+#if !defined(__linux__) && !defined(__ANDROID__)
+            if (strcmp(nm, "المستخدم") == 0 || strcmp(nm, "اسم_المضيف") == 0) {
+                v = nv_str_cstr("غير مدعوم");
+            } else {
+                v = nv_env_read(nm, line, col);
+            }
+#else
+            v = nv_env_read(nm, line, col);
+#endif
+            char *vs = nv_fmt_value(v);
+            size_t n = strlen(nm) + strlen(vs) + 2;
+            char *entry = (char *)malloc(n);
+            snprintf(entry, n, "%s=%s", nm, vs);
+            free(vs);
+            nv_list_push_raw(list.u.list, nv_str_take(entry, strlen(entry)));
+        }
+        return list;
+    }
+    if (strcmp(name, "مفاتيح") == 0) {
+        nv_arity(args, nargs, 1, name, line, col);
+        if (args[0].tag != NV_DICT) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "مفاتيح يتطلب قاموسا، وليس %s", nv_type_name(args[0]));
+        }
+        NvValue list = nv_list_new();
+        for (size_t i = 0; i < args[0].u.dict->len; i++) {
+            nv_list_push_raw(list.u.list, nv_str_cstr(args[0].u.dict->entries[i].key));
+        }
+        return list;
+    }
+    // الدفعة 1 — رموز الخروج (اجتماع 54 §69)، مرآة
+    // أذرع المفسر والآلة الافتراضية نفسها.
+    if (strcmp(name, "رمز_الخروج") == 0) {
+        nv_arity(args, nargs, 0, name, line, col);
+        return nv_num((double)nv_last_exit_code);
+    }
+    if (strcmp(name, "اسم_البرنامج") == 0) {
+        nv_arity(args, nargs, 0, name, line, col);
+        const char *n = nv_program_name ? nv_program_name : "نيفا";
+        return nv_str_cstr(n);
+    }
+    if (strcmp(name, "خروج") == 0) {
+        if (nargs > 1) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة المدمجة %s تتوقع 0 أو 1 معاملات لكن أعطيت %d", name, nargs);
+        }
+        int code;
+        if (nargs == 0) {
+            // بلا معامل: رمز آخر أمر، كـ exit في باش.
+            code = nv_last_exit_code;
+        } else {
+            // عدد صحيح 0–255، وإلا خطأ وقت تشغيل —
+            // بلا التفاف كـباش.
+            if (args[0].tag != NV_NUM || args[0].u.num != trunc(args[0].u.num)
+                || args[0].u.num < 0.0 || args[0].u.num > 255.0) {
+                nv_error(NV_ERR_RUNTIME, "رمز الخروج يجب أن يكون عددا صحيحا بين ٠ و٢٥٥", line, col);
+            }
+            code = (int)args[0].u.num;
+        }
+        nv_exit_code = code;
+        nv_exit_requested = 1;
+        // القفز يغادر — لا عودة هنا أبدا.
+        nv_exit_jump();
+        return nv_nil();
+    }
+    // الدفعة 3 — التشغيل (اجتماع 57 §72): وصف
+    // الأمر ومكان الأداة والاستبدال — مرآة أذرع
+    // المفسر والآلة الافتراضية نفسها.
+    if (strcmp(name, "نوع_الامر") == 0) {
+        nv_arity(args, nargs, 1, name, line, col);
+        if (args[0].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "نوع_الامر يتطلب نصا، وليس %s", nv_type_name(args[0]));
+        }
+        return nv_str_cstr(nv_describe_command(args[0].u.str->data));
+    }
+    if (strcmp(name, "مكان_الاداة") == 0) {
+        nv_arity(args, nargs, 1, name, line, col);
+        if (args[0].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "مكان_الاداة يتطلب نصا، وليس %s", nv_type_name(args[0]));
+        }
+        const char *tool = args[0].u.str->data;
+        if (strchr(tool, '/') || strchr(tool, '\\') || strstr(tool, "..")) {
+            nv_error(NV_ERR_RUNTIME, "مكان_الاداة يقبل اسم ملف بلا مسار", line, col);
+        }
+        char *file_name = nv_tool_file_name(tool);
+        int in_home = 0;
+        char *path = nv_locate_tool(file_name, &in_home);
+        free(file_name);
+        if (!path) return nv_nil();
+        NvValue r = nv_str_cstr(path);
+        free(path);
+        return r;
+    }
+    if (strcmp(name, "استبدل_الجلسة") == 0) {
+        nv_arity(args, nargs, 1, name, line, col);
+        if (args[0].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "استبدل_الجلسة يتطلب نصا، وليس %s", nv_type_name(args[0]));
+        }
+        const char *tool = args[0].u.str->data;
+        if (strchr(tool, '/') || strchr(tool, '\\') || strstr(tool, "..")) {
+            nv_error(NV_ERR_RUNTIME, "استبدل_الجلسة يقبل اسم ملف بلا مسار", line, col);
+        }
+        // لا مفسر داخل الثنائي الأصلي يشغّل ملف
+        // `.نيفا` آخر — خطأ صريح لا ادعاء نجاح.
+        nv_error(NV_ERR_RUNTIME, "استبدل_الجلسة غير مدعوم في البرنامج الأصلي", line, col);
+        return nv_nil();
+    }
+    if (strcmp(name, "انتقل") == 0) {
+        /* اجتماع 56 §71 — الدفعة 2 (التنقل): 0 أو 2
+           معاملات — بلا معاملات → الأب `..` (أمر
+           المالك المباشر 2026-11-09)؛ و`-` اسم عادي
+           غير موجود؛ والمعامل الثاني علم نصي اختياري
+           («منطقي»/«فيزيائي»/«منطقي_متحقق»/
+           «فيزيائي_متحقق»)؛ والصامت في كل الصور. */
+        if (nargs > 2) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة المدمجة %s تتوقع 0 أو 2 معاملات لكن أعطيت %d", name, nargs);
+        }
+        const char *dir = (nargs == 0) ? ".." : NULL;
+        if (nargs >= 1) {
+            if (args[0].tag != NV_STR) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "انتقل يتطلب مسارا نصيا، وليس %s", nv_type_name(args[0]));
+            }
+            dir = args[0].u.str->data;
+        }
+        int flag = -1;
+        if (nargs == 2) {
+            if (args[1].tag != NV_STR) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "علم انتقل يتطلب نصا، وليس %s", nv_type_name(args[1]));
+            }
+            const char *f = args[1].u.str->data;
+            if (strcmp(f, "منطقي") == 0 || strcmp(f, "منطقي_متحقق") == 0) flag = 0;
+            else if (strcmp(f, "فيزيائي") == 0 || strcmp(f, "فيزيائي_متحقق") == 0) flag = 1;
+            else nv_error_fmt(NV_ERR_RUNTIME, line, col, "علم انتقل غير معروف: %s — العلم الصالح: منطقي أو فيزيائي أو منطقي_متحقق أو فيزيائي_متحقق", f);
+        }
+        nv_change_dir(dir, flag, line, col);
+        return nv_nil();
+    }
+    /* اجتماع 56 §71 — الدفعة 2 (التنقل): مكدس
+       المجلدات (الميزات 19–22 و26) — تمر عبر
+       `انتقل` نفسها (nv_change_dir) فيرث قواعدها. */
+    if (strcmp(name, "ادفع_مجلد") == 0) {
+        if (nargs > 1) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة المدمجة %s تتوقع 0 أو 1 معاملات لكن أعطيت %d", name, nargs);
+        }
+        if (nargs == 0) {
+            if (nv_dirstack_len == 0) nv_error(NV_ERR_RUNTIME, "المكدس فارغ", line, col);
+            char *top = nv_dirstack[0];
+            nv_dirstack[0] = nv_strdup(nv_cwd);
+            free(nv_cwd);
+            nv_cwd = top;
+            nv_after_stack_move();
+            return nv_nil();
+        }
+        if (args[0].tag == NV_STR) {
+            const char *s = args[0].u.str->data;
+            long idx;
+            size_t pos;
+            if (nv_parse_arabic_int(s, &idx) && nv_stack_index(idx, nv_dirstack_len, &pos)) {
+                nv_dirstack_rotate(pos);
+                nv_after_stack_move();
+                return nv_nil();
+            }
+            char *old = nv_strdup(nv_cwd);
+            nv_change_dir(s, -1, line, col);
+            nv_dirstack_push_front(old);
+            return nv_nil();
+        }
+        if (args[0].tag == NV_NUM) {
+            long idx;
+            if (!nv_stack_index_value(&args[0], &idx)) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "ادفع_مجلد يتطلب مسارا نصيا أو رقما، وليس %s", nv_type_name(args[0]));
+            }
+            size_t pos;
+            if (!nv_stack_index(idx, nv_dirstack_len, &pos)) {
+                char numbuf[64];
+                nv_fmt_arabic_long(idx, numbuf, sizeof(numbuf));
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "عنصر المكدس غير موجود: %s", numbuf);
+            }
+            nv_dirstack_rotate(pos);
+            nv_after_stack_move();
+            return nv_nil();
+        }
+        nv_error_fmt(NV_ERR_TYPE, line, col, "ادفع_مجلد يتطلب مسارا نصيا أو رقما، وليس %s", nv_type_name(args[0]));
+    }
+    if (strcmp(name, "أخرج_مجلد") == 0) {
+        if (nargs > 1) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة المدمجة %s تتوقع 0 أو 1 معاملات لكن أعطيت %d", name, nargs);
+        }
+        if (nargs == 0) {
+            if (nv_dirstack_len == 0) nv_error(NV_ERR_RUNTIME, "المكدس فارغ", line, col);
+            const char *target = nv_dirstack[0];
+            struct stat st;
+            if (stat(target, &st) != 0) {
+                char *disp = nv_display_path(target);
+                nv_error_fmt(NV_ERR_IO, line, col, "المجلد غير موجود: %s", disp);
+            }
+            if (!S_ISDIR(st.st_mode)) {
+                char *disp = nv_display_path(target);
+                nv_error_fmt(NV_ERR_IO, line, col, "ليس مجلدا: %s", disp);
+            }
+            char *norm = nv_normalize_lexical(target);
+            nv_dirstack_remove(0);
+            free(nv_cwd);
+            nv_cwd = norm;
+            nv_after_stack_move();
+            return nv_nil();
+        }
+        long idx;
+        if (!nv_stack_index_value(&args[0], &idx)) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "أخرج_مجلد يتطلب رقما، وليس %s", nv_type_name(args[0]));
+        }
+        size_t pos;
+        if (!nv_stack_index(idx, nv_dirstack_len, &pos)) {
+            char numbuf[64];
+            nv_fmt_arabic_long(idx, numbuf, sizeof(numbuf));
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "عنصر المكدس غير موجود: %s", numbuf);
+        }
+        nv_dirstack_remove(pos);
+        return nv_nil();
+    }
+    if (strcmp(name, "اعرض_المكدس") == 0) {
+        nv_arity(args, nargs, 0, name, line, col);
+        NvValue out = nv_list_new();
+        char *disp = nv_display_path(nv_cwd);
+        nv_list_push_raw(out.u.list, nv_str_take(disp, strlen(disp)));
+        for (size_t i = 0; i < nv_dirstack_len; i++) {
+            char *d = nv_display_path(nv_dirstack[i]);
+            nv_list_push_raw(out.u.list, nv_str_take(d, strlen(d)));
+        }
+        return out;
+    }
+    if (strcmp(name, "امسح_المكدس") == 0) {
+        nv_arity(args, nargs, 0, name, line, col);
+        nv_dirstack_clear();
+        return nv_nil();
+    }
+    if (strcmp(name, "مسار_بحث_المجلدات") == 0) {
+        if (nargs > 1) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة المدمجة %s تتوقع 0 أو 1 معاملات لكن أعطيت %d", name, nargs);
+        }
+        if (nargs == 1) {
+            if (args[0].tag != NV_LIST) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "مسار_بحث_المجلدات يتطلب قائمة نصوص، وليس %s", nv_type_name(args[0]));
+            }
+            NvList *l = args[0].u.list;
+            for (size_t i = 0; i < l->len; i++) {
+                if (l->items[i].tag != NV_STR) {
+                    nv_error_fmt(NV_ERR_TYPE, line, col, "مسار_بحث_المجلدات يتطلب قائمة نصوص، وليس عنصرا %s", nv_type_name(l->items[i]));
+                }
+            }
+            for (size_t i = 0; i < nv_cdpath_len; i++) free(nv_cdpath[i]);
+            nv_cdpath_len = 0;
+            for (size_t i = 0; i < l->len; i++) {
+                if (nv_cdpath_len == nv_cdpath_cap) {
+                    nv_cdpath_cap = nv_cdpath_cap ? nv_cdpath_cap * 2 : 8;
+                    nv_cdpath = (char **)realloc(nv_cdpath, nv_cdpath_cap * sizeof(char *));
+                }
+                nv_cdpath[nv_cdpath_len++] = nv_strdup(l->items[i].u.str->data);
+            }
+        }
+        NvValue out = nv_list_new();
+        for (size_t i = 0; i < nv_cdpath_len; i++) {
+            nv_list_push_raw(out.u.list, nv_str_cstr(nv_cdpath[i]));
+        }
+        return out;
+    }
+    if (strcmp(name, "الوضع_الفيزيائي") == 0) {
+        if (nargs > 1) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة المدمجة %s تتوقع 0 أو 1 معاملات لكن أعطيت %d", name, nargs);
+        }
+        if (nargs == 1) {
+            if (args[0].tag != NV_BOOL) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الوضع_الفيزيائي يتطلب قيمة منطقية، وليس %s", nv_type_name(args[0]));
+            }
+            nv_physical_mode = args[0].u.boolean ? 1 : 0;
+        }
+        return nv_bool(nv_physical_mode);
+    }
+    if (strcmp(name, "أنشئ_مجلد") == 0) {
+        if (nargs < 1 || nargs > 2) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "أنشئ_مجلد تتوقع 1 أو 2 معاملات لكن أعطيت %d", nargs);
+        }
         if (args[0].tag != NV_STR) {
             nv_error_fmt(NV_ERR_TYPE, line, col, "أنشئ_مجلد يتطلب مسارا نصيا، وليس %s", nv_type_name(args[0]));
         }
+        // الاجتماع 53 §67 (الميزة 210): سلوك `mkdir -p`
+        // دائما — ينشئ كل الآباء الناقصين، وينجح صامتا
+        // على الموجود.
+        if (args[0].u.str->data[0] == '\0') {
+            nv_error_fmt(NV_ERR_IO, line, col, "أنشئ_مجلد يتطلب مسارا غير فارغ");
+        }
+        // الاجتماع 59 §74 (الميزة 211): معامل وضع
+        // اختياري + إرجاع قائمة ما أُنشئ فعلا.
+        unsigned mode = 0;
+        int has_mode = 0;
+        if (nargs == 2) {
+            if (args[1].tag != NV_STR) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "أنشئ_مجلد يتطلب وضعا نصيا، وليس %s", nv_type_name(args[1]));
+            }
+            if (nv_parse_octal(args[1].u.str->data, &mode) != 0) {
+                nv_error_fmt(NV_ERR_IO, line, col, "الوضع يجب أن يكون ثمانيا مثل 755");
+            }
+            has_mode = 1;
+        }
         char *resolved = nv_resolve_path(args[0].u.str->data, line, col);
-#ifdef _WIN32
-        if (mkdir(resolved) != 0) {
-#else
-        if (mkdir(resolved, 0777) != 0) {
-#endif
+        size_t nmiss = 0;
+        char **miss = nv_missing_components(resolved, &nmiss);
+        if (nv_mkdir_p(resolved) != 0) {
             int e = errno;
             char osb[256];
             nv_os_error_str(e, osb, sizeof(osb));
             char *disp = nv_display_str(args[0].u.str->data);
             nv_error_fmt(NV_ERR_IO, line, col, "تعذر إنشاء المجلد %s: %s", disp, osb);
         }
+        // الوضع على الأخير وحده، وإن كان منشأ حديثا
+        // فقط (الموجود لا يمس — كما في `mkdir -m -p`).
+        if (has_mode && nmiss > 0 && strcmp(miss[nmiss - 1], resolved) == 0) {
+            if (chmod(resolved, (int)mode) != 0) {
+                int e = errno;
+                char osb[256];
+                nv_os_error_str(e, osb, sizeof(osb));
+                char *disp = nv_display_str(args[0].u.str->data);
+                nv_error_fmt(NV_ERR_IO, line, col, "تعذر ضبط وضع المجلد %s: %s", disp, osb);
+            }
+        }
+        NvValue out = nv_list_new();
+        for (size_t i = 0; i < nmiss; i++) {
+            char *d = nv_created_display(miss[i]);
+            nv_list_push_raw(out.u.list, nv_str_take(d, strlen(d)));
+            free(miss[i]);
+        }
+        free(miss);
         free(resolved);
-        return nv_nil();
+        return out;
     }
     if (strcmp(name, "احذف") == 0) {
         nv_arity(args, nargs, 1, name, line, col);
         if (args[0].tag != NV_STR) {
             nv_error_fmt(NV_ERR_TYPE, line, col, "احذف يتطلب مسارا نصيا، وليس %s", nv_type_name(args[0]));
         }
+        // الاجتماع 59 §74 (الميزة 208): حارس الجذر
+        // قبل أي حل ساندبوكس.
+        const char *root_msg = nv_root_refusal_text(args[0].u.str->data);
+        if (root_msg) {
+            nv_error_fmt(NV_ERR_IO, line, col, "%s", root_msg);
+        }
+        // فحص قانوني قبل الحل: الرابط الرمزي إلى
+        // الجذر يرفضه الساندبوكس برسالة عامة،
+        // والقرار يطلب رسالة الجذر.
+        if (nv_delete_target_is_root(args[0].u.str->data)) {
+            nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن حذف الجذر: /");
+        }
         char *resolved = nv_resolve_path(args[0].u.str->data, line, col);
+        if (nv_is_filesystem_root(resolved)) {
+            nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن حذف الجذر: /");
+        }
         struct stat st;
         if (stat(resolved, &st) != 0) {
             char *disp = nv_display_str(args[0].u.str->data);
             nv_error_fmt(NV_ERR_IO, line, col, "المسار غير موجود: %s", disp);
         }
-        int rc = S_ISDIR(st.st_mode) ? rmdir(resolved) : unlink(resolved);
+        int is_dir = S_ISDIR(st.st_mode);
+        int rc = is_dir ? rmdir(resolved) : unlink(resolved);
         if (rc != 0) {
             int e = errno;
+            char *disp = nv_display_str(args[0].u.str->data);
+            if (is_dir && e == ENOTEMPTY) {
+                nv_error_fmt(NV_ERR_IO, line, col, "المجلد غير فارغ: %s — استخدم احذف_تكراري", disp);
+            }
             char osb[256];
             nv_os_error_str(e, osb, sizeof(osb));
-            char *disp = nv_display_str(args[0].u.str->data);
             nv_error_fmt(NV_ERR_IO, line, col, "تعذر حذف %s: %s", disp, osb);
         }
         free(resolved);
@@ -3245,7 +5509,20 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
         if (args[0].tag != NV_STR) {
             nv_error_fmt(NV_ERR_TYPE, line, col, "احذف_مجلد يتطلب مسارا نصيا، وليس %s", nv_type_name(args[0]));
         }
+        const char *root_msg = nv_root_refusal_text(args[0].u.str->data);
+        if (root_msg) {
+            nv_error_fmt(NV_ERR_IO, line, col, "%s", root_msg);
+        }
+        // فحص قانوني قبل الحل: الرابط الرمزي إلى
+        // الجذر يرفضه الساندبوكس برسالة عامة،
+        // والقرار يطلب رسالة الجذر.
+        if (nv_delete_target_is_root(args[0].u.str->data)) {
+            nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن حذف الجذر: /");
+        }
         char *resolved = nv_resolve_path(args[0].u.str->data, line, col);
+        if (nv_is_filesystem_root(resolved)) {
+            nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن حذف الجذر: /");
+        }
         struct stat st;
         if (stat(resolved, &st) != 0) {
             char *disp = nv_display_str(args[0].u.str->data);
@@ -3257,9 +5534,12 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
         }
         if (rmdir(resolved) != 0) {
             int e = errno;
+            char *disp = nv_display_str(args[0].u.str->data);
+            if (e == ENOTEMPTY) {
+                nv_error_fmt(NV_ERR_IO, line, col, "المجلد غير فارغ: %s — استخدم احذف_تكراري", disp);
+            }
             char osb[256];
             nv_os_error_str(e, osb, sizeof(osb));
-            char *disp = nv_display_str(args[0].u.str->data);
             nv_error_fmt(NV_ERR_IO, line, col, "تعذر حذف المجلد %s: %s", disp, osb);
         }
         free(resolved);
@@ -3270,7 +5550,20 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
         if (args[0].tag != NV_STR) {
             nv_error_fmt(NV_ERR_TYPE, line, col, "احذف_ملف يتطلب مسارا نصيا، وليس %s", nv_type_name(args[0]));
         }
+        const char *root_msg = nv_root_refusal_text(args[0].u.str->data);
+        if (root_msg) {
+            nv_error_fmt(NV_ERR_IO, line, col, "%s", root_msg);
+        }
+        // فحص قانوني قبل الحل: الرابط الرمزي إلى
+        // الجذر يرفضه الساندبوكس برسالة عامة،
+        // والقرار يطلب رسالة الجذر.
+        if (nv_delete_target_is_root(args[0].u.str->data)) {
+            nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن حذف الجذر: /");
+        }
         char *resolved = nv_resolve_path(args[0].u.str->data, line, col);
+        if (nv_is_filesystem_root(resolved)) {
+            nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن حذف الجذر: /");
+        }
         struct stat st;
         if (stat(resolved, &st) != 0) {
             char *disp = nv_display_str(args[0].u.str->data);
@@ -3286,6 +5579,40 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
             nv_os_error_str(e, osb, sizeof(osb));
             char *disp = nv_display_str(args[0].u.str->data);
             nv_error_fmt(NV_ERR_IO, line, col, "تعذر حذف الملف %s: %s", disp, osb);
+        }
+        free(resolved);
+        return nv_nil();
+    }
+    if (strcmp(name, "احذف_تكراري") == 0) {
+        nv_arity(args, nargs, 1, name, line, col);
+        if (args[0].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "احذف_تكراري يتطلب مسارا نصيا، وليس %s", nv_type_name(args[0]));
+        }
+        const char *root_msg = nv_root_refusal_text(args[0].u.str->data);
+        if (root_msg) {
+            nv_error_fmt(NV_ERR_IO, line, col, "%s", root_msg);
+        }
+        // فحص قانوني قبل الحل: الرابط الرمزي إلى
+        // الجذر يرفضه الساندبوكس برسالة عامة،
+        // والقرار يطلب رسالة الجذر.
+        if (nv_delete_target_is_root(args[0].u.str->data)) {
+            nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن حذف الجذر: /");
+        }
+        char *resolved = nv_resolve_path(args[0].u.str->data, line, col);
+        if (nv_is_filesystem_root(resolved)) {
+            nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن حذف الجذر: /");
+        }
+        struct stat st;
+        if (nv_lstat(resolved, &st) != 0) {
+            char *disp = nv_display_str(args[0].u.str->data);
+            nv_error_fmt(NV_ERR_IO, line, col, "المسار غير موجود: %s", disp);
+        }
+        if (nv_remove_tree(resolved) != 0) {
+            int e = errno;
+            char osb[256];
+            nv_os_error_str(e, osb, sizeof(osb));
+            char *disp = nv_display_str(args[0].u.str->data);
+            nv_error_fmt(NV_ERR_IO, line, col, "تعذر حذف %s: %s", disp, osb);
         }
         free(resolved);
         return nv_nil();
@@ -3311,38 +5638,263 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
         if (is_copy) {
             struct stat sst, dst_e;
             unsigned long long src_len = 0, dst_existing = 0;
-            if (stat(src_path, &sst) == 0) src_len = (unsigned long long)sst.st_size;
-            if (stat(dst_path, &dst_e) == 0) dst_existing = (unsigned long long)dst_e.st_size;
+            int src_ok = (stat(src_path, &sst) == 0);
+            int dst_ok = (stat(dst_path, &dst_e) == 0);
+            if (src_ok) src_len = (unsigned long long)sst.st_size;
+            if (dst_ok) dst_existing = (unsigned long long)dst_e.st_size;
+            // الاجتماع 59 §74 (الميزة 196): نسخ مجلد
+            // بلا خيار تكراري مرفوض برسالة صريحة تسمي
+            // البديل — لا خطأ إدخال/إخراج مبهم.
+            if (src_ok && S_ISDIR(sst.st_mode)) {
+                nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن نسخ المجلد بلا خيار تكراري — استخدم انسخ_تكراري");
+            }
+            // الميزة 202: نسخ الملف على نفسه يفرّغه
+            // (فتح الهدف "wb" يقطعه قبل القراءة) —
+            // ارفض قبل أي كتابة (جهاز+عقدة).
+            if (src_ok && dst_ok
+                && sst.st_dev == dst_e.st_dev && sst.st_ino == dst_e.st_ino) {
+                nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن نسخ الملف على نفسه");
+            }
             unsigned long long extra = src_len > dst_existing ? src_len - dst_existing : 0;
             nv_check_quota((size_t)extra, line, col);
-            FILE *in = fopen(src_path, "rb");
-            FILE *out = in ? fopen(dst_path, "wb") : NULL;
-            if (!in || !out) {
+            if (nv_copy_file(src_path, dst_path) != 0) {
                 int e = errno;
                 char osb[256];
                 nv_os_error_str(e, osb, sizeof(osb));
-                if (in) fclose(in);
-                if (out) fclose(out);
                 char *disp = nv_display_str(args[0].u.str->data);
                 nv_error_fmt(NV_ERR_IO, line, col, "تعذر نسخ %s: %s", disp, osb);
             }
-            unsigned char buf[65536];
-            size_t n;
-            while ((n = fread(buf, 1, sizeof(buf), in)) > 0) fwrite(buf, 1, n, out);
-            fclose(in);
-            fclose(out);
         } else {
+            // الميزة 204: نقل مجلد داخل نفسه أو داخل
+            // فرع منه مرفوض قبل أي كتابة (كما في `mv`)؛
+            // والملف على نفسه يبقى بلا أثر (إعادة
+            // تسمية على النفس).
+            struct stat sst2;
+            if (stat(src_path, &sst2) == 0 && S_ISDIR(sst2.st_mode)) {
+                char *src_c = nv_canonical_with_suffix(src_path);
+                char *dst_c = nv_canonical_with_suffix(dst_path);
+                if (nv_path_starts_with(dst_c, src_c)) {
+                    free(src_c);
+                    free(dst_c);
+                    nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن نقل المجلد داخل نفسه");
+                }
+                free(src_c);
+                free(dst_c);
+            }
             if (rename(src_path, dst_path) != 0) {
                 int e = errno;
-                char osb[256];
-                nv_os_error_str(e, osb, sizeof(osb));
-                char *disp = nv_display_str(args[0].u.str->data);
-                nv_error_fmt(NV_ERR_IO, line, col, "تعذر نقل %s: %s", disp, osb);
+                if (e != EXDEV) {
+                    char osb[256];
+                    nv_os_error_str(e, osb, sizeof(osb));
+                    char *disp = nv_display_str(args[0].u.str->data);
+                    nv_error_fmt(NV_ERR_IO, line, col, "تعذر نقل %s: %s", disp, osb);
+                }
+                // الميزة 204: عبر الأنظمة — نسخ ثم حذف
+                // المصدر بعد نجاح النسخ كاملا فقط.
+                struct stat sst3, dst_e;
+                int is_dir = (stat(src_path, &sst3) == 0 && S_ISDIR(sst3.st_mode));
+                int dst_ok = (stat(dst_path, &dst_e) == 0);
+                unsigned long long dst_existing = dst_ok ? (unsigned long long)dst_e.st_size : 0;
+                size_t extra = 0;
+                if (is_dir) {
+                    int budget = 10000;
+                    extra = (size_t)nv_dir_size_rec(src_path, &budget);
+                } else {
+                    unsigned long long src_len = (stat(src_path, &sst3) == 0) ? (unsigned long long)sst3.st_size : 0;
+                    extra = (size_t)(src_len > dst_existing ? src_len - dst_existing : 0);
+                }
+                // الحصة على نمو مجلد البرنامج وحده.
+                if (nv_path_starts_with(dst_path, nv_program_dir)) {
+                    nv_check_quota(extra, line, col);
+                }
+                struct stat dst_l;
+                int dst_existed = (nv_lstat(dst_path, &dst_l) == 0);
+                int copy_rc = is_dir ? nv_copy_tree(src_path, dst_path) : nv_copy_file(src_path, dst_path);
+                if (copy_rc != 0) {
+                    int ce = errno;
+                    if (!dst_existed) nv_remove_tree(dst_path);
+                    char osb[256];
+                    nv_os_error_str(ce, osb, sizeof(osb));
+                    char *disp = nv_display_str(args[0].u.str->data);
+                    nv_error_fmt(NV_ERR_IO, line, col, "تعذر نقل %s: %s", disp, osb);
+                }
+                if (nv_remove_tree(src_path) != 0) {
+                    int re = errno;
+                    char osb[256];
+                    nv_os_error_str(re, osb, sizeof(osb));
+                    char *dsp = nv_display_str(args[0].u.str->data);
+                    char *ddp = nv_display_str(args[1].u.str->data);
+                    nv_error_fmt(NV_ERR_IO, line, col, "نُسخ %s إلى %s لكن تعذر حذف المصدر: %s", dsp, ddp, osb);
+                }
             }
         }
         free(src_path);
         free(dst_path);
         return nv_nil();
+    }
+    if (strcmp(name, "انسخ_تكراري") == 0 || strcmp(name, "انسخ_أرشيف") == 0) {
+        nv_arity(args, nargs, 2, name, line, col);
+        if (args[0].tag != NV_STR || args[1].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "%s يتطلب مسارين نصيين", name);
+        }
+        int is_archive = (strcmp(name, "انسخ_أرشيف") == 0);
+        char *src_path = nv_resolve_path(args[0].u.str->data, line, col);
+        char *dst_path = nv_resolve_path(args[1].u.str->data, line, col);
+        struct stat dst_st;
+        if (stat(dst_path, &dst_st) == 0 && S_ISDIR(dst_st.st_mode)) {
+            const char *leaf = strrchr(src_path, '/');
+            leaf = leaf ? leaf + 1 : src_path;
+            size_t n = strlen(dst_path) + 1 + strlen(leaf) + 1;
+            char *joined = (char *)malloc(n);
+            snprintf(joined, n, "%s/%s", dst_path, leaf);
+            free(dst_path);
+            dst_path = joined;
+        }
+        struct stat sst, dst_e;
+        int src_ok = (stat(src_path, &sst) == 0);
+        int dst_ok = (stat(dst_path, &dst_e) == 0);
+        int src_is_dir = src_ok && S_ISDIR(sst.st_mode);
+        if (src_is_dir) {
+            // الهدف داخل المصدر مرفوض قبل أي كتابة
+            // (كما في `mv` — الميزة 204).
+            char *src_c = nv_canonical_with_suffix(src_path);
+            char *dst_c = nv_canonical_with_suffix(dst_path);
+            if (nv_path_starts_with(dst_c, src_c)) {
+                free(src_c);
+                free(dst_c);
+                nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن نسخ المجلد داخل نفسه");
+            }
+            free(src_c);
+            free(dst_c);
+        } else if (src_ok && dst_ok
+            && sst.st_dev == dst_e.st_dev && sst.st_ino == dst_e.st_ino) {
+            nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن نسخ الملف على نفسه");
+        }
+        unsigned long long extra = 0;
+        if (src_is_dir) {
+            int budget = 10000;
+            extra = nv_dir_size_rec(src_path, &budget);
+        } else if (src_ok) {
+            unsigned long long dst_existing = dst_ok ? (unsigned long long)dst_e.st_size : 0;
+            extra = (unsigned long long)sst.st_size > dst_existing
+                ? (unsigned long long)sst.st_size - dst_existing
+                : 0;
+        }
+        nv_check_quota((size_t)extra, line, col);
+        int rc = is_archive ? nv_copy_archive(src_path, dst_path)
+            : (src_is_dir ? nv_copy_tree(src_path, dst_path)
+                : nv_copy_file(src_path, dst_path));
+        if (rc != 0) {
+            int e = errno;
+            char osb[256];
+            nv_os_error_str(e, osb, sizeof(osb));
+            char *disp = nv_display_str(args[0].u.str->data);
+            nv_error_fmt(NV_ERR_IO, line, col, "تعذر نسخ %s: %s", disp, osb);
+        }
+        free(src_path);
+        free(dst_path);
+        return nv_nil();
+    }
+    if (strcmp(name, "انسخ_محدث") == 0) {
+        nv_arity(args, nargs, 2, name, line, col);
+        if (args[0].tag != NV_STR || args[1].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "انسخ_محدث يتطلب مسارين نصيين");
+        }
+        char *src_path = nv_resolve_path(args[0].u.str->data, line, col);
+        char *dst_path = nv_resolve_path(args[1].u.str->data, line, col);
+        struct stat dst_st;
+        if (stat(dst_path, &dst_st) == 0 && S_ISDIR(dst_st.st_mode)) {
+            const char *leaf = strrchr(src_path, '/');
+            leaf = leaf ? leaf + 1 : src_path;
+            size_t n = strlen(dst_path) + 1 + strlen(leaf) + 1;
+            char *joined = (char *)malloc(n);
+            snprintf(joined, n, "%s/%s", dst_path, leaf);
+            free(dst_path);
+            dst_path = joined;
+        }
+        struct stat sst, dst_e;
+        int src_ok = (stat(src_path, &sst) == 0);
+        int dst_ok = (stat(dst_path, &dst_e) == 0);
+        // الاجتماع 59 §74 (الميزة 199): المجلد مصدرا
+        // مرفوض برسالة 196 نفسها.
+        if (src_ok && S_ISDIR(sst.st_mode)) {
+            nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن نسخ المجلد بلا خيار تكراري — استخدم انسخ_تكراري");
+        }
+        if (src_ok && dst_ok
+            && sst.st_dev == dst_e.st_dev && sst.st_ino == dst_e.st_ino) {
+            nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن نسخ الملف على نفسه");
+        }
+        // ينسخ فقط حين يكون المصدر أحدث من الهدف
+        // (المساوي يتخطى كما في `cp -u`)، وينسخ إن
+        // غاب الهدف؛ ويرجع منطقيا (نُسخ؟).
+        if (src_ok && dst_ok) {
+            long s_sec = (long)NV_MTIME_SEC(sst);
+            long d_sec = (long)NV_MTIME_SEC(dst_e);
+            long s_nsec = (long)NV_MTIME_NSEC(sst);
+            long d_nsec = (long)NV_MTIME_NSEC(dst_e);
+            if (s_sec < d_sec || (s_sec == d_sec && s_nsec <= d_nsec)) {
+                free(src_path);
+                free(dst_path);
+                return nv_bool(0);
+            }
+        }
+        unsigned long long src_len = src_ok ? (unsigned long long)sst.st_size : 0;
+        unsigned long long dst_existing = dst_ok ? (unsigned long long)dst_e.st_size : 0;
+        unsigned long long extra = src_len > dst_existing ? src_len - dst_existing : 0;
+        nv_check_quota((size_t)extra, line, col);
+        if (nv_copy_file(src_path, dst_path) != 0) {
+            int e = errno;
+            char osb[256];
+            nv_os_error_str(e, osb, sizeof(osb));
+            char *disp = nv_display_str(args[0].u.str->data);
+            nv_error_fmt(NV_ERR_IO, line, col, "تعذر نسخ %s: %s", disp, osb);
+        }
+        free(src_path);
+        free(dst_path);
+        return nv_bool(1);
+    }
+    if (strcmp(name, "انسخ_خفيف") == 0) {
+        nv_arity(args, nargs, 2, name, line, col);
+        if (args[0].tag != NV_STR || args[1].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "انسخ_خفيف يتطلب مسارين نصيين");
+        }
+        char *src_path = nv_resolve_path(args[0].u.str->data, line, col);
+        char *dst_path = nv_resolve_path(args[1].u.str->data, line, col);
+        struct stat dst_st;
+        if (stat(dst_path, &dst_st) == 0 && S_ISDIR(dst_st.st_mode)) {
+            const char *leaf = strrchr(src_path, '/');
+            leaf = leaf ? leaf + 1 : src_path;
+            size_t n = strlen(dst_path) + 1 + strlen(leaf) + 1;
+            char *joined = (char *)malloc(n);
+            snprintf(joined, n, "%s/%s", dst_path, leaf);
+            free(dst_path);
+            dst_path = joined;
+        }
+        struct stat sst, dst_e;
+        int src_ok = (stat(src_path, &sst) == 0);
+        int dst_ok = (stat(dst_path, &dst_e) == 0);
+        if (src_ok && S_ISDIR(sst.st_mode)) {
+            nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن نسخ المجلد بلا خيار تكراري — استخدم انسخ_تكراري");
+        }
+        if (src_ok && dst_ok
+            && sst.st_dev == dst_e.st_dev && sst.st_ino == dst_e.st_ino) {
+            nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن نسخ الملف على نفسه");
+        }
+        unsigned long long src_len = src_ok ? (unsigned long long)sst.st_size : 0;
+        unsigned long long dst_existing = dst_ok ? (unsigned long long)dst_e.st_size : 0;
+        unsigned long long extra = src_len > dst_existing ? src_len - dst_existing : 0;
+        nv_check_quota((size_t)extra, line, col);
+        int method = nv_copy_light(src_path, dst_path);
+        if (method < 0) {
+            int e = errno;
+            char osb[256];
+            nv_os_error_str(e, osb, sizeof(osb));
+            char *disp = nv_display_str(args[0].u.str->data);
+            nv_error_fmt(NV_ERR_IO, line, col, "تعذر نسخ %s: %s", disp, osb);
+        }
+        free(src_path);
+        free(dst_path);
+        return nv_str_cstr(method == 0 ? "مستنسخ" : method == 1 ? "متناثر" : "عادي");
     }
     if (strcmp(name, "أنشئ_ملف") == 0) {
         nv_arity(args, nargs, 1, name, line, col);
@@ -3360,6 +5912,16 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
                 nv_error_fmt(NV_ERR_IO, line, col, "تعذر إنشاء الملف %s: %s", disp, osb);
             }
             fclose(f);
+        } else {
+            // الاجتماع 59 §74 (الميزة 215): الموجود
+            // يحدَّث وقته بلا مساس بالمحتوى (`touch`).
+            if (nv_touch(resolved) != 0) {
+                int e = errno;
+                char osb[256];
+                nv_os_error_str(e, osb, sizeof(osb));
+                char *disp = nv_display_str(args[0].u.str->data);
+                nv_error_fmt(NV_ERR_IO, line, col, "تعذر تحديث وقت %s: %s", disp, osb);
+            }
         }
         free(resolved);
         return nv_nil();
@@ -3578,6 +6140,90 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
         free(link_path);
         return nv_nil();
     }
+    if (strcmp(name, "أنشئ_رابط_صلب") == 0) {
+        nv_arity(args, nargs, 2, name, line, col);
+        if (args[0].tag != NV_STR || args[1].tag != NV_STR) {
+            nv_error(NV_ERR_TYPE, "أنشئ_رابط_صلب يتطلب مسارين نصيين", line, col);
+        }
+        char *target_path = nv_resolve_path(args[0].u.str->data, line, col);
+        char *link_path = nv_resolve_path(args[1].u.str->data, line, col);
+        // الاجتماع 59 §74 (الميزة 212): الصلب يشترط
+        // هدفا موجودا، ويرفض المجلد صراحة.
+        struct stat stt;
+        if (stat(target_path, &stt) != 0) {
+            char *disp = nv_display_str(args[0].u.str->data);
+            nv_error_fmt(NV_ERR_IO, line, col, "الهدف غير موجود: %s", disp);
+        }
+        if (S_ISDIR(stt.st_mode)) {
+            nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن إنشاء رابط صلب لمجلد");
+        }
+#ifdef _WIN32
+        // ويندوز: بلا `link` في MinGW — يُبنى عبر
+        // `CreateHardLinkA` (القيد مسجل: الفشل هنا
+        // خطأ إدخال/إخراج عربي كغيره).
+        if (!CreateHardLinkA(link_path, target_path, NULL)) {
+            char *werr = nv_win32_error_str();
+            char *disp = nv_display_str(args[1].u.str->data);
+            nv_error_fmt(NV_ERR_IO, line, col, "تعذر إنشاء الرابط الصلب %s: %s", disp, werr);
+        }
+#else
+        if (link(target_path, link_path) != 0) {
+            int e = errno;
+            char osb[256];
+            nv_os_error_str(e, osb, sizeof(osb));
+            char *disp = nv_display_str(args[1].u.str->data);
+            nv_error_fmt(NV_ERR_IO, line, col, "تعذر إنشاء الرابط الصلب %s: %s", disp, osb);
+        }
+#endif
+        free(target_path);
+        free(link_path);
+        return nv_nil();
+    }
+    if (strcmp(name, "أنشئ_رابط_نسبي") == 0) {
+        nv_arity(args, nargs, 2, name, line, col);
+        if (args[0].tag != NV_STR || args[1].tag != NV_STR) {
+            nv_error(NV_ERR_TYPE, "أنشئ_رابط_نسبي يتطلب مسارين نصيين", line, col);
+        }
+        // الاجتماع 59 §74 (الميزة 213): النسبي يحسب
+        // من موقع الرابط لا من الجلسة — يحل الطرفين
+        // إلى مطلقين ثم يحسب النسبي بينهما، ويخزن
+        // النص النسبي حرفيا.
+        char *target_abs = nv_resolve_path(args[0].u.str->data, line, col);
+        char *link_path = nv_resolve_path(args[1].u.str->data, line, col);
+        char *link_dir = nv_strdup(link_path);
+        char *slash = strrchr(link_dir, '/');
+        if (slash) *slash = '\0';
+        if (link_dir[0] == '\0') {
+            free(link_dir);
+            link_dir = nv_strdup(nv_cwd);
+        }
+        char *rel = nv_relative_path(link_dir, target_abs);
+#ifdef _WIN32
+        {
+            struct stat stt;
+            DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+            if (stat(target_abs, &stt) == 0 && S_ISDIR(stt.st_mode)) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+            if (!CreateSymbolicLinkA(link_path, rel, flags)) {
+                char *werr = nv_win32_error_str();
+                char *disp = nv_display_str(args[1].u.str->data);
+                nv_error_fmt(NV_ERR_IO, line, col, "تعذر إنشاء الرابط %s: %s", disp, werr);
+            }
+        }
+#else
+        if (symlink(rel, link_path) != 0) {
+            int e = errno;
+            char osb[256];
+            nv_os_error_str(e, osb, sizeof(osb));
+            char *disp = nv_display_str(args[1].u.str->data);
+            nv_error_fmt(NV_ERR_IO, line, col, "تعذر إنشاء الرابط %s: %s", disp, osb);
+        }
+#endif
+        free(target_abs);
+        free(link_path);
+        free(link_dir);
+        free(rel);
+        return nv_nil();
+    }
     if (strcmp(name, "التاريخ_الآن") == 0) {
         nv_arity(args, nargs, 0, name, line, col);
         unsigned long long secs = (unsigned long long)time(NULL);
@@ -3785,6 +6431,11 @@ int nv_main(int argc, char **argv, void (*body)(NvScope *top)) {
     _setmode(_fileno(stderr), _O_BINARY);
 #endif
     setlocale(LC_ALL, "");
+    // الدفعة 1: اسم البرنامج كما استُدعي (argv[0]) —
+    // يقرأه `اسم_البرنامج()`؛ وفي التفاعلي «نيفا».
+    if (argc > 0 && argv[0]) {
+        nv_program_name = argv[0];
+    }
     // حلل الأعلام (المطابقة على الصيغة المطبّعة: ة -> ه).
     // (الأعلام هنا بلا تشكيل أصلا في الاستخدام.)
     for (int i = 1; i < argc; i++) {
@@ -3807,18 +6458,21 @@ int nv_main(int argc, char **argv, void (*body)(NvScope *top)) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "خيار --مضيف-محلي يحتاج مضيفا بعده\n");
                 fputs(nv_standalone_usage, stderr);
-                return 1;
+                // الدفعة 1: خطأ استخدام → 2.
+                return 2;
             }
             nv_local_hosts = (char **)realloc(nv_local_hosts, (size_t)(nv_n_local_hosts + 1) * sizeof(char *));
             nv_local_hosts[nv_n_local_hosts++] = argv[++i];
         } else if (a[0] == '-') {
             fprintf(stderr, "خيار غير معروف: %s\n", a);
             fputs(nv_standalone_usage, stderr);
-            return 1;
+            // الدفعة 1: علم غير معروف → 2.
+            return 2;
         } else {
             fprintf(stderr, "خطأ: البرنامج المستقل لا يأخذ ملف مصدر — شغّله مباشرة\n");
             fputs(nv_standalone_usage, stderr);
-            return 1;
+            // الدفعة 1: وسائط خاطئة → 2.
+            return 2;
         }
     }
     char *dir = nv_exe_dir();
@@ -3845,11 +6499,17 @@ int nv_main(int argc, char **argv, void (*body)(NvScope *top)) {
         body(top);
     } else {
         nv_restore_checkpoint(cp);
-        NvError *e = nv_current_error();
-        if (e) {
-            nv_print_error(e->kind, e->message, e->line, e->col, e->file_idx);
+        // الدفعة 1: خروج معلق → الرمز كما طُلب بلا
+        // طباعة خطأ؛ وإلا خطأ وقت تشغيل غير ممسوك → 1.
+        if (nv_exit_requested) {
+            code = nv_exit_code;
+        } else {
+            NvError *e = nv_current_error();
+            if (e) {
+                nv_print_error(e->kind, e->message, e->line, e->col, e->file_idx);
+            }
+            code = 1;
         }
-        code = 1;
     }
     nv_handlers = NULL;
     nv_frames_pop();

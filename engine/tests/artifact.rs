@@ -312,13 +312,15 @@ fn artifact_standalone_runs_alone() {
 
 /// مدخلات خاطئة: مصدر بدل مصنوع، ومصنوع مقطوع،
 /// وملف غائب، ونموذج معكوس، وأمر بلا ملف.
+/// الرموز على جدول §69 (اجتماع 54): سوء استخدام 2،
+/// ملف غائب 127، وفشل عام 1 لخطأ التشغيل وحده.
 #[test]
 fn artifact_rejects_bad_inputs() {
     let dir = fresh_dir();
     fs::write(dir.join("prog.نيفا"), "اطبع ٥\n").unwrap();
     // شغل على ملف مصدر.
     let (_, err, code) = run_cmd(&["شغل", "prog.نيفا"], &dir, false);
-    assert_eq!(code, 1, "شغل قبل مصدرا");
+    assert_eq!(code, 2, "شغل قبل مصدرا");
     assert!(err.contains("ليس مصنوع"), "رسالة شغل على مصدر: {}", err);
     // مصنوع مقطوع.
     let (_, _, build_code) = run_cmd(&["ابن", "prog.نيفا"], &dir, false);
@@ -327,16 +329,16 @@ fn artifact_rejects_bad_inputs() {
     bytes.truncate(bytes.len() / 2);
     fs::write(dir.join("مقطوع.نيفاب"), &bytes).unwrap();
     let (_, err, code) = run_cmd(&["شغل", "مقطوع.نيفاب"], &dir, false);
-    assert_eq!(code, 1, "شغل قبل مصنوعا مقطوعا");
+    assert_eq!(code, 2, "شغل قبل مصنوعا مقطوعا");
     assert!(err.contains("تالف"), "رسالة مصنوع مقطوع: {}", err);
     // ملف غائب.
     let (_, err, code) = run_cmd(&["شغل", "غائب.نيفاب"], &dir, false);
-    assert_eq!(code, 1, "شغل قبل ملفا غائبا");
+    assert_eq!(code, 127, "شغل قبل ملفا غائبا");
     assert!(!err.is_empty(), "رسالة ملف غائب فارغة");
     // النموذج المعكوس مرفوض في البناء كما في التشغيل.
     fs::write(dir.join("معكوس.نيفا"), "٥ = س\n").unwrap();
     let (_, err, code) = run_cmd(&["ابن", "معكوس.نيفا"], &dir, false);
-    assert_eq!(code, 1, "ابن قبل النموذج المعكوس");
+    assert_eq!(code, 2, "ابن قبل النموذج المعكوس");
     assert!(
         err.contains("هدف التعيين غير صالح"),
         "رسالة النموذج المعكوس: {}",
@@ -344,8 +346,8 @@ fn artifact_rejects_bad_inputs() {
     );
     // ابن بلا ملف، وشغل بلا ملف.
     let (_, _, code) = run_cmd(&["ابن"], &dir, false);
-    assert_eq!(code, 1, "ابن بلا ملف نجح");
+    assert_eq!(code, 2, "ابن بلا ملف نجح");
     let (_, _, code) = run_cmd(&["شغل"], &dir, false);
-    assert_eq!(code, 1, "شغل بلا ملف نجح");
+    assert_eq!(code, 2, "شغل بلا ملف نجح");
     let _ = fs::remove_dir_all(&dir);
 }

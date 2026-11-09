@@ -92,6 +92,289 @@ static REGISTRY: LazyLock<Mutex<HashMap<u64, Child>>> =
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// المرحلة (هـ) — التحكم بالمهام (اجتماعا 64 و65
+/// §79 و§80): جدول الوظائف فوق REGISTRY. الوظيفة =
+/// عملية نظام واحدة من `عمليات.أنشئ` (أو `شغل`
+/// كعملية ابن عبر الثنائي الحالي) — بلا مجموعات
+/// عمليات وبلا حالة موقوفة (لا SIGTSTP في المحرك).
+/// الجدول بيانات خالصة بلا مقابض نظام، فيعيش على
+/// كل الأهداف (حتى حيث الإنشاء مرفوض فيبقى فارغا).
+/// السقف نفسه سقف العمليات الحية (256).
+pub const MAX_JOBS: usize = 256;
+
+/// حالة وظيفة: ثلاث لا أربع — تعمل، وانتهت برمزها،
+/// وأُوقفت (قُتلت). بلا «موقوفة» (اجتماع 64 §79).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobStatus {
+    Running,
+    Done(i32),
+    Killed,
+}
+
+/// مدخل واحد في جدول الوظائف.
+#[derive(Debug, Clone)]
+pub struct JobInfo {
+    pub number: u64,
+    pub process_id: u64,
+    pub command: String,
+    pub status: JobStatus,
+    pub notified: bool,
+}
+
+struct JobsState {
+    jobs: Vec<JobInfo>,
+    current: Option<u64>,
+    previous: Option<u64>,
+    next_number: u64,
+    /// معرف آخر عملية خلفية (0 = لا خلفية بعد) —
+    /// يضبطه كل إنشاء (`أنشئ` و`&`)، لا الانتظار.
+    last_background: u64,
+    /// رموز وظائف منتهية نُسيت بـ`أبعد` (كـbgp في
+    /// باش): يبقى `انتظر %n` قادرا على إرجاعها.
+    /// (مسار كامل: استيراد HashMap مبوَّب للأصلي وحده،
+    /// والجدول بيانات خالصة على كل الأهداف.)
+    saved: std::collections::HashMap<u64, i64>,
+    /// معارف عمليات جارية نُسيت بـ`أبعد`: تبقى في
+    /// REGISTRY ويجمعها موجّه الجمع عند الموجه التالي.
+    detached: std::collections::HashSet<u64>,
+}
+
+impl JobsState {
+    fn new() -> Self {
+        JobsState {
+            jobs: Vec::new(),
+            current: None,
+            previous: None,
+            next_number: 1,
+            last_background: 0,
+            saved: std::collections::HashMap::new(),
+            detached: std::collections::HashSet::new(),
+        }
+    }
+}
+
+static JOBS: LazyLock<Mutex<JobsState>> = LazyLock::new(|| Mutex::new(JobsState::new()));
+
+/// أرقام مشرقية لأسطر الوظائف (كطباعة القيم).
+pub(crate) fn eastern(n: u64) -> String {
+    const D: [char; 10] = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+    n.to_string().chars().map(|c| c.to_digit(10).map(|d| D[d as usize]).unwrap_or(c)).collect()
+}
+
+/// أرقام مشرقية لرمز خروج قد يكون سالبا (-1 =
+/// قُتلت بإشارة).
+fn eastern_i64(n: i64) -> String {
+    if n < 0 {
+        format!("-{}", eastern(n.unsigned_abs()))
+    } else {
+        eastern(n as u64)
+    }
+}
+
+/// سطر وظيفة واحد: `[n]+ الأمر — الحالة`
+/// (والحالية `+` والسابقة `-` وغيرهما فراغ).
+/// الحالة: تعمل، أو انتهت (رمز N)، أو أُوقفت.
+pub fn format_job_line(job: &JobInfo, current: Option<u64>, previous: Option<u64>) -> String {
+    let mark = if Some(job.number) == current {
+        "+"
+    } else if Some(job.number) == previous {
+        "-"
+    } else {
+        " "
+    };
+    let status = match job.status {
+        JobStatus::Running => "تعمل".to_string(),
+        JobStatus::Done(code) => format!("انتهت (رمز {})", eastern_i64(code as i64)),
+        JobStatus::Killed => "أُوقفت".to_string(),
+    };
+    format!("[{}]{} {} — {}", eastern(job.number), mark, job.command, status)
+}
+
+/// سجّل عملية منشأة وظيفة: رقم متسلسل جديد،
+/// وتصير الحالية (والقديمة سابقة). عند الامتلاء
+/// تُسقط أقدم منتهية مُبلَّغ عنها، وإلا رفض عربي.
+pub fn register_job(process_id: u64, command: &str) -> RioResult<u64> {
+    let mut state = match JOBS.lock() {
+        Ok(s) => s,
+        Err(_) => {
+            return Err(RioError::runtime(
+                "تعذّر تسجيل الوظيفة الجديدة",
+                1,
+                1,
+            ))
+        }
+    };
+    if state.jobs.len() >= MAX_JOBS {
+        let drop_at = state
+            .jobs
+            .iter()
+            .position(|j| matches!(j.status, JobStatus::Done(_)) && j.notified);
+        match drop_at {
+            Some(i) => {
+                state.jobs.remove(i);
+            }
+            None => {
+                return Err(RioError::runtime(
+                    "عدد الوظائف تجاوز الحد (٢٥٦) — أبعد بعضها",
+                    1,
+                    1,
+                ))
+            }
+        }
+    }
+    let number = state.next_number;
+    state.next_number += 1;
+    state.previous = state.current;
+    state.current = Some(number);
+    state.last_background = process_id;
+    state.jobs.push(JobInfo {
+        number,
+        process_id,
+        command: command.to_string(),
+        status: JobStatus::Running,
+        notified: false,
+    });
+    Ok(number)
+}
+
+/// لقطة من جدول الوظائف (نسخة للقراءة).
+pub fn list_jobs() -> Vec<JobInfo> {
+    match JOBS.lock() {
+        Ok(s) => s.jobs.clone(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// الحالية والسابقة (لعلامتي `+` و`-`).
+pub fn current_previous_jobs() -> (Option<u64>, Option<u64>) {
+    match JOBS.lock() {
+        Ok(s) => (s.current, s.previous),
+        Err(_) => (None, None),
+    }
+}
+
+/// معرف آخر عملية خلفية (0 = لا خلفية بعد).
+pub fn last_background_id() -> u64 {
+    match JOBS.lock() {
+        Ok(s) => s.last_background,
+        Err(_) => 0,
+    }
+}
+
+/// اضبط معرف آخر خلفية (عند كل إنشاء).
+pub fn set_last_background(id: u64) {
+    if let Ok(mut s) = JOBS.lock() {
+        s.last_background = id;
+    }
+}
+
+/// طبّع أرقاما مشرقية (٠-٩) إلى لاتينية — فمواصفات
+/// الوظائف ومعارف العمليات تقبل ما يطبعه الترمنال
+/// (كالمعجم: أرقام مشرقية ولاتينية معا).
+pub(crate) fn normalize_digits(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '٠'..='٩' => char::from_digit(c as u32 - '٠' as u32, 10).unwrap(),
+            other => other,
+        })
+        .collect()
+}
+
+/// حلّ مواصفة وظيفة (`%n` و`%%` و`%+` و`%-`
+/// و`%اسم`، أو رقم عارٍ) إلى رقم وظيفة.
+pub fn resolve_job_spec(spec: &str) -> Result<u64, String> {
+    let spec = normalize_digits(spec.trim());
+    let spec = spec.as_str();
+    let state = match JOBS.lock() {
+        Ok(s) => s,
+        Err(_) => return Err(format!("وظيفة غير معروفة: {}", spec)),
+    };
+    if spec == "%" || spec == "%%" || spec == "%+" {
+        return state
+            .current
+            .ok_or_else(|| "لا وظيفة حالية".to_string());
+    }
+    if spec == "%-" {
+        return state
+            .previous
+            .ok_or_else(|| "لا وظيفة سابقة".to_string());
+    }
+    if let Some(rest) = spec.strip_prefix('%') {
+        if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+            let n: u64 = rest.parse().map_err(|_| format!("وظيفة غير معروفة: {}", spec))?;
+            if state.jobs.iter().any(|j| j.number == n) || state.saved.contains_key(&n) {
+                return Ok(n);
+            }
+            return Err(format!("وظيفة غير معروفة: {}", spec));
+        }
+        if !rest.is_empty() {
+            // بحث جزئي في نص الأمر — الأحدث أولا.
+            if let Some(j) = state.jobs.iter().rev().find(|j| j.command.contains(rest)) {
+                return Ok(j.number);
+            }
+            return Err(format!("وظيفة غير معروفة: {}", spec));
+        }
+        return Err(format!("وظيفة غير معروفة: {}", spec));
+    }
+    if !spec.is_empty() && spec.chars().all(|c| c.is_ascii_digit()) {
+        let n: u64 = spec.parse().map_err(|_| format!("وظيفة غير معروفة: {}", spec))?;
+        if state.jobs.iter().any(|j| j.number == n) || state.saved.contains_key(&n) {
+            return Ok(n);
+        }
+    }
+    Err(format!("وظيفة غير معروفة: {}", spec))
+}
+
+/// مدخل وظيفة برقمها (أو لا شيء).
+pub fn job_by_number(number: u64) -> Option<JobInfo> {
+    match JOBS.lock() {
+        Ok(s) => s.jobs.iter().find(|j| j.number == number).cloned(),
+        Err(_) => None,
+    }
+}
+
+/// رمز محفوظ لوظيفة منتهية نُسيت بـ`أبعد`.
+pub fn saved_job_code(number: u64) -> Option<i64> {
+    match JOBS.lock() {
+        Ok(s) => s.saved.get(&number).copied(),
+        Err(_) => None,
+    }
+}
+
+/// حدّث مدخل وظيفة مرتبطة بمعرف عملية بعد انتظار
+/// مباشر (`عمليات.انتظر`): انتهت برمزها. والانتظار
+/// نفسه إبلاغ — فتُضبط «أُبلغ عنها» حتى لا يعود
+/// إشعار متأخر عن وظيفة عرف المستخدم انتهاءها.
+pub(crate) fn sync_job_done(process_id: u64, code: i64) {
+    if let Ok(mut s) = JOBS.lock() {
+        if let Some(j) = s.jobs.iter_mut().find(|j| j.process_id == process_id) {
+            if j.status == JobStatus::Running {
+                j.status = JobStatus::Done(code as i32);
+                j.notified = true;
+            }
+        }
+    }
+}
+
+/// حدّث مدخل وظيفة مرتبطة بمعرف عملية بعد قتل
+/// مباشر (`عمليات.أوقف`): أُوقفت.
+pub(crate) fn sync_job_killed(process_id: u64) {
+    if let Ok(mut s) = JOBS.lock() {
+        if let Some(j) = s.jobs.iter_mut().find(|j| j.process_id == process_id) {
+            if j.status == JobStatus::Running {
+                j.status = JobStatus::Killed;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn reset_jobs_for_test() {
+    if let Ok(mut s) = JOBS.lock() {
+        *s = JobsState::new();
+    }
+}
+
 /// Test-only: the OS pid of a live spawned process, if any.
 /// Linux only: its only caller is the /proc proof in
 /// kill_really_kills (a wider gate warns dead-code on the
@@ -353,17 +636,24 @@ fn spawn_process_native(command: &str, line: usize, col: usize) -> RioResult<u64
     let child = cmd
         .spawn()
         .map_err(|e| err_spawn_failed(&e, &program_display, line, col))?;
+    let id = register_spawned_child(child, line, col)?;
+    // كل إنشاء — أمامي أو خلفي — يضبط آخر خلفية.
+    set_last_background(id);
+    Ok(id)
+}
 
-    // Strict cap at insert time (two threads may both have
-    // passed the fast path): kill the extra child at once.
+/// سجّل عملية وليدة منشأة في REGISTRY مع السقف
+/// الصارم عند الإدراج (خيطان قد يتجاوزا الفحص
+/// السريع معا): الزائدة تُقتل فورا.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub(crate) fn register_spawned_child(mut child: Child, line: usize, col: usize) -> RioResult<u64> {
     let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
     {
         let mut reg = match REGISTRY.lock() {
             Ok(r) => r,
             Err(_) => {
-                let mut c = child;
-                let _ = c.kill();
-                let _ = c.wait();
+                let _ = child.kill();
+                let _ = child.wait();
                 return Err(RioError::runtime(
                     "تعذّر تسجيل العملية الجديدة",
                     line,
@@ -373,9 +663,8 @@ fn spawn_process_native(command: &str, line: usize, col: usize) -> RioResult<u64
         };
         if reg.len() >= MAX_LIVE_PROCESSES {
             drop(reg);
-            let mut c = child;
-            let _ = c.kill();
-            let _ = c.wait();
+            let _ = child.kill();
+            let _ = child.wait();
             return Err(RioError::runtime(
                 "عدد العمليات المفتوحة تجاوز الحد (٢٥٦) — انتظر بعضها أو أوقفها",
                 line,
@@ -384,6 +673,38 @@ fn spawn_process_native(command: &str, line: usize, col: usize) -> RioResult<u64
         }
         reg.insert(id, child);
     }
+    Ok(id)
+}
+
+/// أنشئ برنامج نيفا كعملية ابن عبر الثنائي الحالي
+/// (`شغل <ملف> &`): المخرج والخطأ موروثان كـ`أنشئ`.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub fn spawn_niva_file(path: &std::path::Path, line: usize, col: usize) -> RioResult<u64> {
+    let exe = std::env::current_exe().map_err(|_| {
+        RioError::runtime("تعذّر تحديد مسار ثنائي نيفا الحالي", line, col)
+    })?;
+    let stem = exe
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    if stem != "نيفا" && stem != "niva" {
+        return Err(RioError::runtime(
+            "تعذّر تحديد مسار ثنائي نيفا الحالي",
+            line,
+            col,
+        ));
+    }
+    let mut cmd = Command::new(&exe);
+    cmd.arg(path);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::inherit());
+    cmd.stderr(Stdio::inherit());
+    let child = cmd.spawn().map_err(|e| {
+        RioError::runtime(format!("تعذّر تشغيل برنامج نيفا: {}", e), line, col)
+    })?;
+    let id = register_spawned_child(child, line, col)?;
+    set_last_background(id);
     Ok(id)
 }
 
@@ -429,7 +750,13 @@ pub fn wait_process(id: u64, line: usize, col: usize) -> RioResult<i64> {
     {
         let mut child = take_child(id, line, col)?;
         match child.wait() {
-            Ok(status) => Ok(status.code().map(|c| c as i64).unwrap_or(-1)),
+            Ok(status) => {
+                let code = status.code().map(|c| c as i64).unwrap_or(-1);
+                // المرحلة (هـ): الانتظار المباشر يحدّث
+                // مدخل الوظيفة المرتبط (إن وُجد).
+                sync_job_done(id, code);
+                Ok(code)
+            }
             Err(_) => Err(RioError::runtime(
                 format!("تعذّر انتظار العملية: {}", id),
                 line,
@@ -466,13 +793,21 @@ pub fn kill_process(id: u64, line: usize, col: usize) -> RioResult<()> {
     {
         let mut child = take_child(id, line, col)?;
         match child.try_wait() {
-            Ok(Some(_)) => Ok(()),
+            // انتهت وحدها قبل القتل: تُسجَّل منتهية
+            // برمزها لا موقوفة.
+            Ok(Some(status)) => {
+                sync_job_done(id, status.code().map(|c| c as i64).unwrap_or(-1));
+                Ok(())
+            }
             Ok(None) => {
                 child.kill().map_err(|_| {
                     RioError::runtime(format!("تعذّر إيقاف العملية: {}", id), line, col)
                 })?;
                 // Reap so no zombie is left behind.
                 let _ = child.wait();
+                // المرحلة (هـ): القتل المباشر يحدّث
+                // مدخل الوظيفة المرتبط (إن وُجد).
+                sync_job_killed(id);
                 Ok(())
             }
             Err(_) => Err(RioError::runtime(
@@ -481,6 +816,301 @@ pub fn kill_process(id: u64, line: usize, col: usize) -> RioResult<()> {
                 col,
             )),
         }
+    }
+}
+
+/// المرحلة (هـ) — جمع غير حاجب لعملية واحدة:
+/// إن انتهت أُخذت من REGISTRY وجُمعت، ورجع رمزها.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn reap_finished(id: u64) -> Option<i32> {
+    let mut reg = match REGISTRY.lock() {
+        Ok(r) => r,
+        Err(_) => return None,
+    };
+    let child = reg.get_mut(&id)?;
+    match child.try_wait() {
+        Ok(Some(status)) => {
+            let code = status.code().unwrap_or(-1);
+            let mut child = reg.remove(&id).unwrap();
+            let _ = child.wait();
+            Some(code)
+        }
+        _ => None,
+    }
+}
+
+/// انتظار وظيفة حاجب (`قدم` / `انتظر %n`):
+/// يبقي الوظيفة برمزها. على منتهية يرجع رمزها
+/// فورا؛ وعلى موقوفة خطأ؛ وعلى منسية منتهية يرجع
+/// رمزها المحفوظ. لا يستهلكها (خلاف `عمليات.انتظر`).
+pub fn wait_job(number: u64, line: usize, col: usize) -> RioResult<i64> {
+    if let Some(code) = saved_job_code(number) {
+        return Ok(code);
+    }
+    let pid = {
+        let state = match JOBS.lock() {
+            Ok(s) => s,
+            Err(_) => {
+                return Err(RioError::runtime(
+                    format!("وظيفة غير معروفة: %{}", number),
+                    line,
+                    col,
+                ))
+            }
+        };
+        match state.jobs.iter().find(|j| j.number == number) {
+            Some(j) => match j.status {
+                JobStatus::Done(code) => return Ok(code as i64),
+                JobStatus::Killed => {
+                    return Err(RioError::runtime("الوظيفة أُوقفت", line, col))
+                }
+                JobStatus::Running => j.process_id,
+            },
+            None => {
+                return Err(RioError::runtime(
+                    format!("وظيفة غير معروفة: %{}", number),
+                    line,
+                    col,
+                ))
+            }
+        }
+    };
+    // انتظار حاجب للعملية (يسجّل انتهاءها في الجدول).
+    wait_process(pid, line, col)
+}
+
+/// انتظار الكل (`انتظر` بلا معامل): يرجع 0 دائما
+/// (اجتماع 65 §80) — أخطاء الوظائف الفردية تُبتلع.
+pub fn wait_all_jobs(line: usize, col: usize) -> i64 {
+    let numbers: Vec<u64> = match JOBS.lock() {
+        Ok(s) => s
+            .jobs
+            .iter()
+            .filter(|j| j.status == JobStatus::Running)
+            .map(|j| j.number)
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    for n in numbers {
+        let _ = wait_job(n, line, col);
+    }
+    0
+}
+
+/// انتظار أي وظيفة (`انتظر أي` / `عمليات.انتظر_أي`):
+/// أول جارية تنتهي — يرجع (رقمها، رمزها).
+pub fn wait_any_job(line: usize, col: usize) -> RioResult<(u64, i64)> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return Err(RioError::runtime(
+            "العمليات غير مدعومة في متصفح الويب",
+            line,
+            col,
+        ));
+    }
+    #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+    {
+        return Err(RioError::runtime(
+            "تشغيل برامج خارجية غير مدعوم في التطبيق",
+            line,
+            col,
+        ));
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    loop {
+        {
+            let mut state = match JOBS.lock() {
+                Ok(s) => s,
+                Err(_) => {
+                    return Err(RioError::runtime("تعذّر الوصول لجدول الوظائف", line, col))
+                }
+            };
+            let running: Vec<(u64, u64)> = state
+                .jobs
+                .iter()
+                .filter(|j| j.status == JobStatus::Running)
+                .map(|j| (j.number, j.process_id))
+                .collect();
+            if running.is_empty() {
+                return Err(RioError::runtime("لا وظائف جارية", line, col));
+            }
+            for (number, pid) in running {
+                if let Some(code) = reap_finished(pid) {
+                    if let Some(j) = state.jobs.iter_mut().find(|j| j.number == number) {
+                        // الانتظار نفسه إبلاغ (كـsync_job_done).
+                        j.status = JobStatus::Done(code);
+                        j.notified = true;
+                    }
+                    return Ok((number, code as i64));
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// قتل وظيفة بالقوة القصوى (`اقتل`): على منتهية
+/// خطأ «الوظيفة منتهية»، وعلى موقوفة «الوظيفة
+/// أُوقفت». لا اختيار إشارة (اجتماع 65 §80).
+pub fn kill_job(number: u64, line: usize, col: usize) -> RioResult<()> {
+    let pid = {
+        let state = match JOBS.lock() {
+            Ok(s) => s,
+            Err(_) => {
+                return Err(RioError::runtime(
+                    format!("وظيفة غير معروفة: %{}", number),
+                    line,
+                    col,
+                ))
+            }
+        };
+        match state.jobs.iter().find(|j| j.number == number) {
+            Some(j) => match j.status {
+                JobStatus::Done(_) => {
+                    return Err(RioError::runtime("الوظيفة منتهية", line, col))
+                }
+                JobStatus::Killed => {
+                    return Err(RioError::runtime("الوظيفة أُوقفت", line, col))
+                }
+                JobStatus::Running => j.process_id,
+            },
+            None => {
+                return Err(RioError::runtime(
+                    format!("وظيفة غير معروفة: %{}", number),
+                    line,
+                    col,
+                ))
+            }
+        }
+    };
+    kill_process(pid, line, col)
+}
+
+/// هل العملية حية؟ (`عمليات.حية` — مقابل `kill -0`).
+pub fn is_alive(id: u64) -> bool {
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    {
+        let _ = id;
+        return false;
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    {
+        match REGISTRY.lock() {
+            Ok(mut reg) => match reg.get_mut(&id) {
+                Some(child) => matches!(child.try_wait(), Ok(None)),
+                None => false,
+            },
+            Err(_) => false,
+        }
+    }
+}
+
+/// انسَ وظيفة (`أبعد`): المنتهية يُحفظ رمزها
+/// (ليبقى `انتظر %n` قادرا)، والجارية تُنقل إلى
+/// «منفصلة» يجمعها موجّه الجمع عند الموجه التالي.
+pub fn disown_job(number: u64, line: usize, col: usize) -> RioResult<()> {
+    let mut state = match JOBS.lock() {
+        Ok(s) => s,
+        Err(_) => {
+            return Err(RioError::runtime(
+                format!("وظيفة غير معروفة: %{}", number),
+                line,
+                col,
+            ))
+        }
+    };
+    let idx = match state.jobs.iter().position(|j| j.number == number) {
+        Some(i) => i,
+        None => {
+            return Err(RioError::runtime(
+                format!("وظيفة غير معروفة: %{}", number),
+                line,
+                col,
+            ))
+        }
+    };
+    let job = state.jobs.remove(idx);
+    match job.status {
+        JobStatus::Done(code) => {
+            state.saved.insert(number, code as i64);
+        }
+        JobStatus::Running => {
+            state.detached.insert(job.process_id);
+        }
+        JobStatus::Killed => {}
+    }
+    refresh_current_previous(&mut state);
+    Ok(())
+}
+
+/// انسَ كل الوظائف (`أبعد الكل`).
+pub fn disown_all_jobs() {
+    if let Ok(mut s) = JOBS.lock() {
+        let jobs = std::mem::take(&mut s.jobs);
+        for job in jobs {
+            match job.status {
+                JobStatus::Done(code) => {
+                    s.saved.insert(job.number, code as i64);
+                }
+                JobStatus::Running => {
+                    s.detached.insert(job.process_id);
+                }
+                JobStatus::Killed => {}
+            }
+        }
+        s.current = None;
+        s.previous = None;
+    }
+}
+
+/// أعد حساب الحالية والسابقة بعد نسيان: الأعلى
+/// رقما في الجدول حالية، والتي تليه سابقة.
+fn refresh_current_previous(state: &mut JobsState) {
+    let mut numbers: Vec<u64> = state.jobs.iter().map(|j| j.number).collect();
+    numbers.sort_unstable();
+    state.current = numbers.pop();
+    state.previous = numbers.pop();
+}
+
+/// الجمع غير الحاجب عند الموجه (`poll_jobs`):
+/// يجمع كل جارية انتهت ويعيد سطور الإشعار
+/// (`[n]+ الأمر — انتهت (رمز ٠)`) للمنتهية التي
+/// لم تُبلَّغ بعد؛ ويجمع المنفصلة بلا إشعار.
+/// على WASM وأندرويد لا عمليات فيُرجع فارغا.
+pub fn poll_jobs() -> Vec<String> {
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    {
+        return Vec::new();
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    {
+        let mut notes = Vec::new();
+        let mut state = match JOBS.lock() {
+            Ok(s) => s,
+            Err(_) => return notes,
+        };
+        let (current, previous) = (state.current, state.previous);
+        for i in 0..state.jobs.len() {
+            if state.jobs[i].status != JobStatus::Running {
+                continue;
+            }
+            let pid = state.jobs[i].process_id;
+            if let Some(code) = reap_finished(pid) {
+                state.jobs[i].status = JobStatus::Done(code);
+                if !state.jobs[i].notified {
+                    state.jobs[i].notified = true;
+                    notes.push(format_job_line(&state.jobs[i], current, previous));
+                }
+            }
+        }
+        // المنفصلة: جمع بلا إشعار.
+        let detached: Vec<u64> = state.detached.iter().copied().collect();
+        for pid in detached {
+            if reap_finished(pid).is_some() {
+                state.detached.remove(&pid);
+            }
+        }
+        notes
     }
 }
 
@@ -664,6 +1294,171 @@ mod tests {
             // The id is consumed: waiting again is an error.
             assert!(wait_process(id, 1, 1).is_err());
             let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    // المرحلة (هـ) — جدول الوظائف: منطق خالص
+    // بمعارف وهمية (بلا عمليات حقيقية).
+    #[test]
+    fn jobs_table_register_resolve() {
+        let _guard = proc_test_lock();
+        reset_jobs_for_test();
+        let n1 = register_job(999_001, "نوم طويل").unwrap();
+        let n2 = register_job(999_002, "اطبع مرحبا").unwrap();
+        assert_eq!((n1, n2), (1, 2));
+        assert_eq!(last_background_id(), 999_002);
+        let jobs = list_jobs();
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0].status, JobStatus::Running);
+        let (cur, prev) = current_previous_jobs();
+        assert_eq!((cur, prev), (Some(2), Some(1)));
+        assert_eq!(resolve_job_spec("1").unwrap(), 1);
+        assert_eq!(resolve_job_spec("%1").unwrap(), 1);
+        // الأرقام المشرقية كما يطبعها الترمنال.
+        assert_eq!(resolve_job_spec("%١").unwrap(), 1);
+        assert_eq!(resolve_job_spec("٢").unwrap(), 2);
+        assert_eq!(resolve_job_spec("%").unwrap(), 2);
+        assert_eq!(resolve_job_spec("%%").unwrap(), 2);
+        assert_eq!(resolve_job_spec("%+").unwrap(), 2);
+        assert_eq!(resolve_job_spec("%-").unwrap(), 1);
+        assert_eq!(resolve_job_spec("%مرحبا").unwrap(), 2);
+        assert!(resolve_job_spec("%غائب").is_err());
+        assert!(resolve_job_spec("99").is_err());
+        assert!(resolve_job_spec("").is_err());
+        let line1 = format_job_line(&jobs[0], cur, prev);
+        assert!(line1.contains("[١]-"), "got: {}", line1);
+        assert!(line1.contains("نوم طويل"), "got: {}", line1);
+        assert!(line1.contains("تعمل"), "got: {}", line1);
+        let line2 = format_job_line(&jobs[1], cur, prev);
+        assert!(line2.contains("[٢]+"), "got: {}", line2);
+        // السقف: 256 وظيفة — الـ257 تُرفض (كلها
+        // جارية فلا أقدم منتهية مُبلَّغ عنها تُسقط).
+        for i in 3..=256 {
+            register_job(999_000 + i, "وظيفة").unwrap();
+        }
+        let err = register_job(999_999, "زائدة").unwrap_err().to_string();
+        assert!(err.contains("تجاوز الحد"), "got: {}", err);
+        reset_jobs_for_test();
+    }
+
+    /// المرحلة (هـ) — انتظر خروج عملية بلا استهلاك
+    /// (لاختبارات الجمع: `true` قد لا تكون خرجت بعد
+    /// حين يُستدعى الجمع بعد ميكروثوانٍ من الإنشاء —
+    /// فالجمع بلا انتظار يراها جارية).
+    #[cfg(unix)]
+    fn wait_for_exit(id: u64) {
+        for _ in 0..200 {
+            if !is_alive(id) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("العملية {} لم تخرج", id);
+    }
+
+    // المرحلة (هـ) — انتظار وجمع وقتل ونسيان
+    // بعمليات حقيقية (يونكس فقط).
+    #[test]
+    fn jobs_wait_poll_kill_disown() {
+        #[cfg(unix)]
+        {
+            let _guard = proc_test_lock();
+            reset_jobs_for_test();
+            let dir = temp_dir("jobs");
+            test_policy(&dir, true);
+            // true تنتهي فورا: الجمع يبلّغ عنها مرة واحدة.
+            let id = spawn_process(true_program(), 1, 1).unwrap();
+            assert_eq!(last_background_id(), id);
+            let n1 = register_job(id, "برنامج صحيح").unwrap();
+            assert_eq!(n1, 1);
+            wait_for_exit(id);
+            let notes = poll_jobs();
+            assert_eq!(notes.len(), 1, "got: {:?}", notes);
+            assert!(notes[0].contains("انتهت (رمز ٠)"), "got: {}", notes[0]);
+            assert!(poll_jobs().is_empty());
+            assert_eq!(wait_job(n1, 1, 1).unwrap(), 0);
+            // sleep جارية: حية، ثم تُقتل.
+            let id2 = spawn_process("/bin/sleep 30", 1, 1).unwrap();
+            let n2 = register_job(id2, "نوم").unwrap();
+            assert!(is_alive(id2));
+            kill_job(n2, 1, 1).unwrap();
+            assert!(!is_alive(id2));
+            let err = wait_job(n2, 1, 1).unwrap_err().to_string();
+            assert!(err.contains("الوظيفة أُوقفت"), "got: {}", err);
+            let err = kill_job(n2, 1, 1).unwrap_err().to_string();
+            assert!(err.contains("الوظيفة أُوقفت"), "got: {}", err);
+            let err = kill_job(n1, 1, 1).unwrap_err().to_string();
+            assert!(err.contains("الوظيفة منتهية"), "got: {}", err);
+            // النسيان: المنتهية يُحفظ رمزها، والجارية
+            // تُنسى، والمجهولة خطأ.
+            disown_job(n1, 1, 1).unwrap();
+            assert_eq!(wait_job(n1, 1, 1).unwrap(), 0);
+            assert_eq!(list_jobs().len(), 1);
+            disown_job(n2, 1, 1).unwrap();
+            assert!(list_jobs().is_empty());
+            assert!(disown_job(99, 1, 1).is_err());
+            // بلا جارية: wait_any خطأ لا تعليق.
+            let err = wait_any_job(1, 1).unwrap_err().to_string();
+            assert!(err.contains("لا وظائف جارية"), "got: {}", err);
+            // wait_any: أول جارية تنتهي هي true.
+            let id3 = spawn_process(true_program(), 1, 1).unwrap();
+            let n3 = register_job(id3, "صحيح ثان").unwrap();
+            let id4 = spawn_process("/bin/sleep 30", 1, 1).unwrap();
+            let n4 = register_job(id4, "نوم ثان").unwrap();
+            assert_eq!(wait_any_job(1, 1).unwrap(), (n3, 0));
+            assert_eq!(wait_job(n3, 1, 1).unwrap(), 0);
+            kill_job(n4, 1, 1).unwrap();
+            let _ = fs::remove_dir_all(&dir);
+            reset_jobs_for_test();
+        }
+    }
+
+    // المرحلة (هـ) — منسية جارية: الجمع يجمعها
+    // عند الموجه بلا إشعار (والانتظار المباشر بعدها
+    // يجدها مستهلكة — أي جُمعت فعلا).
+    #[test]
+    fn jobs_disowned_running_reaped_by_poll() {
+        #[cfg(unix)]
+        {
+            let _guard = proc_test_lock();
+            reset_jobs_for_test();
+            let dir = temp_dir("jobs-disown");
+            test_policy(&dir, true);
+            let id = spawn_process(true_program(), 1, 1).unwrap();
+            let n = register_job(id, "صحيح منسي").unwrap();
+            disown_job(n, 1, 1).unwrap();
+            assert!(list_jobs().is_empty());
+            wait_for_exit(id);
+            assert!(poll_jobs().is_empty());
+            assert!(wait_process(id, 1, 1).is_err());
+            let _ = fs::remove_dir_all(&dir);
+            reset_jobs_for_test();
+        }
+    }
+
+    // المرحلة (هـ) — الانتظار والقتل المباشران
+    // (`عمليات.انتظر` / `عمليات.أوقف`) يحدّثان
+    // مدخل الوظيفة المرتبط.
+    #[test]
+    fn jobs_sync_from_direct_wait_kill() {
+        #[cfg(unix)]
+        {
+            let _guard = proc_test_lock();
+            reset_jobs_for_test();
+            let dir = temp_dir("jobs-sync");
+            test_policy(&dir, true);
+            let id = spawn_process(true_program(), 1, 1).unwrap();
+            let n1 = register_job(id, "صحيح مباشر").unwrap();
+            assert_eq!(wait_process(id, 1, 1).unwrap(), 0);
+            let job = job_by_number(n1).unwrap();
+            assert_eq!(job.status, JobStatus::Done(0));
+            let id2 = spawn_process("/bin/sleep 30", 1, 1).unwrap();
+            let n2 = register_job(id2, "نوم مباشر").unwrap();
+            kill_process(id2, 1, 1).unwrap();
+            let job = job_by_number(n2).unwrap();
+            assert_eq!(job.status, JobStatus::Killed);
+            let _ = fs::remove_dir_all(&dir);
+            reset_jobs_for_test();
         }
     }
 

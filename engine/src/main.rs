@@ -19,6 +19,7 @@
 //! The engine itself lives in lib.rs; this file is only the CLI
 //! (flags, file reading, the 256 MB stack thread, exit codes).
 
+use niva_engine::error::RioError;
 use niva_engine::interpreter::Interpreter;
 use niva_engine::semantic::SemanticAnalyzer;
 use niva_engine::lexer::{normalize_cli_word, tokenize_named};
@@ -50,6 +51,8 @@ fn usage() -> String {
      --اسمح-بالخادم       السماح بالخادم (شبكة.اخدم) — مغلق افتراضيا، وعلم الشبكة وحده لا يكفي\n\
      --مضيف-محلي مضيف       السماح بمضيف محلي صراحة (مثل 127.0.0.1) — وحده لا يفتح الشبكة\n\
      --تنزيلات مسار       كشف مجلد التنزيلات المشترك للقراءة فقط باسم تخزين/تنزيلات\n\
+     --بلا-بدء            تخطي ملفات البدء (بدء.نيفا والمقتطفات) في التفاعلي\n\
+     --ملف-بدء مسار       ملف بدء إضافي يُنفَّذ بعد ملفات البدء في التفاعلي\n\
      --مستقل               مع ابن: ملف تنفيذي مستقل بدلا من المصنوع\n\
      --أصلي                مع ابن: ثنائي أصلي (C) بدلا من المصنوع\n"
         .to_string()
@@ -79,6 +82,45 @@ fn io_error_arabic(e: &std::io::Error) -> String {
         // Any other OS error: Arabic only — the raw OS message is
         // English, so it is never shown to the user.
         _ => "خطأ نظام غير معروف".to_string(),
+    }
+}
+
+/// الدفعة 1 — رموز الخروج (اجتماع 54 §69): تحويل
+/// خطأ إدخال/إخراج إلى رمز العملية — غير موجود 127،
+/// وغيره (مجلد كملف، بلا صلاحية) 126. وخطأ الاستخدام
+/// (علم غير معروف، قيمة ناقصة، وسائط خاطئة) 2.
+fn io_exit_code(e: &std::io::Error) -> ExitCode {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => ExitCode::from(127u8),
+        _ => ExitCode::from(126u8),
+    }
+}
+
+/// الدفعة 1: رمز سوء الاستخدام (2) — خطأ لغوي أو
+/// نحوي أو دلالي أو ترجمة، أو علم/وسائط CLI خاطئة.
+fn usage_exit_code() -> ExitCode {
+    ExitCode::from(2u8)
+}
+
+/// الدفعة 1 (§69 ممتد — وحدة مستوردة غائبة ملف
+/// مطلوب غير موجود): خطأ تشغيل برنامج → 1، إلا
+/// الوحدة الغائبة → 127.
+fn run_error_exit_code(e: &RioError) -> ExitCode {
+    if e.is_module_not_found() {
+        ExitCode::from(127u8)
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// الدفعة 1 (§69 ممتد): خطأ بناء (مصدر/ترجمة) → 2،
+/// إلا الوحدة الغائبة (يحلها المولد الأصلي وقت
+/// البناء) → 127.
+fn build_error_exit_code(e: &RioError) -> ExitCode {
+    if e.is_module_not_found() {
+        ExitCode::from(127u8)
+    } else {
+        usage_exit_code()
     }
 }
 
@@ -112,7 +154,7 @@ fn main() -> ExitCode {
     // Arabic flags only — a Latin flag is rejected here.
     // --مفسر is a HIDDEN diagnostic flag (DESIGN §39.3):
     // known to the parser, but never shown in --مساعدة.
-    const KNOWN_FLAGS: [&str; 12] = [
+    const KNOWN_FLAGS: [&str; 14] = [
         "--مساعده",
         "--نسخه",
         "--تفاعلي",
@@ -125,6 +167,10 @@ fn main() -> ExitCode {
         "--تنزيلات",
         "--مستقل",
         "--اصلي",
+        // المرحلة (د) — الإكمال (اجتماع 68 §83):
+        // علما بدء التشغيل التفاعلي.
+        "--بلا-بدء",
+        "--ملف-بدء",
     ];
     // ك-2 (مهمة 7): --افتراضي أُزيل — الآلة الافتراضية هي
     // المحرك الافتراضي الآن، فلا معنى للعلم. خطأ عربي واضح
@@ -132,7 +178,7 @@ fn main() -> ExitCode {
     if nargs.iter().any(|a| a == "--افتراضي") {
         eprintln!("الآلة الافتراضية هي المحرك الافتراضي الآن — لا حاجة إلى --افتراضي");
         eprint!("{}", usage());
-        return ExitCode::FAILURE;
+        return usage_exit_code();
     }
     if let Some(unknown) = args
         .iter()
@@ -143,7 +189,7 @@ fn main() -> ExitCode {
     {
         eprintln!("خيار غير معروف: {}", unknown);
         eprint!("{}", usage());
-        return ExitCode::FAILURE;
+        return usage_exit_code();
     }
     // Meeting 22: network is OFF by default. --اسمح-بالشبكة
     // opens it; --مضيف-محلي HOST (repeatable) explicitly
@@ -156,6 +202,9 @@ fn main() -> ExitCode {
     let allow_server = nargs.iter().any(|a| a == "--اسمح-بالخادم");
     let mut local_hosts: Vec<String> = Vec::new();
     let mut downloads: Option<String> = None;
+    // المرحلة (د) — الإكمال (اجتماع 68 §83): علما بدء
+    // التشغيل التفاعلي.
+    let mut startup_file: Option<String> = None;
     let mut arg_iter = args.iter().skip(1).peekable();
     let mut file_args: Vec<String> = Vec::new();
     while let Some(a) = arg_iter.next() {
@@ -165,7 +214,7 @@ fn main() -> ExitCode {
                 None => {
                     eprintln!("خيار --مضيف-محلي يحتاج مضيفا بعده");
                     eprint!("{}", usage());
-                    return ExitCode::FAILURE;
+                    return usage_exit_code();
                 }
             }
         } else if normalize_cli_word(a) == "--تنزيلات" {
@@ -176,7 +225,18 @@ fn main() -> ExitCode {
                 None => {
                     eprintln!("خيار --تنزيلات يحتاج مسارا بعده");
                     eprint!("{}", usage());
-                    return ExitCode::FAILURE;
+                    return usage_exit_code();
+                }
+            }
+        } else if normalize_cli_word(a) == "--ملف-بدء" {
+            // المرحلة (د) — الإكمال (اجتماع 68 §83):
+            // ملف بدء إضافي للتفاعلي.
+            match arg_iter.next() {
+                Some(path) => startup_file = Some(path.clone()),
+                None => {
+                    eprintln!("خيار --ملف-بدء يحتاج مسارا بعده");
+                    eprint!("{}", usage());
+                    return usage_exit_code();
                 }
             }
         } else if !a.starts_with('-') {
@@ -190,7 +250,7 @@ fn main() -> ExitCode {
             let pb = std::path::PathBuf::from(p);
             if !pb.is_dir() {
                 eprintln!("مسار التنزيلات غير صالح");
-                return ExitCode::FAILURE;
+                return usage_exit_code();
             }
             Some(pb)
         }
@@ -219,20 +279,24 @@ fn main() -> ExitCode {
     if nargs.iter().any(|a| a == "--مستقل") {
         eprintln!("خطأ: العلم --مستقل يناسب أمر ابن فقط — مثال: نيفا ابن --مستقل برنامج.نيفا");
         eprint!("{}", usage());
-        return ExitCode::FAILURE;
+        return usage_exit_code();
     }
     // --أصلي بلا ابن لا معنى له.
     if nargs.iter().any(|a| a == "--اصلي") {
         eprintln!("خطأ: العلم --أصلي يناسب أمر ابن فقط — مثال: نيفا ابن --أصلي برنامج.نيفا");
         eprint!("{}", usage());
-        return ExitCode::FAILURE;
+        return usage_exit_code();
     }
     if file_arg.is_none() {
         // Same 256 MB stack thread as file mode, so the depth-500
         // recursion limit is a Niva error, not a Rust stack overflow.
+        // المرحلة (د) — الإكمال (اجتماع 68 §83): علما بدء
+        // التشغيل التفاعلي.
+        let skip_startup = nargs.iter().any(|a| a == "--بلا-بدء");
+        let startup_path = startup_file.map(std::path::PathBuf::from);
         let handle = std::thread::Builder::new()
             .stack_size(STACK_SIZE_BYTES)
-            .spawn(move || repl::run_repl(allow_all, allow_network, allow_server, &local_hosts, use_interpreter, downloads_path));
+            .spawn(move || repl::run_repl(allow_all, allow_network, allow_server, &local_hosts, use_interpreter, downloads_path, skip_startup, startup_path));
         return match handle {
             Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),
             Err(_) => ExitCode::FAILURE,
@@ -248,7 +312,9 @@ fn main() -> ExitCode {
         Ok(s) => s,
         Err(e) => {
             eprintln!("خطأ إدخال/إخراج: تعذر قراءة الملف {}: {}", path, io_error_arabic(&e));
-            return ExitCode::FAILURE;
+            // الدفعة 1: غائب 127، وغيره (مجلد/بلا
+            // صلاحية) 126.
+            return io_exit_code(&e);
         }
     };
 
@@ -256,14 +322,14 @@ fn main() -> ExitCode {
         Ok(t) => t,
         Err(e) => {
             eprintln!("{}", e);
-            return ExitCode::FAILURE;
+            return usage_exit_code();
         }
     };
     let program = match Parser::named(tokens, &path).parse_program() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{}", e);
-            return ExitCode::FAILURE;
+            return usage_exit_code();
         }
     };
 
@@ -299,7 +365,7 @@ fn main() -> ExitCode {
             let mut analyzer = SemanticAnalyzer::new();
             if let Err(e) = analyzer.analyze_program(&program) {
                 eprintln!("{}", e.with_file_if_none(Some(path.clone())));
-                return ExitCode::FAILURE;
+                return usage_exit_code();
             }
             // ك-2 (مهمة 7): --مفسر فقط يشغّل مفسر الشجرة
             // (تشخيص ومقارنة)؛ الافتراضي هو المترجم (VM).
@@ -328,13 +394,16 @@ fn main() -> ExitCode {
                 return match interp.run(&program) {
                     Ok(()) => {
                         print!("{}", interp.output);
-                        ExitCode::SUCCESS
+                        // الدفعة 1: رمز خروج البرنامج،
+                        // أو 0 حين انتهى بلا خروج.
+                        ExitCode::from(interp.take_exit_code().unwrap_or(0))
                     }
                     Err(e) => {
                         // Partial output first, then the Arabic error with line/col.
                         print!("{}", interp.output);
                         eprintln!("{}", e);
-                        ExitCode::FAILURE
+                        // الدفعة 1 (§69 ممتد): وحدة غائبة 127، وغيره 1.
+                        run_error_exit_code(&e)
                     }
                 };
             }
@@ -344,7 +413,7 @@ fn main() -> ExitCode {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("{}", e.with_file_if_none(Some(path.clone())));
-                    return ExitCode::FAILURE;
+                    return usage_exit_code();
                 }
             };
             return run_vm(compiled, program_dir, allow_all, allow_network, allow_server, &local_hosts, &path, downloads_path);
@@ -415,12 +484,15 @@ fn run_vm(
     match vm_inst.run() {
         Ok(()) => {
             print!("{}", vm_inst.output);
-            ExitCode::SUCCESS
+            // الدفعة 1: رمز خروج البرنامج، أو 0 حين
+            // انتهى بلا خروج.
+            ExitCode::from(vm_inst.take_exit_code().unwrap_or(0))
         }
         Err(e) => {
             print!("{}", vm_inst.output);
             eprintln!("{}", e);
-            ExitCode::FAILURE
+            // الدفعة 1 (§69 ممتد): وحدة غائبة 127، وغيره 1.
+            run_error_exit_code(&e)
         }
     }
 }
@@ -467,7 +539,7 @@ fn run_standalone(payload: Vec<u8>) -> ExitCode {
     {
         eprintln!("خيار غير معروف: {}", unknown);
         eprint!("{}", standalone_usage());
-        return ExitCode::FAILURE;
+        return usage_exit_code();
     }
     let allow_network = nargs.iter().any(|a| a == "--اسمح-بالشبكه");
     let allow_all = nargs.iter().any(|a| a == "--اسمح-بالكل");
@@ -481,13 +553,13 @@ fn run_standalone(payload: Vec<u8>) -> ExitCode {
                 None => {
                     eprintln!("خيار --مضيف-محلي يحتاج مضيفا بعده");
                     eprint!("{}", standalone_usage());
-                    return ExitCode::FAILURE;
+                    return usage_exit_code();
                 }
             }
         } else if !a.starts_with('-') {
             eprintln!("خطأ: البرنامج المستقل لا يأخذ ملف مصدر — شغّله مباشرة");
             eprint!("{}", standalone_usage());
-            return ExitCode::FAILURE;
+            return usage_exit_code();
         }
     }
     let program_dir = std::env::current_exe()
@@ -514,7 +586,8 @@ fn run_standalone(payload: Vec<u8>) -> ExitCode {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("خطأ: {}", e.message);
-                    return ExitCode::FAILURE;
+                    // الدفعة 1: مصنوع تالف → سوء استخدام (2).
+                    return usage_exit_code();
                 }
             };
             // مهمة 8: ارفع عدّاد الإغلاقات فوق معرّفات
@@ -561,20 +634,20 @@ fn do_build(args: &[String], file_args: &[String]) -> ExitCode {
     {
         eprintln!("خطأ: العلم {} لا يناسب أمر ابن", flag);
         eprint!("{}", usage());
-        return ExitCode::FAILURE;
+        return usage_exit_code();
     }
     let src_path = match file_args.get(1) {
         Some(p) => p.clone(),
         None => {
             eprintln!("خطأ: ابن يحتاج ملف مصدر — مثال: نيفا ابن برنامج.نيفا");
             eprint!("{}", usage());
-            return ExitCode::FAILURE;
+            return usage_exit_code();
         }
     };
     if file_args.len() > 2 {
         eprintln!("خطأ: ابن يبني ملفا واحدا فقط");
         eprint!("{}", usage());
-        return ExitCode::FAILURE;
+        return usage_exit_code();
     }
     let standalone = args
         .iter()
@@ -585,7 +658,7 @@ fn do_build(args: &[String], file_args: &[String]) -> ExitCode {
     if standalone && native {
         eprintln!("خطأ: لا تجمع --مستقل و--أصلي — اختر أحدهما");
         eprint!("{}", usage());
-        return ExitCode::FAILURE;
+        return usage_exit_code();
     }
     if native {
         // الثنائي الأصلي: المولد يحلل المصدر بنفسه.
@@ -604,7 +677,9 @@ fn do_build(args: &[String], file_args: &[String]) -> ExitCode {
             }
             Err(e) => {
                 eprintln!("{}", e);
-                ExitCode::FAILURE
+                // الدفعة 1 (§69 ممتد): وحدة غائبة 127،
+                // وخطأ بناء آخر (مصدر/ترجمة) → 2.
+                build_error_exit_code(&e)
             }
         };
     }
@@ -616,21 +691,22 @@ fn do_build(args: &[String], file_args: &[String]) -> ExitCode {
                 src_path,
                 io_error_arabic(&e)
             );
-            return ExitCode::FAILURE;
+            // الدفعة 1: غائب 127، وغيره 126.
+            return io_exit_code(&e);
         }
     };
     let tokens = match tokenize_named(&source, &src_path) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("{}", e);
-            return ExitCode::FAILURE;
+            return build_error_exit_code(&e);
         }
     };
     let program = match Parser::named(tokens, &src_path).parse_program() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{}", e);
-            return ExitCode::FAILURE;
+            return build_error_exit_code(&e);
         }
     };
     let handle = std::thread::Builder::new()
@@ -638,14 +714,16 @@ fn do_build(args: &[String], file_args: &[String]) -> ExitCode {
         .spawn(move || {
             let mut analyzer = SemanticAnalyzer::new();
             if let Err(e) = analyzer.analyze_program(&program) {
-                eprintln!("{}", e.with_file_if_none(Some(src_path.clone())));
-                return ExitCode::FAILURE;
+                let e = e.with_file_if_none(Some(src_path.clone()));
+                eprintln!("{}", e);
+                return build_error_exit_code(&e);
             }
             let compiled = match vm::Compiler::compile_program(&program) {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("{}", e.with_file_if_none(Some(src_path.clone())));
-                    return ExitCode::FAILURE;
+                    let e = e.with_file_if_none(Some(src_path.clone()));
+                    eprintln!("{}", e);
+                    return build_error_exit_code(&e);
                 }
             };
             let payload = match artifact::encode_program(&compiled) {
@@ -671,7 +749,8 @@ fn do_build(args: &[String], file_args: &[String]) -> ExitCode {
                             out_path.display(),
                             io_error_arabic(&e)
                         );
-                        ExitCode::FAILURE
+                        // الدفعة 1: غائب 127، وغيره 126.
+                        io_exit_code(&e)
                     }
                 }
             }
@@ -700,7 +779,7 @@ fn build_standalone(src_path: &str, payload: &[u8]) -> ExitCode {
                 exe.display(),
                 io_error_arabic(&e)
             );
-            return ExitCode::FAILURE;
+            return io_exit_code(&e);
         }
     };
     let mut out_path = std::path::PathBuf::from(src_path);
@@ -716,7 +795,7 @@ fn build_standalone(src_path: &str, payload: &[u8]) -> ExitCode {
         .unwrap_or(false);
     if same {
         eprintln!("خطأ: اسم المخرج يطابق الملف التنفيذي الحالي — غيّر اسم المصدر");
-        return ExitCode::FAILURE;
+        return usage_exit_code();
     }
     let wrapped = artifact::wrap_standalone(&exe_bytes, payload);
     if let Err(e) = fs::write(&out_path, &wrapped) {
@@ -725,7 +804,7 @@ fn build_standalone(src_path: &str, payload: &[u8]) -> ExitCode {
             out_path.display(),
             io_error_arabic(&e)
         );
-        return ExitCode::FAILURE;
+        return io_exit_code(&e);
     }
     #[cfg(unix)]
     {
@@ -759,20 +838,20 @@ fn do_run_artifact(
     {
         eprintln!("خطأ: العلم {} لا يناسب أمر شغل", flag);
         eprint!("{}", usage());
-        return ExitCode::FAILURE;
+        return usage_exit_code();
     }
     let art_path = match file_args.get(1) {
         Some(p) => p.clone(),
         None => {
             eprintln!("خطأ: شغل يحتاج مصنوعا — مثال: نيفا شغل مصنوع.نيفاب");
             eprint!("{}", usage());
-            return ExitCode::FAILURE;
+            return usage_exit_code();
         }
     };
     if file_args.len() > 2 {
         eprintln!("خطأ: شغل يشغّل مصنوعا واحدا فقط");
         eprint!("{}", usage());
-        return ExitCode::FAILURE;
+        return usage_exit_code();
     }
     let bytes = match fs::read(&art_path) {
         Ok(b) => b,
@@ -782,7 +861,8 @@ fn do_run_artifact(
                 art_path,
                 io_error_arabic(&e)
             );
-            return ExitCode::FAILURE;
+            // الدفعة 1: غائب 127، وغيره 126.
+            return io_exit_code(&e);
         }
     };
     let program_dir = program_dir_of(&art_path);
@@ -805,7 +885,8 @@ fn do_run_artifact(
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("خطأ: {}", e.message);
-                    return ExitCode::FAILURE;
+                    // الدفعة 1: مصنوع تالف → سوء استخدام (2).
+                    return usage_exit_code();
                 }
             };
             // مهمة 8: ارفع عدّاد الإغلاقات فوق معرّفات

@@ -53,6 +53,8 @@ pub enum TokenKind {
     Str(String),
     Keyword(Keyword),
     Plus,
+    // الدفعة 4 — المتغيرات (اجتماع 58 §73): `+=`.
+    PlusEq,
     Minus,
     Star,
     Slash,
@@ -115,6 +117,14 @@ fn normalize_keyword(word: &str) -> String {
 pub fn normalize_cli_word(word: &str) -> String {
     let stripped: String = word.chars().filter(|c| !is_diacritic(*c)).collect();
     normalize_keyword(&stripped)
+}
+
+/// هل هذه الكلمة (بعد التطبيع) كلمة محجوزة في
+/// اللغة؟ الدفعة 3 (الميزة 44): طبقة «كلمة محجوزة»
+/// في وصف الأمر — والمقارنة بعد التطبيع كما يميز
+/// المحلل الكلمة المحجوزة نفسها.
+pub(crate) fn is_keyword_word(word: &str) -> bool {
+    keyword_for(&normalize_cli_word(word)).is_some()
 }
 
 fn keyword_for(normalized: &str) -> Option<Keyword> {
@@ -386,6 +396,8 @@ pub fn tokenize(source: &str) -> RioResult<Vec<Token>> {
                 Some(('!', '=')) => (TokenKind::NotEq, 2),
                 Some(('<', '=')) => (TokenKind::LtEq, 2),
                 Some(('>', '=')) => (TokenKind::GtEq, 2),
+                // الدفعة 4 — المتغيرات (اجتماع 58 §73): `+=`.
+                Some(('+', '=')) => (TokenKind::PlusEq, 2),
                 _ => match c {
                     '+' => (TokenKind::Plus, 1),
                     '-' => (TokenKind::Minus, 1),

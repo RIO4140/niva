@@ -114,9 +114,10 @@
 
 use crate::ast::{BinOp, Expr, ExprKind, Stmt, StmtKind, UnOp};
 use crate::error::{RioError, RioResult};
+use crate::navigation::TryDir;
 use crate::value::Value;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -149,6 +150,9 @@ pub enum Op {
     Const(Value),
     Load(String),
     Store(String),
+    // الدفعة 4 — المتغيرات (اجتماع 58 §73): `+=`
+    // (إلحاق بقيمة قديمة أو هوية الغائب).
+    StoreAppend(String),
     Pop,
     Add,
     Sub,
@@ -361,19 +365,55 @@ fn is_pure_builtin(name: &str) -> bool {
     PURE_BUILTINS.contains(&name)
 }
 
+/// المرحلة (د) — الإكمال (اجتماع 67 §82): كل أسماء
+/// الدوال المدمجة (النقية + الملفات) — للإكمال في
+/// التفاعلي.
+pub(crate) fn all_builtin_names() -> Vec<&'static str> {
+    let mut names: Vec<&'static str> = PURE_BUILTINS.to_vec();
+    names.extend(FILE_BUILTINS.iter().copied());
+    names
+}
+
 /// مهمة 5: every file builtin the interpreter knows
 /// (the 11 terminal shortcuts + the 15 added for the 50
-/// terminal shortcuts + تفاصيل_المسار + تثبيت + ادخل). The compiler emits
+/// terminal shortcuts + تفاصيل_المسار + تثبيت + ادخل +
+/// الدفعة 1: رمز_الخروج + اسم_البرنامج + خروج +
+/// اجتماع 56 §71 — الدفعة 2: المكدس الستة +
+/// الدفعة 3 — التشغيل (اجتماع 57 §72): وصف الأمر
+/// ومكان الأداة والاستبدال). والدفعة 4 — المتغيرات
+/// (اجتماع 58 §73): التجميد والحذف والفحص
+/// والمرجع وعرض البيئة ومفاتيح القاموس. والدفعة 5 —
+/// أدوات الملفات (اجتماع 59 §74): النسخ التكراري
+/// والمحدَّث والأرشيفي والخفيف والحذف التكراري
+/// والرابط الصلب والنسبي. The compiler emits
 /// Op::Builtin for these, like the pure ones; the
 /// runtime env-first check in Op::Builtin still applies
 /// (a bound name wins over the builtin).
-const FILE_BUILTINS: [&str; 31] = [
+const FILE_BUILTINS: [&str; 70] = [
     "اقرأ_ملف", "اكتب_ملف", "اعرض_الملفات", "المجلد_الحالي", "انتقل", "أنشئ_مجلد",
     "احذف", "احذف_مجلد", "احذف_ملف", "انسخ", "انقل", "أنشئ_ملف", "اعرض_البداية",
     "اعرض_النهاية", "عد_الأسطر", "عد_الكلمات", "ابحث_في_ملف", "ابحث_عن",
     "اعرض_الشجرة", "حجم_المسار", "أنشئ_رابط", "التاريخ_الآن", "النسخة", "موجود",
     "نوع_المسار", "عد_الملفات", "تفاصيل_المسار", "تثبيت", "ادخل", "إصدار_المحرك",
-    "بيئة",
+    "بيئة", "رمز_الخروج", "اسم_البرنامج", "خروج",
+    // المرحلة (ج) — التوجيه والأنابيب (اجتماعا 62
+    // و63 §77 و§78): قراءة الإدخال الموجَّه، و`tee`،
+    // وأمرا النجاح والفشل، وقائمة رموز الأنبوب.
+    "اقرأ_الإدخال", "وزع", "نجاح", "فشل", "رموز_الأنبوب",
+    "ادفع_مجلد", "أخرج_مجلد", "اعرض_المكدس", "امسح_المكدس", "مسار_بحث_المجلدات",
+    "الوضع_الفيزيائي",
+    "نوع_الامر", "مكان_الاداة", "استبدل_الجلسة",
+    "جمد", "احذف_متغير", "افحص_متغير", "مرجع", "اعرض_البيئة", "مفاتيح",
+    "انسخ_تكراري", "انسخ_محدث", "انسخ_أرشيف", "انسخ_خفيف", "احذف_تكراري",
+    "أنشئ_رابط_صلب", "أنشئ_رابط_نسبي",
+    // المرحلة (د) — الإكمال (اجتماعات 66–69 §81–
+    // §84): بديلا البيئة، وإزالتا البادئة/اللاحقة،
+    // والفهارس، وعرض المتغيرات والدوال، وحذف الدالة،
+    // والمصدر. (بلا هذه القائمة يصدر المترجم Op::Call
+    // فيخطئ التشغيل «دالة غير معرفة في VM» — تنبيه
+    // الدرس الدائم: كل اسم جديد هنا أولا.)
+    "بيئة_أو", "بيئة_إن_وجد", "أزل_بادئة", "أزل_لاحقة", "فهارس",
+    "اعرض_المتغيرات", "اعرض_الدوال", "احذف_دالة", "مصدر",
 ];
 
 fn is_file_builtin(name: &str) -> bool {
@@ -586,12 +626,19 @@ impl Compiler {
 
     fn compile_stmt(&mut self, stmt: &Stmt) -> RioResult<()> {
         match &stmt.kind {
-            StmtKind::Assign { target, value, annotation } => {
+            StmtKind::Assign { target, value, annotation, append } => {
                 match target {
                     crate::ast::AssignTarget::Var(name) => {
                         self.compile_expr(value)?;
                         self.emit_assign_type_check(annotation, name, stmt.line, stmt.col);
-                        self.emit(Op::Store(name.clone()), stmt.line, stmt.col);
+                        // الدفعة 4 — المتغيرات (اجتماع 58
+                        // §73): الإلحاق تعليمة مستقلة
+                        // (القديم أو الهوية وقت التشغيل).
+                        if *append {
+                            self.emit(Op::StoreAppend(name.clone()), stmt.line, stmt.col);
+                        } else {
+                            self.emit(Op::Store(name.clone()), stmt.line, stmt.col);
+                        }
                         Ok(())
                     }
                     crate::ast::AssignTarget::Index { target: t, index: i } => {
@@ -1216,6 +1263,10 @@ enum FlowResume {
     Break { end_pc: usize },
     Continue { target_pc: usize },
     Return,
+    /// الدفعة 1 — رموز الخروج (اجتماع 54 §69): `خروج(رمز)`
+    /// ينهي البرنامج كله — يهرب من كل معالج كـ Return،
+    /// ويشغّل `أخيرا` في طريقه، ولا يمسكه `ماعدا`.
+    Exit(u8),
     /// اكسر/تابع بلا حلقة محيطة: تُشغَّل أخيرا أولا، ثم
     /// يُرفع الخطأ بالرسالة المخزنة.
     NoLoop(&'static str),
@@ -1286,6 +1337,13 @@ pub struct Vm {
     /// تغيير انتقل داخل دالة ظاهرا للمتصل بعد عودتها.
     pub file_policy: Rc<RefCell<crate::permissions::FilePolicy>>,
     pub cwd: Rc<RefCell<std::path::PathBuf>>,
+    /// اجتماع 56 §71 — الدفعة 2 (التنقل): مكدس
+    /// المجلدات وقائمة بحث `CDPATH` وراية الوضع
+    /// الفيزيائي العام — مشتركة مع كل VM فرعية كـ`cwd`
+    /// (فلا يضيع المكدس داخل دالة).
+    pub dir_stack: Rc<RefCell<Vec<std::path::PathBuf>>>,
+    pub cdpath: Rc<RefCell<Vec<String>>>,
+    pub physical_mode: Rc<RefCell<bool>>,
     /// مهمة 4: الوحدات المحمّلة مرة واحدة في هذا التشغيل
     /// (اسم ← قيمة الوحدة)، مشتركة مع كل VM فرعية.
     pub loaded_modules: Rc<RefCell<HashMap<String, Value>>>,
@@ -1322,6 +1380,23 @@ pub struct Vm {
     pending_flow: Option<FlowResume>,
     /// ك-1.2: قيمة الارجع المعلقة أثناء فكّ أخيرا.
     pending_return: Option<Value>,
+    /// الدفعة 1 — رموز الخروج (اجتماع 54 §69): خروج معلق
+    /// طلبه `خروج(رمز)` (يأخذه المتصل مرة واحدة)، ورمز
+    /// آخر أمر مكتمل (0 أولا؛ و1 بعد خطأ ممسوك بـ`ماعدا`).
+    exit_code: Option<u8>,
+    last_exit_code: u8,
+    // المرحلة (ج) — التوجيه والأنابيب (اجتماعا 62
+    // و63 §77 و§78): رموز مراحل آخر أنبوب تقرأها
+    // `رموز_الأنبوب()` — مرآة المفسر.
+    pipe_status: Vec<u8>,
+    // الدفعة 4 — المتغيرات (اجتماع 58 §73): أسماء
+    // المتغيرات المجمدة نهائيا، وخريطة المراجع
+    // الاسمية، وبدء الجلسة (لـ`بيئة("ثواني")`) —
+    // مشتركة (Rc) مع كل VM فرعية كـ`cwd`، فلا
+    // يضيع التجميد داخل دالة.
+    frozen: Rc<RefCell<HashSet<String>>>,
+    namerefs: Rc<RefCell<HashMap<String, String>>>,
+    started: Rc<std::time::Instant>,
 }
 
 impl Vm {
@@ -1340,6 +1415,10 @@ impl Vm {
             )),
             // اجتماع 45 §59: الجلسة تبدأ في البيت.
             cwd: Rc::new(RefCell::new(program_dir.join("home"))),
+            // اجتماع 56 §71 — الدفعة 2 (التنقل).
+            dir_stack: Rc::new(RefCell::new(Vec::new())),
+            cdpath: Rc::new(RefCell::new(Vec::new())),
+            physical_mode: Rc::new(RefCell::new(false)),
             loaded_modules: Rc::new(RefCell::new(HashMap::new())),
             loading_stack: Rc::new(RefCell::new(Vec::new())),
             return_value: None,
@@ -1353,13 +1432,20 @@ impl Vm {
             finally_stack: Vec::new(),
             pending_flow: None,
             pending_return: None,
+            exit_code: None,
+            last_exit_code: 0,
+            pipe_status: Vec::new(),
+            frozen: Rc::new(RefCell::new(HashSet::new())),
+            namerefs: Rc::new(RefCell::new(HashMap::new())),
+            started: Rc::new(std::time::Instant::now()),
         }
     }
 
     /// Look a name up innermost-first, like the interpreter.
     fn lookup(&self, name: &str) -> Option<Value> {
+        let resolved = self.resolve_name(name);
         for scope in self.env.iter().rev() {
-            if let Some(v) = scope.borrow().get(name) {
+            if let Some(v) = scope.borrow().get(&resolved) {
                 return Some(v.clone());
             }
         }
@@ -1410,6 +1496,34 @@ impl Vm {
         self.source_file = Some(file.to_string());
     }
 
+    /// الدفعة 1 — رموز الخروج (اجتماع 54 §69): يأخذ
+    /// رمز الخروج المعلق مرة واحدة (منتهية كـ Take).
+    pub fn take_exit_code(&mut self) -> Option<u8> {
+        self.exit_code.take()
+    }
+
+    /// الدفعة 1: رمز الخروج المعلق بلا أخذ.
+    pub fn exit_code(&self) -> Option<u8> {
+        self.exit_code
+    }
+
+    /// الدفعة 1: رمز آخر أمر مكتمل.
+    pub fn last_exit_code(&self) -> u8 {
+        self.last_exit_code
+    }
+
+    /// الدفعة 1: ضبط رمز آخر أمر (تزامن REPL للمحرك
+    /// بعد كل سطر، كالمفسر).
+    pub fn set_last_exit_code(&mut self, code: u8) {
+        self.last_exit_code = code;
+    }
+
+    /// المرحلة (ج): ضبط رموز مراحل آخر أنبوب (تزامن
+    /// REPL بعد كل سطر، كـ`set_last_exit_code`).
+    pub fn set_pipe_status(&mut self, codes: Vec<u8>) {
+        self.pipe_status = codes;
+    }
+
     /// اجتماع 32، السؤال الثامن: بث حي لمخرجات `اطبع`
     /// (السطر يصل فور إنتاجه). افتراضيا خطأ.
     pub fn set_live_output(&mut self, live: bool) {
@@ -1437,6 +1551,9 @@ impl Vm {
         self.pc = 0;
         self.stack.clear();
         self.return_value = None;
+        // الدفعة 1: برنامج جديد بلا خروج معلق — أما رمز
+        // آخر أمر فيبقى (تزامنه REPL بعد كل سطر).
+        self.exit_code = None;
         self.call_depth = 0;
         self.loop_states.clear();
         self.handlers.clear();
@@ -1484,19 +1601,455 @@ impl Vm {
     /// مهمة 5: حلّ مسار مستخدم نسبة إلى مجلد الجلسة
     /// الحالي (انتقل)، تحت سياسة الملفات — مرآة
     /// Interpreter::resolve_cwd تماما.
+    /// اجتماع 56 §71: توسعة `~+` و`~+N` أولا — فهي في
+    /// كل مسارات الجلسة، كما توسعة التلدة في باش.
     fn resolve_cwd(&self, path: &str, line: usize, col: usize) -> RioResult<std::path::PathBuf> {
-        self.file_policy
-            .borrow()
-            .resolve_in(&self.cwd.borrow(), path, line, col)
+        match self.expand_tilde_plus(path, line, col)? {
+            Some(expanded) => self.file_policy.borrow().resolve_in(&self.cwd.borrow(), &expanded, line, col),
+            None => self
+                .file_policy
+                .borrow()
+                .resolve_in(&self.cwd.borrow(), path, line, col),
+        }
     }
 
     /// Like `resolve_cwd`, but a write is refused under the
     /// downloads root (Meeting 50 §64, items 94/96) — مرآة
     /// Interpreter::resolve_cwd_for_write تماما.
     fn resolve_cwd_for_write(&self, path: &str, line: usize, col: usize) -> RioResult<std::path::PathBuf> {
+        match self.expand_tilde_plus(path, line, col)? {
+            Some(expanded) => self.file_policy.borrow().resolve_in_for_write(
+                &self.cwd.borrow(),
+                &expanded,
+                line,
+                col,
+            ),
+            None => self
+                .file_policy
+                .borrow()
+                .resolve_in_for_write(&self.cwd.borrow(), path, line, col),
+        }
+    }
+
+    /// اجتماع 56 §71 — الدفعة 2 (التنقل): مرآة مساعدات
+    /// المفسر نفسها (الحالة هنا `Rc<RefCell<...>>`
+    /// مشتركة مع VM الفرعية، فالأساليب `&self`).
+
+    /// الدفعة 4 — المتغيرات (اجتماع 58 §73): قيمة
+    /// متغير بيئة ديناميكي، أو `None` إن كان الاسم
+    /// ثابتا — مرآة مساعد المفسر نفسه.
+    fn env_dynamic(&self, name: &str, line: usize, col: usize) -> Option<RioResult<String>> {
+        match name {
+            "المجلد_الحالي" => Some(Ok(self.display_current(None))),
+            "المستخدم" => Some(crate::env::username().map_err(|m| RioError::runtime(m, line, col))),
+            "اسم_المضيف" => Some(crate::env::hostname().map_err(|m| RioError::runtime(m, line, col))),
+            "عشوائي" => Some(Ok(Value::Number(crate::env::random_0_32767() as f64).fmt_value())),
+            "ثواني" => Some(Ok(Value::Number(self.started.elapsed().as_secs() as f64).fmt_value())),
+            "رقم_السطر" => Some(Ok(Value::Number(line as f64).fmt_value())),
+            _ => None,
+        }
+    }
+
+    /// الدفعة 4 — المتغيرات (اجتماع 58 §73): قائمة
+    /// «الاسم=القيمة» للأربعة عشر اسما المقروءة —
+    /// مرآة مساعد المفسر نفسه.
+    fn env_display_list(&self, line: usize, col: usize) -> RioResult<Vec<Value>> {
+        let mut out = Vec::new();
+        for name in crate::env::ALL_NAMES {
+            let value = match self.env_dynamic(name, line, col) {
+                Some(Ok(v)) => v,
+                Some(Err(e)) => {
+                    if name == "المستخدم" || name == "اسم_المضيف" {
+                        let _ = e;
+                        "غير مدعوم".to_string()
+                    } else {
+                        return Err(e);
+                    }
+                }
+                None => crate::env::lookup(name, crate::repl::version())
+                    .unwrap_or_else(|| "?".to_string()),
+            };
+            out.push(Value::Str(format!("{}={}", name, value)));
+        }
+        Ok(out)
+    }
+
+    // المرحلة (د) — الإكمال (اجتماع 66 §81): قراءة
+    // بيئة لينة بلا خطأ — مرآة مساعد المفسر نفسه.
+    fn env_lookup_soft(&self, name: &str, line: usize, col: usize) -> Option<String> {
+        match self.env_dynamic(name, line, col) {
+            Some(Ok(v)) => Some(v),
+            Some(Err(_)) => None,
+            None => crate::env::lookup(name, crate::repl::version()),
+        }
+    }
+
+    // المرحلة (د) — الإكمال (اجتماع 68 §83): حلّ
+    // مسار `مصدر` — مرآة مساعد المفسر نفسه (المطلق
+    // كما هو بسياسة الملفات، وإلا `$نيفا` ثم `~` ثم
+    // المجلد الحالي؛ واللاحقة `.نيفا` تُلحق حين تغيب).
+    fn resolve_source_file(
+        &self,
+        name: &str,
+        line: usize,
+        col: usize,
+    ) -> RioResult<(std::path::PathBuf, String)> {
+        let mut file_name = name.to_string();
+        if !file_name.ends_with(".نيفا") {
+            file_name.push_str(".نيفا");
+        }
+        let path = std::path::PathBuf::from(&file_name);
+        if path.is_absolute() {
+            let resolved = self.resolve_cwd(&file_name, line, col)?;
+            return Ok((resolved, file_name));
+        }
+        for cand in [
+            self.program_dir.join(&file_name),
+            self.program_dir.join("home").join(&file_name),
+            self.cwd.borrow().join(&file_name),
+        ] {
+            if std::fs::metadata(&cand).map(|m| m.is_file()).unwrap_or(false) {
+                return Ok((cand, file_name));
+            }
+        }
+        Err(RioError::new(
+            crate::error::ErrorKind::Io,
+            format!("الملف غير موجود: {}", name),
+            line,
+            col,
+        ))
+    }
+
+    /// المرحلة (د) — الإكمال (اجتماعا 66 و67 §81
+    /// و§82): أسماء متغيرات الجلسة (النطاق الخارجي
+    /// وحده) — بلا دوال ولا وحدات — مرتبة؛ للإكمال.
+    /// مرآة مساعد المفسر نفسه.
+    pub fn session_variable_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = match self.env.first() {
+            Some(scope) => scope
+                .borrow()
+                .iter()
+                .filter(|(_, v)| {
+                    !matches!(
+                        v,
+                        Value::Function { .. }
+                            | Value::NativeFunction { .. }
+                            | Value::Module { .. }
+                    )
+                })
+                .map(|(k, _)| k.clone())
+                .collect(),
+            None => Vec::new(),
+        };
+        names.sort();
+        names
+    }
+
+    /// المرحلة (د) — الإكمال (اجتماع 67 §82): أسماء
+    /// دوال الجلسة المعرفة (النطاق الخارجي وحده) —
+    /// مرتبة؛ للإكمال ولـ`اعرض_الدوال`. مرآة مساعد
+    /// المفسر نفسه.
+    pub fn session_function_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = match self.env.first() {
+            Some(scope) => scope
+                .borrow()
+                .iter()
+                .filter(|(_, v)| matches!(v, Value::Function { .. }))
+                .map(|(k, _)| k.clone())
+                .collect(),
+            None => Vec::new(),
+        };
+        names.sort();
+        names
+    }
+
+    /// المرحلة (د) — الإكمال (اجتماع 67 §82): المجلد
+    /// الحالي الحقيقي للجلسة (لا صيغة العرض)؛ للإكمال.
+    pub fn cwd_path(&self) -> std::path::PathBuf {
+        self.cwd.borrow().clone()
+    }
+
+    fn set_cwd(&self, new: std::path::PathBuf) {
+        *self.cwd.borrow_mut() = new;
+        crate::processes::set_process_policy(
+            self.file_policy.borrow().base.clone(),
+            self.file_policy.borrow().trusted,
+            self.cwd.borrow().clone(),
+        );
+    }
+
+    fn after_stack_move(&self) {
+        if *self.physical_mode.borrow() {
+            let cur = self.cwd.borrow().clone();
+            if let Some(canon) = crate::navigation::canonical_dir(&cur) {
+                *self.cwd.borrow_mut() = canon;
+            }
+        }
+        crate::processes::set_process_policy(
+            self.file_policy.borrow().base.clone(),
+            self.file_policy.borrow().trusted,
+            self.cwd.borrow().clone(),
+        );
+    }
+
+    fn physical_cwd(&self) -> std::path::PathBuf {
+        let cur = self.cwd.borrow().clone();
+        crate::navigation::canonical_dir(&cur).unwrap_or(cur)
+    }
+
+    /// عرض مسار منشأ لإعلان `mkdir -v` (الميزة 211،
+    /// الاجتماع 59 §74): نسبي إلى المجلد الحالي إن
+    /// كان تحته، وإلا بصيغة العرض القائمة (`~` و
+    /// `$نيفا`).
+    fn display_created(&self, path: &std::path::Path) -> String {
+        let cwd = self.cwd.borrow();
+        if let Ok(rel) = path.strip_prefix(cwd.as_path()) {
+            if !rel.as_os_str().is_empty() {
+                return crate::permissions::slash_display(rel);
+            }
+        }
         self.file_policy
             .borrow()
-            .resolve_in_for_write(&self.cwd.borrow(), path, line, col)
+            .display_str(&path.to_string_lossy())
+    }
+
+    fn display_current(&self, mode: Option<crate::navigation::NavMode>) -> String {
+        let physical = match mode {
+            Some(m) => m.is_physical(),
+            None => *self.physical_mode.borrow(),
+        };
+        if physical {
+            self.file_policy.borrow().display_path(&self.physical_cwd())
+        } else {
+            self.file_policy.borrow().display_path(&self.cwd.borrow())
+        }
+    }
+
+    fn expand_tilde_plus(&self, path: &str, line: usize, col: usize) -> RioResult<Option<String>> {
+        let (idx, tail) = match crate::navigation::parse_tilde_plus(path) {
+            Some(v) => v,
+            None => return Ok(None),
+        };
+        let base: std::path::PathBuf = if idx == 0 {
+            self.cwd.borrow().clone()
+        } else {
+            match crate::navigation::resolve_stack_index(idx - 1, self.dir_stack.borrow().len()) {
+                Some(pos) => self.dir_stack.borrow()[pos].clone(),
+                None => {
+                    return Err(RioError::runtime(
+                        format!(
+                            "عنصر المكدس غير موجود: {}",
+                            Value::Number(idx as f64).fmt_value()
+                        ),
+                        line,
+                        col,
+                    ))
+                }
+            }
+        };
+        let mut out = base.to_string_lossy().to_string();
+        out.push_str(tail);
+        Ok(Some(out))
+    }
+
+    fn try_resolved(&self, resolved: std::path::PathBuf, mode: crate::navigation::NavMode) -> TryDir {
+        if mode.is_physical() {
+            return match crate::navigation::canonical_dir(&resolved) {
+                Some(canon) => TryDir::Ok(canon),
+                None => {
+                    if resolved.exists() {
+                        TryDir::NotDir
+                    } else {
+                        TryDir::NotFound
+                    }
+                }
+            };
+        }
+        match std::fs::metadata(&resolved) {
+            Ok(m) if m.is_dir() => TryDir::Ok(
+                crate::interpreter::Interpreter::normalize_lexical(&resolved),
+            ),
+            Ok(_) => TryDir::NotDir,
+            Err(_) => TryDir::NotFound,
+        }
+    }
+
+    fn try_candidate(&self, raw: &str, mode: crate::navigation::NavMode, line: usize, col: usize) -> TryDir {
+        match self.resolve_cwd(raw, line, col) {
+            Ok(resolved) => {
+                // بوابة الوجود (إصلاح انهيار `..`
+                // المعجمي — مرآة المفسر): يُرفض المرشح
+                // إن غاب مساره الموصول كما كُتب قبل
+                // أي تطبيع.
+                let gate_raw = match self.expand_tilde_plus(raw, line, col) {
+                    Ok(Some(e)) => e,
+                    Ok(None) => raw.to_string(),
+                    Err(e) => return TryDir::Policy(e),
+                };
+                match self
+                    .file_policy
+                    .borrow()
+                    .raw_joined_state(&self.cwd.borrow(), &gate_raw)
+                {
+                    Some(true) => self.try_resolved(resolved, mode),
+                    Some(false) => TryDir::NotDir,
+                    None => TryDir::NotFound,
+                }
+            }
+            Err(e) => TryDir::Policy(e),
+        }
+    }
+
+    fn spell_correct(&self, raw: &str, mode: crate::navigation::NavMode, line: usize, col: usize) -> Option<std::path::PathBuf> {
+        if raw.is_empty() || raw.ends_with('/') {
+            return None;
+        }
+        let (parent, last) = match raw.rfind('/') {
+            Some(i) => (&raw[..i], &raw[i + 1..]),
+            None => ("", raw),
+        };
+        if last.is_empty() || last == "." || last == ".." {
+            return None;
+        }
+        let parent_path = if parent.is_empty() {
+            self.cwd.borrow().clone()
+        } else {
+            match self.resolve_cwd(parent, line, col) {
+                Ok(p) => p,
+                Err(_) => return None,
+            }
+        };
+        let entries = std::fs::read_dir(&parent_path).ok()?;
+        let mut found: Option<std::path::PathBuf> = None;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == "." || name == ".." {
+                continue;
+            }
+            let child = parent_path.join(&name);
+            if !child.is_dir() {
+                continue;
+            }
+            if crate::navigation::edit_distance_one(last, &name) {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(child);
+            }
+        }
+        let corrected = found?;
+        match self.try_resolved(corrected, mode) {
+            TryDir::Ok(p) => Some(p),
+            _ => None,
+        }
+    }
+
+    fn change_dir(&self, raw: &str, flag: Option<crate::navigation::NavMode>, line: usize, col: usize) -> RioResult<()> {
+        use crate::navigation::NavMode;
+        let mode = match flag {
+            Some(m) => m,
+            None => {
+                if *self.physical_mode.borrow() {
+                    NavMode::Physical
+                } else {
+                    NavMode::Logical
+                }
+            }
+        };
+        let is_absolute = raw == "~"
+            || raw.starts_with("~/")
+            || raw == "$نيفا"
+            || raw.starts_with("$نيفا/")
+            || raw.starts_with('/');
+        let mut saw_not_dir = false;
+        let mut direct_policy: Option<RioError> = None;
+        if is_absolute {
+            match self.try_candidate(raw, mode, line, col) {
+                TryDir::Ok(p) => {
+                    self.set_cwd(p);
+                    return Ok(());
+                }
+                TryDir::NotDir => saw_not_dir = true,
+                TryDir::Policy(e) => direct_policy = Some(e),
+                TryDir::NotFound => {}
+            }
+        } else {
+            // POSIX (مثبت بفحوص باش 5.2 الحية — مرآة
+            // المفسر): لا `CDPATH` حين يكون المكون
+            // الأول `.` أو `..`.
+            if crate::navigation::cdpath_applies(raw) {
+                for entry in self.cdpath.borrow().clone() {
+                    let cand = if entry.is_empty() {
+                        raw.to_string()
+                    } else {
+                        format!("{}/{}", entry, raw)
+                    };
+                    match self.try_candidate(&cand, mode, line, col) {
+                        TryDir::Ok(p) => {
+                            self.set_cwd(p);
+                            return Ok(());
+                        }
+                        TryDir::NotDir => saw_not_dir = true,
+                        TryDir::Policy(_) => {}
+                        TryDir::NotFound => {}
+                    }
+                }
+            }
+            match self.try_candidate(raw, mode, line, col) {
+                TryDir::Ok(p) => {
+                    self.set_cwd(p);
+                    return Ok(());
+                }
+                TryDir::NotDir => saw_not_dir = true,
+                TryDir::Policy(e) => direct_policy = Some(e),
+                TryDir::NotFound => {}
+            }
+        }
+        if let Ok(canon) = self.file_policy.borrow().resolve_literal_in(
+            &self.cwd.borrow(),
+            raw,
+            line,
+            col,
+        ) {
+            if canon.is_dir() {
+                self.set_cwd(canon);
+                return Ok(());
+            }
+        }
+        if crate::env::valid_name(raw) {
+            if let Some(Value::Str(val)) = self.lookup(raw) {
+                match self.try_candidate(&val, mode, line, col) {
+                    TryDir::Ok(p) => {
+                        self.set_cwd(p);
+                        return Ok(());
+                    }
+                    TryDir::NotDir => saw_not_dir = true,
+                    TryDir::Policy(_) => {}
+                    TryDir::NotFound => {}
+                }
+            }
+        }
+        if let Some(corrected) = self.spell_correct(raw, mode, line, col) {
+            self.set_cwd(corrected);
+            return Ok(());
+        }
+        if let Some(e) = direct_policy {
+            return Err(e);
+        }
+        if saw_not_dir {
+            return Err(RioError::new(
+                crate::error::ErrorKind::Io,
+                format!("ليس مجلدا: {}", self.file_policy.borrow().display_str(raw)),
+                line,
+                col,
+            ));
+        }
+        Err(RioError::new(
+            crate::error::ErrorKind::Io,
+            format!("المجلد غير موجود: {}", self.file_policy.borrow().display_str(raw)),
+            line,
+            col,
+        ))
     }
 
     /// مهمة 5: حصة التخزين (100 ميغابايت لمجلد البرنامج)
@@ -1521,14 +2074,52 @@ impl Vm {
     /// interpreter's assign_local exactly, so closures mutate
     /// their captured variables and functions can update outer
     /// variables.
-    fn assign(&mut self, name: &str, value: Value) {
-        for scope in self.env.iter().rev() {
-            if scope.borrow().contains_key(name) {
-                scope.borrow_mut().insert(name.to_string(), value);
-                return;
+    // الدفعة 4 — المتغيرات (اجتماع 58 §73): حلّ
+    // المرجع الاسمي إلى هدفه النهائي، كالمفسر.
+    fn resolve_name(&self, name: &str) -> String {
+        let mut current = name.to_string();
+        for _ in 0..32 {
+            let next = self.namerefs.borrow().get(&current).cloned();
+            match next {
+                Some(target) => current = target,
+                None => break,
             }
         }
-        self.define(name, value);
+        current
+    }
+
+    fn check_not_frozen(&self, name: &str, line: usize, col: usize) -> RioResult<()> {
+        let resolved = self.resolve_name(name);
+        if self.frozen.borrow().contains(&resolved) {
+            return Err(RioError::runtime(
+                format!("متغير مجمد: {}", name),
+                line,
+                col,
+            ));
+        }
+        Ok(())
+    }
+
+    fn assign(&mut self, name: &str, value: Value, line: usize, col: usize) -> RioResult<()> {
+        // الدفعة 4 — المتغيرات (اجتماع 58 §73):
+        // الكتابة عبر مرجع تصل هدفه، والكتابة في
+        // مجمد مرفوضة قبل أي تغيير.
+        let resolved = self.resolve_name(name);
+        if self.frozen.borrow().contains(&resolved) {
+            return Err(RioError::runtime(
+                format!("متغير مجمد: {}", name),
+                line,
+                col,
+            ));
+        }
+        for scope in self.env.iter().rev() {
+            if scope.borrow().contains_key(&resolved) {
+                scope.borrow_mut().insert(resolved, value);
+                return Ok(());
+            }
+        }
+        self.define(&resolved, value);
+        Ok(())
     }
 
     /// The scope index holding a name (innermost first), for
@@ -1573,7 +2164,15 @@ impl Vm {
             program_dir: self.program_dir.clone(),
             file_policy: Rc::clone(&self.file_policy),
             cwd: Rc::clone(&self.cwd),
+            // اجتماع 56 §71: الدالة تشارك المكدس
+            // و`CDPATH` والوضع الفيزيائي مع متصلها.
+            dir_stack: Rc::clone(&self.dir_stack),
+            cdpath: Rc::clone(&self.cdpath),
+            physical_mode: Rc::clone(&self.physical_mode),
             loaded_modules: Rc::clone(&self.loaded_modules),
+            // المرحلة (ج): الدالة ترث رموز أنبوب متصلها
+            // (فـ`رموز_الأنبوب()` داخل دالة ترى الحالية).
+            pipe_status: self.pipe_status.clone(),
             loading_stack: Rc::clone(&self.loading_stack),
             return_value: None,
             call_depth: self.call_depth + 1,
@@ -1591,6 +2190,16 @@ impl Vm {
             finally_stack: Vec::new(),
             pending_flow: None,
             pending_return: None,
+            // الدفعة 1: الدالة ترث رمز آخر أمر من متصلها،
+            // كالمفسر (نسخة واحدة) حرفيا.
+            exit_code: None,
+            last_exit_code: self.last_exit_code,
+            // الدفعة 4 — المتغيرات (اجتماع 58 §73):
+            // الدالة تشارك المجمدات والمراجع وبدء
+            // الجلسة مع متصلها.
+            frozen: Rc::clone(&self.frozen),
+            namerefs: Rc::clone(&self.namerefs),
+            started: Rc::clone(&self.started),
         }
     }
 
@@ -1612,7 +2221,14 @@ impl Vm {
             program_dir: self.program_dir.clone(),
             file_policy: Rc::clone(&self.file_policy),
             cwd: Rc::clone(&self.cwd),
+            // اجتماع 56 §71: الوحدة تشارك المكدس
+            // و`CDPATH` والوضع الفيزيائي مع أمها.
+            dir_stack: Rc::clone(&self.dir_stack),
+            cdpath: Rc::clone(&self.cdpath),
+            physical_mode: Rc::clone(&self.physical_mode),
             loaded_modules: Rc::clone(&self.loaded_modules),
+            // المرحلة (ج): الوحدة ترث رموز أنبوب أمها.
+            pipe_status: self.pipe_status.clone(),
             loading_stack: Rc::clone(&self.loading_stack),
             return_value: None,
             call_depth: self.call_depth,
@@ -1627,6 +2243,61 @@ impl Vm {
             finally_stack: Vec::new(),
             pending_flow: None,
             pending_return: None,
+            // الدفعة 1: كـ child — الوحدة ترث رمز آخر أمر.
+            exit_code: None,
+            last_exit_code: self.last_exit_code,
+            // الدفعة 4 — المتغيرات (اجتماع 58 §73):
+            // الوحدة تشارك المجمدات والمراجع وبدء
+            // الجلسة مع أمها.
+            frozen: Rc::clone(&self.frozen),
+            namerefs: Rc::clone(&self.namerefs),
+            started: Rc::clone(&self.started),
+        }
+    }
+
+    /// المرحلة (د) — الإكمال (اجتماع 68 §83): نسخة
+    /// لتنفيذ ملف `مصدر` — كـ child_module تماما إلا
+    /// أنها تشارك سلسلة نطاقات المتصل نفسها (فتعريفات
+    /// المستوى الأعلى تهبط في نطاق الجلسة وتبقى بعد
+    /// عودته)، وتدمج جدول دوال الملف المترجم مع جدول
+    /// المتصل. كود المتصل ومكدسه لا يُمسان أبدا (فلا
+    /// يكسر `load` السطر الخارجي الجاري تقييمه).
+    fn child_source(&self, compiled: CompiledProgram) -> Vm {
+        let mut functions = (*self.functions).clone();
+        functions.extend(compiled.functions);
+        Vm {
+            code: compiled.code,
+            pc: 0,
+            stack: Vec::new(),
+            env: self.env.clone(),
+            output: String::new(),
+            functions: Rc::new(functions),
+            closures: Rc::clone(&self.closures),
+            program_dir: self.program_dir.clone(),
+            file_policy: Rc::clone(&self.file_policy),
+            cwd: Rc::clone(&self.cwd),
+            dir_stack: Rc::clone(&self.dir_stack),
+            cdpath: Rc::clone(&self.cdpath),
+            physical_mode: Rc::clone(&self.physical_mode),
+            loaded_modules: Rc::clone(&self.loaded_modules),
+            pipe_status: self.pipe_status.clone(),
+            loading_stack: Rc::clone(&self.loading_stack),
+            return_value: None,
+            call_depth: self.call_depth,
+            server_allowed: self.server_allowed,
+            source_file: self.source_file.clone(),
+            live_output: self.live_output,
+            module_files: Rc::clone(&self.module_files),
+            loop_states: Vec::new(),
+            handlers: Vec::new(),
+            finally_stack: Vec::new(),
+            pending_flow: None,
+            pending_return: None,
+            exit_code: None,
+            last_exit_code: self.last_exit_code,
+            frozen: Rc::clone(&self.frozen),
+            namerefs: Rc::clone(&self.namerefs),
+            started: Rc::clone(&self.started),
         }
     }
 
@@ -1838,12 +2509,7 @@ impl Vm {
                     .map(|p| crate::permissions::slash_display(p))
                     .collect::<Vec<_>>()
                     .join("؛ ");
-                return Err(RioError::new(
-                    crate::error::ErrorKind::Io,
-                    format!("وحدة غير موجودة: {} (بحثت في {})", module, searched),
-                    line,
-                    col,
-                ));
+                return Err(RioError::module_not_found(module, &searched, line, col));
             }
         };
         let source = self.read_module_file(&path, module, line, col)?;
@@ -1898,6 +2564,12 @@ impl Vm {
         // Partial output survives even when the module fails,
         // like the interpreter's single shared output.
         self.output.push_str(&child.output);
+        // الدفعة 1: خروج أو رمز آخر أمر من الوحدة يصعدان
+        // إلى المستورد (كالمفسر — نسخة واحدة).
+        if let Some(code) = child.exit_code {
+            self.exit_code = Some(code);
+        }
+        self.last_exit_code = child.last_exit_code;
         self.loading_stack.borrow_mut().pop();
         exec_result.map_err(|e| {
             e.with_prefix(&format!("في وحدة {}: ", module))
@@ -2022,6 +2694,12 @@ impl Vm {
         match child_vm.run() {
             Ok(()) => {
                 self.output.push_str(&child_vm.output);
+                // الدفعة 1: خروج أو رمز آخر أمر من داخل
+                // الدالة يصعدان إلى المتصل (كالمفسر).
+                if let Some(code) = child_vm.exit_code {
+                    self.exit_code = Some(code);
+                }
+                self.last_exit_code = child_vm.last_exit_code;
                 let (returned, v) = Self::child_return(&child_vm);
                 Self::check_return_type("الدالة", &name, &return_type, returned, &v, line, col)?;
                 Ok(v)
@@ -2119,6 +2797,12 @@ impl Vm {
         match child_vm.run() {
             Ok(()) => {
                 self.output.push_str(&child_vm.output);
+                // الدفعة 1: كـ call_closure_value — خروج
+                // أو رمز آخر أمر من داخل الطريقة يصعدان.
+                if let Some(code) = child_vm.exit_code {
+                    self.exit_code = Some(code);
+                }
+                self.last_exit_code = child_vm.last_exit_code;
                 let (returned, v) = Self::child_return(&child_vm);
                 Self::check_return_type("الطريقة", &name, &return_type, returned, &v, line, col)?;
                 Ok(v)
@@ -2243,6 +2927,74 @@ impl Vm {
                             )),
                         }
                     }
+                    // المرحلة (د) — الإكمال (اجتماع 66
+                    // §81): قصّ بالحروف — مرآة طريقة
+                    // المفسر نفسها.
+                    "اقطع" => {
+                        if args.len() < 1 || args.len() > 2 {
+                            return Err(RioError::runtime(
+                                format!(
+                                    "الطريقة اقطع تتوقع 1 أو 2 معاملات لكن أعطيت {}",
+                                    args.len()
+                                ),
+                                line, col,
+                            ));
+                        }
+                        let start_num = match &args[0] {
+                            Value::Number(n) => *n,
+                            other => {
+                                return Err(RioError::typ(
+                                    format!(
+                                        "طريقة اقطع تتوقع عددا للبداية، وليس {}",
+                                        other.type_name()
+                                    ),
+                                    line, col,
+                                ))
+                            }
+                        };
+                        let len_num = match args.get(1) {
+                            None => None,
+                            Some(Value::Number(n)) => Some(*n),
+                            Some(other) => {
+                                return Err(RioError::typ(
+                                    format!(
+                                        "طريقة اقطع تتوقع عددا للطول، وليس {}",
+                                        other.type_name()
+                                    ),
+                                    line, col,
+                                ))
+                            }
+                        };
+                        let chars: Vec<char> = s.chars().collect();
+                        let total = chars.len();
+                        let start = if start_num < 0.0 {
+                            total.saturating_sub((-start_num) as usize)
+                        } else {
+                            (start_num as usize).min(total)
+                        };
+                        let end = match len_num {
+                            None => total,
+                            Some(l) if l <= 0.0 => start,
+                            Some(l) => start.saturating_add(l as usize).min(total),
+                        };
+                        Ok(Value::Str(chars[start..end].iter().collect()))
+                    }
+                    // المرحلة (د) — الإكمال (اجتماع 66
+                    // §81): استبدال أول ظهور فقط — مرآة
+                    // طريقة المفسر نفسها.
+                    "استبدل_أول" => {
+                        arity(2)?;
+                        let (old, new) = match (&args[0], &args[1]) {
+                            (Value::Str(a), Value::Str(b)) => (a.clone(), b.clone()),
+                            _ => {
+                                return Err(RioError::typ(
+                                    "طريقة استبدل_أول تتوقع نصين: القديم والجديد",
+                                    line, col,
+                                ))
+                            }
+                        };
+                        Ok(Value::Str(s.replacen(old.as_str(), new.as_str(), 1)))
+                    }
                     _ => Err(RioError::typ(
                         format!("طريقة غير معروفة لنوع نص: {}", name),
                         line, col,
@@ -2272,7 +3024,7 @@ impl Vm {
                             }
                         };
                         items.push(args[0].clone());
-                        self.assign(var, Value::List(items));
+                        self.assign(var, Value::List(items), line, col)?;
                         Ok(Value::Nil)
                     }
                     "أزل" => {
@@ -2320,7 +3072,7 @@ impl Vm {
                             }
                             items.remove(idx)
                         };
-                        self.assign(var, Value::List(items));
+                        self.assign(var, Value::List(items), line, col)?;
                         Ok(removed)
                     }
                     _ => Err(RioError::typ(
@@ -2537,6 +3289,94 @@ impl Vm {
         }
     }
 
+    /// شغّل ملف أداة في جلسة جديدة (الدفعة 3 —
+    /// التشغيل، الاجتماع 57 §72، الميزة 51):
+    /// مرآة `exec_tool` في المفسر — نفس البحث
+    /// (الميزة 39) ونفس الرموز. راية الشبكة تُقرأ
+    /// من البوابة العامة (تزامنها الجلسة قبل كل
+    /// استدعاء مدمجة، فتعكس الجلسة الحالية)؛ وباقي
+    /// الأعلام من حقول VM نفسها.
+    fn exec_tool(
+        &mut self,
+        file_name: &str,
+        line: usize,
+        col: usize,
+    ) -> RioResult<(String, u8)> {
+        use crate::files::ToolLookup;
+        let path = match crate::files::find_tool_file(&self.program_dir, file_name) {
+            ToolLookup::Found { path, .. } => path,
+            ToolLookup::IsDir => {
+                return Err(RioError::runtime(
+                    format!("{} مجلد وليس ملفا", file_name),
+                    line,
+                    col,
+                ))
+            }
+            ToolLookup::Unreadable => {
+                return Err(RioError::runtime(
+                    format!("تعذر قراءة الملف: {}", file_name),
+                    line,
+                    col,
+                ))
+            }
+            ToolLookup::Missing => {
+                return Err(RioError::new(
+                    crate::error::ErrorKind::Io,
+                    format!(
+                        "الملف {} غير موجود — بحثت في $نيفا وفي ~",
+                        file_name
+                    ),
+                    line,
+                    col,
+                )
+                .with_module_not_found())
+            }
+        };
+        let source = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => {
+                return Err(RioError::runtime(
+                    format!("تعذر قراءة الملف: {}", file_name),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let mut fail = |e: String| (format!("{}\n", e), 2u8);
+        let tokens = match crate::lexer::tokenize(&source) {
+            Ok(t) => t,
+            Err(e) => return Ok(fail(e.to_string())),
+        };
+        let program = match crate::parser::Parser::new(tokens).parse_program() {
+            Ok(p) => p,
+            Err(e) => return Ok(fail(e.to_string())),
+        };
+        let mut analyzer = crate::semantic::SemanticAnalyzer::new();
+        if let Err(e) = analyzer.analyze_program(&program) {
+            return Ok(fail(e.to_string()));
+        }
+        let mut session = VmSession::new(self.program_dir.clone());
+        session.set_trusted(self.file_policy.borrow().trusted);
+        session.set_network_allowed(crate::network::network_allowed());
+        session.set_server_allowed(self.server_allowed);
+        session.set_live_output(self.live_output);
+        session.set_source_file(file_name);
+        match session.run(&program) {
+            Ok(()) => Ok((
+                session.take_output(),
+                session.take_exit_code().unwrap_or(0),
+            )),
+            Err(e) => {
+                let mut out = session.take_output();
+                out.push_str(&format!("{}\n", e));
+                // الدفعة 1 (§69 ممتد): وحدة غائبة
+                // 127، وخطأ تشغيل آخر → 1.
+                let code = if e.is_module_not_found() { 127 } else { 1 };
+                Ok((out, code))
+            }
+        }
+    }
+
     /// مهمة 5 (ك-1.4): دوال الملفات + ادخل في VM —
     /// مرآة أذرع call_builtin في المفسر نفسها (الرسائل
     /// والأعداد القصوى والقواعد نفسها)، عبر المساعدات
@@ -2561,6 +3401,8 @@ impl Vm {
             "اقرأ_ملف"
                 | "اكتب_ملف"
                 | "ادخل"
+                | "اقرأ_الإدخال"
+                | "وزع"
                 | "اعرض_الملفات"
                 | "المجلد_الحالي"
                 | "انتقل"
@@ -2585,6 +3427,21 @@ impl Vm {
                 | "عد_الملفات"
                 | "تفاصيل_المسار"
                 | "تثبيت"
+                // الدفعة 3 — التشغيل (اجتماع 57 §72):
+                // وصف الأمر ومكان الأداة والاستبدال
+                // تقرأ مجلد الأدوات فهي خاملة هنا أيضا.
+                | "نوع_الامر"
+                | "مكان_الاداة"
+                | "استبدل_الجلسة"
+                // الدفعة 5 — أدوات الملفات (اجتماع 59
+                // §74): دوال ملفات فهي خاملة هنا أيضا.
+                | "انسخ_تكراري"
+                | "انسخ_محدث"
+                | "انسخ_أرشيف"
+                | "انسخ_خفيف"
+                | "احذف_تكراري"
+                | "أنشئ_رابط_صلب"
+                | "أنشئ_رابط_نسبي"
         ) {
             return Err(RioError::runtime(
                 "هذه الدالة غير مدعومة في متصفح الويب",
@@ -2660,36 +3517,165 @@ impl Vm {
                 }
             }
             "اعرض_الملفات" => {
-                arity(0)?;
-                let dir = self.resolve_cwd(".", line, col)?;
-                let entries = std::fs::read_dir(&dir).map_err(|e| {
-                    RioError::new(crate::error::ErrorKind::Io, format!("تعذر عرض المجلد: {}", e), line, col)
+                // المرحلة (د) — الإكمال (اجتماع 69 §84):
+                // مسار اختياري وأعلام نصية — مرآة ذراع
+                // المفسر نفسه.
+                let mut show_hidden = false;
+                let mut no_sort = false;
+                let mut reverse = false;
+                let mut long = false;
+                let mut human = false;
+                let mut time_key = 0u8;
+                let mut self_dir = false;
+                let mut path_arg: Option<String> = None;
+                for arg in &args {
+                    match arg {
+                        Value::Str(s) => match s.as_str() {
+                            "أظهر_المخفية" => show_hidden = true,
+                            "بلا_ترتيب" => no_sort = true,
+                            "عكسي" => reverse = true,
+                            "طويل" => long = true,
+                            "بشري" => human = true,
+                            "بالوقت" => time_key = 1,
+                            "وقت_الوصول" => time_key = 2,
+                            "وقت_التغيير" => time_key = 3,
+                            "مجلد_نفسه" => self_dir = true,
+                            other => {
+                                if path_arg.is_some() {
+                                    return Err(RioError::runtime(
+                                        "اعرض_الملفات تتوقع مسارا واحدا على الأكثر",
+                                        line, col,
+                                    ));
+                                }
+                                path_arg = Some(other.to_string());
+                            }
+                        },
+                        other => {
+                            return Err(RioError::typ(
+                                format!(
+                                    "اعرض_الملفات تتوقع نصوصا، وليس {}",
+                                    other.type_name()
+                                ),
+                                line, col,
+                            ))
+                        }
+                    }
+                }
+                let dir = self.resolve_cwd(path_arg.as_deref().unwrap_or("."), line, col)?;
+                // المرحلة (د) — الإكمال (اجتماع 69 §84):
+                // الغائب خطأ عربي نظيف يسمّي المسار (لا
+                // خطأ نظام خام)؛ والملف المفرد يُعرض وحده
+                // مثل `ls ملف`.
+                let dir_meta = std::fs::metadata(&dir).map_err(|_| {
+                    RioError::new(
+                        crate::error::ErrorKind::Io,
+                        format!(
+                            "المسار غير موجود: {}",
+                            path_arg.as_deref().unwrap_or(".")
+                        ),
+                        line, col,
+                    )
                 })?;
                 // Audit م-14: cap the listing at the first 1000
                 // names (sorted) and count the rest instead of
                 // building a list of the whole directory.
                 const LIST_CAP: usize = 1000;
-                let mut names: Vec<String> = Vec::new();
+                struct ListEntry {
+                    name: String,
+                    is_dir: bool,
+                    is_link: bool,
+                    is_exec: bool,
+                    size: u64,
+                    mtime: u64,
+                    atime: u64,
+                    ctime: u64,
+                }
+                let meta_times = |m: &std::fs::Metadata| -> (u64, u64, u64) {
+                    let mtime = m
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let atime = m
+                        .accessed()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(mtime);
+                    #[cfg(unix)]
+                    let ctime = {
+                        use std::os::unix::fs::MetadataExt;
+                        if m.ctime() >= 0 {
+                            m.ctime() as u64
+                        } else {
+                            mtime
+                        }
+                    };
+                    #[cfg(not(unix))]
+                    let ctime = mtime;
+                    (mtime, atime, ctime)
+                };
+                let mut entries: Vec<ListEntry> = Vec::new();
                 let mut total = 0usize;
-                for entry in entries {
-                    let entry = entry.map_err(|e| {
-                        RioError::new(crate::error::ErrorKind::Io, format!("تعذر عرض المجلد: {}", e), line, col)
+                if self_dir || !dir_meta.is_dir() {
+                    let m = dir_meta;
+                    let (mtime, atime, ctime) = meta_times(&m);
+                    let is_link = std::fs::symlink_metadata(&dir)
+                        .ok()
+                        .map(|sm| sm.file_type().is_symlink())
+                        .unwrap_or(false);
+                    #[cfg(unix)]
+                    let is_exec = {
+                        use std::os::unix::fs::PermissionsExt;
+                        m.permissions().mode() & 0o111 != 0
+                    };
+                    #[cfg(not(unix))]
+                    let is_exec = false;
+                    total = 1;
+                    entries.push(ListEntry {
+                        name: path_arg.clone().unwrap_or_else(|| ".".to_string()),
+                        is_dir: m.is_dir(),
+                        is_link,
+                        is_exec,
+                        size: m.len(),
+                        mtime,
+                        atime,
+                        ctime,
+                    });
+                } else {
+                    let rd = std::fs::read_dir(&dir).map_err(|e| {
+                        RioError::new(
+                            crate::error::ErrorKind::Io,
+                            format!("تعذر عرض المجلد: {}", e),
+                            line, col,
+                        )
                     })?;
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    // مثل `ls` الافتراضي: الملفات المخفية لا
-                    // تظهر ولا تُحسب في العدد ولا تشغل مكانا
-                    // في السقف.
-                    if name.starts_with('.') {
-                        continue;
-                    }
-                    total += 1;
-                    if names.len() < LIST_CAP {
+                    for entry in rd {
+                        let entry = entry.map_err(|e| {
+                            RioError::new(
+                                crate::error::ErrorKind::Io,
+                                format!("تعذر عرض المجلد: {}", e),
+                                line, col,
+                            )
+                        })?;
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        // مثل `ls` الافتراضي: الملفات المخفية
+                        // لا تظهر ولا تُحسب في العدد ولا تشغل
+                        // مكانا في السقف؛ و`.` و`..` لا يردهما
+                        // read_dir أصلا، فلا يظهران أبدا حتى
+                        // مع العلم.
+                        if !show_hidden && name.starts_with('.') {
+                            continue;
+                        }
+                        total += 1;
+                        if entries.len() >= LIST_CAP {
+                            continue;
+                        }
                         let file_type = entry.file_type().ok();
                         let is_dir = file_type.as_ref().map(|t| t.is_dir()).unwrap_or(false);
-                        let is_link = file_type
-                            .as_ref()
-                            .map(|t| t.is_symlink())
-                            .unwrap_or(false);
+                        let is_link =
+                            file_type.as_ref().map(|t| t.is_symlink()).unwrap_or(false);
                         // علامات `ls -F`: `/` للمجلد و`@`
                         // للرابط و`*` للتنفيذي (يونكس فقط —
                         // الفحص مكفوف على غير يونكس).
@@ -2703,19 +3689,72 @@ impl Vm {
                         };
                         #[cfg(not(unix))]
                         let is_exec = false;
-                        if is_dir {
-                            names.push(format!("{}/", name));
-                        } else if is_link {
-                            names.push(format!("{}@", name));
-                        } else if is_exec {
-                            names.push(format!("{}*", name));
-                        } else {
-                            names.push(name);
-                        }
+                        let (size, mtime, atime, ctime) = match entry.metadata() {
+                            Ok(m) => {
+                                let (mt, at, ct) = meta_times(&m);
+                                (m.len(), mt, at, ct)
+                            }
+                            Err(_) => (0, 0, 0, 0),
+                        };
+                        entries.push(ListEntry {
+                            name,
+                            is_dir,
+                            is_link,
+                            is_exec,
+                            size,
+                            mtime,
+                            atime,
+                            ctime,
+                        });
                     }
                 }
-                names.sort();
-                let mut out: Vec<Value> = names.into_iter().map(Value::Str).collect();
+                if !no_sort {
+                    if time_key == 0 {
+                        entries.sort_by(|a, b| a.name.cmp(&b.name));
+                    } else {
+                        let key = |e: &ListEntry| match time_key {
+                            1 => e.mtime,
+                            2 => e.atime,
+                            _ => e.ctime,
+                        };
+                        entries.sort_by(|a, b| key(b).cmp(&key(a)).then(a.name.cmp(&b.name)));
+                    }
+                }
+                if reverse {
+                    entries.reverse();
+                }
+                let mut out: Vec<Value> = Vec::new();
+                for e in entries {
+                    if long {
+                        let kind = if e.is_link {
+                            "رابط"
+                        } else if e.is_dir {
+                            "مجلد"
+                        } else {
+                            "ملف"
+                        };
+                        let size = if human {
+                            crate::interpreter::Interpreter::human_size(e.size)
+                        } else {
+                            Value::Number(e.size as f64).fmt_value()
+                        };
+                        out.push(Value::Str(format!(
+                            "{} {} {} {}",
+                            kind,
+                            size,
+                            crate::interpreter::Interpreter::format_unix_utc(e.mtime),
+                            e.name
+                        )));
+                    } else if e.is_dir {
+                        out.push(Value::Str(format!("{}/", e.name)));
+                    } else if e.is_link {
+                        out.push(Value::Str(format!("{}@", e.name)));
+                    } else if e.is_exec {
+                        out.push(Value::Str(format!("{}*", e.name)));
+                    } else {
+                        out.push(Value::Str(e.name));
+                    }
+                }
                 if total > LIST_CAP {
                     let more = Value::Number((total - LIST_CAP) as f64).fmt_value();
                     out.push(Value::Str(format!("…و {} أخرى", more)));
@@ -2723,20 +3762,65 @@ impl Vm {
                 Ok(Value::List(out))
             }
             "المجلد_الحالي" => {
-                arity(0)?;
-                Ok(Value::Str(
-                    self.file_policy.borrow().display_path(&self.cwd.borrow()),
-                ))
+                // اجتماع 56 §71 (الميزتان 9 و12) — مرآة
+                // ذراع المفسر نفسه: 0 أو 1 معاملات،
+                // وبلا معامل حسب الوضع العام للجلسة.
+                if args.len() > 1 {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة المدمجة {} تتوقع 0 أو 1 معاملات لكن أعطيت {}",
+                            name,
+                            args.len()
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+                let mode = match args.first() {
+                    None => None,
+                    Some(Value::Str(s)) => match crate::navigation::parse_pwd_flag(s) {
+                        Some(m) => Some(m),
+                        None => {
+                            return Err(RioError::runtime(
+                                format!(
+                                    "علم المجلد_الحالي غير معروف: {} — العلم الصالح: منطقي أو فيزيائي",
+                                    s
+                                ),
+                                line,
+                                col,
+                            ))
+                        }
+                    },
+                    Some(other) => {
+                        return Err(RioError::typ(
+                            format!("المجلد_الحالي يتطلب علما نصيا، وليس {}", other.type_name()),
+                            line,
+                            col,
+                        ))
+                    }
+                };
+                Ok(Value::Str(self.display_current(mode)))
             }
             "بيئة" => {
                 arity(1)?;
                 // اجتماع 45 §59 (39–41): قراءة فقط، الثمانية
                 // فقط — مرآة ذراع المفسر نفسه.
                 match &args[0] {
-                    Value::Str(name) => match crate::env::lookup_checked(name, crate::repl::version()) {
-                        Ok(v) => Ok(Value::Str(v)),
-                        Err(msg) => Err(RioError::runtime(msg, line, col)),
-                    },
+                    Value::Str(name) => {
+                        // اجتماع 56 §71 (الميزة 4): كشف
+                        // `PWD` — `بيئة("المجلد_الحالي")`
+                        // قراءة ديناميكية بصيغة العرض حسب
+                        // الوضع الحالي؛ والدفعة 4 (اجتماع
+                        // 58 §73): باقي الديناميكية
+                        // بالمساعد نفسه.
+                        if let Some(v) = self.env_dynamic(name, line, col) {
+                            return v.map(Value::Str);
+                        }
+                        match crate::env::lookup_checked(name, crate::repl::version()) {
+                            Ok(v) => Ok(Value::Str(v)),
+                            Err(msg) => Err(RioError::runtime(msg, line, col)),
+                        }
+                    }
                     other => Err(RioError::runtime(
                         format!("بيئة تتوقع نصا، وليس {}", other.type_name()),
                         line,
@@ -2744,81 +3828,1160 @@ impl Vm {
                     )),
                 }
             }
-            "انتقل" => {
+            // المرحلة (د) — الإكمال (اجتماع 66 §81):
+            // بديل البيئة والبديل المشروط — مرآة أذرع
+            // المفسر نفسها.
+            "بيئة_أو" => {
+                arity(2)?;
+                match (&args[0], &args[1]) {
+                    (Value::Str(name), Value::Str(default)) => {
+                        match self.env_lookup_soft(name, line, col) {
+                            Some(v) if !v.is_empty() => Ok(Value::Str(v)),
+                            _ => Ok(Value::Str(default.clone())),
+                        }
+                    }
+                    _ => Err(RioError::typ(
+                        "بيئة_أو تتوقع نصين: الاسم والبديل",
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "بيئة_إن_وجد" => {
+                arity(2)?;
+                match (&args[0], &args[1]) {
+                    (Value::Str(name), Value::Str(alt)) => {
+                        match self.env_lookup_soft(name, line, col) {
+                            Some(v) if !v.is_empty() => Ok(Value::Str(alt.clone())),
+                            _ => Ok(Value::Str(String::new())),
+                        }
+                    }
+                    _ => Err(RioError::typ(
+                        "بيئة_إن_وجد تتوقع نصين: الاسم والبديل",
+                        line,
+                        col,
+                    )),
+                }
+            }
+            // المرحلة (د) — الإكمال (اجتماع 66 §81):
+            // إزالة البادئة/اللاحقة الحرفية فقط — مرآة
+            // أذرع المفسر نفسها.
+            "أزل_بادئة" => {
+                arity(2)?;
+                match (&args[0], &args[1]) {
+                    (Value::Str(s), Value::Str(prefix)) => Ok(Value::Str(
+                        s.strip_prefix(prefix.as_str())
+                            .unwrap_or(s.as_str())
+                            .to_string(),
+                    )),
+                    _ => Err(RioError::typ(
+                        "أزل_بادئة تتوقع نصين: النص والبادئة",
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "أزل_لاحقة" => {
+                arity(2)?;
+                match (&args[0], &args[1]) {
+                    (Value::Str(s), Value::Str(suffix)) => Ok(Value::Str(
+                        s.strip_suffix(suffix.as_str())
+                            .unwrap_or(s.as_str())
+                            .to_string(),
+                    )),
+                    _ => Err(RioError::typ(
+                        "أزل_لاحقة تتوقع نصين: النص واللاحقة",
+                        line,
+                        col,
+                    )),
+                }
+            }
+            // المرحلة (د) — الإكمال (اجتماع 66 §81):
+            // فهارس القائمة (0..الطول-1).
+            "فهارس" => {
                 arity(1)?;
                 match &args[0] {
-                    Value::Str(dir) => {
-                        let resolved = self.resolve_cwd(dir, line, col)?;
-                        match std::fs::metadata(&resolved) {
-                            Ok(m) if m.is_dir() => {
-                                *self.cwd.borrow_mut() =
-                                    crate::interpreter::Interpreter::normalize_lexical(&resolved);
-                                // مهمة 10: تغيّر مجلد الجلسة —
-                                // أعد مزامنة سياسة العمليات حالا
-                                // (مرآة ذراع المفسر نفسه).
-                                crate::processes::set_process_policy(
-                                    self.file_policy.borrow().base.clone(),
-                                    self.file_policy.borrow().trusted,
-                                    self.cwd.borrow().clone(),
-                                );
-                                Ok(Value::Nil)
-                            }
-                            Ok(_) => Err(RioError::new(
-                                crate::error::ErrorKind::Io,
-                                format!("ليس مجلدا: {}", self.file_policy.borrow().display_str(dir)),
+                    Value::List(items) => Ok(Value::List(
+                        (0..items.len())
+                            .map(|i| Value::Number(i as f64))
+                            .collect(),
+                    )),
+                    other => Err(RioError::typ(
+                        format!("فهارس تتوقع قائمة، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            // المرحلة (د) — الإكمال (اجتماع 66 §81):
+            // متغيرات الجلسة «الاسم=القيمة» — مرآة ذراع
+            // المفسر نفسه (المجمد يُعلَّم، والمرجع
+            // الاسمي يُعرض هدفه).
+            "اعرض_المتغيرات" => {
+                arity(0)?;
+                let mut names = self.session_variable_names();
+                names.sort();
+                let mut out = Vec::new();
+                for name in names {
+                    if let Some(target) = self.namerefs.borrow().get(name.as_str()) {
+                        out.push(Value::Str(format!(
+                            "{}=مرجع إلى {}",
+                            name, target
+                        )));
+                        continue;
+                    }
+                    let resolved = self.resolve_name(&name);
+                    if let Some(v) = self.lookup(&resolved) {
+                        let val = match &v {
+                            Value::Str(s) => format!("\"{}\"", s),
+                            other => other.fmt_value(),
+                        };
+                        let mut entry = format!("{}={}", name, val);
+                        if self.frozen.borrow().contains(&resolved) {
+                            entry.push_str(" مجمد");
+                        }
+                        out.push(Value::Str(entry));
+                    }
+                }
+                Ok(Value::List(out))
+            }
+            // المرحلة (د) — الإكمال (اجتماع 67 §82):
+            // أسماء دوال الجلسة مرتبة.
+            "اعرض_الدوال" => {
+                arity(0)?;
+                Ok(Value::List(
+                    self.session_function_names()
+                        .into_iter()
+                        .map(Value::Str)
+                        .collect(),
+                ))
+            }
+            // المرحلة (د) — الإكمال (اجتماع 67 §82):
+            // حذف دالة معرفة من أقرب ربط — مرآة ذراع
+            // المفسر نفسه.
+            "احذف_دالة" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(name) => {
+                        if self.namerefs.borrow().contains_key(name.as_str()) {
+                            return Err(RioError::runtime(
+                                format!("ليست دالة: {}", name),
                                 line,
                                 col,
-                            )),
-                            Err(_) => Err(RioError::new(
+                            ));
+                        }
+                        let resolved = self.resolve_name(name);
+                        if self.frozen.borrow().contains(&resolved) {
+                            return Err(RioError::runtime(
+                                format!("دالة مجمدة: {}", name),
+                                line,
+                                col,
+                            ));
+                        }
+                        let mut found = false;
+                        let mut is_function = false;
+                        for scope in self.env.iter().rev() {
+                            if let Some(v) = scope.borrow().get(&resolved) {
+                                found = true;
+                                is_function = matches!(v, Value::Function { .. });
+                                break;
+                            }
+                        }
+                        if !found {
+                            return Err(RioError::runtime(
+                                format!("دالة غير موجودة: {}", name),
+                                line,
+                                col,
+                            ));
+                        }
+                        if !is_function {
+                            return Err(RioError::runtime(
+                                format!("ليست دالة: {}", name),
+                                line,
+                                col,
+                            ));
+                        }
+                        for scope in self.env.iter().rev() {
+                            if scope.borrow_mut().remove(&resolved).is_some() {
+                                break;
+                            }
+                        }
+                        Ok(Value::Nil)
+                    }
+                    other => Err(RioError::typ(
+                        format!("احذف_دالة تتوقع نصا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            // المرحلة (د) — الإكمال (اجتماع 68 §83):
+            // تنفيذ ملف .نيفا في الجلسة الحالية نفسها —
+            // في نسخة مصدر تشارك النطاقات (فتبقى
+            // التعريفات بعد عودته)؛ والمخرج ورمز الخروج
+            // يصعدان إلى المتصل كالوحدة؛ والدورة خطأ صريح.
+            "مصدر" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(path) => {
+                        let (resolved, display) =
+                            self.resolve_source_file(path, line, col)?;
+                        if self.loading_stack.borrow().contains(&display) {
+                            return Err(RioError::new(
                                 crate::error::ErrorKind::Io,
-                                format!("المجلد غير موجود: {}", self.file_policy.borrow().display_str(dir)),
+                                format!("الملف يُستدعى دوريا: {}", path),
+                                line,
+                                col,
+                            ));
+                        }
+                        let source = crate::interpreter::Interpreter::read_file_capped(
+                            &resolved, &display, line, col,
+                        )?;
+                        let tokens = crate::lexer::tokenize_named(&source, &display)?;
+                        let program =
+                            crate::parser::Parser::named(tokens, &display).parse_program()?;
+                        let compiled = Compiler::compile_program(&program)?;
+                        self.closures
+                            .borrow_mut()
+                            .extend(compiled.closures.clone());
+                        self.loading_stack.borrow_mut().push(display.clone());
+                        let mut child = self.child_source(compiled);
+                        child.source_file = Some(display.clone());
+                        let result = child.run();
+                        self.loading_stack.borrow_mut().pop();
+                        self.output.push_str(&child.output);
+                        if let Some(code) = child.exit_code {
+                            self.exit_code = Some(code);
+                        }
+                        result?;
+                        Ok(Value::Nil)
+                    }
+                    other => Err(RioError::typ(
+                        format!("مصدر يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            // الدفعة 4 — المتغيرات (اجتماع 58 §73):
+            // التجميد والحذف والفحص والمرجع وعرض
+            // البيئة ومفاتيح القاموس — مرآة أذرع
+            // المفسر نفسها.
+            "جمد" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(name) => {
+                        let resolved = self.resolve_name(name);
+                        if self.lookup(&resolved).is_none() {
+                            return Err(RioError::runtime(
+                                format!("متغير غير معرف: {}", name),
+                                line,
+                                col,
+                            ));
+                        }
+                        self.frozen.borrow_mut().insert(resolved);
+                        Ok(Value::Nil)
+                    }
+                    other => Err(RioError::typ(
+                        format!("جمد يتطلب نصا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "احذف_متغير" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(name) => {
+                        if self.namerefs.borrow().contains_key(name.as_str()) {
+                            self.namerefs.borrow_mut().remove(name.as_str());
+                            return Ok(Value::Nil);
+                        }
+                        let resolved = self.resolve_name(name);
+                        if self.frozen.borrow().contains(&resolved) {
+                            return Err(RioError::runtime(
+                                format!("متغير مجمد: {}", name),
+                                line,
+                                col,
+                            ));
+                        }
+                        for scope in self.env.iter().rev() {
+                            if scope.borrow_mut().remove(&resolved).is_some() {
+                                break;
+                            }
+                        }
+                        Ok(Value::Nil)
+                    }
+                    other => Err(RioError::typ(
+                        format!(
+                            "احذف_متغير يتطلب نصا، وليس {}",
+                            other.type_name()
+                        ),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "افحص_متغير" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(name) => {
+                        if let Some(target) =
+                            self.namerefs.borrow().get(name.as_str()).cloned()
+                        {
+                            return Ok(Value::Str(format!(
+                                "متغير {}: مرجع إلى {}",
+                                name, target
+                            )));
+                        }
+                        let resolved = self.resolve_name(name);
+                        match self.lookup(&resolved) {
+                            Some(v) => {
+                                let val = match &v {
+                                    Value::Str(s) => format!("\"{}\"", s),
+                                    other => other.fmt_value(),
+                                };
+                                let mut out = format!(
+                                    "متغير {}: {} = {}",
+                                    name,
+                                    v.type_name(),
+                                    val
+                                );
+                                if self.frozen.borrow().contains(&resolved) {
+                                    out.push_str(" مجمد");
+                                }
+                                Ok(Value::Str(out))
+                            }
+                            None => Err(RioError::runtime(
+                                format!("متغير غير معرف: {}", name),
                                 line,
                                 col,
                             )),
                         }
                     }
                     other => Err(RioError::typ(
-                        format!("انتقل يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        format!(
+                            "افحص_متغير يتطلب نصا، وليس {}",
+                            other.type_name()
+                        ),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "مرجع" => {
+                arity(2)?;
+                let (new_name, target) = match (&args[0], &args[1]) {
+                    (Value::Str(a), Value::Str(b)) => (a.clone(), b.clone()),
+                    (Value::Str(_), other) => {
+                        return Err(RioError::typ(
+                            format!("مرجع يتطلب نصين، وليس {}", other.type_name()),
+                            line,
+                            col,
+                        ));
+                    }
+                    (other, _) => {
+                        return Err(RioError::typ(
+                            format!("مرجع يتطلب نصين، وليس {}", other.type_name()),
+                            line,
+                            col,
+                        ));
+                    }
+                };
+                if !crate::env::valid_name(&new_name) || !crate::env::valid_name(&target) {
+                    return Err(RioError::runtime(
+                        format!("اسم مرجع غير صالح: {} أو {}", new_name, target),
+                        line,
+                        col,
+                    ));
+                }
+                if self.lookup(&new_name).is_some()
+                    || self.namerefs.borrow().contains_key(new_name.as_str())
+                {
+                    return Err(RioError::runtime(
+                        format!("الاسم مستخدم: {}", new_name),
+                        line,
+                        col,
+                    ));
+                }
+                if self.lookup(&target).is_none() {
+                    return Err(RioError::runtime(
+                        format!("متغير غير معرف: {}", target),
+                        line,
+                        col,
+                    ));
+                }
+                let mut current = target.clone();
+                for _ in 0..32 {
+                    if current == new_name {
+                        return Err(RioError::runtime(
+                            "مرجع دائري".to_string(),
+                            line,
+                            col,
+                        ));
+                    }
+                    match self.namerefs.borrow().get(&current).cloned() {
+                        Some(next) => current = next,
+                        None => break,
+                    }
+                }
+                self.namerefs.borrow_mut().insert(new_name, target);
+                Ok(Value::Nil)
+            }
+            "اعرض_البيئة" => {
+                arity(0)?;
+                Ok(Value::List(self.env_display_list(line, col)?))
+            }
+            "مفاتيح" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Dict(pairs) => Ok(Value::List(
+                        pairs
+                            .iter()
+                            .map(|(k, _)| Value::Str(k.clone()))
+                            .collect(),
+                    )),
+                    other => Err(RioError::typ(
+                        format!("مفاتيح يتطلب قاموسا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            // الدفعة 1 — رموز الخروج (اجتماع 54 §69)،
+            // مرآة أذرع المفسر نفسها. `خروج` تضبط الراية
+            // فقط وترجع لاشيء؛ وحلقة run_inner تفكّها
+            // (تشغّل أخيرا ولا يمسكها ماعدا).
+            "رمز_الخروج" => {
+                arity(0)?;
+                Ok(Value::Number(self.last_exit_code as f64))
+            }
+            // المرحلة (ج) — التوجيه والأنابيب (اجتماعا 62
+            // و63 §77 و§78)، مرآة أذرع المفسر نفسها.
+            "رموز_الأنبوب" => {
+                arity(0)?;
+                Ok(Value::List(
+                    self.pipe_status
+                        .iter()
+                        .map(|c| Value::Number(*c as f64))
+                        .collect(),
+                ))
+            }
+            "اقرأ_الإدخال" => {
+                arity(0)?;
+                let mut text = String::new();
+                while let Some(line) = crate::stdin_pump::stdin_line() {
+                    text.push_str(&line);
+                }
+                Ok(Value::Str(text))
+            }
+            "نجاح" => {
+                arity(0)?;
+                Ok(Value::Bool(true))
+            }
+            "فشل" => {
+                arity(0)?;
+                Err(RioError::runtime("فشل", line, col))
+            }
+            "وزع" => {
+                if args.is_empty() {
+                    return Err(RioError::runtime(
+                        "وزع تتوقع مسارا واحدا على الأقل",
+                        line,
+                        col,
+                    ));
+                }
+                let mut append = false;
+                let mut paths: Vec<String> = Vec::new();
+                for (idx, a) in args.iter().enumerate() {
+                    match a {
+                        Value::Str(s) if idx + 1 == args.len() && s == "ألحق" => {
+                            append = true;
+                        }
+                        Value::Str(s) => paths.push(s.clone()),
+                        other => {
+                            return Err(RioError::typ(
+                                format!(
+                                    "وزع تتوقع مسارات نصية، وليس {}",
+                                    other.type_name()
+                                ),
+                                line,
+                                col,
+                            ));
+                        }
+                    }
+                }
+                if paths.is_empty() {
+                    return Err(RioError::runtime(
+                        "وزع تتوقع مسارا واحدا على الأقل",
+                        line,
+                        col,
+                    ));
+                }
+                let mut text = String::new();
+                while let Some(l) = crate::stdin_pump::stdin_line() {
+                    text.push_str(&l);
+                }
+                for p in &paths {
+                    let content = if append {
+                        let old = match self.call_builtin(
+                            "موجود",
+                            vec![Value::Str(p.clone())],
+                            line,
+                            col,
+                        ) {
+                            Ok(Value::Bool(true)) => {
+                                match self.call_builtin(
+                                    "اقرأ_ملف",
+                                    vec![Value::Str(p.clone())],
+                                    line,
+                                    col,
+                                ) {
+                                    Ok(Value::Str(s)) => s,
+                                    Ok(_) => String::new(),
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            Ok(_) => String::new(),
+                            Err(e) => return Err(e),
+                        };
+                        format!("{}{}", old, text)
+                    } else {
+                        text.clone()
+                    };
+                    self.call_builtin(
+                        "اكتب_ملف",
+                        vec![Value::Str(p.clone()), Value::Str(content)],
+                        line,
+                        col,
+                    )?;
+                }
+                if self.live_output {
+                    use std::io::Write;
+                    print!("{}", text);
+                    let _ = std::io::stdout().flush();
+                } else {
+                    self.output.push_str(&text);
+                }
+                // المرحلة (ج): نص فارغ لا `لاشيء` — فقيمة
+                // التعبير العار الفارغة لا تطبع سطرا،
+                // فتبقى التمريرة وحدها في المخرج.
+                Ok(Value::Str(String::new()))
+            }
+            "اسم_البرنامج" => {
+                arity(0)?;
+                Ok(Value::Str(
+                    self.source_file.clone().unwrap_or_else(|| "نيفا".to_string()),
+                ))
+            }
+            "خروج" => {
+                if args.len() > 1 {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة المدمجة {} تتوقع 0 أو 1 معاملات لكن أعطيت {}",
+                            name,
+                            args.len()
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+                let code = match args.first() {
+                    None => self.last_exit_code,
+                    Some(v) => match crate::value::exit_code_number(v) {
+                        Some(n) => n,
+                        None => {
+                            return Err(RioError::runtime(
+                                "رمز الخروج يجب أن يكون عددا صحيحا بين ٠ و٢٥٥",
+                                line,
+                                col,
+                            ))
+                        }
+                    },
+                };
+                self.exit_code = Some(code);
+                Ok(Value::Nil)
+            }
+            // الدفعة 3 — التشغيل (اجتماع 57 §72):
+            // وصف الأمر ومكان الأداة والاستبدال —
+            // مرآة أذرع المفسر نفسها.
+            "نوع_الامر" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(name) => {
+                        let desc = crate::command_names::describe_command(
+                            name,
+                            |n| {
+                                matches!(
+                                    self.lookup(n),
+                                    Some(Value::Function { .. })
+                                )
+                            },
+                            |f| crate::files::find_tool_file(&self.program_dir, f),
+                        );
+                        Ok(Value::Str(desc.to_string()))
+                    }
+                    other => Err(RioError::typ(
+                        format!("نوع_الامر يتطلب نصا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "مكان_الاداة" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(name) => {
+                        if name.contains('/')
+                            || name.contains('\\')
+                            || name.contains("..")
+                        {
+                            return Err(RioError::runtime(
+                                "مكان_الاداة يقبل اسم ملف بلا مسار",
+                                line,
+                                col,
+                            ));
+                        }
+                        let file_name = if name.ends_with(".نيفا") {
+                            name.clone()
+                        } else {
+                            format!("{}.نيفا", name)
+                        };
+                        match crate::files::find_tool_file(&self.program_dir, &file_name) {
+                            crate::files::ToolLookup::Found { path, .. } => {
+                                Ok(Value::Str(
+                                    path.to_string_lossy().into_owned(),
+                                ))
+                            }
+                            // غائب أو مجلد أو غير مقروء:
+                            // لا ملف أداة — لاشيء لا خطأ.
+                            _ => Ok(Value::Nil),
+                        }
+                    }
+                    other => Err(RioError::typ(
+                        format!("مكان_الاداة يتطلب نصا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "استبدل_الجلسة" => {
+                arity(1)?;
+                let name = match &args[0] {
+                    Value::Str(s) => s.clone(),
+                    other => {
+                        return Err(RioError::typ(
+                            format!(
+                                "استبدل_الجلسة يتطلب نصا، وليس {}",
+                                other.type_name()
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                };
+                if name.contains('/') || name.contains('\\') || name.contains("..") {
+                    return Err(RioError::runtime(
+                        "استبدل_الجلسة يقبل اسم ملف بلا مسار",
+                        line,
+                        col,
+                    ));
+                }
+                let file_name = if name.ends_with(".نيفا") {
+                    name
+                } else {
+                    format!("{}.نيفا", name)
+                };
+                // غياب الأداة خطأ يُمسك (127 بعلامة
+                // الملف المطلوب الغائب)؛ أما الأداة
+                // الموجودة فتُشغَّل ثم تنتهي الجلسة
+                // برمزها بلا عودة (الراية كـ`خروج`).
+                let (out, code) = self.exec_tool(&file_name, line, col)?;
+                self.output.push_str(&out);
+                self.exit_code = Some(code);
+                Ok(Value::Nil)
+            }
+            "انتقل" => {
+                // اجتماع 56 §71 — الدفعة 2 (التنقل): مرآة
+                // ذراع المفسر نفسه — 0 أو 2 معاملات؛ بلا
+                // معاملات → الأب (`..`)؛ و`-` اسم عادي
+                // غير موجود؛ والصامت في كل الصور.
+                if args.len() > 2 {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة المدمجة {} تتوقع 0 أو 2 معاملات لكن أعطيت {}",
+                            name,
+                            args.len()
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+                let dir = match args.first() {
+                    None => "..",
+                    Some(Value::Str(s)) => s.as_str(),
+                    Some(other) => {
+                        return Err(RioError::typ(
+                            format!("انتقل يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                            line,
+                            col,
+                        ))
+                    }
+                };
+                let flag = match args.get(1) {
+                    None => None,
+                    Some(Value::Str(s)) => match crate::navigation::parse_mode_flag(s) {
+                        Some(m) => Some(m),
+                        None => {
+                            return Err(RioError::runtime(
+                                format!(
+                                    "علم انتقل غير معروف: {} — العلم الصالح: منطقي أو فيزيائي أو منطقي_متحقق أو فيزيائي_متحقق",
+                                    s
+                                ),
+                                line,
+                                col,
+                            ))
+                        }
+                    },
+                    Some(other) => {
+                        return Err(RioError::typ(
+                            format!("علم انتقل يتطلب نصا، وليس {}", other.type_name()),
+                            line,
+                            col,
+                        ))
+                    }
+                };
+                self.change_dir(dir, flag, line, col)?;
+                Ok(Value::Nil)
+            }
+            // اجتماع 56 §71 — الدفعة 2 (التنقل): مكدس
+            // المجلدات — مرآة أذرع المفسر نفسها.
+            "ادفع_مجلد" => {
+                if args.len() > 1 {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة المدمجة {} تتوقع 0 أو 1 معاملات لكن أعطيت {}",
+                            name,
+                            args.len()
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+                match args.first() {
+                    None => {
+                        if self.dir_stack.borrow().is_empty() {
+                            return Err(RioError::runtime("المكدس فارغ", line, col));
+                        }
+                        let top = self.dir_stack.borrow()[0].clone();
+                        self.dir_stack.borrow_mut()[0] = self.cwd.borrow().clone();
+                        *self.cwd.borrow_mut() = top;
+                        self.after_stack_move();
+                        Ok(Value::Nil)
+                    }
+                    Some(Value::Str(s)) => {
+                        if let Some(idx) = crate::navigation::parse_arabic_int(s) {
+                            if let Some(pos) = crate::navigation::resolve_stack_index(
+                                idx,
+                                self.dir_stack.borrow().len(),
+                            ) {
+                                {
+                                    let mut cwd = self.cwd.borrow_mut();
+                                    let mut stack = self.dir_stack.borrow_mut();
+                                    crate::navigation::rotate_stack(&mut cwd, &mut stack, pos);
+                                }
+                                self.after_stack_move();
+                                return Ok(Value::Nil);
+                            }
+                        }
+                        let old = self.cwd.borrow().clone();
+                        self.change_dir(s, None, line, col)?;
+                        self.dir_stack.borrow_mut().insert(0, old);
+                        Ok(Value::Nil)
+                    }
+                    Some(v) => match crate::navigation::parse_stack_index(v) {
+                        Some(idx) => {
+                            let pos = match crate::navigation::resolve_stack_index(
+                                idx,
+                                self.dir_stack.borrow().len(),
+                            ) {
+                                Some(p) => p,
+                                None => {
+                                    return Err(RioError::runtime(
+                                        format!(
+                                            "عنصر المكدس غير موجود: {}",
+                                            Value::Number(idx as f64).fmt_value()
+                                        ),
+                                        line,
+                                        col,
+                                    ))
+                                }
+                            };
+                            {
+                                let mut cwd = self.cwd.borrow_mut();
+                                let mut stack = self.dir_stack.borrow_mut();
+                                crate::navigation::rotate_stack(&mut cwd, &mut stack, pos);
+                            }
+                            self.after_stack_move();
+                            Ok(Value::Nil)
+                        }
+                        None => Err(RioError::typ(
+                            format!(
+                                "ادفع_مجلد يتطلب مسارا نصيا أو رقما، وليس {}",
+                                v.type_name()
+                            ),
+                            line,
+                            col,
+                        )),
+                    },
+                }
+            }
+            "أخرج_مجلد" => {
+                if args.len() > 1 {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة المدمجة {} تتوقع 0 أو 1 معاملات لكن أعطيت {}",
+                            name,
+                            args.len()
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+                match args.first() {
+                    None => {
+                        if self.dir_stack.borrow().is_empty() {
+                            return Err(RioError::runtime("المكدس فارغ", line, col));
+                        }
+                        let target = self.dir_stack.borrow()[0].clone();
+                        match std::fs::metadata(&target) {
+                            Ok(m) if m.is_dir() => {
+                                self.dir_stack.borrow_mut().remove(0);
+                                *self.cwd.borrow_mut() =
+                                    crate::interpreter::Interpreter::normalize_lexical(&target);
+                                self.after_stack_move();
+                                Ok(Value::Nil)
+                            }
+                            Ok(_) => Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                format!(
+                                    "ليس مجلدا: {}",
+                                    self.file_policy.borrow().display_path(&target)
+                                ),
+                                line,
+                                col,
+                            )),
+                            Err(_) => Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                format!(
+                                    "المجلد غير موجود: {}",
+                                    self.file_policy.borrow().display_path(&target)
+                                ),
+                                line,
+                                col,
+                            )),
+                        }
+                    }
+                    Some(v) => match crate::navigation::parse_stack_index(v) {
+                        Some(idx) => {
+                            let pos = match crate::navigation::resolve_stack_index(
+                                idx,
+                                self.dir_stack.borrow().len(),
+                            ) {
+                                Some(p) => p,
+                                None => {
+                                    return Err(RioError::runtime(
+                                        format!(
+                                            "عنصر المكدس غير موجود: {}",
+                                            Value::Number(idx as f64).fmt_value()
+                                        ),
+                                        line,
+                                        col,
+                                    ))
+                                }
+                            };
+                            self.dir_stack.borrow_mut().remove(pos);
+                            Ok(Value::Nil)
+                        }
+                        None => Err(RioError::typ(
+                            format!(
+                                "أخرج_مجلد يتطلب رقما، وليس {}",
+                                v.type_name()
+                            ),
+                            line,
+                            col,
+                        )),
+                    },
+                }
+            }
+            "اعرض_المكدس" => {
+                arity(0)?;
+                let mut out = vec![Value::Str(
+                    self.file_policy.borrow().display_path(&self.cwd.borrow()),
+                )];
+                for p in self.dir_stack.borrow().iter() {
+                    out.push(Value::Str(self.file_policy.borrow().display_path(p)));
+                }
+                Ok(Value::List(out))
+            }
+            "امسح_المكدس" => {
+                arity(0)?;
+                self.dir_stack.borrow_mut().clear();
+                Ok(Value::Nil)
+            }
+            "مسار_بحث_المجلدات" => {
+                if args.len() > 1 {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة المدمجة {} تتوقع 0 أو 1 معاملات لكن أعطيت {}",
+                            name,
+                            args.len()
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+                match args.first() {
+                    None => Ok(Value::List(
+                        self.cdpath.borrow().iter().cloned().map(Value::Str).collect(),
+                    )),
+                    Some(Value::List(items)) => {
+                        let mut new: Vec<String> = Vec::new();
+                        for it in items {
+                            match it {
+                                Value::Str(s) => new.push(s.clone()),
+                                other => {
+                                    return Err(RioError::typ(
+                                        format!(
+                                            "مسار_بحث_المجلدات يتطلب قائمة نصوص، وليس عنصرا {}",
+                                            other.type_name()
+                                        ),
+                                        line,
+                                        col,
+                                    ))
+                                }
+                            }
+                        }
+                        *self.cdpath.borrow_mut() = new;
+                        Ok(Value::List(
+                            self.cdpath.borrow().iter().cloned().map(Value::Str).collect(),
+                        ))
+                    }
+                    Some(other) => Err(RioError::typ(
+                        format!(
+                            "مسار_بحث_المجلدات يتطلب قائمة نصوص، وليس {}",
+                            other.type_name()
+                        ),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "الوضع_الفيزيائي" => {
+                if args.len() > 1 {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة المدمجة {} تتوقع 0 أو 1 معاملات لكن أعطيت {}",
+                            name,
+                            args.len()
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+                match args.first() {
+                    None => Ok(Value::Bool(*self.physical_mode.borrow())),
+                    Some(Value::Bool(b)) => {
+                        *self.physical_mode.borrow_mut() = *b;
+                        Ok(Value::Bool(*self.physical_mode.borrow()))
+                    }
+                    Some(other) => Err(RioError::typ(
+                        format!(
+                            "الوضع_الفيزيائي يتطلب قيمة منطقية، وليس {}",
+                            other.type_name()
+                        ),
                         line,
                         col,
                     )),
                 }
             }
             "أنشئ_مجلد" => {
-                arity(1)?;
-                match &args[0] {
-                    Value::Str(dir) => {
-                        let resolved = self.resolve_cwd_for_write(dir, line, col)?;
-                        std::fs::create_dir(&resolved).map(|_| Value::Nil).map_err(|e| {
+                // الاجتماع 59 §74 (الميزة 211): معامل وضع
+                // اختياري + إرجاع قائمة ما أُنشئ فعلا.
+                if args.is_empty() || args.len() > 2 {
+                    return Err(RioError::runtime(
+                        "أنشئ_مجلد تتوقع 1 أو 2 معاملات",
+                        line,
+                        col,
+                    ));
+                }
+                let dir = match &args[0] {
+                    Value::Str(d) => d.clone(),
+                    other => {
+                        return Err(RioError::typ(
+                            format!(
+                                "أنشئ_مجلد يتطلب مسارا نصيا، وليس {}",
+                                other.type_name()
+                            ),
+                            line,
+                            col,
+                        ));
+                    }
+                };
+                if dir.is_empty() {
+                    return Err(RioError::new(
+                        crate::error::ErrorKind::Io,
+                        "أنشئ_مجلد يتطلب مسارا غير فارغ",
+                        line,
+                        col,
+                    ));
+                }
+                let mode = if args.len() == 2 {
+                    match &args[1] {
+                        Value::Str(m) => match crate::files::parse_octal_mode(m) {
+                            Some(v) => Some(v),
+                            None => {
+                                return Err(RioError::new(
+                                    crate::error::ErrorKind::Io,
+                                    "الوضع يجب أن يكون ثمانيا مثل 755",
+                                    line,
+                                    col,
+                                ));
+                            }
+                        },
+                        other => {
+                            return Err(RioError::typ(
+                                format!(
+                                    "أنشئ_مجلد يتطلب وضعا نصيا، وليس {}",
+                                    other.type_name()
+                                ),
+                                line,
+                                col,
+                            ));
+                        }
+                    }
+                } else {
+                    None
+                };
+                let resolved = self.resolve_cwd_for_write(&dir, line, col)?;
+                let missing = crate::files::missing_components(&resolved);
+                std::fs::create_dir_all(&resolved).map_err(|e| {
+                    RioError::new(
+                        crate::error::ErrorKind::Io,
+                        format!(
+                            "تعذر إنشاء المجلد {}: {}",
+                            self.file_policy.borrow().display_str(&dir),
+                            e
+                        ),
+                        line,
+                        col,
+                    )
+                })?;
+                if let Some(m) = mode {
+                    if missing.last().map(|p| p == &resolved).unwrap_or(false) {
+                        crate::files::set_mode(&resolved, m).map_err(|e| {
                             RioError::new(
                                 crate::error::ErrorKind::Io,
-                                format!("تعذر إنشاء المجلد {}: {}", self.file_policy.borrow().display_str(dir), e),
+                                format!(
+                                    "تعذر ضبط وضع المجلد {}: {}",
+                                    self.file_policy.borrow().display_str(&dir),
+                                    e
+                                ),
                                 line,
                                 col,
                             )
-                        })
+                        })?;
                     }
-                    other => Err(RioError::typ(
-                        format!("أنشئ_مجلد يتطلب مسارا نصيا، وليس {}", other.type_name()),
-                        line,
-                        col,
-                    )),
                 }
+                let created: Vec<Value> = missing
+                    .iter()
+                    .map(|p| Value::Str(self.display_created(p)))
+                    .collect();
+                Ok(Value::List(created))
             }
             "احذف" => {
-                arity(1)?;
+                // المرحلة (د) — الإكمال (اجتماع 69 §84):
+                // علم ثان اختياري «تجاهل_الغائب» — مرآة
+                // ذراع المفسر نفسه.
+                if args.len() < 1 || args.len() > 2 {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة المدمجة احذف تتوقع 1 أو 2 معاملات لكن أعطيت {}",
+                            args.len()
+                        ),
+                        line, col,
+                    ));
+                }
+                let ignore_missing = match args.get(1) {
+                    None => false,
+                    Some(Value::Str(s)) if s == "تجاهل_الغائب" => true,
+                    Some(Value::Str(s)) => {
+                        return Err(RioError::runtime(
+                            format!(
+                                "علم احذف غير معروف: {} — العلم الصالح: تجاهل_الغائب",
+                                s
+                            ),
+                            line, col,
+                        ));
+                    }
+                    Some(other) => {
+                        return Err(RioError::typ(
+                            format!("احذف تتوقع علما نصيا، وليس {}", other.type_name()),
+                            line, col,
+                        ));
+                    }
+                };
                 match &args[0] {
                     Value::Str(path) => {
+                        if let Some(msg) = crate::files::root_refusal_text(path) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                msg,
+                                line,
+                                col,
+                            ));
+                        }
+                        // فحص قانوني قبل الحل: الرابط الرمزي
+                        // إلى الجذر يرفضه الساندبوكس برسالة
+                        // عامة، والقرار يطلب رسالة الجذر.
+                        if crate::files::delete_target_is_root(&self.cwd.borrow(), path) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن حذف الجذر: /",
+                                line,
+                                col,
+                            ));
+                        }
                         let resolved = self.resolve_cwd_for_write(path, line, col)?;
+                        if crate::files::is_filesystem_root(&resolved) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن حذف الجذر: /",
+                                line,
+                                col,
+                            ));
+                        }
                         match std::fs::metadata(&resolved) {
                             Ok(m) if m.is_dir() => {
                                 std::fs::remove_dir(&resolved).map(|_| Value::Nil).map_err(|e| {
-                                    RioError::new(
-                                        crate::error::ErrorKind::Io,
-                                        format!("تعذر حذف {}: {}", self.file_policy.borrow().display_str(path), e),
-                                        line,
-                                        col,
-                                    )
+                                    if crate::files::is_dir_not_empty_error(&e) {
+                                        RioError::new(
+                                            crate::error::ErrorKind::Io,
+                                            format!(
+                                                "المجلد غير فارغ: {} — استخدم احذف_تكراري",
+                                                self.file_policy.borrow().display_str(path)
+                                            ),
+                                            line,
+                                            col,
+                                        )
+                                    } else {
+                                        RioError::new(
+                                            crate::error::ErrorKind::Io,
+                                            format!("تعذر حذف {}: {}", self.file_policy.borrow().display_str(path), e),
+                                            line,
+                                            col,
+                                        )
+                                    }
                                 })
                             }
                             Ok(_) => {
@@ -2831,12 +4994,22 @@ impl Vm {
                                     )
                                 })
                             }
-                            Err(_) => Err(RioError::new(
-                                crate::error::ErrorKind::Io,
-                                format!("المسار غير موجود: {}", self.file_policy.borrow().display_str(path)),
-                                line,
-                                col,
-                            )),
+                            Err(_) => {
+                                // المرحلة (د) — الإكمال (اجتماع
+                                // 69 §84): «تجاهل_الغائب» — الغائب
+                                // نجاح صامت؛ وبلا العلم يبقى الخطأ
+                                // الصريح.
+                                if ignore_missing {
+                                    Ok(Value::Nil)
+                                } else {
+                                    Err(RioError::new(
+                                        crate::error::ErrorKind::Io,
+                                        format!("المسار غير موجود: {}", self.file_policy.borrow().display_str(path)),
+                                        line,
+                                        col,
+                                    ))
+                                }
+                            }
                         }
                     }
                     other => Err(RioError::typ(
@@ -2850,16 +5023,55 @@ impl Vm {
                 arity(1)?;
                 match &args[0] {
                     Value::Str(path) => {
+                        if let Some(msg) = crate::files::root_refusal_text(path) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                msg,
+                                line,
+                                col,
+                            ));
+                        }
+                        // فحص قانوني قبل الحل: الرابط الرمزي
+                        // إلى الجذر يرفضه الساندبوكس برسالة
+                        // عامة، والقرار يطلب رسالة الجذر.
+                        if crate::files::delete_target_is_root(&self.cwd.borrow(), path) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن حذف الجذر: /",
+                                line,
+                                col,
+                            ));
+                        }
                         let resolved = self.resolve_cwd_for_write(path, line, col)?;
+                        if crate::files::is_filesystem_root(&resolved) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن حذف الجذر: /",
+                                line,
+                                col,
+                            ));
+                        }
                         match std::fs::metadata(&resolved) {
                             Ok(m) if m.is_dir() => {
                                 std::fs::remove_dir(&resolved).map(|_| Value::Nil).map_err(|e| {
-                                    RioError::new(
-                                        crate::error::ErrorKind::Io,
-                                        format!("تعذر حذف المجلد {}: {}", self.file_policy.borrow().display_str(path), e),
-                                        line,
-                                        col,
-                                    )
+                                    if crate::files::is_dir_not_empty_error(&e) {
+                                        RioError::new(
+                                            crate::error::ErrorKind::Io,
+                                            format!(
+                                                "المجلد غير فارغ: {} — استخدم احذف_تكراري",
+                                                self.file_policy.borrow().display_str(path)
+                                            ),
+                                            line,
+                                            col,
+                                        )
+                                    } else {
+                                        RioError::new(
+                                            crate::error::ErrorKind::Io,
+                                            format!("تعذر حذف المجلد {}: {}", self.file_policy.borrow().display_str(path), e),
+                                            line,
+                                            col,
+                                        )
+                                    }
                                 })
                             }
                             Ok(_) => Err(RioError::new(
@@ -2887,7 +5099,34 @@ impl Vm {
                 arity(1)?;
                 match &args[0] {
                     Value::Str(path) => {
+                        if let Some(msg) = crate::files::root_refusal_text(path) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                msg,
+                                line,
+                                col,
+                            ));
+                        }
+                        // فحص قانوني قبل الحل: الرابط الرمزي
+                        // إلى الجذر يرفضه الساندبوكس برسالة
+                        // عامة، والقرار يطلب رسالة الجذر.
+                        if crate::files::delete_target_is_root(&self.cwd.borrow(), path) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن حذف الجذر: /",
+                                line,
+                                col,
+                            ));
+                        }
                         let resolved = self.resolve_cwd_for_write(path, line, col)?;
+                        if crate::files::is_filesystem_root(&resolved) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن حذف الجذر: /",
+                                line,
+                                col,
+                            ));
+                        }
                         match std::fs::metadata(&resolved) {
                             Ok(m) if !m.is_dir() => {
                                 std::fs::remove_file(&resolved).map(|_| Value::Nil).map_err(|e| {
@@ -2920,8 +5159,103 @@ impl Vm {
                     )),
                 }
             }
+            "احذف_تكراري" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(path) => {
+                        if let Some(msg) = crate::files::root_refusal_text(path) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                msg,
+                                line,
+                                col,
+                            ));
+                        }
+                        // فحص قانوني قبل الحل: الرابط الرمزي
+                        // إلى الجذر يرفضه الساندبوكس برسالة
+                        // عامة، والقرار يطلب رسالة الجذر.
+                        if crate::files::delete_target_is_root(&self.cwd.borrow(), path) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن حذف الجذر: /",
+                                line,
+                                col,
+                            ));
+                        }
+                        let resolved = self.resolve_cwd_for_write(path, line, col)?;
+                        if crate::files::is_filesystem_root(&resolved) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن حذف الجذر: /",
+                                line,
+                                col,
+                            ));
+                        }
+                        match std::fs::symlink_metadata(&resolved) {
+                            Ok(_) => crate::files::remove_tree(&resolved)
+                                .map(|_| Value::Nil)
+                                .map_err(|e| {
+                                    RioError::new(
+                                        crate::error::ErrorKind::Io,
+                                        format!(
+                                            "تعذر حذف {}: {}",
+                                            self.file_policy.borrow().display_str(path),
+                                            e
+                                        ),
+                                        line,
+                                        col,
+                                    )
+                                }),
+                            Err(_) => Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                format!(
+                                    "المسار غير موجود: {}",
+                                    self.file_policy.borrow().display_str(path)
+                                ),
+                                line,
+                                col,
+                            )),
+                        }
+                    }
+                    other => Err(RioError::typ(
+                        format!("احذف_تكراري يتطلب مسارا نصيا، وليس {}", other.type_name()),
+                        line,
+                        col,
+                    )),
+                }
+            }
             "انسخ" => {
-                arity(2)?;
+                // المرحلة (د) — الإكمال (اجتماع 69 §84):
+                // علم ثالث اختياري «لا_تكتب» — مرآة ذراع
+                // المفسر نفسه.
+                if args.len() < 2 || args.len() > 3 {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة المدمجة انسخ تتوقع 2 أو 3 معاملات لكن أعطيت {}",
+                            args.len()
+                        ),
+                        line, col,
+                    ));
+                }
+                let no_clobber = match args.get(2) {
+                    None => false,
+                    Some(Value::Str(s)) if s == "لا_تكتب" => true,
+                    Some(Value::Str(s)) => {
+                        return Err(RioError::runtime(
+                            format!(
+                                "علم انسخ غير معروف: {} — العلم الصالح: لا_تكتب",
+                                s
+                            ),
+                            line, col,
+                        ));
+                    }
+                    Some(other) => {
+                        return Err(RioError::typ(
+                            format!("انسخ تتوقع علما نصيا، وليس {}", other.type_name()),
+                            line, col,
+                        ));
+                    }
+                };
                 match (&args[0], &args[1]) {
                     (Value::Str(src), Value::Str(dst)) => {
                         let src_path = self.resolve_cwd(src, line, col)?;
@@ -2931,6 +5265,39 @@ impl Vm {
                             if let Some(name) = src_path.file_name() {
                                 dst_path.push(name);
                             }
+                        }
+                        // الاجتماع 59 §74 (الميزة 196): نسخ
+                        // مجلد بلا خيار تكراري مرفوض برسالة
+                        // صريحة تسمي البديل — لا خطأ إدخال/
+                        // إخراج مبهم.
+                        if std::fs::metadata(&src_path)
+                            .map(|m| m.is_dir())
+                            .unwrap_or(false)
+                        {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن نسخ المجلد بلا خيار تكراري — استخدم انسخ_تكراري",
+                                line,
+                                col,
+                            ));
+                        }
+                        // الميزة 202: نسخ الملف على نفسه كان
+                        // يفرّغه بصمت (`std::fs::copy` على
+                        // المسار نفسه يرجع `Ok(0)`) — ارفض
+                        // قبل أي كتابة، والملف يبقى سليما.
+                        if crate::files::paths_same_file(&src_path, &dst_path) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن نسخ الملف على نفسه",
+                                line,
+                                col,
+                            ));
+                        }
+                        // المرحلة (د) — الإكمال (اجتماع 69
+                        // §84): «لا_تكتب» — الهدف الموجود
+                        // يُتخطى بصمت بلا كتابة ولا حصة.
+                        if no_clobber && std::fs::metadata(&dst_path).is_ok() {
+                            return Ok(Value::Nil);
                         }
                         // Audit م-20: same quota as اكتب_ملف.
                         let src_len =
@@ -2951,6 +5318,243 @@ impl Vm {
                     _ => Err(RioError::typ("انسخ يتطلب مسارين نصيين", line, col)),
                 }
             }
+            "انسخ_تكراري" => {
+                arity(2)?;
+                match (&args[0], &args[1]) {
+                    (Value::Str(src), Value::Str(dst)) => {
+                        let src_path = self.resolve_cwd(src, line, col)?;
+                        let mut dst_path = self.resolve_cwd_for_write(dst, line, col)?;
+                        if dst_path.is_dir() {
+                            if let Some(name) = src_path.file_name() {
+                                dst_path.push(name);
+                            }
+                        }
+                        let src_is_dir = std::fs::metadata(&src_path)
+                            .map(|m| m.is_dir())
+                            .unwrap_or(false);
+                        if src_is_dir {
+                            if crate::files::dst_inside_src(&src_path, &dst_path) {
+                                return Err(RioError::new(
+                                    crate::error::ErrorKind::Io,
+                                    "لا يمكن نسخ المجلد داخل نفسه",
+                                    line,
+                                    col,
+                                ));
+                            }
+                        } else if crate::files::paths_same_file(&src_path, &dst_path) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن نسخ الملف على نفسه",
+                                line,
+                                col,
+                            ));
+                        }
+                        let extra = match std::fs::symlink_metadata(&src_path) {
+                            Ok(m) if m.is_dir() => crate::files::tree_size(&src_path),
+                            Ok(m) => {
+                                let dst_existing =
+                                    std::fs::metadata(&dst_path).map(|m| m.len()).unwrap_or(0);
+                                m.len().saturating_sub(dst_existing)
+                            }
+                            Err(_) => 0,
+                        };
+                        self.check_disk_quota(extra, line, col)?;
+                        crate::files::copy_tree(&src_path, &dst_path)
+                            .map(|_| Value::Nil)
+                            .map_err(|e| {
+                                RioError::new(
+                                    crate::error::ErrorKind::Io,
+                                    format!(
+                                        "تعذر نسخ {}: {}",
+                                        self.file_policy.borrow().display_str(src),
+                                        e
+                                    ),
+                                    line,
+                                    col,
+                                )
+                            })
+                    }
+                    _ => Err(RioError::typ("انسخ_تكراري يتطلب مسارين نصيين", line, col)),
+                }
+            }
+            "انسخ_محدث" => {
+                arity(2)?;
+                match (&args[0], &args[1]) {
+                    (Value::Str(src), Value::Str(dst)) => {
+                        let src_path = self.resolve_cwd(src, line, col)?;
+                        let mut dst_path = self.resolve_cwd_for_write(dst, line, col)?;
+                        if dst_path.is_dir() {
+                            if let Some(name) = src_path.file_name() {
+                                dst_path.push(name);
+                            }
+                        }
+                        if std::fs::metadata(&src_path)
+                            .map(|m| m.is_dir())
+                            .unwrap_or(false)
+                        {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن نسخ المجلد بلا خيار تكراري — استخدم انسخ_تكراري",
+                                line,
+                                col,
+                            ));
+                        }
+                        if crate::files::paths_same_file(&src_path, &dst_path) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن نسخ الملف على نفسه",
+                                line,
+                                col,
+                            ));
+                        }
+                        let src_mtime = std::fs::metadata(&src_path)
+                            .and_then(|m| m.modified())
+                            .ok();
+                        let dst_mtime = std::fs::metadata(&dst_path)
+                            .and_then(|m| m.modified())
+                            .ok();
+                        if let (Some(s), Some(d)) = (src_mtime, dst_mtime) {
+                            if s <= d {
+                                return Ok(Value::Bool(false));
+                            }
+                        }
+                        let src_len =
+                            std::fs::metadata(&src_path).map(|m| m.len()).unwrap_or(0);
+                        let dst_existing =
+                            std::fs::metadata(&dst_path).map(|m| m.len()).unwrap_or(0);
+                        let extra = src_len.saturating_sub(dst_existing);
+                        self.check_disk_quota(extra, line, col)?;
+                        std::fs::copy(&src_path, &dst_path)
+                            .map(|_| Value::Bool(true))
+                            .map_err(|e| {
+                                RioError::new(
+                                    crate::error::ErrorKind::Io,
+                                    format!(
+                                        "تعذر نسخ {}: {}",
+                                        self.file_policy.borrow().display_str(src),
+                                        e
+                                    ),
+                                    line,
+                                    col,
+                                )
+                            })
+                    }
+                    _ => Err(RioError::typ("انسخ_محدث يتطلب مسارين نصيين", line, col)),
+                }
+            }
+            "انسخ_أرشيف" => {
+                arity(2)?;
+                match (&args[0], &args[1]) {
+                    (Value::Str(src), Value::Str(dst)) => {
+                        let src_path = self.resolve_cwd(src, line, col)?;
+                        let mut dst_path = self.resolve_cwd_for_write(dst, line, col)?;
+                        if dst_path.is_dir() {
+                            if let Some(name) = src_path.file_name() {
+                                dst_path.push(name);
+                            }
+                        }
+                        let src_is_dir = std::fs::metadata(&src_path)
+                            .map(|m| m.is_dir())
+                            .unwrap_or(false);
+                        if src_is_dir {
+                            if crate::files::dst_inside_src(&src_path, &dst_path) {
+                                return Err(RioError::new(
+                                    crate::error::ErrorKind::Io,
+                                    "لا يمكن نسخ المجلد داخل نفسه",
+                                    line,
+                                    col,
+                                ));
+                            }
+                        } else if crate::files::paths_same_file(&src_path, &dst_path) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن نسخ الملف على نفسه",
+                                line,
+                                col,
+                            ));
+                        }
+                        let extra = match std::fs::symlink_metadata(&src_path) {
+                            Ok(m) if m.is_dir() => crate::files::tree_size(&src_path),
+                            Ok(m) => {
+                                let dst_existing =
+                                    std::fs::metadata(&dst_path).map(|m| m.len()).unwrap_or(0);
+                                m.len().saturating_sub(dst_existing)
+                            }
+                            Err(_) => 0,
+                        };
+                        self.check_disk_quota(extra, line, col)?;
+                        crate::files::copy_archive(&src_path, &dst_path)
+                            .map(|_| Value::Nil)
+                            .map_err(|e| {
+                                RioError::new(
+                                    crate::error::ErrorKind::Io,
+                                    format!(
+                                        "تعذر نسخ {}: {}",
+                                        self.file_policy.borrow().display_str(src),
+                                        e
+                                    ),
+                                    line,
+                                    col,
+                                )
+                            })
+                    }
+                    _ => Err(RioError::typ("انسخ_أرشيف يتطلب مسارين نصيين", line, col)),
+                }
+            }
+            "انسخ_خفيف" => {
+                arity(2)?;
+                match (&args[0], &args[1]) {
+                    (Value::Str(src), Value::Str(dst)) => {
+                        let src_path = self.resolve_cwd(src, line, col)?;
+                        let mut dst_path = self.resolve_cwd_for_write(dst, line, col)?;
+                        if dst_path.is_dir() {
+                            if let Some(name) = src_path.file_name() {
+                                dst_path.push(name);
+                            }
+                        }
+                        if std::fs::metadata(&src_path)
+                            .map(|m| m.is_dir())
+                            .unwrap_or(false)
+                        {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن نسخ المجلد بلا خيار تكراري — استخدم انسخ_تكراري",
+                                line,
+                                col,
+                            ));
+                        }
+                        if crate::files::paths_same_file(&src_path, &dst_path) {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن نسخ الملف على نفسه",
+                                line,
+                                col,
+                            ));
+                        }
+                        let src_len =
+                            std::fs::metadata(&src_path).map(|m| m.len()).unwrap_or(0);
+                        let dst_existing =
+                            std::fs::metadata(&dst_path).map(|m| m.len()).unwrap_or(0);
+                        let extra = src_len.saturating_sub(dst_existing);
+                        self.check_disk_quota(extra, line, col)?;
+                        crate::files::copy_light(&src_path, &dst_path)
+                            .map(|m| Value::Str(m.as_str().to_string()))
+                            .map_err(|e| {
+                                RioError::new(
+                                    crate::error::ErrorKind::Io,
+                                    format!(
+                                        "تعذر نسخ {}: {}",
+                                        self.file_policy.borrow().display_str(src),
+                                        e
+                                    ),
+                                    line,
+                                    col,
+                                )
+                            })
+                    }
+                    _ => Err(RioError::typ("انسخ_خفيف يتطلب مسارين نصيين", line, col)),
+                }
+            }
             "انقل" => {
                 arity(2)?;
                 match (&args[0], &args[1]) {
@@ -2963,14 +5567,72 @@ impl Vm {
                                 dst_path.push(name);
                             }
                         }
-                        std::fs::rename(&src_path, &dst_path).map(|_| Value::Nil).map_err(|e| {
-                            RioError::new(
+                        // الميزة 204: نقل مجلد داخل نفسه أو
+                        // داخل فرع منه مرفوض قبل أي كتابة
+                        // (كما في `mv`)؛ والملف على نفسه
+                        // يبقى بلا أثر (إعادة تسمية على النفس).
+                        if std::fs::metadata(&src_path).map(|m| m.is_dir()).unwrap_or(false)
+                            && crate::files::dst_inside_src(&src_path, &dst_path)
+                        {
+                            return Err(RioError::new(
+                                crate::error::ErrorKind::Io,
+                                "لا يمكن نقل المجلد داخل نفسه",
+                                line,
+                                col,
+                            ));
+                        }
+                        match std::fs::rename(&src_path, &dst_path) {
+                            Ok(()) => Ok(Value::Nil),
+                            Err(e) if crate::files::is_cross_device_error(&e) => {
+                                // الميزة 204: عبر الأنظمة — نسخ
+                                // ثم حذف المصدر بعد نجاح النسخ.
+                                let extra = match std::fs::symlink_metadata(&src_path) {
+                                    Ok(m) if m.is_dir() => crate::files::tree_size(&src_path),
+                                    Ok(m) => {
+                                        let dst_existing = std::fs::metadata(&dst_path)
+                                            .map(|m| m.len())
+                                            .unwrap_or(0);
+                                        m.len().saturating_sub(dst_existing)
+                                    }
+                                    Err(_) => 0,
+                                };
+                                // الحصة على نمو مجلد البرنامج
+                                // وحده؛ فالهدف خارجه بلا حصة.
+                                if dst_path.starts_with(&self.program_dir) {
+                                    self.check_disk_quota(extra, line, col)?;
+                                }
+                                match crate::files::move_fallback(&src_path, &dst_path) {
+                                    Ok(()) => Ok(Value::Nil),
+                                    Err(crate::files::MoveError::Copy(err)) => Err(RioError::new(
+                                        crate::error::ErrorKind::Io,
+                                        format!(
+                                            "تعذر نقل {}: {}",
+                                            self.file_policy.borrow().display_str(src),
+                                            err
+                                        ),
+                                        line,
+                                        col,
+                                    )),
+                                    Err(crate::files::MoveError::Remove(err)) => Err(RioError::new(
+                                        crate::error::ErrorKind::Io,
+                                        format!(
+                                            "نُسخ {} إلى {} لكن تعذر حذف المصدر: {}",
+                                            self.file_policy.borrow().display_str(src),
+                                            self.file_policy.borrow().display_str(dst),
+                                            err
+                                        ),
+                                        line,
+                                        col,
+                                    )),
+                                }
+                            }
+                            Err(e) => Err(RioError::new(
                                 crate::error::ErrorKind::Io,
                                 format!("تعذر نقل {}: {}", self.file_policy.borrow().display_str(src), e),
                                 line,
                                 col,
-                            )
-                        })
+                            )),
+                        }
                     }
                     _ => Err(RioError::typ("انقل يتطلب مسارين نصيين", line, col)),
                 }
@@ -2986,6 +5648,19 @@ impl Vm {
                                 RioError::new(
                                     crate::error::ErrorKind::Io,
                                     format!("تعذر إنشاء الملف {}: {}", self.file_policy.borrow().display_str(path), e),
+                                    line,
+                                    col,
+                                )
+                            })?;
+                        } else {
+                            // الاجتماع 59 §74 (الميزة 215):
+                            // الموجود يحدَّث وقته بلا مساس
+                            // بالمحتوى (`touch`).
+                            let resolved_w = self.resolve_cwd_for_write(path, line, col)?;
+                            crate::files::touch_times(&resolved_w).map_err(|e| {
+                                RioError::new(
+                                    crate::error::ErrorKind::Io,
+                                    format!("تعذر تحديث وقت {}: {}", self.file_policy.borrow().display_str(path), e),
                                     line,
                                     col,
                                 )
@@ -3181,6 +5856,106 @@ impl Vm {
                     _ => Err(RioError::typ("أنشئ_رابط يتطلب مسارين نصيين", line, col)),
                 }
             }
+            "أنشئ_رابط_صلب" => {
+                arity(2)?;
+                match (&args[0], &args[1]) {
+                    (Value::Str(target), Value::Str(link)) => {
+                        let target_path = self.resolve_cwd(target, line, col)?;
+                        let link_path = self.resolve_cwd(link, line, col)?;
+                        match std::fs::metadata(&target_path) {
+                            Ok(m) if m.is_dir() => {
+                                return Err(RioError::new(
+                                    crate::error::ErrorKind::Io,
+                                    "لا يمكن إنشاء رابط صلب لمجلد",
+                                    line,
+                                    col,
+                                ));
+                            }
+                            Ok(_) => {}
+                            Err(_) => {
+                                return Err(RioError::new(
+                                    crate::error::ErrorKind::Io,
+                                    format!(
+                                        "الهدف غير موجود: {}",
+                                        self.file_policy.borrow().display_str(target)
+                                    ),
+                                    line,
+                                    col,
+                                ));
+                            }
+                        }
+                        std::fs::hard_link(&target_path, &link_path)
+                            .map(|_| Value::Nil)
+                            .map_err(|e| {
+                                RioError::new(
+                                    crate::error::ErrorKind::Io,
+                                    format!(
+                                        "تعذر إنشاء الرابط الصلب {}: {}",
+                                        self.file_policy.borrow().display_str(link),
+                                        e
+                                    ),
+                                    line,
+                                    col,
+                                )
+                            })
+                    }
+                    _ => Err(RioError::typ("أنشئ_رابط_صلب يتطلب مسارين نصيين", line, col)),
+                }
+            }
+            "أنشئ_رابط_نسبي" => {
+                arity(2)?;
+                match (&args[0], &args[1]) {
+                    (Value::Str(target), Value::Str(link)) => {
+                        let target_abs = self.resolve_cwd(target, line, col)?;
+                        let link_path = self.resolve_cwd(link, line, col)?;
+                        let link_dir = link_path
+                            .parent()
+                            .map(|p| p.to_path_buf())
+                            .unwrap_or_else(|| self.cwd.borrow().clone());
+                        // النسبي يُحسب داخل كل فرع منصة
+                        // (على WASM بلا استعمال فيحذّر).
+                        #[cfg(unix)]
+                        let res = std::os::unix::fs::symlink(
+                            &crate::files::relative_path(&link_dir, &target_abs),
+                            &link_path,
+                        );
+                        #[cfg(windows)]
+                        let res = {
+                            let rel = crate::files::relative_path(&link_dir, &target_abs);
+                            match std::fs::metadata(&target_abs) {
+                            Ok(m) if m.is_dir() => std::os::windows::fs::symlink_dir(
+                                &rel,
+                                &link_path,
+                            ),
+                            _ => std::os::windows::fs::symlink_file(
+                                &rel,
+                                &link_path,
+                            ),
+                            }
+                        };
+                        #[cfg(not(any(unix, windows)))]
+                        let res: std::io::Result<()> = {
+                            // WASM: بلا روابط رمزية — المتغيران
+                            // محلولان للتحقق من النوع فقط،
+                            // فيُستهلكان هنا صراحة بلا تحذير.
+                            let _ = (&target_abs, &link_dir);
+                            Err(std::io::Error::new(
+                                std::io::ErrorKind::Unsupported,
+                                "إنشاء الروابط غير مدعوم على هذه المنصة",
+                            ))
+                        };
+                        res.map(|_| Value::Nil).map_err(|e| {
+                            RioError::new(
+                                crate::error::ErrorKind::Io,
+                                format!("تعذر إنشاء الرابط {}: {}", self.file_policy.borrow().display_str(link), e),
+                                line,
+                                col,
+                            )
+                        })
+                    }
+                    _ => Err(RioError::typ("أنشئ_رابط_نسبي يتطلب مسارين نصيين", line, col)),
+                }
+            }
             "التاريخ_الآن" => {
                 arity(0)?;
                 let secs = std::time::SystemTime::now()
@@ -3242,18 +6017,20 @@ impl Vm {
                 match &args[0] {
                     Value::Str(path) => {
                         let resolved = self.resolve_cwd(path, line, col)?;
-                        let kind = match std::fs::metadata(&resolved) {
-                            Ok(m) if m.is_dir() => "مجلد",
-                            Ok(_) => "ملف",
-                            Err(_) => "غير موجود",
+                        let meta = std::fs::metadata(&resolved).ok();
+                        let smeta = std::fs::symlink_metadata(&resolved).ok();
+                        let kind = match &meta {
+                            Some(m) if m.is_dir() => "مجلد",
+                            Some(_) => "ملف",
+                            None => "غير موجود",
                         };
                         let mut budget: usize = 10000;
                         let size = crate::interpreter::Interpreter::dir_size(
                             &resolved, &mut budget,
                         );
-                        let modified = std::fs::metadata(&resolved)
-                            .and_then(|m| m.modified())
-                            .ok()
+                        let modified = meta
+                            .as_ref()
+                            .and_then(|m| m.modified().ok())
                             .and_then(|t| {
                                 t.duration_since(std::time::UNIX_EPOCH).ok()
                             })
@@ -3263,10 +6040,127 @@ impl Vm {
                                 )
                             })
                             .unwrap_or_else(|| "—".to_string());
+                        // المرحلة (د) — الإكمال (اجتماع 69
+                        // §84): الحقول الموسعة — مرآة ذراع
+                        // المفسر نفسه.
+                        let is_link = smeta
+                            .as_ref()
+                            .map(|m| m.file_type().is_symlink())
+                            .unwrap_or(false);
+                        #[cfg(unix)]
+                        let perms = {
+                            use std::os::unix::fs::PermissionsExt;
+                            match smeta.as_ref().or(meta.as_ref()) {
+                                Some(m) => {
+                                    let mode = m.permissions().mode();
+                                    let type_c = if m.is_dir() {
+                                        'd'
+                                    } else if m.file_type().is_symlink() {
+                                        'l'
+                                    } else {
+                                        '-'
+                                    };
+                                    let bit = |b: u32, c: char| {
+                                        if mode & b != 0 { c } else { '-' }
+                                    };
+                                    format!(
+                                        "{}{}{}{}{}{}{}{}{}{}",
+                                        type_c,
+                                        bit(0o400, 'r'), bit(0o200, 'w'), bit(0o100, 'x'),
+                                        bit(0o040, 'r'), bit(0o020, 'w'), bit(0o010, 'x'),
+                                        bit(0o004, 'r'), bit(0o002, 'w'), bit(0o001, 'x'),
+                                    )
+                                }
+                                None => "—".to_string(),
+                            }
+                        };
+                        #[cfg(not(unix))]
+                        let perms = "—".to_string();
+                        #[cfg(unix)]
+                        let (owner, group) = {
+                            use std::os::unix::fs::MetadataExt;
+                            match meta.as_ref() {
+                                Some(m) => {
+                                    let uid = m.uid();
+                                    let gid = m.gid();
+                                    let owner =
+                                        crate::interpreter::Interpreter::passwd_name(uid)
+                                            .unwrap_or_else(|| uid.to_string());
+                                    let group =
+                                        crate::interpreter::Interpreter::group_name(gid)
+                                            .unwrap_or_else(|| gid.to_string());
+                                    (owner, group)
+                                }
+                                None => ("—".to_string(), "—".to_string()),
+                            }
+                        };
+                        #[cfg(not(unix))]
+                        let (owner, group) = ("—".to_string(), "—".to_string());
+                        let accessed = meta
+                            .as_ref()
+                            .and_then(|m| m.accessed().ok())
+                            .and_then(|t| {
+                                t.duration_since(std::time::UNIX_EPOCH).ok()
+                            })
+                            .map(|d| {
+                                crate::interpreter::Interpreter::format_unix_utc(
+                                    d.as_secs(),
+                                )
+                            })
+                            .unwrap_or_else(|| "—".to_string());
+                        #[cfg(unix)]
+                        let changed = {
+                            use std::os::unix::fs::MetadataExt;
+                            match meta.as_ref() {
+                                Some(m) if m.ctime() >= 0 => {
+                                    crate::interpreter::Interpreter::format_unix_utc(
+                                        m.ctime() as u64,
+                                    )
+                                }
+                                _ => "—".to_string(),
+                            }
+                        };
+                        #[cfg(not(unix))]
+                        let changed = "—".to_string();
+                        #[cfg(unix)]
+                        let (inode, links) = {
+                            use std::os::unix::fs::MetadataExt;
+                            match meta.as_ref() {
+                                Some(m) => (
+                                    Value::Number(m.ino() as f64),
+                                    Value::Number(m.nlink() as f64),
+                                ),
+                                None => (
+                                    Value::Str("—".to_string()),
+                                    Value::Str("—".to_string()),
+                                ),
+                            }
+                        };
+                        #[cfg(not(unix))]
+                        let (inode, links) = (
+                            Value::Str("—".to_string()),
+                            Value::Str("—".to_string()),
+                        );
+                        let target = if is_link {
+                            match std::fs::read_link(&resolved) {
+                                Ok(p) => Value::Str(p.to_string_lossy().to_string()),
+                                Err(_) => Value::Nil,
+                            }
+                        } else {
+                            Value::Nil
+                        };
                         Ok(Value::Dict(vec![
                             ("نوع".to_string(), Value::Str(kind.to_string())),
                             ("حجم".to_string(), Value::Number(size as f64)),
                             ("معدل".to_string(), Value::Str(modified)),
+                            ("أذونات".to_string(), Value::Str(perms)),
+                            ("مالك".to_string(), Value::Str(owner)),
+                            ("مجموعة".to_string(), Value::Str(group)),
+                            ("وصل".to_string(), Value::Str(accessed)),
+                            ("غيّر".to_string(), Value::Str(changed)),
+                            ("عقدة".to_string(), inode),
+                            ("روابط".to_string(), links),
+                            ("هدف".to_string(), target),
                         ]))
                     }
                     other => Err(RioError::typ(
@@ -3384,7 +6278,26 @@ impl Vm {
             let instr = self.code[idx].clone();
             self.pc += 1;
             match self.step(idx, instr) {
-                Ok(StepFlow::Next) => {}
+                // الدفعة 1: خروج معلق (من `خروج()` المدمجة
+                // أو من VM فرعية عادت) يُفكّ هنا — يهرب
+                // من كل معالج إلا إلى `أخيرا`، ثم ينهي
+                // التشغيل برمزه؛ وخطوة أخيرا نفسها تعود
+                // إلى هنا فتُستأنف.
+                Ok(StepFlow::Next) => {
+                    if let Some(code) = self.exit_code {
+                        self.pending_flow = Some(FlowResume::Exit(code));
+                        match self.unwind_flow(1, 1)? {
+                            // قفز إلى أخيرا: الراية تُمسح
+                            // لأن FinallyCtx يحمل الخروج
+                            // الآن — وإلا أعاد إطلاق نفسه
+                            // داخل جسم أخيرا قبل تنفيذه.
+                            UnwindOutcome::Continue => {
+                                self.exit_code = None;
+                            }
+                            UnwindOutcome::ReturnNow => return Ok(()),
+                        }
+                    }
+                }
                 Ok(StepFlow::Returned) => return Ok(()),
                 // خطأ اعترضه on_error وعولج (أعاد التموضع
                 // إلى ماعدا/أخيرا) فتواصل الحلقة؛ وإن لم
@@ -3419,7 +6332,37 @@ impl Vm {
                     // Phase ك-1: lexical assignment (Meeting 11)
                     // — a closure storing an outer variable mutates
                     // the captured scope, not a local shadow.
-                    self.assign(&name, v);
+                    self.assign(&name, v, line, col)?;
+                }
+                Op::StoreAppend(name) => {
+                    // الدفعة 4 — المتغيرات (اجتماع 58
+                    // §73): الإلحاق — القديم + الجديد
+                    // بعملية `+` نفسها، والغائب من
+                    // الهوية كما في باش.
+                    let v = self.pop(line, col)?;
+                    let old = match self.lookup(&name) {
+                        Some(old) => old,
+                        None => match &v {
+                            Value::Number(_) => Value::Number(0.0),
+                            Value::Str(_) => Value::Str(String::new()),
+                            Value::List(_) => Value::List(Vec::new()),
+                            Value::Dict(_) => Value::Dict(Vec::new()),
+                            other => {
+                                return Err(RioError::typ(
+                                    format!(
+                                        "لا يمكن الإلحاق بقيمة {}",
+                                        other.type_name()
+                                    ),
+                                    line,
+                                    col,
+                                ));
+                            }
+                        },
+                    };
+                    let joined = crate::interpreter::Interpreter::add_values(
+                        &old, &v, line, col,
+                    )?;
+                    self.assign(&name, joined, line, col)?;
                 }
                 Op::Pop => {
                     // اجتماع 32، السؤال الثاني (2): عبارة
@@ -3444,6 +6387,15 @@ impl Vm {
                 Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod => {
                     let r = self.pop(line, col)?;
                     let l = self.pop(line, col)?;
+                    // الدفعة 4 — المتغيرات (اجتماع 58
+                    // §73): الجمع (ومنها دمج القواميس)
+                    // مساعد المفسر نفسه، فتتطابق الرسائل.
+                    if matches!(instr.op, Op::Add) {
+                        let joined =
+                            crate::interpreter::Interpreter::add_values(&l, &r, line, col)?;
+                        self.stack.push(joined);
+                        return Ok(StepFlow::Next);
+                    }
                     let (a, b) = match (&l, &r) {
                         (Value::Number(a), Value::Number(b)) => (*a, *b),
                         (Value::Str(a), Value::Str(b)) if matches!(instr.op, Op::Add) => {
@@ -3735,6 +6687,11 @@ impl Vm {
                     // captured list/dict mutates the original).
                     let idx = self.pop(line, col)?;
                     let value = self.pop(line, col)?;
+                    // الدفعة 4 — المتغيرات (اجتماع 58
+                    // §73): الفهرسة عبر مرجع تصل هدفه،
+                    // والفهرسة في مجمد مرفوضة.
+                    let name = self.resolve_name(&name);
+                    self.check_not_frozen(&name, tgt_line, tgt_col)?;
                     let si = self.lookup_scope_index(&name).ok_or_else(|| {
                         RioError::runtime(
                             format!("متغير غير معرف: {}", name),
@@ -3977,6 +6934,12 @@ impl Vm {
                     match child_vm.run() {
                         Ok(()) => {
                             self.output.push_str(&child_vm.output);
+                            // الدفعة 1: خروج أو رمز آخر أمر
+                            // من داخل الدالة يصعدان إلى المتصل.
+                            if let Some(code) = child_vm.exit_code {
+                                self.exit_code = Some(code);
+                            }
+                            self.last_exit_code = child_vm.last_exit_code;
                             let (returned, ret) = Self::child_return(&child_vm);
                             // مهمة 3: نوع الإرجاع كما في المفسر.
                             Self::check_return_type(
@@ -4354,6 +7317,9 @@ impl Vm {
                     // define_local. The value is NOT left on the
                     // stack (a definition is a statement).
                     let v = self.make_closure_value(&def);
+                    // الدفعة 4 — المتغيرات (اجتماع 58
+                    // §73): إعادة تعريف اسم مجمد مرفوضة.
+                    self.check_not_frozen(&def.name, line, col)?;
                     self.define(&def.name, v);
                 }
                 Op::CallValue { nargs: n, callee_line, callee_col } => {
@@ -4688,6 +7654,10 @@ impl Vm {
                 // ماعدا موجود: احمِ أخيرا بحارس (فإن أخطأ
                 // جسم ماعدا نفسه، شُغّل أخيرا ثم أُعيد رفع
                 // خطئه).
+                // الدفعة 1: الخطأ الممسوك رمز خروج 1 —
+                // يُضبط قبل جسم ماعدا، فتقرأه
+                // `رمز_الخروج()` داخله.
+                self.last_exit_code = 1;
                 self.handlers.push(Handler {
                     except_pc: None,
                     finally_pc: h.finally_pc,
@@ -4739,7 +7709,7 @@ impl Vm {
                 None => return self.perform_flow(flow, line, col),
             };
             let escapes = match &flow {
-                FlowResume::Return | FlowResume::NoLoop(_) => true,
+                FlowResume::Return | FlowResume::NoLoop(_) | FlowResume::Exit(_) => true,
                 FlowResume::Break { .. } | FlowResume::Continue { .. } => {
                     handler.loop_depth >= self.loop_states.len()
                 }
@@ -4783,6 +7753,12 @@ impl Vm {
             }
             FlowResume::Return => {
                 self.return_value = self.pending_return.take();
+                Ok(UnwindOutcome::ReturnNow)
+            }
+            // الدفعة 1: خروج معلق — يُثبَّت كرمز خروج
+            // البرنامج وينتهي التشغيل (بنجاح برمزه).
+            FlowResume::Exit(code) => {
+                self.exit_code = Some(code);
                 Ok(UnwindOutcome::ReturnNow)
             }
             FlowResume::NoLoop(msg) => Err(RioError::runtime(msg, line, col)),
@@ -4874,12 +7850,48 @@ impl VmSession {
         self.vm.call_builtin(name, args, line, col)
     }
 
+    /// الدفعة 1 — رموز الخروج (اجتماع 54 §69): يأخذ
+    /// رمز الخروج المعلق مرة واحدة، مرآة المفسر.
+    pub fn take_exit_code(&mut self) -> Option<u8> {
+        self.vm.take_exit_code()
+    }
+
+    /// الدفعة 1: رمز آخر أمر مكتمل.
+    pub fn last_exit_code(&self) -> u8 {
+        self.vm.last_exit_code()
+    }
+
+    /// الدفعة 1: ضبط رمز آخر أمر (تزامن REPL).
+    pub fn set_last_exit_code(&mut self, code: u8) {
+        self.vm.set_last_exit_code(code);
+    }
+
+    /// المرحلة (ج): ضبط رموز مراحل آخر أنبوب.
+    pub fn set_pipe_status(&mut self, codes: Vec<u8>) {
+        self.vm.set_pipe_status(codes);
+    }
+
     /// المجلد الحالي في صيغة العرض (~، ~/...) — للموجّه.
     pub fn current_dir_display(&self) -> String {
         self.vm
             .file_policy
             .borrow()
             .display_path(&self.vm.cwd.borrow())
+    }
+
+    /// المرحلة (د) — الإكمال (اجتماع 67 §82):
+    /// أسماء متغيرات/دوال الجلسة والمجلد الحالي —
+    /// تفويض إلى الآلة، للإكمال في التفاعلي.
+    pub fn session_variable_names(&self) -> Vec<String> {
+        self.vm.session_variable_names()
+    }
+
+    pub fn session_function_names(&self) -> Vec<String> {
+        self.vm.session_function_names()
+    }
+
+    pub fn cwd_path(&self) -> std::path::PathBuf {
+        self.vm.cwd_path()
     }
 
     /// خذ مخرجات التشغيل الأخير (اطبع) وصفّرها.
@@ -4929,6 +7941,11 @@ impl VmSession {
     /// — يُمرَّر إلى VM الجلسة (load لا يمسه).
     pub fn set_live_output(&mut self, live: bool) {
         self.vm.set_live_output(live);
+    }
+
+    /// المرحلة (ج) — البث الحي مفعّل؟ (مرآة الضابط).
+    pub fn live_output(&self) -> bool {
+        self.vm.live_output()
     }
 
     /// This session's own server permission.
@@ -5749,6 +8766,41 @@ mod tests {
         );
     }
 
+    // الدفعة 4 — المتغيرات (اجتماع 58 §73): تكافؤ `+=`
+    // على نص وعدد وقائمة وقاموس والغائب.
+    #[test]
+    fn vm_append_parity() {
+        assert_parity(
+            "ن = \"أهلا\"\nن += \" وسهلا\"\nاطبع ن\nع = ٥\nع += ٣\nاطبع ع\nق = [١، ٢]\nق += [٣]\nاطبع ق\nخ = {\"أ\": ١}\nخ += {\"ب\": ٢}\nاطبع خ\nغ += ٧\nاطبع غ\n",
+            "أهلا وسهلا\n٨\n[١, ٢, ٣]\n{\"أ\": ١, \"ب\": ٢}\n٧\n",
+        );
+    }
+
+    // الدفعة 4 — المتغيرات (اجتماع 58 §73): التجميد
+    // والحذف والمرجع والفحص — نفس الرسائل في الوضعين.
+    #[test]
+    fn vm_freeze_delete_nameref_parity() {
+        assert_parity(
+            "س = ٥\nاطبع افحص_متغير(\"س\")\nجمد(\"س\")\nاطبع افحص_متغير(\"س\")\nص = ١٠\nمرجع(\"ر\", \"ص\")\nر = ٢٠\nاطبع ص\nاطبع افحص_متغير(\"ر\")\nاحذف_متغير(\"ر\")\nاطبع ص\nاحذف_متغير(\"ص\")\n",
+            "متغير س: عدد = ٥\nمتغير س: عدد = ٥ مجمد\n٢٠\nمتغير ر: مرجع إلى ص\n٢٠\n",
+        );
+        assert_parity_err("س = ٥\nجمد(\"س\")\nس = ٦\n");
+        assert_parity_err("س = ٥\nجمد(\"س\")\nس += ١\n");
+        assert_parity_err("س = ٥\nجمد(\"س\")\nاحذف_متغير(\"س\")\n");
+        assert_parity_err("ص = ١\nاحذف_متغير(\"ص\")\nاطبع ص\n");
+        assert_parity_err("س = ١\nمرجع(\"ر\", ٥)\n");
+    }
+
+    // الدفعة 4 — المتغيرات (اجتماع 58 §73): الترابطية
+    // وعرض البيئة — نفس المخرجات في الوضعين.
+    #[test]
+    fn vm_assoc_and_env_display_parity() {
+        assert_parity(
+            "خ = {}\nخ[\"أ\"] = ١\nخ[\"ب\"] = ٢\nاطبع مفاتيح(خ)\nخ += {\"ج\": ٣، \"أ\": ٩}\nاطبع خ\nاطبع مفاتيح(خ)\nق = اعرض_البيئة()\nاطبع طول(ق)\nاطبع ق[٠]\nاطبع ق[٤]\n",
+            "[\"أ\", \"ب\"]\n{\"أ\": ٩, \"ب\": ٢, \"ج\": ٣}\n[\"أ\", \"ب\", \"ج\"]\n١٤\nالبيت=~\nالطرفية=نيفا\n",
+        );
+    }
+
     #[test]
     fn vm_control_for_string() {
         assert_parity(
@@ -6363,6 +9415,86 @@ mod tests {
         );
     }
 
+    // الدفعة 5 — أدوات الملفات (اجتماع 59 §74):
+    // تكافؤ مفسر/VM للنسخ والحذف والروابط والوضع.
+    #[test]
+    fn vm_batch5_recursive_copy_mkdir_list() {
+        assert_file_parity(
+            "أنشئ_مجلد(\"مجلد/فرعي\")\nاكتب_ملف(\"مجلد/أ.txt\"، \"أ\")\nاكتب_ملف(\"مجلد/فرعي/ب.txt\"، \"ب\")\nانسخ_تكراري(\"مجلد\"، \"نسخة\")\nاطبع اقرأ_ملف(\"نسخة/أ.txt\")\nاطبع اقرأ_ملف(\"نسخة/فرعي/ب.txt\")\nاطبع أنشئ_مجلد(\"س/ص/ع\"، \"750\")\n",
+            &[],
+            "أ\nب\n[\"س\", \"س/ص\", \"س/ص/ع\"]\n",
+        );
+    }
+
+    #[test]
+    fn vm_batch5_copy_updated() {
+        // الغائب ينسخ دائما (صحيح)، والثانية
+        // تتخطى دائما (خطأ) لأن الهدف صار أحدث
+        // من المصدر أو مساويا له بعد النسخ — بلا
+        // اعتماد على دقة طابع الوقت بين كتابتين.
+        assert_file_parity(
+            "اكتب_ملف(\"أ.txt\"، \"قديم\")\nاطبع انسخ_محدث(\"أ.txt\"، \"ب.txt\")\nاطبع انسخ_محدث(\"أ.txt\"، \"ب.txt\")\nاطبع اقرأ_ملف(\"ب.txt\")\n",
+            &[],
+            "صحيح\nخطأ\nقديم\n",
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn vm_batch5_copy_archive_links() {
+        assert_file_parity(
+            "أنشئ_مجلد(\"مجلد\")\nاكتب_ملف(\"مجلد/أ.txt\"، \"أ\")\nأنشئ_رابط(\"مجلد/أ.txt\"، \"مجلد/رابط.txt\")\nأنشئ_رابط_صلب(\"مجلد/أ.txt\"، \"مجلد/صلب.txt\")\nانسخ_أرشيف(\"مجلد\"، \"نسخة\")\nاطبع اقرأ_ملف(\"نسخة/رابط.txt\")\nاطبع اقرأ_ملف(\"نسخة/صلب.txt\")\nاطبع اقرأ_ملف(\"نسخة/أ.txt\")\n",
+            &[],
+            "أ\nأ\nأ\n",
+        );
+    }
+
+    #[test]
+    fn vm_batch5_copy_light_touch_delete() {
+        assert_file_parity(
+            "اكتب_ملف(\"أ.txt\"، \"ثابت\")\nانسخ_خفيف(\"أ.txt\"، \"ب.txt\")\nاطبع اقرأ_ملف(\"ب.txt\")\nأنشئ_ملف(\"أ.txt\")\nاطبع اقرأ_ملف(\"أ.txt\")\nأنشئ_مجلد(\"شجرة/فرعي\")\nاكتب_ملف(\"شجرة/فرعي/ج.txt\"، \"ج\")\nاحذف_تكراري(\"شجرة\")\nاطبع موجود(\"شجرة\")\nاطبع موجود(\"أ.txt\")\n",
+            &[],
+            "ثابت\nثابت\nخطأ\nصحيح\n",
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn vm_batch5_relative_link_survives_move() {
+        assert_file_parity(
+            "أنشئ_مجلد(\"شجرة/أ/ب\")\nاكتب_ملف(\"شجرة/أ/ب/ملف.txt\"، \"داخل\")\nأنشئ_رابط_نسبي(\"شجرة/أ/ب/ملف.txt\"، \"شجرة/أ/رابط.txt\")\nاطبع اقرأ_ملف(\"شجرة/أ/رابط.txt\")\nانقل(\"شجرة\"، \"شجرة2\")\nاطبع اقرأ_ملف(\"شجرة2/أ/رابط.txt\")\n",
+            &[],
+            "داخل\nداخل\n",
+        );
+    }
+
+    #[test]
+    fn vm_batch5_file_errors() {
+        assert_file_error_parity(
+            "انسخ(\"مجلد\"، \"نسخة\")\n",
+            &[("مجلد/أ.txt", "أ")],
+            "لا يمكن نسخ المجلد بلا خيار تكراري",
+        );
+        assert_file_error_parity("احذف(\"/\")\n", &[], "لا يمكن حذف الجذر: /");
+        assert_file_error_parity("احذف(\".\")\n", &[], "لا يمكن حذف . أو ..");
+        assert_file_error_parity("احذف_تكراري(\"/\")\n", &[], "لا يمكن حذف الجذر: /");
+        assert_file_error_parity(
+            "أنشئ_مجلد(\"أ\"، \"888\")\n",
+            &[],
+            "الوضع يجب أن يكون ثمانيا مثل 755",
+        );
+        assert_file_error_parity(
+            "أنشئ_رابط_صلب(\"غائب.txt\"، \"ب.txt\")\n",
+            &[],
+            "الهدف غير موجود",
+        );
+        assert_file_error_parity(
+            "احذف(\"مجلد\")\n",
+            &[("مجلد/أ.txt", "أ")],
+            "المجلد غير فارغ",
+        );
+    }
+
     #[test]
     fn vm_files_create_exists_kind_delete() {
         assert_file_parity(
@@ -6393,6 +9525,92 @@ mod tests {
     }
 
     #[test]
+    fn vm_files_cd_bare_goes_parent() {
+        // أمر المالك المباشر 2026-11-09 (يلغي §66 جزئيا):
+        // تكافؤ المفسر والآلة الافتراضية — `انتقل()`
+        // بلا معاملات → الأب مجلدا واحدا كل مرة.
+        assert_file_parity(
+            "أنشئ_مجلد(\"أ\")\nانتقل(\"أ\")\nانتقل()\nاطبع المجلد_الحالي()\nانتقل()\nاطبع المجلد_الحالي()\n",
+            &[],
+            "~\n$نيفا\n",
+        );
+    }
+
+    #[test]
+    fn vm_files_cd_dash_not_found() {
+        // أمر المالك المباشر 2026-11-09 (يلغي §66 جزئيا):
+        // تكافؤ الخطأ — `-` اسم عادي غير موجود.
+        assert_file_error_parity("انتقل(\"-\")\n", &[], "المجلد غير موجود: -");
+    }
+
+    #[test]
+    fn vm_nav56_stack_parity() {
+        // اجتماع 56 §71 — الدفعة 2 (التنقل): المكدس
+        // (دفع/تبديل/إخراج/عرض) — تكافؤ المفسر والآلة
+        // الافتراضية.
+        assert_file_parity(
+            "أنشئ_مجلد(\"أ\")\nأنشئ_مجلد(\"ب\")\nادفع_مجلد(\"أ\")\nادفع_مجلد(\"~/ب\")\nس = اعرض_المكدس()\nاطبع طول(س)\nاطبع س[٠]\nاطبع س[١]\nاطبع س[٢]\nادفع_مجلد()\nاطبع المجلد_الحالي()\nأخرج_مجلد()\nاطبع المجلد_الحالي()\nأخرج_مجلد(٠)\nاطبع طول(اعرض_المكدس())\n",
+            &[],
+            "٣\n~/ب\n~/أ\n~\n~/أ\n~/ب\n١\n",
+        );
+    }
+
+    #[test]
+    fn vm_nav56_cdpath_and_spell_parity() {
+        // اجتماع 56 §71: CDPATH وتصحيح الإملاء وكشف
+        // PWD — تكافؤ المفسر والآلة الافتراضية.
+        assert_file_parity(
+            "أنشئ_مجلد(\"مشاريع/هدف\")\nمسار_بحث_المجلدات([\"مشاريع\"])\nانتقل(\"هدف\")\nاطبع المجلد_الحالي()\nانتقل(\"~\")\nانتقل(\"مشاري\")\nاطبع المجلد_الحالي()\nاطبع بيئة(\"المجلد_الحالي\")\n",
+            &[],
+            "~/مشاريع/هدف\n~/مشاريع\n~/مشاريع\n",
+        );
+    }
+
+    #[test]
+    fn vm_nav56_cdable_var_and_tilde_plus_parity() {
+        // اجتماع 56 §71: اسم المتغير كمجلد و`~+N` —
+        // تكافؤ المفسر والآلة الافتراضية.
+        assert_file_parity(
+            "أنشئ_مجلد(\"أ\")\nأنشئ_مجلد(\"ب\")\nوجهتي = \"أ\"\nانتقل(\"وجهتي\")\nاطبع المجلد_الحالي()\nادفع_مجلد(\"~/ب\")\nانتقل(\"~+1\")\nاطبع المجلد_الحالي()\n",
+            &[],
+            "~/أ\n~/أ\n",
+        );
+    }
+
+    #[test]
+    fn vm_nav56_cdpath_dotdot_regression_parity() {
+        // انحدار (إصلاح انهيار `..` المعجمي): مع
+        // CDPATH مضبوطا، `..` تذهب إلى الأب فعلا —
+        // منطقيا وفيزيائيا — لا تبقى في مكانها.
+        // وPOSIX: `../..` لا تُستشار فيها `CDPATH`
+        // (مع CDPATH = [~/أ]، `../..` من ~/مشاريع/هدف
+        // → ~ لا $نيفا).
+        assert_file_parity(
+            "أنشئ_مجلد(\"أ\")\nأنشئ_مجلد(\"مشاريع/هدف\")\nمسار_بحث_المجلدات([\"مشاريع\"])\nانتقل(\"هدف\")\nانتقل(\"..\")\nاطبع المجلد_الحالي()\nانتقل(\"هدف\")\nانتقل(\"..\"، \"فيزيائي\")\nاطبع المجلد_الحالي()\nمسار_بحث_المجلدات([\"~/أ\"])\nانتقل(\"~/مشاريع/هدف\")\nانتقل(\"../..\")\nاطبع المجلد_الحالي()\n",
+            &[],
+            "~/مشاريع\n~/مشاريع\n~\n",
+        );
+    }
+
+    #[test]
+    fn vm_nav56_flag_error_parity() {
+        // اجتماع 56 §71: العلم الغريب — تكافؤ رسالة
+        // الخطأ حرفيا بين المفسر والآلة الافتراضية.
+        assert_file_error_parity(
+            "انتقل(\"أ\"، \"غريب\")\n",
+            &[("أ/بذرة", "")],
+            "علم انتقل غير معروف: غريب",
+        );
+    }
+
+    #[test]
+    fn vm_nav56_stack_empty_error_parity() {
+        // اجتماع 56 §71: المكدس الفارغ — تكافؤ رسالة
+        // الخطأ حرفيا.
+        assert_file_error_parity("أخرج_مجلد()\n", &[], "المكدس فارغ");
+    }
+
+    #[test]
     fn vm_files_head_tail_count_search() {
         let seed = "ألف\nباء\nجيم\nدال\nهاء\n";
         assert_file_parity(
@@ -6417,6 +9635,63 @@ mod tests {
             "اكتب_ملف(\"أصل.txt\"، \"محتوى\")\nانسخ(\"أصل.txt\"، \"نسخة.txt\")\nاطبع اقرأ_ملف(\"نسخة.txt\")\nانقل(\"نسخة.txt\"، \"منقول.txt\")\nاطبع موجود(\"نسخة.txt\")\nاطبع اقرأ_ملف(\"منقول.txt\")\nاحذف(\"منقول.txt\")\nاطبع موجود(\"منقول.txt\")\nأنشئ_مجلد(\"سلة\")\nاحذف_مجلد(\"سلة\")\nاطبع موجود(\"سلة\")\n",
             &[],
             "محتوى\nخطأ\nمحتوى\nخطأ\nخطأ\n",
+        );
+    }
+
+    #[test]
+    fn vm_files_mkdir_p_creates_parents() {
+        // الاجتماع 53 §67 (الميزة 210): إنشاء متداخل
+        // ونجاح صامت على الموجود، والخروج من
+        // الساندبوكس مرفوض — في الوضعين معا.
+        assert_file_parity(
+            "أنشئ_مجلد(\"أ/ب/ج\")\nاطبع نوع_المسار(\"أ/ب/ج\")\nأنشئ_مجلد(\"أ/ب/ج\")\nاطبع \"موجود-صامت\"\nحاول:\n    أنشئ_مجلد(\"../../خارج\")\nماعدا:\n    اطبع \"رفض\"\n",
+            &[],
+            "مجلد\nموجود-صامت\nرفض\n",
+        );
+    }
+
+    #[test]
+    fn vm_files_copy_onto_itself_refused() {
+        // الميزة 202: نسخ الملف على نفسه يرفض قبل أي
+        // كتابة، والملف يبقى سليما — في الوضعين معا.
+        assert_file_parity(
+            "اكتب_ملف(\"أ.txt\"، \"محتوى مهم\")\nحاول:\n    انسخ(\"أ.txt\"، \"أ.txt\")\nماعدا:\n    اطبع \"رفض\"\nاطبع اقرأ_ملف(\"أ.txt\")\nحاول:\n    انسخ(\"./أ.txt\"، \"أ.txt\")\nماعدا:\n    اطبع \"رفض\"\nاطبع اقرأ_ملف(\"أ.txt\")\nانسخ(\"أ.txt\"، \"ب.txt\")\nاطبع اقرأ_ملف(\"ب.txt\")\n",
+            &[],
+            "رفض\nمحتوى مهم\nرفض\nمحتوى مهم\nمحتوى مهم\n",
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn vm_files_copy_onto_itself_via_symlink_refused() {
+        // الميزة 202 عبر الرابط الرمزي: الهدف يحل إلى
+        // الملف نفسه فيُرفض، والملف يبقى سليما.
+        assert_file_parity(
+            "اكتب_ملف(\"هدف.txt\"، \"هدف\")\nأنشئ_رابط(\"هدف.txt\"، \"رابط.txt\")\nحاول:\n    انسخ(\"رابط.txt\"، \"هدف.txt\")\nماعدا:\n    اطبع \"رفض\"\nاطبع اقرأ_ملف(\"هدف.txt\")\n",
+            &[],
+            "رفض\nهدف\n",
+        );
+    }
+
+    #[test]
+    fn vm_files_move_dir_into_itself_refused() {
+        // الميزة 204: رفض نقل مجلد داخل نفسه في
+        // الوضعين بالرسالة نفسها حرفيا.
+        assert_file_error_parity(
+            "أنشئ_مجلد(\"مجلد\")\nاكتب_ملف(\"مجلد/أ.txt\"، \"محتوى مهم\")\nانقل(\"مجلد\"، \"مجلد/فرعي\")\n",
+            &[],
+            "لا يمكن نقل المجلد داخل نفسه",
+        );
+    }
+
+    #[test]
+    fn vm_files_move_dir_matches_interpreter() {
+        // الميزة 204: نقل مجلد عادي يعمل في الوضعين،
+        // والمخرجات واللقطة النهائية متطابقان.
+        assert_file_parity(
+            "أنشئ_مجلد(\"مجلد/داخلي\")\nاكتب_ملف(\"مجلد/داخلي/أ.txt\"، \"محتوى مهم\")\nانقل(\"مجلد\"، \"منقول\")\nاطبع اقرأ_ملف(\"منقول/داخلي/أ.txt\")\nاطبع موجود(\"مجلد\")\n",
+            &[],
+            "محتوى مهم\nخطأ\n",
         );
     }
 
@@ -6671,5 +9946,349 @@ mod tests {
         assert!(err.contains("قسمة على صفر"), "got: {}", err);
         assert!(err.contains("في وحدة ع: "), "got: {}", err);
         assert!(err.contains("ع.نيفا"), "got: {}", err);
+    }
+
+    // الدفعة 1 — رموز الخروج (اجتماع 54 §69): مرآة
+    // اختبارات المفسر نفسها — تكافؤ مفسر/VM.
+    fn run_vm_full(src: &str) -> (Vm, Result<(), RioError>) {
+        let dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let tokens = tokenize(src).unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let compiled = Compiler::compile_program(&program).unwrap();
+        let mut vm = Vm::new(compiled, dir);
+        let res = vm.run();
+        (vm, res)
+    }
+
+    #[test]
+    fn vm_exit_code_starts_zero() {
+        let (mut vm, res) = run_vm_full("اطبع رمز_الخروج()\n");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(vm.output, "٠\n");
+        assert_eq!(vm.last_exit_code(), 0);
+        assert_eq!(vm.take_exit_code(), None);
+    }
+
+    #[test]
+    fn vm_exit_code_one_after_caught_error() {
+        let (mut vm, res) = run_vm_full(
+            "حاول:\n    س = غير_معرف\nماعدا:\n    اطبع رمز_الخروج()\n",
+        );
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(vm.output, "١\n");
+        assert_eq!(vm.last_exit_code(), 1);
+    }
+
+    #[test]
+    fn vm_exit_with_code_ends_program() {
+        let (mut vm, res) = run_vm_full("اطبع \"قبل\"\nخروج(٥)\nاطبع \"بعد\"\n");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(vm.output, "قبل\n");
+        assert_eq!(vm.take_exit_code(), Some(5));
+    }
+
+    #[test]
+    fn vm_exit_without_arg_uses_last_code() {
+        let (mut vm, res) = run_vm_full(
+            "حاول:\n    س = غير_معرف\nماعدا:\n    خروج()\nاطبع \"بعد\"\n",
+        );
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(vm.output, "");
+        assert_eq!(vm.take_exit_code(), Some(1));
+    }
+
+    #[test]
+    fn vm_exit_rejects_bad_codes() {
+        for src in [
+            "خروج(-١)\n",
+            "خروج(٢٥٦)\n",
+            "خروج(٣٫٥)\n",
+            "خروج(\"نص\")\n",
+        ] {
+            let (_, res) = run_vm_full(src);
+            let err = res.unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("رمز الخروج يجب أن يكون عددا صحيحا بين ٠ و٢٥٥"),
+                "src {}: got: {}",
+                src,
+                err
+            );
+        }
+        let (_, res) = run_vm_full("خروج(١، ٢)\n");
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn vm_program_name_defaults_and_set() {
+        let (mut vm, res) = run_vm_full("اطبع اسم_البرنامج()\n");
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(vm.output, "نيفا\n");
+        let dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let tokens = tokenize("اطبع اسم_البرنامج()\n").unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let compiled = Compiler::compile_program(&program).unwrap();
+        let mut vm2 = Vm::new(compiled, dir);
+        vm2.set_source_file("برنامج.نيفا");
+        assert!(vm2.run().is_ok());
+        assert_eq!(vm2.output, "برنامج.نيفا\n");
+    }
+
+    #[test]
+    fn vm_exit_inside_function_and_loop() {
+        let (mut vm, res) = run_vm_full(
+            "دالة اخرج():\n    خروج(٧)\nاخرج()\nاطبع \"بعد\"\n",
+        );
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(vm.output, "");
+        assert_eq!(vm.take_exit_code(), Some(7));
+        let (mut vm, res) = run_vm_full(
+            "س = ٠\nبينما س < ٣:\n    س = س + ١\n    خروج(٧)\nاطبع \"بعد\"\n",
+        );
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(vm.output, "");
+        assert_eq!(vm.take_exit_code(), Some(7));
+    }
+
+    #[test]
+    fn vm_exit_skips_except_runs_finally() {
+        let (mut vm, res) = run_vm_full(
+            "حاول:\n    خروج(٥)\nماعدا:\n    اطبع \"ماعدا\"\nأخيرا:\n    اطبع \"أخيرا\"\nاطبع \"بعد\"\n",
+        );
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(vm.output, "أخيرا\n");
+        assert_eq!(vm.take_exit_code(), Some(5));
+    }
+
+    #[test]
+    fn vm_exit_inside_function_runs_caller_finally() {
+        let (mut vm, res) = run_vm_full(
+            "دالة اخرج():\n    خروج(٣)\nحاول:\n    اخرج()\nماعدا:\n    اطبع \"ماعدا\"\nأخيرا:\n    اطبع \"أخيرا\"\nاطبع \"بعد\"\n",
+        );
+        assert!(res.is_ok(), "{:?}", res);
+        assert_eq!(vm.output, "أخيرا\n");
+        assert_eq!(vm.take_exit_code(), Some(3));
+    }
+
+    // الدفعة 3 — التشغيل (اجتماع 57 §72): مجلد مؤقت
+    // بملفاته، وتشغيل مصدر على VM مع رمز الخروج.
+    fn batch3_vm_dir(files: &[(&str, &str)]) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "niva-batch3-vm-{}-{}",
+            std::process::id(),
+            n
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, src) in files {
+            let path = dir.join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, src).unwrap();
+        }
+        dir
+    }
+
+    fn batch3_vm_run(
+        src: &str,
+        dir: &std::path::Path,
+    ) -> (String, Result<(), RioError>, Option<u8>) {
+        let tokens = tokenize(src).unwrap();
+        let program = Parser::new(tokens).parse_program().unwrap();
+        let compiled = Compiler::compile_program(&program).unwrap();
+        let mut vm = Vm::new(compiled, dir.to_path_buf());
+        let res = vm.run();
+        let out = std::mem::take(&mut vm.output);
+        let code = vm.take_exit_code();
+        (out, res, code)
+    }
+
+    fn batch3_interp_run(
+        src: &str,
+        dir: &std::path::Path,
+    ) -> (String, Result<(), RioError>, Option<u8>) {
+        let toks = tokenize(src).unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let mut interp =
+            crate::interpreter::Interpreter::with_program_dir(dir.to_path_buf());
+        let res = interp.run(&prog);
+        let code = interp.take_exit_code();
+        (interp.output.clone(), res, code)
+    }
+
+    #[test]
+    fn batch3_vm_type_command_layers_parity() {
+        let ((iout, ierr, iok), (vout, verr, vok)) = run_both_with_files(
+            "دالة عرفتها():\n    ارجع ١\nاطبع نوع_الامر(\"شغل\")\nاطبع نوع_الامر(\"ات\")\nاطبع نوع_الامر(\"اذا\")\nاطبع نوع_الامر(\"عرفتها\")\nاطبع نوع_الامر(\"انتقل\")\nاطبع نوع_الامر(\"ادفع مجلد\")\nاطبع نوع_الامر(\"أداة\")\nاطبع نوع_الامر(\"غائب\")\n",
+            &[("أداة.نيفا", "اطبع \"أداة\"\n")],
+        );
+        assert!(iok, "interpreter failed: {}", ierr);
+        assert!(vok, "VM failed: {}", verr);
+        assert_eq!(iout, vout, "interpreter vs VM differ");
+        assert_eq!(
+            vout,
+            "امر طرفي\nاختصار\nكلمة محجوزة\nدالة معرفة\nدالة مدمجة\nدالة مدمجة\nاداة في $نيفا\nغير موجود\n",
+            "got: {}",
+            vout
+        );
+    }
+
+    #[test]
+    fn batch3_vm_tool_location_parity() {
+        let ((iout, ierr, iok), (vout, verr, vok)) = run_both_with_files(
+            "اطبع مكان_الاداة(\"أداة\")\nاطبع مكان_الاداة(\"غائب\")\n",
+            &[("أداة.نيفا", "اطبع \"أداة\"\n")],
+        );
+        assert!(iok, "interpreter failed: {}", ierr);
+        assert!(vok, "VM failed: {}", verr);
+        assert_eq!(iout, vout, "interpreter vs VM differ");
+        assert!(vout.contains("أداة.نيفا"), "got: {}", vout);
+        assert!(vout.contains("لاشيء"), "got: {}", vout);
+    }
+
+    #[test]
+    fn batch3_vm_exec_session_replaces_parity() {
+        let dir = batch3_vm_dir(&[
+            ("يخرج.نيفا", "اطبع \"داخل\"\nخروج(٧)\nاطبع \"بعد\"\n"),
+            ("فاشل.نيفا", "س = ١ / ٠\n"),
+        ]);
+        // الاستبدال بلا عودة في المحركين معا.
+        let src = "اطبع \"قبل\"\nاستبدل_الجلسة(\"يخرج\")\nاطبع \"بعد\"\n";
+        let (iout, ires, icode) = batch3_interp_run(src, &dir);
+        let (vout, vres, vcode) = batch3_vm_run(src, &dir);
+        assert!(ires.is_ok(), "{:?}", ires);
+        assert!(vres.is_ok(), "{:?}", vres);
+        assert_eq!(iout, "قبل\nداخل\n", "interp got: {}", iout);
+        assert_eq!(vout, "قبل\nداخل\n", "VM got: {}", vout);
+        assert_eq!(icode, Some(7));
+        assert_eq!(vcode, Some(7));
+        // كـ`خروج`: يشغّل `أخيرا` ولا يمسكه `ماعدا`.
+        let src2 = "حاول:\n    استبدل_الجلسة(\"يخرج\")\nماعدا:\n    اطبع \"ممسوك\"\nأخيرا:\n    اطبع \"أخيرا\"\nاطبع \"بعد\"\n";
+        let (iout, _, icode) = batch3_interp_run(src2, &dir);
+        let (vout, _, vcode) = batch3_vm_run(src2, &dir);
+        assert_eq!(iout, "داخل\nأخيرا\n", "interp got: {}", iout);
+        assert_eq!(vout, "داخل\nأخيرا\n", "VM got: {}", vout);
+        assert_eq!(icode, Some(7));
+        assert_eq!(vcode, Some(7));
+        // الأداة الفاشلة: رمزها 1 في المحركين.
+        let src3 = "استبدل_الجلسة(\"فاشل\")\nاطبع \"بعد\"\n";
+        let (iout, _, icode) = batch3_interp_run(src3, &dir);
+        let (vout, _, vcode) = batch3_vm_run(src3, &dir);
+        assert!(iout.contains("قسمة على صفر"), "interp got: {}", iout);
+        assert!(vout.contains("قسمة على صفر"), "VM got: {}", vout);
+        assert_eq!(icode, Some(1));
+        assert_eq!(vcode, Some(1));
+        // الأداة الغائبة: 127 بعلامة الملف المطلوب.
+        let (_, ires, _) = batch3_interp_run("استبدل_الجلسة(\"غائب\")\n", &dir);
+        let (_, vres, _) = batch3_vm_run("استبدل_الجلسة(\"غائب\")\n", &dir);
+        assert!(ires.unwrap_err().is_module_not_found());
+        assert!(vres.unwrap_err().is_module_not_found());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // المرحلة (د) — الإكمال (اجتماعات 66–69 §81–
+    // §84): مرآة اختبارات المفسر على VM — التكافؤ
+    // بين المحركين لكل ما بُني في المرحلة.
+    #[test]
+    fn stage_completion_vm_env_and_strings() {
+        let (out, err, ok) = run_vm_src(
+            "اطبع بيئة_أو(\"المسار\"، \"بديل\")\nاطبع بيئة_أو(\"اسم_غير_موجود_تماماً\"، \"بديل\")\nاطبع بيئة_إن_وجد(\"المسار\"، \"موجود\")\nاطبع بيئة_إن_وجد(\"اسم_غير_موجود_تماماً\"، \"موجود\")\nاطبع أزل_بادئة(\"تقرير.txt\"، \"تقرير.\")\nاطبع أزل_لاحقة(\"تقرير.txt\"، \".txt\")\nاطبع فهارس([١٠، ٢٠، ٣٠])\nاطبع \"أبجد\".اقطع(١، ٢)\nاطبع \"أبجد\".اقطع(-٢)\nاطبع \"أ-أ-أ\".استبدل_أول(\"أ\"، \"ب\")\n",
+        );
+        assert!(ok, "err: {}", err);
+        assert_eq!(
+            out,
+            "$نيفا\nبديل\nموجود\n\ntxt\nتقرير\n[٠, ١, ٢]\nبج\nجد\nب-أ-أ\n"
+        );
+    }
+
+    #[test]
+    fn stage_completion_vm_session_vars_and_functions() {
+        let (out, err, ok) = run_vm_src(
+            "س = ٥\nنص = \"أ\"\nدالة جمع(أ، ب):\n    ارجع أ + ب\nاطبع اعرض_المتغيرات()\nاطبع اعرض_الدوال()\nاحذف_دالة(\"جمع\")\nاطبع اعرض_الدوال()\n",
+        );
+        assert!(ok, "err: {}", err);
+        assert_eq!(out, "[\"س=٥\", \"نص=\\\"أ\\\"\"]\n[\"جمع\"]\n[]\n");
+        let (_, err, ok) = run_vm_src("احذف_دالة(\"غائبة\")\n");
+        assert!(!ok);
+        assert!(err.contains("دالة غير موجودة: غائبة"), "got: {}", err);
+        let (_, err, ok) = run_vm_src("س = ٥\nاحذف_دالة(\"س\")\n");
+        assert!(!ok);
+        assert!(err.contains("ليست دالة: س"), "got: {}", err);
+    }
+
+    #[test]
+    fn stage_completion_vm_list_and_details_and_flags() {
+        let dir = std::env::temp_dir()
+            .join(format!("niva-stage-d-vm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        std::fs::write(dir.join("home").join("أ.txt"), "نص").unwrap();
+        std::fs::write(dir.join("home").join("ب.txt"), "نص أطول").unwrap();
+        std::fs::write(dir.join("home").join(".مخفي"), "خ").unwrap();
+        let (out, err, ok) = run_vm_src_dir("اطبع اعرض_الملفات()\n", &dir);
+        assert!(ok, "err: {}", err);
+        assert_eq!(out, "[\"أ.txt\", \"ب.txt\"]\n", "got: {}", out);
+        let (out, err, ok) = run_vm_src_dir("اطبع اعرض_الملفات(\"أ.txt\")\n", &dir);
+        assert!(ok, "err: {}", err);
+        assert_eq!(out, "[\"أ.txt\"]\n", "got: {}", out);
+        let (_, err, ok) = run_vm_src_dir("اطبع اعرض_الملفات(\"غائب\")\n", &dir);
+        assert!(!ok);
+        assert!(err.contains("المسار غير موجود: غائب"), "got: {}", err);
+        let (out, err, ok) =
+            run_vm_src_dir("اطبع اعرض_الملفات(\"أظهر_المخفية\")\n", &dir);
+        assert!(ok, "err: {}", err);
+        assert!(out.contains(".مخفي"), "got: {}", out);
+        let (out, err, ok) = run_vm_src_dir(
+            "اطبع تفاصيل_المسار(\"أ.txt\")\n",
+            &dir,
+        );
+        assert!(ok, "err: {}", err);
+        for key in [
+            "\"نوع\": \"ملف\"",
+            "\"حجم\": ٤",
+            "\"أذونات\": \"-",
+            "\"مالك\": ",
+            "\"روابط\": ١",
+            "\"هدف\": لاشيء",
+        ] {
+            assert!(out.contains(key), "missing {} in: {}", key, out);
+        }
+        let (out, err, ok) = run_vm_src_dir(
+            "انسخ(\"أ.txt\"، \"ب.txt\"، \"لا_تكتب\")\nاطبع اقرأ_ملف(\"ب.txt\")\nاحذف(\"غائب.txt\"، \"تجاهل_الغائب\")\nاطبع \"تم\"\n",
+            &dir,
+        );
+        assert!(ok, "err: {}", err);
+        assert_eq!(out, "نص أطول\nتم\n", "got: {}", out);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stage_completion_vm_source_file() {
+        let dir = std::env::temp_dir()
+            .join(format!("niva-stage-d-vm-src-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        std::fs::write(
+            dir.join("home").join("تعريفات.نيفا"),
+            "س = ٤٢\nدالة ضاعف(ن):\n    ارجع ن * ٢\n",
+        )
+        .unwrap();
+        let (out, err, ok) = run_vm_src_dir(
+            "مصدر(\"تعريفات.نيفا\")\nاطبع س\nاطبع ضاعف(٣)\n",
+            &dir,
+        );
+        assert!(ok, "err: {}", err);
+        assert_eq!(out, "٤٢\n٦\n", "got: {}", out);
+        let (_, err, ok) = run_vm_src_dir("مصدر(\"غائب\")\n", &dir);
+        assert!(!ok);
+        assert!(err.contains("الملف غير موجود"), "got: {}", err);
+        std::fs::write(dir.join("home").join("دوري.نيفا"), "مصدر(\"دوري.نيفا\")\n").unwrap();
+        let (_, err, ok) = run_vm_src_dir("مصدر(\"دوري.نيفا\")\n", &dir);
+        assert!(!ok);
+        assert!(err.contains("يُستدعى دوريا"), "got: {}", err);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

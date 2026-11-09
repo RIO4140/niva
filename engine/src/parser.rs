@@ -698,6 +698,35 @@ impl Parser {
                     target: AssignTarget::Var(name),
                     value,
                     annotation: Some(annotation),
+                    append: false,
+                },
+                expr.line,
+                expr.col,
+            ));
+        }
+        // الدفعة 4 — المتغيرات (اجتماع 58 §73):
+        // `س += قيمة` — إلحاق لا استبدال، لهدف
+        // متغير وحده (الفهرسة والنقطة مرفوضتان
+        // تحليلا، بلا تقييم مزدوج للفهرس).
+        if matches!(self.peek().kind, TokenKind::PlusEq) {
+            self.advance(); // +=
+            let name = match &expr.kind {
+                ExprKind::Ident(n) => n.clone(),
+                _ => {
+                    return Err(RioError::parse(
+                        "الإلحاق يدعم المتغير وحده، مثل س += قيمة",
+                        expr.line,
+                        expr.col,
+                    ));
+                }
+            };
+            let value = self.parse_expr()?;
+            return Ok(Stmt::new(
+                StmtKind::Assign {
+                    target: AssignTarget::Var(name),
+                    value,
+                    annotation: None,
+                    append: true,
                 },
                 expr.line,
                 expr.col,
@@ -731,6 +760,7 @@ impl Parser {
                         target: AssignTarget::Var(name),
                         value: expr,
                         annotation: None,
+                        append: false,
                     },
                     line,
                     col,
@@ -757,7 +787,7 @@ impl Parser {
             };
             let value = self.parse_expr()?;
             return Ok(Stmt::new(
-                StmtKind::Assign { target, value, annotation: None },
+                StmtKind::Assign { target, value, annotation: None, append: false },
                 expr.line,
                 expr.col,
             ));

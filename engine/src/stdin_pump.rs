@@ -56,6 +56,12 @@ struct PumpState {
     /// أسطر عادية وصلت أثناء انتظار جلب — تُقرأ أولا
     /// قبل القناة (لا سطور إلغاء هنا أبدا).
     pending: Mutex<VecDeque<String>>,
+    /// المرحلة (ج) — الإدخال الموجَّه: حين يكون `Some`
+    /// فـ`stdin_line` يقرأ منه وحده (أسطر بيانات بالترتيب،
+    /// ونفاده EOF فورا بلا حجب)؛ وحين يكون `None` فالسلوك
+    /// العادي (القناة). لا يمس حلقة REPL نفسها (فهي تقرأ
+    /// عبر `next_raw_line_timeout` لا عبر `stdin_line`).
+    redirect: Mutex<Option<VecDeque<String>>>,
     /// نهاية الإدخال: ضبطها خيط المضخة عند EOF.
     eof: AtomicBool,
 }
@@ -72,6 +78,7 @@ fn ensure_pump() -> &'static PumpState {
             #[cfg(test)]
             tx: Mutex::new(tx.clone()),
             pending: Mutex::new(VecDeque::new()),
+            redirect: Mutex::new(None),
             eof: AtomicBool::new(false),
         };
         std::thread::spawn(move || {
@@ -203,10 +210,74 @@ pub(crate) fn next_channel_line_timeout(dur: Duration) -> RawLine {
 /// `None` تعني نهاية الإدخال (كما `read_line` حين
 /// تعيد 0 — فـ `ادخل` يرجع نصا فارغا كما كان).
 pub(crate) fn stdin_line() -> Option<String> {
+    // المرحلة (ج) — الإدخال الموجَّه أولا: أسطر بيانات
+    // تُقرأ بالترتيب، ونفادها EOF فورا بلا حجب (فلا يعلق
+    // `ادخل` في أنبوب أو مستند هنا). أسطر التوجيه بيانات
+    // خالصة فلا تُتخطى منها سطور إلغاء.
+    {
+        let state = ensure_pump();
+        if let Ok(mut q) = state.redirect.lock() {
+            if let Some(queue) = q.as_mut() {
+                return queue.pop_front();
+            }
+        }
+    }
     loop {
         match next_raw_line() {
             Some(l) if is_cancel_line(&l) => continue,
             other => return other,
+        }
+    }
+}
+
+/// المرحلة (ج) — ثبّت إدخالا موجَّها لمرحلة واحدة: أسطر
+/// بالسطر الجديد كما يقرأها `read_line` (فـ`ادخل` يقرأ
+/// سطرا سطرا، و`اقرأ_الإدخال` تصرّفها كلها).
+pub(crate) fn set_redirect_stdin(lines: Vec<String>) {
+    let state = ensure_pump();
+    if let Ok(mut q) = state.redirect.lock() {
+        *q = Some(lines.into());
+    }
+}
+
+/// المرحلة (ج) — ألغِ الإدخال الموجَّه (بعد المرحلة،
+/// فلا يقرأ السطر التالي بقايا أنبوب سابق).
+pub(crate) fn clear_redirect_stdin() {
+    let state = ensure_pump();
+    if let Ok(mut q) = state.redirect.lock() {
+        *q = None;
+    }
+}
+
+/// نتيجة قراءة سطر بمهلة (الدفعة 7 — المهلة 176).
+pub(crate) enum TimeoutLine {
+    /// سطر كامل.
+    Line(String),
+    /// انتهت المهلة بلا سطر.
+    Timeout,
+    /// انتهى الإدخال (EOF).
+    Eof,
+}
+
+/// سطر stdin التالي بمهلة (الدفعة 7 — `مهلة_الخمول`):
+/// كـ`stdin_line` لكنها تعود بـ`Timeout` حين تنتهي
+/// المهلة بلا سطر — وسطور الإلغاء تُتخطى ضمن المهلة
+/// نفسها (لا تعيد ضبطها). `None` من `next_raw_line`
+/// لا تصل هنا — فالمهلة تحسم قبل الحجب الطويل.
+pub(crate) fn stdin_line_timeout(dur: Duration) -> TimeoutLine {
+    let deadline = std::time::Instant::now() + dur;
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        match next_raw_line_timeout(left) {
+            RawLine::Line(l) if is_cancel_line(&l) => {
+                if std::time::Instant::now() >= deadline {
+                    return TimeoutLine::Timeout;
+                }
+                continue;
+            }
+            RawLine::Line(l) => return TimeoutLine::Line(l),
+            RawLine::Timeout => return TimeoutLine::Timeout,
+            RawLine::Eof => return TimeoutLine::Eof,
         }
     }
 }
@@ -275,6 +346,22 @@ mod tests {
         assert!(matches!(
             next_raw_line_timeout(Duration::from_millis(120)),
             RawLine::Timeout | RawLine::Eof
+        ));
+    }
+
+    #[test]
+    fn batch7_timeout_line_reads_injected_then_times_out() {
+        // الدفعة 7 (المهلة 176): سطر محقون يصل فورا،
+        // وبلا سطر تعود المهلة (أو EOF حين stdin مغلق).
+        let _guard = pump_test_lock();
+        inject_stdin_line("سطر_مهلة\n".to_string());
+        assert!(matches!(
+            stdin_line_timeout(Duration::from_secs(5)),
+            TimeoutLine::Line(l) if l == "سطر_مهلة\n"
+        ));
+        assert!(matches!(
+            stdin_line_timeout(Duration::from_millis(120)),
+            TimeoutLine::Timeout | TimeoutLine::Eof
         ));
     }
 }

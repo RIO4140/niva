@@ -322,7 +322,7 @@ fn math_ceil(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usi
 // A zero state means "not seeded yet" (the seed is forced nonzero).
 static RNG_STATE: AtomicU64 = AtomicU64::new(0);
 
-fn next_u64() -> u64 {
+pub(crate) fn next_u64() -> u64 {
     let mut state = RNG_STATE.load(Ordering::Relaxed);
     if state == 0 {
         // SystemTime traps on wasm32-unknown-unknown (no clock
@@ -792,6 +792,14 @@ fn processes_entries() -> Vec<(&'static str, Value)> {
         ("انتظر", native("انتظر", proc_wait)),
         ("أوقف", native("أوقف", proc_kill)),
         ("الحالية", native("الحالية", proc_current)),
+        // المرحلة (هـ) — التحكم بالمهام (اجتماعا 64
+        // و65 §79 و§80): أدوات الوظائف للسكربتات.
+        // الأسماء بلا تشكيل ككل الأسماء.
+        ("وظائف", native("وظائف", proc_jobs)),
+        ("آخر_خلفية", native("آخر_خلفية", proc_last_background)),
+        ("حية", native("حية", proc_is_alive)),
+        ("انتظر_الكل", native("انتظر_الكل", proc_wait_all)),
+        ("انتظر_أي", native("انتظر_أي", proc_wait_any)),
     ]
 }
 
@@ -837,6 +845,82 @@ fn proc_current(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: 
     Ok(Value::Number(
         crate::processes::current_process_id(line, col)? as f64,
     ))
+}
+
+// المرحلة (هـ) — التحكم بالمهام (اجتماعا 64 و65
+// §79 و§80): أدوات الوظائف للسكربتات.
+
+/// `عمليات.وظائف()`: قائمة قواميس (رقم، أمر، حالة،
+/// رمز أو لاشيء، معرف) — على نمط `تفاصيل_المسار`.
+/// الحالة نص: تعمل، أو انتهت، أو أُوقفت؛ والرمز عدد
+/// للمنتهية وحدها.
+fn proc_jobs(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("عمليات.وظائف", args, 0, line, col)?;
+    let items: Vec<Value> = crate::processes::list_jobs()
+        .iter()
+        .map(|j| {
+            let (status, code) = match j.status {
+                crate::processes::JobStatus::Running => ("تعمل", Value::Nil),
+                crate::processes::JobStatus::Done(c) => {
+                    ("انتهت", Value::Number(c as f64))
+                }
+                crate::processes::JobStatus::Killed => ("أُوقفت", Value::Nil),
+            };
+            Value::Dict(vec![
+                ("رقم".to_string(), Value::Number(j.number as f64)),
+                ("أمر".to_string(), Value::Str(j.command.clone())),
+                ("حالة".to_string(), Value::Str(status.to_string())),
+                ("رمز".to_string(), code),
+                ("معرف".to_string(), Value::Number(j.process_id as f64)),
+            ])
+        })
+        .collect();
+    Ok(Value::List(items))
+}
+
+/// `عمليات.آخر_خلفية()`: معرف آخر عملية خلفية
+/// أُنشئت (عبر `&` أو عبر `عمليات.أنشئ` مباشرة)،
+/// أو 0 حين لا خلفية بعد.
+fn proc_last_background(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("عمليات.آخر_خلفية", args, 0, line, col)?;
+    Ok(Value::Number(
+        crate::processes::last_background_id() as f64,
+    ))
+}
+
+/// `عمليات.حية(معرف)`: صح/خطأ — هل العملية حية
+/// (مقابل `kill -0`)؛ والغائبة خطأ لا صحيح.
+fn proc_is_alive(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("عمليات.حية", args, 1, line, col)?;
+    let id = need_integer("عمليات.حية", &args[0], line, col)?;
+    if id < 0 {
+        return Err(RioError::typ(
+            "الدالة عمليات.حية تتوقع معرف عملية غير سالب",
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Bool(crate::processes::is_alive(id as u64)))
+}
+
+/// `عمليات.انتظر_الكل()`: انتظار حاجب لكل وظيفة
+/// جارية، ويرجع 0 دائما.
+fn proc_wait_all(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("عمليات.انتظر_الكل", args, 0, line, col)?;
+    Ok(Value::Number(
+        crate::processes::wait_all_jobs(line, col) as f64,
+    ))
+}
+
+/// `عمليات.انتظر_أي()`: انتظار حاجب لأول وظيفة
+/// جارية تنتهي — قاموس {وظيفة، رمز}.
+fn proc_wait_any(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("عمليات.انتظر_أي", args, 0, line, col)?;
+    let (number, code) = crate::processes::wait_any_job(line, col)?;
+    Ok(Value::Dict(vec![
+        ("وظيفة".to_string(), Value::Number(number as f64)),
+        ("رمز".to_string(), Value::Number(code as f64)),
+    ]))
 }
 
 // --- تواصل (catalog task 16, from ipc/) ---

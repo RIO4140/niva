@@ -337,10 +337,11 @@ fn operations_subprogram_home_fallback() {
     assert_eq!(code, 0, "stderr={}", err);
     assert_eq!(out, "من البرنامج\n٠\n");
     // 3) الغائب من المكانين: الابن نفسه يفشل بخطأ عربي
-    // يسمّي المسار، والأب يطبع رمز خروجه (١) ويخرج 0.
+    // يسمّي المسار، والأب يطبع رمز خروجه (١٢٧ — ملف
+    // برنامج غائب على جدول §69) ويخرج 0.
     let (out, err, code) = run_case(&[("برنامج.نيفا", parent_prog)]);
     assert_eq!(code, 0, "stderr={}", err);
-    assert_eq!(out, "١\n");
+    assert_eq!(out, "١٢٧\n");
     assert!(err.contains("مساعد.نيفا"), "stderr={}", err);
 }
 
@@ -4683,4 +4684,179 @@ fn server_self_signed_announcement_and_client_rejection() {
     };
     assert!(refused, "the test-CA client should reject the self-signed server");
     kill_server(child, &dir);
+}
+
+// الدفعة 1 — رموز الخروج (اجتماع 54 §69): رموز خروج
+// عملية الثنائي `نيفا` نفسه.
+fn run_args_in(dir: &std::path::Path, args: &[&str]) -> (String, String, i32) {
+    let out = Command::new(bin())
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("run نيفا");
+    (
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+#[test]
+fn exit_code_program_exits_with_code() {
+    // خروج(٥) في الوضعين (VM والمفسر) → 5.
+    let (out, _, code) = run_src("اطبع \"قبل\"\nخروج(٥)\nاطبع \"بعد\"\n");
+    assert_eq!(code, 5);
+    assert_eq!(out, "قبل\n");
+    let dir = std::env::temp_dir().join(format!(
+        "niva-exit-interp-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("برنامج.نيفا");
+    fs::write(&path, "خروج(٧)\n").unwrap();
+    let (_, _, code_i) = run_args_in(&dir, &[path.to_str().unwrap(), "--مفسر"]);
+    assert_eq!(code_i, 7);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn exit_code_missing_file_is_127() {
+    let dir = std::env::temp_dir().join(format!(
+        "niva-exit-127-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let (_, err, code) = run_args_in(&dir, &["غائب.نيفا"]);
+    assert_eq!(code, 127, "stderr={}", err);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn exit_code_directory_as_file_is_126() {
+    let dir = std::env::temp_dir().join(format!(
+        "niva-exit-126-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(dir.join("مجلد")).unwrap();
+    let (_, _, code) = run_args_in(&dir, &["مجلد"]);
+    assert_eq!(code, 126);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn exit_code_syntax_error_is_2() {
+    let (_, err, code) = run_src("س = = ١\n");
+    assert_eq!(code, 2, "stderr={}", err);
+    let (_, _, code) = run_src("اطبع \"أ\" + ١\nس = غير_معرف\n");
+    // خطأ دلالي (اسم غير معرف) → 2 أيضا.
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn exit_code_runtime_error_is_1() {
+    let (_, err, code) = run_src("س = ١ / ٠\n");
+    assert_eq!(code, 1, "stderr={}", err);
+    // برنامج ناجح → 0.
+    let (_, _, code) = run_src("اطبع ١ + ٢\n");
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn exit_code_unknown_flag_is_2() {
+    let dir = std::env::temp_dir().join(format!(
+        "niva-exit-flag-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let (_, err, code) = run_args_in(&dir, &["--علم-غريب"]);
+    assert_eq!(code, 2, "stderr={}", err);
+    let (_, _, code) = run_args_in(&dir, &["ابن"]);
+    assert_eq!(code, 2);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn exit_code_build_missing_is_127() {
+    let dir = std::env::temp_dir().join(format!(
+        "niva-exit-build-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let (_, err, code) = run_args_in(&dir, &["ابن", "غائب.نيفا"]);
+    assert_eq!(code, 127, "stderr={}", err);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+fn run_repl_stdin(dir: &std::path::Path, input: &str) -> (String, String, i32) {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let mut child = Command::new(bin())
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn نيفا");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("run نيفا");
+    (
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+#[test]
+fn exit_code_repl_lines() {
+    let dir = std::env::temp_dir().join(format!(
+        "niva-exit-repl-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    // شغل غائب → 127 يقرؤه رمز_الخروج()، ثم خروج ٣
+    // ينهي العملية برمز 3.
+    let (out, _, code) = run_repl_stdin(&dir, "شغل غائب\nرمز_الخروج()\nخروج ٣\n");
+    assert_eq!(code, 3, "stdout={}", out);
+    assert!(out.contains("١٢٧"), "stdout={}", out);
+    // EOF بعد خطأ تشغيل → رمز آخر سطر (1).
+    let (_, _, code) = run_repl_stdin(&dir, "١ / ٠\n");
+    assert_eq!(code, 1);
+    // EOF بعد نجاح → 0.
+    let (_, _, code) = run_repl_stdin(&dir, "س = ١\n");
+    assert_eq!(code, 0);
+    // عكس يقلب: شغل غائب (127) → 0.
+    let (_, _, code) = run_repl_stdin(&dir, "عكس شغل غائب\nخروج\n");
+    assert_eq!(code, 0);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn exit_code_missing_module_is_127() {
+    // الدفعة 1 (§69 ممتد): وحدة مستوردة غائبة ملف
+    // مطلوب غير موجود → 127 في الوضعين (VM والمفسر).
+    let (_, err, code) = run_src("استورد لاوجود\n");
+    assert_eq!(code, 127, "stderr={}", err);
+    assert!(err.contains("وحدة غير موجودة"), "stderr={}", err);
+    let dir = std::env::temp_dir().join(format!(
+        "niva-exit-module-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("برنامج.نيفا");
+    fs::write(&path, "استورد لاوجود\n").unwrap();
+    let (_, _, code_i) = run_args_in(&dir, &[path.to_str().unwrap(), "--مفسر"]);
+    assert_eq!(code_i, 127);
+    let _ = fs::remove_dir_all(&dir);
 }

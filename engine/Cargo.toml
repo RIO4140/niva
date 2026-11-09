@@ -79,6 +79,17 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["loggin
 http = { version = "1", optional = true }
 bytes = { version = "1", optional = true }
 
+# الاجتماع 59 §74 (الدفعة 5 — أدوات الملفات،
+# الميزة 201): `libc` واجهة نظام لا مكتبة منطق —
+# لاستنساخ الكتل `FICLONE` ومسح الثقوب
+# `SEEK_DATA`/`SEEK_HOLE` في `انسخ_خفيف` وحده.
+# في `Cargo.lock` أصلا 0.2.191 كاعتماد انتقالي
+# (عبر tokio) فلا تنزيل جديد؛ ويونكس فقط (بلا
+# `libc` على ويندوز وWASM — وهناك ينسخ
+# `انسخ_خفيف` عاديا ويرجع «عادي»).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Meeting 26: the TLS test server in the integration tests
 # uses the same audited stack (test-only; never shipped).
 # Meeting 27 §42: the HTTP/2 parity-gate test drives a real

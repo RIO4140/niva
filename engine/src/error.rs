@@ -42,11 +42,42 @@ pub struct RioError {
     /// لا شيء حين لا ملف (إدخال REPL، أو نص بلا ملف)،
     /// فيبقى العرض القديم بلا اسم ملف حرفيا.
     pub file: Option<String>,
+    /// الدفعة 1 (§69 ممتد): وحدة مستوردة غائبة — ملف
+    /// مطلوب غير موجود، فيرجع المتصل 127 لا 1 ولا 2.
+    /// يُضبط فقط عبر المنشئ `module_not_found` أدناه،
+    /// فلا يتأثر ببادئة «في وحدة X: » اللاحقة.
+    pub module_not_found: bool,
 }
 
 impl RioError {
     pub fn new(kind: ErrorKind, message: impl Into<String>, line: usize, col: usize) -> Self {
-        Self { kind, message: message.into(), line, col, file: None }
+        Self { kind, message: message.into(), line, col, file: None, module_not_found: false }
+    }
+    /// وحدة مستوردة غائبة: خطأ إدخال/إخراج بالرسالة
+    /// نفسها حرفيا («وحدة غير موجودة: ...») مع علامة
+    /// تعيين الرمز 127 — الدفعة 1 (§69 ممتد).
+    pub fn module_not_found(
+        module: &str,
+        searched: &str,
+        line: usize,
+        col: usize,
+    ) -> Self {
+        Self::new(
+            ErrorKind::Io,
+            format!("وحدة غير موجودة: {} (بحثت في {})", module, searched),
+            line,
+            col,
+        )
+        .with_module_not_found()
+    }
+    /// اضبط علامة الوحدة الغائبة (سلسلة بناء).
+    pub fn with_module_not_found(mut self) -> Self {
+        self.module_not_found = true;
+        self
+    }
+    /// هل هذا الخطأ وحدة مستوردة غائبة؟ (127 لا 1 ولا 2).
+    pub fn is_module_not_found(&self) -> bool {
+        self.module_not_found
     }
     /// سمِّ الملف صراحة (يغلب أي اسم سابق).
     pub fn with_file(mut self, file: impl Into<String>) -> Self {

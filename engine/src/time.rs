@@ -456,7 +456,8 @@ pub fn diff(a: &DateTime, b: &DateTime, display: &str, line: usize, col: usize) 
 
 const ARABIC_DIGITS: [char; 10] = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
 
-fn eastern(s: &str) -> String {
+/// حوّل الأرقام اللاتينية في نص إلى أرقام مشرقية.
+pub(crate) fn eastern(s: &str) -> String {
     s.chars()
         .map(|c| match c {
             '0'..='9' => ARABIC_DIGITS[c as usize - '0' as usize],

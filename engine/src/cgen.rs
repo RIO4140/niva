@@ -730,10 +730,12 @@ impl Gen {
                 if let Some(vn) = target_name {
                     let n2 = self.root_live(out);
                     out.push_str(&format!(
-                        "nv_scope_assign({}, {}, {});\n",
+                        "nv_scope_assign({}, {}, {}, {}, {});\n",
                         ctx.scope_var,
                         c_str(&vn),
-                        tt
+                        tt,
+                        e.line,
+                        e.col
                     ));
                     self.unroot(out, n2);
                 }
@@ -810,8 +812,9 @@ impl Gen {
                 target,
                 value,
                 annotation,
+                append,
             } => {
-                self.emit_assign(target, value, annotation, s, ctx, out);
+                self.emit_assign(target, value, annotation, *append, s, ctx, out);
             }
             StmtKind::Print { args } => {
                 let mut arg_tmps = Vec::new();
@@ -951,6 +954,14 @@ impl Gen {
                 ));
                 self.unroot(out, n);
                 let n2 = self.root_live(out);
+                // الدفعة 4 — المتغيرات (اجتماع 58 §73):
+                // إعادة تعريف اسم مجمد مرفوضة.
+                out.push_str(&format!(
+                    "nv_check_not_frozen({}, {}, {});\n",
+                    c_str(name),
+                    s.line,
+                    s.col
+                ));
                 out.push_str(&format!(
                     "nv_scope_define({}, {}, {});\n",
                     ctx.scope_var,
@@ -1191,6 +1202,7 @@ impl Gen {
         target: &AssignTarget,
         value: &Expr,
         annotation: &Option<String>,
+        append: bool,
         s: &Stmt,
         ctx: &mut Ctx,
         out: &mut String,
@@ -1214,12 +1226,76 @@ impl Gen {
         match target {
             AssignTarget::Var(name) => {
                 let n = self.root_live(out);
-                out.push_str(&format!(
-                    "nv_scope_assign({}, {}, {});\n",
-                    ctx.scope_var,
-                    c_str(name),
-                    vt
-                ));
+                if append {
+                    // الدفعة 4 — المتغيرات (اجتماع 58
+                    // §73): الإلحاق — القديم من النطاق
+                    // أو الهوية من نوع الجديد، ثم `+`.
+                    let cell = format!("_cell{}", self.tmp);
+                    self.tmp += 1;
+                    let old = format!("_old{}", self.tmp);
+                    self.tmp += 1;
+                    let joined = format!("_new{}", self.tmp);
+                    self.tmp += 1;
+                    out.push_str(&format!(
+                        "NvCell *{} = nv_scope_lookup_cell({}, {});\n",
+                        cell,
+                        ctx.scope_var,
+                        c_str(name)
+                    ));
+                    out.push_str(&format!("NvValue {};\n", old));
+                    out.push_str(&format!("if ({} == NULL) {{\n", cell));
+                    out.push_str(&format!(
+                        "if ({}.tag == NV_NUM) {} = nv_num(0);\n",
+                        vt, old
+                    ));
+                    out.push_str(&format!(
+                        "else if ({}.tag == NV_STR) {} = nv_str_cstr(\"\");\n",
+                        vt, old
+                    ));
+                    out.push_str(&format!(
+                        "else if ({}.tag == NV_LIST) {} = nv_list_new();\n",
+                        vt, old
+                    ));
+                    out.push_str(&format!(
+                        "else if ({}.tag == NV_DICT) {} = nv_dict_new();\n",
+                        vt, old
+                    ));
+                    out.push_str(&format!(
+                        "else nv_error_fmt(NV_ERR_TYPE, {}, {}, \"لا يمكن الإلحاق بقيمة %s\", nv_type_name({}));\n",
+                        s.line, s.col, vt
+                    ));
+                    out.push_str(&format!(
+                        "}} else {{ {} = {}->val; }}\n",
+                        old, cell
+                    ));
+                    out.push_str(&format!(
+                        "NvValue {} = nv_add({}, {}, {}, {});\n",
+                        joined, old, vt, s.line, s.col
+                    ));
+                    // جذّر الناتج قبل التعيين (قد يخصص
+                    // التعيين فيجمع — ككل مؤقت حي).
+                    self.live.push(joined.clone());
+                    let n2 = self.root_live(out);
+                    out.push_str(&format!(
+                        "nv_scope_assign({}, {}, {}, {}, {});\n",
+                        ctx.scope_var,
+                        c_str(name),
+                        joined,
+                        s.line,
+                        s.col
+                    ));
+                    self.unroot(out, n2);
+                    self.release(&joined);
+                } else {
+                    out.push_str(&format!(
+                        "nv_scope_assign({}, {}, {}, {}, {});\n",
+                        ctx.scope_var,
+                        c_str(name),
+                        vt,
+                        s.line,
+                        s.col
+                    ));
+                }
                 self.unroot(out, n);
                 self.release(&vt);
             }
@@ -1229,6 +1305,14 @@ impl Gen {
                 if let ExprKind::Ident(vn) = &tgt.kind {
                     let it = self.eval_into_temp(index, ctx, out);
                     let n = self.root_live(out);
+                    // الدفعة 4 — المتغيرات (اجتماع 58
+                    // §73): الفهرسة في مجمد مرفوضة.
+                    out.push_str(&format!(
+                        "nv_check_not_frozen({}, {}, {});\n",
+                        c_str(vn),
+                        s.line,
+                        s.col
+                    ));
                     out.push_str(&format!(
                         "nv_index_assign(nv_scope_slot_ptr({}, {}, {}, {}), {}, {}, {}, {}, {}, {});\n",
                         ctx.scope_var, c_str(vn), tgt.line, tgt.col,
@@ -1410,6 +1494,27 @@ impl Gen {
         // مسار الخطأ: استعد النقاط. (nv_error أزال المعالج
         // نفسه قبل القفز، فـ nv_handlers تحته الآن.)
         out.push_str(&format!("nv_restore_checkpoint({});\n", cpid));
+        // الدفعة 1: الخروج لا تمسكه ماعدا — أخيرا
+        // وحدها ثم إعادة رفع الطلب إلى المعالج الأعمق.
+        out.push_str("if (nv_exit_requested) {\n");
+        if let Some(fin) = finally {
+            let fmark = self.checkpoint_live();
+            let mut fctx = Ctx {
+                scope_var: ctx.scope_var.clone(),
+                in_function: ctx.in_function,
+                func_end: ctx.func_end.clone(),
+                loop_stack: ctx.loop_stack.clone(),
+                try_stack: Vec::new(),
+                module_name: ctx.module_name.clone(),
+                module_scope_var: ctx.module_scope_var.clone(),
+                func_depth: ctx.func_depth,
+                file_idx: ctx.file_idx,
+            };
+            self.emit_stmts(fin, &mut fctx, out)?;
+            self.restore_live(fmark);
+        }
+        out.push_str("nv_reraise_current();\n");
+        out.push_str("}\n");
         if has_except {
             // معالج فرعي يحمي ماعدا: إن أخطأت ماعدا شغّل
             // أخيرا ثم أعد الرفع إلى ما تحت هذه المحاولة.
@@ -1422,6 +1527,10 @@ impl Gen {
             out.push_str(&format!("nv_handlers = &{};\n", sub));
             out.push_str(&format!("if (setjmp({}.jb) == 0) {{\n", sub));
             let ebody = except.as_ref().unwrap();
+            // الدفعة 1: الخطأ الممسوك رمز خروج 1 —
+            // يُضبط قبل جسم ماعدا، فتقرأه
+            // `رمز_الخروج()` داخله.
+            out.push_str("nv_last_exit_code = 1;\n");
             self.emit_stmts(ebody, ctx, out)?;
             out.push_str("} else {\n");
             out.push_str(&format!("nv_restore_checkpoint({});\n", subcp));
@@ -1656,13 +1765,8 @@ impl Gen {
                     .map(|p| crate::permissions::slash_display(p))
                     .collect::<Vec<_>>()
                     .join("؛ ");
-                return Err(RioError::new(
-                    ErrorKind::Io,
-                    format!("وحدة غير موجودة: {} (بحثت في {})", module, searched),
-                    line,
-                    col,
-                )
-                .with_file_if_none(Some(self.files[cur_file_idx].clone())));
+                return Err(RioError::module_not_found(module, &searched, line, col)
+                    .with_file_if_none(Some(self.files[cur_file_idx].clone())));
             }
         };
         // عرض مسار الوحدة بشرطة مائلة كما في المفسر،

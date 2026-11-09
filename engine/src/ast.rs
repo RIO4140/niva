@@ -81,7 +81,7 @@ pub const TYPE_NAMES: &[&str] = &[
 
 /// String/list method names (Meeting 14). Shared by the
 /// interpreter (dispatch) and the semantic analyzer (static check).
-pub const STR_METHODS: &[&str] = &["طول", "كبير", "صغير", "قص", "استبدل", "قسم", "يحتوي"];
+pub const STR_METHODS: &[&str] = &["طول", "كبير", "صغير", "قص", "استبدل", "قسم", "يحتوي", "اقطع", "استبدل_أول"];
 pub const LIST_METHODS: &[&str] = &["طول", "أضف", "أزل", "يحتوي"];
 
 pub fn is_known_type(name: &str) -> bool {
@@ -96,6 +96,9 @@ pub enum StmtKind {
         target: AssignTarget,
         value: Expr,
         annotation: Option<String>,
+        // الدفعة 4 — المتغيرات (اجتماع 58 §73):
+        // `+=` (إلحاق) مقابل `=` (استبدال).
+        append: bool,
     },
     Print { args: Vec<Expr> },
     If {

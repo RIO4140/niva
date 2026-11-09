@@ -125,6 +125,764 @@ pub(crate) fn check_disk_quota(
     Ok(())
 }
 
+/// هل المساران الملف نفسه؟ فحص قبل النسخ، كما في
+/// `same_file_ok` في لينكس (الميزة 202: `cp` يرفض
+/// «are the same file»). على يونكس: الجهاز+العقدة
+/// (البيانات الوصفية تتبع الروابط الرمزية، فيلتقط
+/// الفحص الاسم نفسه و`./` و`..` والمسار المطلق
+/// والرابط الرمزي والرابط الصلب). خارجه: مقارنة
+/// المسارين القانونيين الموحّدين. وإن غاب أحد
+/// المسارين فلا تطابق — فالهدف غير الموجود ليس
+/// الملف نفسه أبدا.
+pub(crate) fn paths_same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::metadata(a), std::fs::metadata(b)) {
+            (Ok(ma), Ok(mb)) => ma.dev() == mb.dev() && ma.ino() == mb.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(ca), Ok(cb)) => ca == cb,
+            _ => false,
+        }
+    }
+}
+
+/// نتيجة البحث عن ملف أداة (الدفعة 3 — التشغيل،
+/// الاجتماع 57 §72، الميزة 39): تعريف التنفيذي
+/// لملف `.نيفا` — موجود + ملف عادي + مقروء
+/// (بت القراءة يقوم مقام بت التنفيذ، فالملف نص
+/// يقرأه المفسر لا ثنائي تنفذه النواة؛ وبت التنفيذ
+/// نفسه لا يُشترط وإلا كُسرت كل أداة مثبتة).
+/// المجلد وغير المقروء لا يُعدّان تطابقا أبدا بل
+/// يُتخطيان إلى المكان التالي — مرآة `FS_NODIRS`
+/// و`FS_EXEC_PREFERRED` في لينكس.
+#[derive(Debug)]
+pub enum ToolLookup {
+    /// وُجد تنفيذي: مساره الكامل، و`في_البيت`
+    /// صحيحة إن كان في البيت (`~`) لا في `$نيفا`.
+    Found { path: std::path::PathBuf, in_home: bool },
+    /// الاسم موجود كمجلد في مكان واحد على الأقل
+    /// (ولم يوجد تنفيذي في أي مكان).
+    IsDir,
+    /// الاسم موجود كملف غير مقروء في مكان واحد
+    /// على الأقل (ولم يوجد تنفيذي في أي مكان).
+    Unreadable,
+    /// الاسم غائب في المكانين معا.
+    Missing,
+}
+
+/// ابحث عن ملف أداة باسمه الكامل (مع الامتداد)
+/// في `$نيفا` أولا ثم في البيت — المثبَّت يفوز
+/// عند التعارض (اجتماع 45 §59، البند 35).
+/// المرشح المجلد أو غير المقروء يُتخطى إلى المكان
+/// التالي؛ وإن لم يوجد تنفيذي يُرجع أول عائق
+/// بالترتيب (مجلد قبل غير مقروء إن سبقه).
+pub(crate) fn find_tool_file(
+    program_dir: &Path,
+    file_name: &str,
+) -> ToolLookup {
+    let mut first_bad: Option<ToolLookup> = None;
+    for (in_home, path) in [
+        (false, program_dir.join(file_name)),
+        (true, program_dir.join("home").join(file_name)),
+    ] {
+        match std::fs::metadata(&path) {
+            Ok(meta) if meta.is_dir() => {
+                if first_bad.is_none() {
+                    first_bad = Some(ToolLookup::IsDir);
+                }
+            }
+            Ok(meta) if meta.is_file() => {
+                if is_readable_file(&meta, &path) {
+                    return ToolLookup::Found { path, in_home };
+                }
+                if first_bad.is_none() {
+                    first_bad = Some(ToolLookup::Unreadable);
+                }
+            }
+            // غير ملف ولا مجلد (أو غائب): يُتخطى —
+            // والغائب في المكانين معا «غائب» في النهاية.
+            _ => {}
+        }
+    }
+    first_bad.unwrap_or(ToolLookup::Missing)
+}
+
+/// هل هذا الملف المقروء فعلا؟ الفحص ببت القراءة
+/// (أي بت من 0400/0040/0004 على يونكس — حاسم
+/// وقابل للاختبار حتى بصلاحيات الجذر)، ومحاولة
+/// فتح خارجه.
+fn is_readable_file(meta: &std::fs::Metadata, path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o444 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        std::fs::File::open(path).is_ok()
+    }
+}
+
+/// هل خطأ الإدخال/الإخراج هذا اختلاف جهاز (EXDEV) —
+/// أي أن إعادة التسمية مستحيلة بين جهازين، لا أنها
+/// مرفوضة لسبب آخر؟ `CrossesDevices` هو ترجمة
+/// المكتبة القياسية لـEXDEV (يونكس) و
+/// ERROR_NOT_SAME_DEVICE (ويندوز)؛ والرمز الخام
+/// احتياط إن لم تترجمه المكتبة.
+pub(crate) fn is_cross_device_error(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::CrossesDevices {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        e.raw_os_error() == Some(18)
+    }
+    #[cfg(windows)]
+    {
+        e.raw_os_error() == Some(17)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
+/// المسار القانوني لمسار قد لا يوجد بعد: أطول بادئة
+/// موجودة تُقنَّن، ثم تُعاد اللاحقة كما هي — مرآة
+/// `nv_canonical_with_suffix` في الخلفية C.
+pub(crate) fn canonical_with_suffix(path: &Path) -> std::path::PathBuf {
+    let mut cur = path.to_path_buf();
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(c) = std::fs::canonicalize(&cur) {
+            let mut out = c;
+            for comp in suffix.iter().rev() {
+                out.push(comp);
+            }
+            return out;
+        }
+        match cur.file_name() {
+            Some(name) => {
+                suffix.push(name.to_os_string());
+                cur = cur
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_default();
+                if cur.as_os_str().is_empty() {
+                    cur = if path.is_absolute() {
+                        std::path::PathBuf::from("/")
+                    } else {
+                        std::path::PathBuf::from(".")
+                    };
+                }
+            }
+            None => {
+                let mut out = std::fs::canonicalize(&cur).unwrap_or(cur);
+                for comp in suffix.iter().rev() {
+                    out.push(comp);
+                }
+                return out;
+            }
+        }
+    }
+}
+
+/// هل هدف الحذف هو الجذر؟ فحص قانوني قبل حل
+/// الساندبوكس (الميزة 208): يلحق المسار بالمجلد
+/// الحالي (مطلقا كان أو نسبيا) ثم يقنّن أطول
+/// بادئة موجودة — فيكشف الرابط الرمزي إلى الجذر
+/// قبل أن يرفضه الساندبوكس برسالة عامة.
+pub(crate) fn delete_target_is_root(cwd: &Path, path: &str) -> bool {
+    let joined = if std::path::Path::new(path).is_absolute() {
+        std::path::PathBuf::from(path)
+    } else {
+        cwd.join(path)
+    };
+    is_filesystem_root(&canonical_with_suffix(&joined))
+}
+
+/// هل الهدف هو المصدر نفسه أو داخل فرع منه؟ فحص
+/// قبل النقل، كما في `copy_into_self` في لينكس
+/// (الميزة 204: `mv` يرفض نقل مجلد داخل نفسه).
+/// المقارنة مكونات لا نصا، فتلتقط `..` والروابط
+/// الرمزية. وإن غاب المصدر فلا تطابق — فإعادة
+/// التسمية ستفشل أصلا بخطأ «غير موجود».
+pub(crate) fn dst_inside_src(src: &Path, dst: &Path) -> bool {
+    let src_c = match std::fs::canonicalize(src) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let dst_c = canonical_with_suffix(dst);
+    dst_c == src_c || dst_c.starts_with(&src_c)
+}
+
+/// حجم شجرة (ملفاتها فقط، بلا اتباع روابط رمزية)
+/// لحساب حصة التخزين قبل نسخ مجلد عبر الأنظمة —
+/// مرآة `Interpreter::dir_size` بميزانية المداخل
+/// نفسها، بلا حاجة إلى جلسة.
+pub(crate) fn tree_size(path: &Path) -> u64 {
+    fn walk(p: &Path, budget: &mut usize) -> u64 {
+        if *budget == 0 {
+            return 0;
+        }
+        *budget -= 1;
+        match std::fs::symlink_metadata(p) {
+            Ok(m) if m.file_type().is_symlink() => 0,
+            Ok(m) if m.is_dir() => {
+                let mut total = 0u64;
+                if let Ok(entries) = std::fs::read_dir(p) {
+                    for e in entries.flatten() {
+                        total += walk(&e.path(), budget);
+                        if *budget == 0 {
+                            break;
+                        }
+                    }
+                }
+                total
+            }
+            Ok(m) => m.len(),
+            Err(_) => 0,
+        }
+    }
+    walk(path, &mut 10000usize)
+}
+
+/// نسخ شجرة تكراريا: ملف ينسخ محتواه (ويستبدل
+/// ملف هدف موجود، كما في إعادة التسمية)، ومجلد
+/// ينشأ وينسخ أبناؤه، ورابط رمزي يعاد إنشاؤه
+/// رابطا (بلا اتباع هدفه — فلا خروج من الساندبوكس
+/// عبر رابط داخل الشجرة). ومجلد هدف موجود فارغ
+/// يستخدم كما هو (كاستبدال إعادة التسمية لمجلد
+/// فارغ)؛ وغير الفارغ أو الملف خطأ.
+pub(crate) fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(src)?;
+    if meta.file_type().is_symlink() {
+        let target = std::fs::read_link(src)?;
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&target, dst)?;
+        }
+        #[cfg(windows)]
+        {
+            let is_dir = std::fs::metadata(src).map(|m| m.is_dir()).unwrap_or(false);
+            if is_dir {
+                std::os::windows::fs::symlink_dir(&target, dst)?;
+            } else {
+                std::os::windows::fs::symlink_file(&target, dst)?;
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = target;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "symlink",
+            ));
+        }
+        return Ok(());
+    }
+    if meta.is_dir() {
+        match std::fs::create_dir(dst) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match std::fs::metadata(dst) {
+                Ok(m) if m.is_dir() => {
+                    let non_empty =
+                        std::fs::read_dir(dst).map(|mut it| it.next().is_some()).unwrap_or(true);
+                    if non_empty {
+                        return Err(e);
+                    }
+                }
+                _ => return Err(e),
+            },
+            Err(e) => return Err(e),
+        }
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            copy_tree(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        std::fs::copy(src, dst).map(|_| ())
+    }
+}
+
+/// حذف شجرة: ملف أو رابط يزال وحده (بلا اتباع
+/// الهدف)، ومجلد يزال تكراريا.
+pub(crate) fn remove_tree(path: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+/// نتيجة مسار نسخ-ثم-حذف: فشل النسخ (المصدر سليم
+/// — بلا حذف جزئي) مقابل فشل الحذف بعد نسخ ناجح
+/// (الملف صار في المكانين، فيبلَّغ بذلك صراحة).
+pub(crate) enum MoveError {
+    Copy(std::io::Error),
+    Remove(std::io::Error),
+}
+
+/// مسار نسخ-ثم-حذف عبر الأنظمة (الميزة 204: `mv`
+/// حين تفشل إعادة التسمية باختلاف الجهاز): انسخ
+/// أولا، واحذف المصدر بعد نجاح النسخ كاملا فقط.
+/// وإن فشل النسخ وكان الهدف جديدا، أزل النسخة
+/// الجزئية (بأفضل جهد) ولا تمسّ هدفا كان موجودا.
+pub(crate) fn move_fallback(src: &Path, dst: &Path) -> Result<(), MoveError> {
+    let dst_existed = std::fs::symlink_metadata(dst).is_ok();
+    if let Err(e) = copy_tree(src, dst) {
+        if !dst_existed {
+            let _ = remove_tree(dst);
+        }
+        return Err(MoveError::Copy(e));
+    }
+    remove_tree(src).map_err(MoveError::Remove)
+}
+
+/// رفض حذف الجذر نصا (الميزة 208، الاجتماع 59
+/// §74): قاعدة صريحة قبل أي حل ساندبوكس — لا
+/// بالساندبوكس وحده. المكون الأخير `.` أو `..`
+/// (بعد تقليم `/` اللاحقة) مرفوض، والجذر `/`
+/// مرفوض. والمسار الفارغ ليس جذرا (يتعامل معه
+/// المسار العادي). يرجع رسالة الرفض أو لاشيء.
+pub(crate) fn root_refusal_text(path: &str) -> Option<&'static str> {
+    if path.is_empty() {
+        return None;
+    }
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    if trimmed.is_empty() {
+        return Some("لا يمكن حذف الجذر: /");
+    }
+    let last = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
+    if last == "." || last == ".." {
+        return Some("لا يمكن حذف . أو ..");
+    }
+    None
+}
+
+/// هل هذا المسار المحلول هو جذر نظام الملفات `/`
+/// نفسه — بما فيه عبر رابط رمزي؟ المقارنة
+/// قانونية (تتبع الروابط) وجهاز+عقدة على يونكس،
+/// كما في `ROOT_DEV_INO_CHECK` في لينكس (الميزة
+/// 208). وإن غاب المسار فليس جذرا.
+pub(crate) fn is_filesystem_root(path: &Path) -> bool {
+    if let Ok(c) = std::fs::canonicalize(path) {
+        if c.as_os_str() == "/" {
+            return true;
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(m), Ok(r)) = (std::fs::metadata(path), std::fs::metadata("/")) {
+            return m.dev() == r.dev() && m.ino() == r.ino();
+        }
+    }
+    false
+}
+
+/// هل خطأ الإدخال/الإخراج هذا «مجلد غير فارغ»؟
+/// `DirectoryNotEmpty` القياسي، والرمزان الخامان
+/// احتياطا (39 يونكس، و145 ويندوز).
+pub(crate) fn is_dir_not_empty_error(e: &std::io::Error) -> bool {
+    if e.kind() == std::io::ErrorKind::DirectoryNotEmpty {
+        return true;
+    }
+    matches!(e.raw_os_error(), Some(39) | Some(145))
+}
+
+/// حلل وضع أذونات ثمانيا («755» أو «0755») —
+/// 3 أو 4 أرقام 0–7 فقط (الميزة 211). وكل ما
+/// عداه لاشيء (فيبلَّغ بخطأ عربي).
+pub(crate) fn parse_octal_mode(s: &str) -> Option<u32> {
+    if s.len() < 3 || s.len() > 4 {
+        return None;
+    }
+    let mut v: u32 = 0;
+    for c in s.chars() {
+        v = v * 8 + c.to_digit(8)?;
+    }
+    Some(v)
+}
+
+/// طبق وضع أذونات على مسار (الميزة 211): على
+/// يونكس الوضع تماما؛ وعلى ويندوز بت الكتابة
+/// للمالك وحده (بلا كتابة → للقراءة فقط) وباقي
+/// البتات بلا مقابل — مسجل في §74.
+pub(crate) fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+    }
+    #[cfg(not(unix))]
+    {
+        let mut perm = std::fs::metadata(path)?.permissions();
+        perm.set_readonly(mode & 0o200 == 0);
+        std::fs::set_permissions(path, perm)
+    }
+}
+
+/// حدّث وقتي الوصول والتعديل إلى الآن بلا مساس
+/// بالمحتوى (الميزة 215 — `touch`): `File::set_times`
+/// القياسي، فيعمل للملف والمجلد على يونكس.
+pub(crate) fn touch_times(path: &Path) -> std::io::Result<()> {
+    let now = std::time::SystemTime::now();
+    let times = std::fs::FileTimes::new()
+        .set_accessed(now)
+        .set_modified(now);
+    std::fs::File::open(path)?.set_times(times)
+}
+
+/// المسار النسبي من مجلد إلى هدف (الميزة 213 —
+/// `ln -r`): مكونات مشتركة ثم `..` لكل مكون زائد
+/// في مجلد المصدر. والطرفان مطلقان محلولان عند
+/// الاستدعاء؛ وبلا بادئة مشتركة (قرصان مختلفان
+/// على ويندوز) يبقى الهدف المطلق كما هو.
+// مستدعاة من فروع يونكس/ويندوز وحدهما — على
+// WASM مستدعوها مُكيَّفون خارجا فيُسمح بعدم
+// الاستعمال هناك.
+#[allow(dead_code)]
+pub(crate) fn relative_path(from_dir: &Path, to: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let from: Vec<Component<'_>> = from_dir.components().collect();
+    let to_c: Vec<Component<'_>> = to.components().collect();
+    let mut i = 0;
+    while i < from.len() && i < to_c.len() && from[i] == to_c[i] {
+        i += 1;
+    }
+    if i == 0 {
+        return to.to_path_buf();
+    }
+    let mut out = std::path::PathBuf::new();
+    for _ in i..from.len() {
+        out.push("..");
+    }
+    for c in &to_c[i..] {
+        out.push(c.as_os_str());
+    }
+    if out.as_os_str().is_empty() {
+        out.push(".");
+    }
+    out
+}
+
+/// المكونات الناقصة من مسار محلول (من أول سلف
+/// موجود إلى المسار نفسه) — لإعلان `mkdir -v`
+/// (الميزة 211): تُحسب قبل الإنشاء، فالقائمة
+/// الفارغة تعني «موجود أصلا».
+pub(crate) fn missing_components(path: &Path) -> Vec<std::path::PathBuf> {
+    let mut missing = Vec::new();
+    let mut cur = path.to_path_buf();
+    loop {
+        if cur.exists() {
+            break;
+        }
+        missing.push(cur.clone());
+        match cur.parent() {
+            Some(p) if !p.as_os_str().is_empty() => cur = p.to_path_buf(),
+            _ => break,
+        }
+    }
+    missing.reverse();
+    missing
+}
+
+/// مفتاح تتبع الروابط الصلبة في نسخ الأرشيف
+/// (الميزة 200): جهاز+عقدة على يونكس، ومؤشر
+/// الملف على ويندوز، وبلا تتبع خارجهما.
+#[cfg(unix)]
+type LinkKey = (u64, u64);
+#[cfg(windows)]
+type LinkKey = u64;
+#[cfg(not(any(unix, windows)))]
+type LinkKey = ();
+
+/// مفتاح الرابط الصلب لملف عادي — لاشيء إن كان
+/// للملف رابط واحد فقط (فلا تكرار يتتبع) أو إن
+/// كانت المنصة بلا مفتاح.
+fn link_key(meta: &std::fs::Metadata) -> Option<LinkKey> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.nlink() > 1 {
+            return Some((meta.dev(), meta.ino()));
+        }
+        None
+    }
+    // ويندوز/WASM: بلا هوية ملف مستقرة في راست
+    // المستقر (`file_index` غير مستقرة) — تُنسخ
+    // الروابط الصلبة نسخا مستقلة في الأرشيف
+    // (المحتوى محفوظ، والعلاقة لا) — قيد منصة
+    // مسجل، لا ادعاء.
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        None
+    }
+}
+
+/// أنشئ رابطا رمزيا بالنص المعطى (يونكس وويندوز —
+/// وعلى ويندوز يفرّق نوع الهدف كما في `copy_tree`).
+fn create_symlink(target: &Path, dst: &Path, target_is_dir: bool) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let _ = target_is_dir;
+        std::os::unix::fs::symlink(target, dst)
+    }
+    #[cfg(windows)]
+    {
+        if target_is_dir {
+            std::os::windows::fs::symlink_dir(target, dst)
+        } else {
+            std::os::windows::fs::symlink_file(target, dst)
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, dst, target_is_dir);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "إنشاء الروابط غير مدعوم على هذه المنصة",
+        ))
+    }
+}
+
+/// احفظ أذونات المصدر (يونكس وحده) ووقتي الوصول
+/// والتعديل على نسخة — للمجلد بعد أبنائه حتى لا
+/// يرفع إنشاؤهم وقته (الميزة 200). أخطاء الحفظ
+/// هنا أفضل جهد (لا تفشل نسخا ناجحا)؛ وفشل فتح
+/// المجلد على ويندوز متوقع فيتجاوز.
+fn preserve_attrs(meta: &std::fs::Metadata, dst: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = set_mode(dst, meta.permissions().mode());
+    }
+    let mut times = std::fs::FileTimes::new();
+    if let Ok(a) = meta.accessed() {
+        times = times.set_accessed(a);
+    }
+    if let Ok(m) = meta.modified() {
+        times = times.set_modified(m);
+    }
+    let _ = std::fs::File::open(dst).and_then(|f| f.set_times(times));
+}
+
+/// نسخ أرشيف (الميزة 200، الاجتماع 59 §74):
+/// تكراري مع حفظ الروابط الرمزية روابط والروابط
+/// الصلبة روابط صلبة (خريطة المفتاح إلى أول هدف
+/// منسوخ) والأذونات (يونكس) ووقتي الوصول
+/// والتعديل للملفات والمجلدات. الملكية وسياق
+/// الأمان والسمات الموسعة لا تُحفظ (مسجل في §74).
+pub(crate) fn copy_archive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let mut links: std::collections::HashMap<LinkKey, std::path::PathBuf> =
+        std::collections::HashMap::new();
+    copy_archive_inner(src, dst, &mut links)
+}
+
+fn copy_archive_inner(
+    src: &Path,
+    dst: &Path,
+    links: &mut std::collections::HashMap<LinkKey, std::path::PathBuf>,
+) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(src)?;
+    if meta.file_type().is_symlink() {
+        let target = std::fs::read_link(src)?;
+        let is_dir = std::fs::metadata(src).map(|m| m.is_dir()).unwrap_or(false);
+        return create_symlink(&target, dst, is_dir);
+    }
+    if meta.is_dir() {
+        match std::fs::create_dir(dst) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                match std::fs::metadata(dst) {
+                    Ok(m) if m.is_dir() => {
+                        let non_empty = std::fs::read_dir(dst)
+                            .map(|mut it| it.next().is_some())
+                            .unwrap_or(true);
+                        if non_empty {
+                            return Err(e);
+                        }
+                    }
+                    _ => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        }
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            copy_archive_inner(&entry.path(), &dst.join(entry.file_name()), links)?;
+        }
+        preserve_attrs(&meta, dst);
+        return Ok(());
+    }
+    if let Some(key) = link_key(&meta) {
+        if let Some(first) = links.get(&key) {
+            std::fs::hard_link(first, dst)?;
+            return Ok(());
+        }
+        std::fs::copy(src, dst)?;
+        links.insert(key, dst.to_path_buf());
+    } else {
+        std::fs::copy(src, dst)?;
+    }
+    preserve_attrs(&meta, dst);
+    Ok(())
+}
+
+/// طريقة النسخ الخفيف المرجعة نصا (الميزة 201):
+/// مستنسخ أو متناثر أو عادي — فلا ادعاء بلا دليل.
+// `Cloned` و`Sparse` تُبنيان على لينكس وحده
+// (على ويندوز/WASM الطريقة «عادي» دائما) —
+// فالتحذير `dead_code` على تلك المنصات متوقع.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum LightMethod {
+    Cloned,
+    Sparse,
+    Plain,
+}
+
+impl LightMethod {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::Cloned => "مستنسخ",
+            Self::Sparse => "متناثر",
+            Self::Plain => "عادي",
+        }
+    }
+}
+
+/// نسخ خفيف (الميزة 201، الاجتماع 59 §74): على
+/// لينكس/أندرويد يحاول استنساخ الكتل `FICLONE`
+/// ثم نسخا متناثرا بـ`SEEK_HOLE`/`SEEK_DATA` ثم
+/// نسخا عاديا؛ وخارجهما نسخ عادي و«عادي».
+pub(crate) fn copy_light(src: &Path, dst: &Path) -> std::io::Result<LightMethod> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        return copy_light_linux(src, dst);
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        std::fs::copy(src, dst)?;
+        Ok(LightMethod::Plain)
+    }
+}
+
+/// احفظ وضع ملف المصدر على نسخته (يونكس — كما
+/// يفعل `std::fs::copy` نفسه).
+#[cfg(unix)]
+fn preserve_file_mode(dst: &Path, meta: &std::fs::Metadata) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(
+        dst,
+        std::fs::Permissions::from_mode(meta.permissions().mode()),
+    );
+}
+
+/// النسخ الخفيف على لينكس/أندرويد (الميزة 201):
+/// `FICLONE` أولا (فشله تراجع لا خطأ)، ثم مسح
+/// الثقوب، ثم النسخ العادي.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn copy_light_linux(src: &Path, dst: &Path) -> std::io::Result<LightMethod> {
+    use std::os::unix::io::AsRawFd;
+    let src_file = std::fs::File::open(src)?;
+    let src_meta = src_file.metadata()?;
+    let src_len = src_meta.len();
+    {
+        let dst_file = std::fs::File::create(dst)?;
+        // الاستنساخ: `ioctl(FICLONE)` عملية O(1)
+        // بلا نسخ بيانات حيث يدعمها نظام الملفات.
+        let rc = unsafe { libc::ioctl(dst_file.as_raw_fd(), libc::FICLONE, src_file.as_raw_fd()) };
+        if rc == 0 {
+            preserve_file_mode(dst, &src_meta);
+            return Ok(LightMethod::Cloned);
+        }
+        // فشل الاستنساخ — أغلق الهدف المقطوع
+        // وانتقل إلى النسخ المتناثر.
+        drop(dst_file);
+    }
+    match copy_sparse(&src_file, dst, src_len) {
+        Ok(sparse) => {
+            preserve_file_mode(dst, &src_meta);
+            Ok(if sparse { LightMethod::Sparse } else { LightMethod::Plain })
+        }
+        Err(_) => {
+            std::fs::copy(src, dst)?;
+            Ok(LightMethod::Plain)
+        }
+    }
+}
+
+/// انسخ ملفا متناثرا بـ`SEEK_DATA`/`SEEK_HOLE`
+/// (الميزة 201): الامتدادات الحقيقية فقط تنسخ،
+/// والثقوب تبقى ثقوبا في الهدف. يرجع صحيحا إن
+/// وجد ثقبا واحدا على الأقل (وإلا فالنسخ عادي
+/// الشكل)، وخطأ إن كان نظام الملفات بلا دعم
+/// للمسح فيتراجع المتصل إلى النسخ العادي.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn copy_sparse(
+    src_file: &std::fs::File,
+    dst: &Path,
+    src_len: u64,
+) -> std::io::Result<bool> {
+    use std::os::unix::fs::FileExt;
+    use std::os::unix::io::AsRawFd;
+    let fd = src_file.as_raw_fd();
+    let dst_file = std::fs::File::create(dst)?;
+    if src_len == 0 {
+        return Ok(false);
+    }
+    let mut pos: libc::off_t = 0;
+    let mut had_hole = false;
+    let mut buf = vec![0u8; 65536];
+    loop {
+        let data = unsafe { libc::lseek(fd, pos, libc::SEEK_DATA) };
+        if data < 0 {
+            let e = std::io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::ENXIO) {
+                // لا بيانات بعد هذا الموضع: الباقي ثقب
+                // (أو الملف كله ثقوب) — ينهي النسخ.
+                break;
+            }
+            return Err(e);
+        }
+        if data > pos {
+            had_hole = true;
+        }
+        let hole = unsafe { libc::lseek(fd, data, libc::SEEK_HOLE) };
+        if hole < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut off = data;
+        while off < hole {
+            let want = std::cmp::min(buf.len() as u64, (hole - off) as u64) as usize;
+            let n = src_file.read_at(&mut buf[..want], off as u64)?;
+            if n == 0 {
+                break;
+            }
+            dst_file.write_at(&buf[..n], off as u64)?;
+            off += n as libc::off_t;
+        }
+        pos = hole;
+        if pos >= src_len as libc::off_t {
+            break;
+        }
+    }
+    dst_file.set_len(src_len)?;
+    Ok(had_hole || pos < src_len as libc::off_t)
+}
+
 /// Open a file: `ملفات.افتح مسار` — returns the file handle.
 /// Read+write, creating the file when it does not exist yet.
 /// The policy check is the session's own FilePolicy, so the
@@ -1026,6 +1784,102 @@ mod tests {
         (FilePolicy::restricted(dir.to_path_buf()), dir.to_path_buf())
     }
 
+    // الميزة 204: مسار نسخ-ثم-حذف عبر جهازين حقيقيين
+    // (/tmp ذاكرة مؤقتة tmpfs مقابل /dev/shm ذاكرة
+    // مؤقتة أخرى — جهازان مختلفان على لينكس).
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn move_fallback_cross_device_file() {
+        let _guard = file_test_lock();
+        let dir = test_dir("xdev-file");
+        let src = dir.join("أ.txt");
+        std::fs::write(&src, "محتوى مهم").unwrap();
+        let other = PathBuf::from("/dev/shm").join(format!("niva-xdev-{}-file", std::process::id()));
+        let _ = std::fs::remove_dir_all(&other);
+        std::fs::create_dir_all(&other).unwrap();
+        let dst = other.join("ب.txt");
+        // إثبات أن الجهازين مختلفان فعلا: إعادة
+        // التسمية وحدها تفشل باختلاف الجهاز.
+        let r = std::fs::rename(&src, &dst);
+        assert!(r.is_err(), "expected EXDEV between /tmp and /dev/shm");
+        assert!(is_cross_device_error(&r.unwrap_err()));
+        assert!(move_fallback(&src, &dst).is_ok());
+        assert!(!src.exists(), "source must be gone after move");
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), "محتوى مهم");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn move_fallback_cross_device_dir() {
+        let _guard = file_test_lock();
+        let dir = test_dir("xdev-dir");
+        let src = dir.join("مجلد");
+        std::fs::create_dir_all(src.join("داخلي")).unwrap();
+        std::fs::write(src.join("داخلي/أ.txt"), "أ").unwrap();
+        std::fs::write(src.join("ب.txt"), "ب").unwrap();
+        std::os::unix::fs::symlink("ب.txt", src.join("رابط.txt")).unwrap();
+        let other = PathBuf::from("/dev/shm").join(format!("niva-xdev-{}-dir", std::process::id()));
+        let _ = std::fs::remove_dir_all(&other);
+        std::fs::create_dir_all(&other).unwrap();
+        let dst = other.join("منقول");
+        let r = std::fs::rename(&src, &dst);
+        assert!(r.is_err());
+        assert!(is_cross_device_error(&r.unwrap_err()));
+        assert!(move_fallback(&src, &dst).is_ok());
+        assert!(!src.exists());
+        assert_eq!(std::fs::read_to_string(dst.join("داخلي/أ.txt")).unwrap(), "أ");
+        assert_eq!(std::fs::read_to_string(dst.join("ب.txt")).unwrap(), "ب");
+        // الرابط يعاد رابطا بلا اتباع هدفه.
+        let link = dst.join("رابط.txt");
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_link(&link).unwrap().to_str().unwrap(),
+            "ب.txt"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
+    }
+
+    #[test]
+    fn move_fallback_copy_failure_keeps_source() {
+        let _guard = file_test_lock();
+        let dir = test_dir("xdev-fail");
+        let src = dir.join("أ.txt");
+        std::fs::write(&src, "محتوى مهم").unwrap();
+        // الهدف تحت ملف لا مجلد: النسخ يستحيل.
+        let blocker = dir.join("حاجز");
+        std::fs::write(&blocker, "x").unwrap();
+        let dst = blocker.join("ب.txt");
+        let res = move_fallback(&src, &dst);
+        assert!(matches!(res, Err(MoveError::Copy(_))));
+        assert_eq!(std::fs::read_to_string(&src).unwrap(), "محتوى مهم");
+        assert!(!dst.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dst_inside_src_cases() {
+        let _guard = file_test_lock();
+        let dir = test_dir("inside-src");
+        let src = dir.join("مجلد");
+        std::fs::create_dir_all(&src).unwrap();
+        assert!(dst_inside_src(&src, &src));
+        assert!(dst_inside_src(&src, &src.join("فرعي")));
+        assert!(dst_inside_src(&src, &dir.join("مجلد/../مجلد/فرعي")));
+        assert!(dst_inside_src(&src, &dir.join("./مجلد")));
+        assert!(!dst_inside_src(&src, &dir.join("آخر")));
+        assert!(!dst_inside_src(&src, &dir));
+        assert!(!dst_inside_src(&src, &dir.join("مجلد٢")));
+        // مصدر غائب: لا تطابق.
+        assert!(!dst_inside_src(&dir.join("غائب"), &dir.join("غائب/فرعي")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn open_read_write_replace_roundtrip() {
         let _guard = file_test_lock();
@@ -1383,5 +2237,113 @@ mod tests {
         let json = saf_json_tree_path("تفاصيل_ممنوح", 1, "م\"لف");
         assert!(json.contains("م\\\"لف"), "got: {}", json);
         assert!(json.starts_with("{\"عملية\":\"تفاصيل_ممنوح\""), "got: {}", json);
+    }
+
+    // الدفعة 3 — التشغيل (اجتماع 57 §72، الميزة 39):
+    // تعريف الملف التنفيذي — موجود + ملف عادي +
+    // مقروء؛ والمجلد وغير المقروء يُتخطيان إلى المكان
+    // التالي، وأول عائق يحدد النتيجة حين لا تنفيذي.
+    fn batch3_tool_dir() -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "niva-tool-lookup-{}-{}",
+            std::process::id(),
+            n
+        ));
+        std::fs::create_dir_all(dir.join("home")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn batch3_tool_lookup_found_and_home_fallback() {
+        let dir = batch3_tool_dir();
+        std::fs::write(dir.join("أداة.نيفا"), "اطبع \"أداة\"\n").unwrap();
+        std::fs::write(dir.join("home").join("بيت.نيفا"), "اطبع \"بيت\"\n").unwrap();
+        // المثبَّت يفوز، والبيت بديله.
+        match find_tool_file(&dir, "أداة.نيفا") {
+            ToolLookup::Found { path, in_home } => {
+                assert!(!in_home);
+                assert_eq!(path, dir.join("أداة.نيفا"));
+            }
+            other => panic!("expected Found, got {:?}", other),
+        }
+        match find_tool_file(&dir, "بيت.نيفا") {
+            ToolLookup::Found { path, in_home } => {
+                assert!(in_home);
+                assert_eq!(path, dir.join("home").join("بيت.نيفا"));
+            }
+            other => panic!("expected Found in home, got {:?}", other),
+        }
+        // الغائب غائب.
+        assert!(matches!(
+            find_tool_file(&dir, "غائب.نيفا"),
+            ToolLookup::Missing
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn batch3_tool_lookup_dir_skipped_to_next() {
+        let dir = batch3_tool_dir();
+        // مجلد في `$نيفا` يحجب ملفا في البيت في الكود
+        // القديم — هنا يُتخطى ويعمل ملف البيت.
+        std::fs::create_dir_all(dir.join("أداة.نيفا")).unwrap();
+        std::fs::write(dir.join("home").join("أداة.نيفا"), "اطبع \"بيت\"\n").unwrap();
+        match find_tool_file(&dir, "أداة.نيفا") {
+            ToolLookup::Found { path, in_home } => {
+                assert!(in_home);
+                assert_eq!(path, dir.join("home").join("أداة.نيفا"));
+            }
+            other => panic!("expected Found in home, got {:?}", other),
+        }
+        // مجلد في المكانين معا → عائق مجلد (126).
+        std::fs::create_dir_all(dir.join("home").join("مجلد.نيفا")).unwrap();
+        std::fs::create_dir_all(dir.join("مجلد.نيفا")).unwrap();
+        assert!(matches!(
+            find_tool_file(&dir, "مجلد.نيفا"),
+            ToolLookup::IsDir
+        ));
+        // مجلد وحده بلا بديل → عائق مجلد أيضا.
+        assert!(matches!(
+            find_tool_file(&dir, "مجلد.نيفا"),
+            ToolLookup::IsDir
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn batch3_tool_lookup_unreadable_skipped_to_next() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = batch3_tool_dir();
+        // غير مقروء في `$نيفا` + مقروء في البيت →
+        // يعمل ملف البيت.
+        let blocked = dir.join("مقفل.نيفا");
+        std::fs::write(&blocked, "اطبع \"محجوب\"\n").unwrap();
+        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000))
+            .unwrap();
+        std::fs::write(dir.join("home").join("مقفل.نيفا"), "اطبع \"بيت\"\n").unwrap();
+        match find_tool_file(&dir, "مقفل.نيفا") {
+            ToolLookup::Found { in_home, .. } => assert!(in_home),
+            other => panic!("expected Found in home, got {:?}", other),
+        }
+        // غير مقروء في المكانين معا → عائق قراءة (126).
+        let blocked_home = dir.join("home").join("مقفل.نيفا");
+        std::fs::set_permissions(&blocked_home, std::fs::Permissions::from_mode(0o000))
+            .unwrap();
+        assert!(matches!(
+            find_tool_file(&dir, "مقفل.نيفا"),
+            ToolLookup::Unreadable
+        ));
+        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        std::fs::set_permissions(
+            &blocked_home,
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

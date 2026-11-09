@@ -28,6 +28,29 @@ pub(crate) const NAMES: [&str; 8] = [
     "الألوان",
 ];
 
+/// كل الأسماء التي تقرأها `بيئة()`، بالترتيب الثابت
+/// الذي تعرضه `اعرض_البيئة()` (اجتماع 58 §73):
+/// الثمانية الثابتة، ثم `المجلد_الحالي` الديناميكي
+/// (اجتماع 56 §71)، ثم `المستخدم` و`اسم_المضيف`
+/// (الميزتان 100 و177)، ثم الديناميكية الثلاث
+/// (الميزة 101).
+pub(crate) const ALL_NAMES: [&str; 14] = [
+    "البيت",
+    "مجلد_البرنامج",
+    "المسار",
+    "إصدار_نيفا",
+    "الطرفية",
+    "اللغة",
+    "المجلد_المؤقت",
+    "الألوان",
+    "المجلد_الحالي",
+    "المستخدم",
+    "اسم_المضيف",
+    "عشوائي",
+    "ثواني",
+    "رقم_السطر",
+];
+
 /// قيمة متغير معروف، أو `None` إن لم يكن من الثمانية.
 /// `version` هو إصدار المحرك (قيمة `إصدار_نيفا`).
 pub(crate) fn lookup(name: &str, version: &str) -> Option<String> {
@@ -86,6 +109,71 @@ pub(crate) fn valid_value(value: &str) -> bool {
     !value.contains('\0')
 }
 
+// ---------- الدفعة 4 — المتغيرات (اجتماع 58 §73) ----------
+
+/// عدد عشوائي صحيح 0–32767، جديد عند كل قراءة
+/// (مقابل `$RANDOM` — الحد نفسه في باش). يعيد
+/// استعمال مولد `عشوائي` نفسه، فلا مولد ثان.
+pub(crate) fn random_0_32767() -> u32 {
+    (crate::stdlib::next_u64() % 32768) as u32
+}
+
+/// اسم المضيف (الميزة 177، مقابل `HOSTNAME`):
+/// من `/proc/sys/kernel/hostname` على لينكس/
+/// أندرويد — سابقة `نظام.اسم_النظام` نفسها —
+/// ورفض صريح خارجهما، بلا قراءة بيئة موروثة أبدا.
+pub(crate) fn hostname() -> Result<String, String> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let raw = std::fs::read_to_string("/proc/sys/kernel/hostname")
+            .map_err(|_| "تعذر قراءة اسم المضيف".to_string())?;
+        let name = raw.trim().to_string();
+        if name.is_empty() {
+            return Err("اسم المضيف فارغ".to_string());
+        }
+        Ok(name)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        Err("بيئة(\"اسم_المضيف\") غير مدعومة على هذه المنصة".to_string())
+    }
+}
+
+/// اسم المستخدم (الميزة 100، مقابل `USER`): رقم
+/// المستخدم من `/proc/self/status` ثم اسمه من
+/// `/etc/passwd` — سابقة `نظام.معرف_المستخدم`
+/// نفسها — ورفض صريح خارجهما، بلا قراءة بيئة
+/// موروثة أبدا.
+pub(crate) fn username() -> Result<String, String> {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let status = std::fs::read_to_string("/proc/self/status")
+            .map_err(|_| "تعذر قراءة معرف المستخدم".to_string())?;
+        let uid = status
+            .lines()
+            .find(|l| l.starts_with("Uid:"))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .ok_or_else(|| "تعذر قراءة معرف المستخدم".to_string())?;
+        let passwd = std::fs::read_to_string("/etc/passwd")
+            .map_err(|_| "تعذر قراءة اسم المستخدم".to_string())?;
+        for line in passwd.lines() {
+            let mut parts = line.split(':');
+            if let (Some(name), Some(_), Some(id)) =
+                (parts.next(), parts.next(), parts.next())
+            {
+                if id == uid && !name.is_empty() {
+                    return Ok(name.to_string());
+                }
+            }
+        }
+        Err("اسم المستخدم غير موجود".to_string())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    {
+        Err("بيئة(\"المستخدم\") غير مدعومة على هذه المنصة".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -127,5 +215,32 @@ mod tests {
         assert!(valid_value("قيمة عادية"));
         assert!(valid_value(""));
         assert!(!valid_value("قبل\0بعد"));
+    }
+
+    // الدفعة 4 — المتغيرات (اجتماع 58 §73).
+    #[test]
+    fn all_fourteen_names() {
+        assert_eq!(ALL_NAMES.len(), 14);
+        assert_eq!(NAMES.len(), 8);
+        for name in NAMES {
+            assert!(ALL_NAMES.contains(&name));
+        }
+        for name in ["المجلد_الحالي", "المستخدم", "اسم_المضيف", "عشوائي", "ثواني", "رقم_السطر"] {
+            assert!(ALL_NAMES.contains(&name));
+        }
+    }
+
+    #[test]
+    fn random_in_bash_range() {
+        for _ in 0..20 {
+            assert!(random_0_32767() <= 32767);
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn hostname_and_username_read() {
+        assert!(!hostname().unwrap().is_empty());
+        assert!(!username().unwrap().is_empty());
     }
 }

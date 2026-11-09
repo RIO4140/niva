@@ -425,6 +425,93 @@ impl FilePolicy {
         Ok(resolved)
     }
 
+    /// اجتماع 56 §71 (الميزة 13) — المحاولة الحرفية
+    /// الاحتياطية: حل المسار كما كُتب بلا تطبيع معجمي
+    /// (فـ`..` تُحلّ على الحقيقي عبر نظام الملفات لا
+    /// على النص)، وإرجاع المسار الحقيقي (`canonicalize`)
+    /// عند النجاح. في الوضع المقيد: الهدف خارج النطاق
+    /// (معجميا أو عبر رابط) مرفوض كغيره؛ والغائب خطأ
+    /// «المجلد غير موجود» نفسه.
+    pub fn resolve_literal_in(
+        &self,
+        cwd: &Path,
+        path_str: &str,
+        line: usize,
+        col: usize,
+    ) -> RioResult<PathBuf> {
+        let given = self.expand_home(path_str);
+        let joined = if given.is_absolute() {
+            given
+        } else {
+            cwd.join(given)
+        };
+        if self.trusted {
+            return Ok(std::fs::canonicalize(&joined).unwrap_or(joined));
+        }
+        if let Some(mapped) = self.downloads_path(path_str, line, col) {
+            return mapped;
+        }
+        let canon = std::fs::canonicalize(&joined).map_err(|_| {
+            RioError::new(
+                ErrorKind::Io,
+                format!("المجلد غير موجود: {}", self.display_str(path_str)),
+                line,
+                col,
+            )
+        })?;
+        let base_norm = Self::normalize(&self.base, &self.base);
+        let canon_base = Self::canonicalize_with_suffix(&base_norm);
+        if !canon.starts_with(&canon_base) {
+            return Err(RioError::new(
+                ErrorKind::Io,
+                format!(
+                    "الملف {} خارج مجلد البرنامج عبر رابط رمزي، والوصول مقيد بمجلد البرنامج افتراضيا",
+                    self.display_str(path_str)
+                ),
+                line,
+                col,
+            ));
+        }
+        Ok(canon)
+    }
+
+    /// اجتماع 56 §71 — إصلاح انهيار `..` المعجمي
+    /// (كشفه الدليل الحي 2026-11-09): حالة المسار
+    /// الموصول كما كُتب بلا تطبيع معجمي — فـ`مشاريع/..`
+    /// حين لا توجد `مشاريع` تحت الحالي يجب أن تفشل
+    /// لا أن تنهار إلى الحالي نفسه (باش يحسمها نواة
+    /// نظام الملفات نفسها: `chdir("مشاريع/..")` يفشل
+    /// حين تغيب `مشاريع`). `Some(true)` مجلد موجود،
+    /// و`Some(false)` موجود ليس مجلدا، و`None` غائب
+    /// أو بلا وصول. بلا فحص نطاق هنا — فحص السياسة
+    /// يسبقه في المتصل.
+    pub fn raw_joined_state(&self, cwd: &Path, path_str: &str) -> Option<bool> {
+        let joined = if self.trusted {
+            let given = self.expand_home(path_str);
+            if given.is_absolute() {
+                given
+            } else {
+                cwd.join(given)
+            }
+        } else if let Some(mapped) = self.downloads_path(path_str, 1, 1) {
+            match mapped {
+                Ok(p) => p,
+                Err(_) => return None,
+            }
+        } else {
+            let given = self.expand_home(path_str);
+            if given.is_absolute() {
+                given
+            } else {
+                cwd.join(given)
+            }
+        };
+        match std::fs::metadata(&joined) {
+            Ok(m) => Some(m.is_dir()),
+            Err(_) => None,
+        }
+    }
+
     /// Shared restricted-mode checks for a joined candidate:
     /// lexical normalization, then the prefix check, then the
     /// symlink check. Returns the lexical path the program

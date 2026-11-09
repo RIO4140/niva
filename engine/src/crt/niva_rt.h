@@ -332,6 +332,11 @@ extern int nv_server_allowed;  // --اسمح-بالخادم
 extern char **nv_local_hosts;  // مضيفات محلية مصرّح بها
 extern int nv_n_local_hosts;
 extern int nv_call_depth;    // عمق الاستدعاء الحالي
+// الدفعة 1 — رموز الخروج (اجتماع 54 §69).
+extern int nv_last_exit_code; // رمز آخر أمر مكتمل (0 أولا)
+extern int nv_exit_requested; // طلب خروج معلق (0/1)
+extern int nv_exit_code;      // رمز الخروج المطلوب
+extern char *nv_program_name; // اسم البرنامج كما استُدعي
 extern unsigned long long nv_alloc_bytes; // بايتات مخصصة منذ آخر جمع
 
 // خطاف تنظيف المقابض: تستدعيه الجامعة قبل تحرير ptr
@@ -431,6 +436,11 @@ void nv_clear_error(void);
 // أعد رفع الخطأ الحالي إلى المعالج الأعمق (أو اخرج).
 // بلا خطأ معلق تعود صامتة.
 void nv_reraise_current(void);
+// الدفعة 1 — رموز الخروج (اجتماع 54 §69): اقفز
+// بطلب خروج معلق إلى أعمق معالج، بلا ضبط خطأ —
+// فمسار الخطأ في حاول يميّز الخروج فيشغّل أخيرا
+// وحدها (بلا ماعدا) ثم يعيد رفع الطلب. لا تعود.
+void nv_exit_jump(void) __attribute__((noreturn));
 // أضف بادئة إلى رسالة الخطأ الحالي (دون تغيير ملفه
 // أو سطره أو عموده) — «في وحدة X: » عند عبور حدود
 // وحدة أثناء تحميلها، كما في المفسر.
@@ -477,7 +487,12 @@ NvValue *nv_scope_slot_ptr(NvScope *scope, const char *name, int line, int col);
 // تعريف في أعمق نطاق (يعيد الخلية).
 NvCell *nv_scope_define(NvScope *scope, const char *name, NvValue v);
 // تعيين: أقرب نطاق يربط الاسم، وإلا تعريف في الأعمق.
-void nv_scope_assign(NvScope *scope, const char *name, NvValue v);
+// الدفعة 4 — المتغيرات (اجتماع 58 §73): يحلّ
+// المرجع الاسمي ويرفض الكتابة في مجمد.
+void nv_scope_assign(NvScope *scope, const char *name, NvValue v, int line, int col);
+// فحص التجميد لتعريف دالة — إعادة تعريف اسم مجمد
+// مرفوضة كإعادة الإسناد.
+void nv_check_not_frozen(const char *name, int line, int col);
 // نسخ نطاق (قيم منسوخة عميقا) — لاستدعاء دالة وحدة.
 NvScope *nv_scope_clone(NvScope *scope);
 // نطاق الوحدة: استنساخ جديد كل استدعاء.

@@ -556,6 +556,11 @@ fn enc_op(w: &mut Writer, op: &Op) -> RioResult<()> {
             w.u8(2);
             w.str(s);
         }
+        // الدفعة 4 — المتغيرات (اجتماع 58 §73): `+=`.
+        Op::StoreAppend(s) => {
+            w.u8(57);
+            w.str(s);
+        }
         Op::Pop => w.u8(3),
         Op::Add => w.u8(4),
         Op::Sub => w.u8(5),
@@ -738,6 +743,8 @@ fn dec_op(r: &mut Reader) -> RioResult<Op> {
         0 => Op::Const(dec_value(r)?),
         1 => Op::Load(r.str()?),
         2 => Op::Store(r.str()?),
+        // الدفعة 4 — المتغيرات (اجتماع 58 §73): `+=`.
+        57 => Op::StoreAppend(r.str()?),
         3 => Op::Pop,
         4 => Op::Add,
         5 => Op::Sub,
@@ -1102,11 +1109,13 @@ fn dec_stmts(r: &mut Reader) -> RioResult<Vec<Stmt>> {
 
 fn enc_stmt_kind(w: &mut Writer, k: &StmtKind) -> RioResult<()> {
     match k {
-        StmtKind::Assign { target, value, annotation } => {
+        StmtKind::Assign { target, value, annotation, append } => {
             w.u8(0);
             enc_assign_target(w, target)?;
             enc_expr(w, value)?;
             w.opt_str(annotation);
+            // الدفعة 4 — المتغيرات (اجتماع 58 §73): `+=`.
+            w.u8(if *append { 1 } else { 0 });
         }
         StmtKind::Print { args } => {
             w.u8(1);
@@ -1236,6 +1245,8 @@ fn dec_stmt_kind(r: &mut Reader) -> RioResult<StmtKind> {
             target: dec_assign_target(r)?,
             value: dec_expr(r)?,
             annotation: r.opt_str()?,
+            // الدفعة 4 — المتغيرات (اجتماع 58 §73): `+=`.
+            append: r.u8()? != 0,
         },
         1 => {
             let n = r.u64()? as usize;
