@@ -1382,6 +1382,13 @@ impl Vm {
         self.file_policy.borrow_mut().trusted = trusted;
     }
 
+    /// Meeting 50 §64 (items 94/96): set the read-only
+    /// downloads root for this session — مرآة
+    /// Interpreter::set_downloads.
+    pub fn set_downloads(&mut self, path: std::path::PathBuf) {
+        self.file_policy.borrow_mut().set_downloads(path);
+    }
+
     /// Meeting 27: server capability (--اسمح-بالخادم).
     /// Default OFF; the network flag alone is not enough.
     /// Read through the HandlerCaller context when a native
@@ -1481,6 +1488,15 @@ impl Vm {
         self.file_policy
             .borrow()
             .resolve_in(&self.cwd.borrow(), path, line, col)
+    }
+
+    /// Like `resolve_cwd`, but a write is refused under the
+    /// downloads root (Meeting 50 §64, items 94/96) — مرآة
+    /// Interpreter::resolve_cwd_for_write تماما.
+    fn resolve_cwd_for_write(&self, path: &str, line: usize, col: usize) -> RioResult<std::path::PathBuf> {
+        self.file_policy
+            .borrow()
+            .resolve_in_for_write(&self.cwd.borrow(), path, line, col)
     }
 
     /// مهمة 5: حصة التخزين (100 ميغابايت لمجلد البرنامج)
@@ -2615,7 +2631,7 @@ impl Vm {
                 arity(2)?;
                 match (&args[0], &args[1]) {
                     (Value::Str(path), Value::Str(content)) => {
-                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let resolved = self.resolve_cwd_for_write(path, line, col)?;
                         // Audit م-20: refuse a write that would
                         // push the program dir past its quota
                         // (net growth only — rewriting a file
@@ -2772,7 +2788,7 @@ impl Vm {
                 arity(1)?;
                 match &args[0] {
                     Value::Str(dir) => {
-                        let resolved = self.resolve_cwd(dir, line, col)?;
+                        let resolved = self.resolve_cwd_for_write(dir, line, col)?;
                         std::fs::create_dir(&resolved).map(|_| Value::Nil).map_err(|e| {
                             RioError::new(
                                 crate::error::ErrorKind::Io,
@@ -2793,7 +2809,7 @@ impl Vm {
                 arity(1)?;
                 match &args[0] {
                     Value::Str(path) => {
-                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let resolved = self.resolve_cwd_for_write(path, line, col)?;
                         match std::fs::metadata(&resolved) {
                             Ok(m) if m.is_dir() => {
                                 std::fs::remove_dir(&resolved).map(|_| Value::Nil).map_err(|e| {
@@ -2834,7 +2850,7 @@ impl Vm {
                 arity(1)?;
                 match &args[0] {
                     Value::Str(path) => {
-                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let resolved = self.resolve_cwd_for_write(path, line, col)?;
                         match std::fs::metadata(&resolved) {
                             Ok(m) if m.is_dir() => {
                                 std::fs::remove_dir(&resolved).map(|_| Value::Nil).map_err(|e| {
@@ -2871,7 +2887,7 @@ impl Vm {
                 arity(1)?;
                 match &args[0] {
                     Value::Str(path) => {
-                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let resolved = self.resolve_cwd_for_write(path, line, col)?;
                         match std::fs::metadata(&resolved) {
                             Ok(m) if !m.is_dir() => {
                                 std::fs::remove_file(&resolved).map(|_| Value::Nil).map_err(|e| {
@@ -2909,7 +2925,7 @@ impl Vm {
                 match (&args[0], &args[1]) {
                     (Value::Str(src), Value::Str(dst)) => {
                         let src_path = self.resolve_cwd(src, line, col)?;
-                        let mut dst_path = self.resolve_cwd(dst, line, col)?;
+                        let mut dst_path = self.resolve_cwd_for_write(dst, line, col)?;
                         // cp into a directory keeps the file name.
                         if dst_path.is_dir() {
                             if let Some(name) = src_path.file_name() {
@@ -2939,8 +2955,8 @@ impl Vm {
                 arity(2)?;
                 match (&args[0], &args[1]) {
                     (Value::Str(src), Value::Str(dst)) => {
-                        let src_path = self.resolve_cwd(src, line, col)?;
-                        let mut dst_path = self.resolve_cwd(dst, line, col)?;
+                        let src_path = self.resolve_cwd_for_write(src, line, col)?;
+                        let mut dst_path = self.resolve_cwd_for_write(dst, line, col)?;
                         // mv into a directory keeps the file name.
                         if dst_path.is_dir() {
                             if let Some(name) = src_path.file_name() {
@@ -4875,6 +4891,12 @@ impl VmSession {
         self.vm.set_trusted(trusted);
     }
 
+    /// Meeting 50 §64 (items 94/96): set the read-only
+    /// downloads root for this session — مرآة set_trusted.
+    pub fn set_downloads(&mut self, path: std::path::PathBuf) {
+        self.vm.set_downloads(path);
+    }
+
     /// Meeting 22: same per-instance pattern as the
     /// interpreter — the flag lives on this session and is
     /// synced to the process-wide gate at the start of run /
@@ -4922,6 +4944,7 @@ impl VmSession {
     /// مع استعادة الموثوقية والشبكة (:مسح).
     pub fn reset(&mut self) {
         let trusted = self.vm.file_policy.borrow().trusted;
+        let downloads = self.vm.file_policy.borrow().downloads.clone();
         let network_allowed = self.network_allowed;
         let server_allowed = self.server_allowed;
         let empty = CompiledProgram {
@@ -4931,6 +4954,11 @@ impl VmSession {
         };
         self.vm = Vm::new(empty, self.program_dir.clone());
         self.vm.set_trusted(trusted);
+        // Meeting 50 §64: the downloads root survives
+        // :مسح like the other session capabilities.
+        if let Some(d) = downloads {
+            self.vm.set_downloads(d);
+        }
         self.network_allowed = network_allowed;
         self.server_allowed = server_allowed;
         self.vm.set_server_allowed(server_allowed);

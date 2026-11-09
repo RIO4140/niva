@@ -49,6 +49,7 @@ fn usage() -> String {
      --اسمح-بالشبكة       السماح بالشبكة (شبكة.اجلب) — مغلقة افتراضيا\n\
      --اسمح-بالخادم       السماح بالخادم (شبكة.اخدم) — مغلق افتراضيا، وعلم الشبكة وحده لا يكفي\n\
      --مضيف-محلي مضيف       السماح بمضيف محلي صراحة (مثل 127.0.0.1) — وحده لا يفتح الشبكة\n\
+     --تنزيلات مسار       كشف مجلد التنزيلات المشترك للقراءة فقط باسم تخزين/تنزيلات\n\
      --مستقل               مع ابن: ملف تنفيذي مستقل بدلا من المصنوع\n\
      --أصلي                مع ابن: ثنائي أصلي (C) بدلا من المصنوع\n"
         .to_string()
@@ -111,7 +112,7 @@ fn main() -> ExitCode {
     // Arabic flags only — a Latin flag is rejected here.
     // --مفسر is a HIDDEN diagnostic flag (DESIGN §39.3):
     // known to the parser, but never shown in --مساعدة.
-    const KNOWN_FLAGS: [&str; 11] = [
+    const KNOWN_FLAGS: [&str; 12] = [
         "--مساعده",
         "--نسخه",
         "--تفاعلي",
@@ -121,6 +122,7 @@ fn main() -> ExitCode {
         "--اسمح-بالشبكه",
         "--اسمح-بالخادم",
         "--مضيف-محلي",
+        "--تنزيلات",
         "--مستقل",
         "--اصلي",
     ];
@@ -153,6 +155,7 @@ fn main() -> ExitCode {
     // network flag alone is NOT enough to serve.
     let allow_server = nargs.iter().any(|a| a == "--اسمح-بالخادم");
     let mut local_hosts: Vec<String> = Vec::new();
+    let mut downloads: Option<String> = None;
     let mut arg_iter = args.iter().skip(1).peekable();
     let mut file_args: Vec<String> = Vec::new();
     while let Some(a) = arg_iter.next() {
@@ -165,10 +168,34 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             }
+        } else if normalize_cli_word(a) == "--تنزيلات" {
+            // Meeting 50 §64 (items 94/96): the downloads
+            // root, passed by the launcher.
+            match arg_iter.next() {
+                Some(path) => downloads = Some(path.clone()),
+                None => {
+                    eprintln!("خيار --تنزيلات يحتاج مسارا بعده");
+                    eprint!("{}", usage());
+                    return ExitCode::FAILURE;
+                }
+            }
         } else if !a.starts_with('-') {
             file_args.push(a.clone());
         }
     }
+    // The downloads root must exist and be a directory —
+    // fail fast with an Arabic error, before any session.
+    let downloads_path: Option<std::path::PathBuf> = match &downloads {
+        Some(p) => {
+            let pb = std::path::PathBuf::from(p);
+            if !pb.is_dir() {
+                eprintln!("مسار التنزيلات غير صالح");
+                return ExitCode::FAILURE;
+            }
+            Some(pb)
+        }
+        None => None,
+    };
     let file_arg = file_args.first().cloned();
     // No file path given (no args, or only flags) -> interactive REPL.
     // --تفاعلي is explicit; the REPL runs on the compiler (VM) by
@@ -205,7 +232,7 @@ fn main() -> ExitCode {
         // recursion limit is a Niva error, not a Rust stack overflow.
         let handle = std::thread::Builder::new()
             .stack_size(STACK_SIZE_BYTES)
-            .spawn(move || repl::run_repl(allow_all, allow_network, allow_server, &local_hosts, use_interpreter));
+            .spawn(move || repl::run_repl(allow_all, allow_network, allow_server, &local_hosts, use_interpreter, downloads_path));
         return match handle {
             Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),
             Err(_) => ExitCode::FAILURE,
@@ -290,6 +317,11 @@ fn main() -> ExitCode {
                 // Meeting 27: the server flag is separate —
                 // the network flag alone does not open it.
                 interp.set_server_allowed(allow_server);
+                // Meeting 50 §64: the downloads root, when
+                // the launcher passed one (validated above).
+                if let Some(d) = &downloads_path {
+                    let _ = interp.set_downloads(d.clone());
+                }
                 for host in &local_hosts {
                     interp.allow_local_network_host(host);
                 }
@@ -315,7 +347,7 @@ fn main() -> ExitCode {
                     return ExitCode::FAILURE;
                 }
             };
-            return run_vm(compiled, program_dir, allow_all, allow_network, allow_server, &local_hosts, &path);
+            return run_vm(compiled, program_dir, allow_all, allow_network, allow_server, &local_hosts, &path, downloads_path);
         });
     match handle {
         Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),
@@ -354,6 +386,7 @@ fn run_vm(
     allow_server: bool,
     local_hosts: &[String],
     source_file: &str,
+    downloads: Option<std::path::PathBuf>,
 ) -> ExitCode {
     niva_engine::network::set_network_allowed(allow_network);
     for host in local_hosts {
@@ -371,6 +404,11 @@ fn run_vm(
     );
     let mut vm_inst = vm::Vm::new(compiled, program_dir);
     vm_inst.set_trusted(allow_all);
+    // Meeting 50 §64: the downloads root, when the
+    // launcher passed one (validated above).
+    if let Some(d) = downloads {
+        vm_inst.set_downloads(d);
+    }
     vm_inst.set_source_file(source_file);
     vm_inst.set_live_output(true);
     vm_inst.set_server_allowed(allow_server);
@@ -488,7 +526,7 @@ fn run_standalone(payload: Vec<u8>) -> ExitCode {
             let exe_path = std::env::current_exe()
                 .map(|e| e.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            run_vm(prog, program_dir, allow_all, allow_network, allow_server, &local_hosts, &exe_path)
+            run_vm(prog, program_dir, allow_all, allow_network, allow_server, &local_hosts, &exe_path, None)
         });
     match handle {
         Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),
@@ -774,7 +812,7 @@ fn do_run_artifact(
             // المصنوع، فلا يصطدم بها إغلاق وحدة تُترجَم
             // وقت التشغيل.
             vm::reserve_closure_ids_above(artifact::max_closure_id(&prog));
-            run_vm(prog, program_dir, allow_all, allow_network, allow_server, &local_hosts, &art_path)
+            run_vm(prog, program_dir, allow_all, allow_network, allow_server, &local_hosts, &art_path, None)
         });
     match handle {
         Ok(h) => h.join().unwrap_or(ExitCode::FAILURE),

@@ -474,7 +474,9 @@ pub fn download(
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let resolved = policy.resolve_in(cwd, path, line, col)?;
+        // Meeting 50 §64: the download destination is a
+        // write — refused under the downloads root.
+        let resolved = policy.resolve_in_for_write(cwd, path, line, col)?;
         let display = policy.display_path(&resolved);
         let base = policy.base.clone();
         let url = url.to_string();

@@ -62,17 +62,132 @@ pub struct FilePolicy {
     pub base: PathBuf,
     /// The user's home: `base/home` (Meeting 45 §59).
     pub home: PathBuf,
+    /// Read-only external root (Meeting 50 §64, items 94/96):
+    /// the shared Downloads folder, exposed to programs as
+    /// `تخزين/تنزيلات` — reads only, every write under it is
+    /// refused. Set by the launcher (`--تنزيلات <مسار>`) or
+    /// live by the host app (`:تنزيلات <مسار>`); `None` means
+    /// storage is not exposed yet, and the spelling itself is
+    /// an Arabic error naming the fix. In trusted mode
+    /// (--اسمح-بالكل) the restriction is lifted, as every
+    /// other file restriction is.
+    pub downloads: Option<PathBuf>,
 }
 
 impl FilePolicy {
     pub fn restricted(base: PathBuf) -> Self {
         let home = base.join("home");
-        Self { trusted: false, base, home }
+        Self { trusted: false, base, home, downloads: None }
     }
 
     pub fn trusted(base: PathBuf) -> Self {
         let home = base.join("home");
-        Self { trusted: true, base, home }
+        Self { trusted: true, base, home, downloads: None }
+    }
+
+    /// Set the read-only downloads root (Meeting 50 §64).
+    /// The caller validates that the path exists and is a
+    /// directory; the policy only stores it.
+    pub fn set_downloads(&mut self, path: PathBuf) {
+        self.downloads = Some(path);
+    }
+
+    /// The spelling names the downloads root
+    /// (`تخزين/تنزيلات`, or anything below it) — return the
+    /// rest below the root, or `None` for any other spelling.
+    fn downloads_rest(path_str: &str) -> Option<&str> {
+        if path_str == "تخزين/تنزيلات" {
+            Some("")
+        } else {
+            path_str.strip_prefix("تخزين/تنزيلات/")
+        }
+    }
+
+    /// Map a downloads spelling to its filesystem path, or
+    /// the «not exposed yet» error when the root is unset.
+    /// `None` = the spelling does not name downloads.
+    fn downloads_path(&self, path_str: &str, line: usize, col: usize) -> Option<RioResult<PathBuf>> {
+        let rest = Self::downloads_rest(path_str)?;
+        match &self.downloads {
+            Some(root) => {
+                let mapped = if rest.is_empty() {
+                    root.clone()
+                } else {
+                    root.join(rest)
+                };
+                Some(self.check_downloads(mapped, path_str, line, col))
+            }
+            None => Some(Err(RioError::new(
+                ErrorKind::Io,
+                "التخزين غير مكشوف — امنح إذن التخزين أولا",
+                line,
+                col,
+            ))),
+        }
+    }
+
+    /// Checks for a mapped downloads path: the lexical form
+    /// must stay under the root (`..` cannot climb out of
+    /// it), and the canonical form must stay under the
+    /// canonical root (a symlink inside Downloads pointing
+    /// elsewhere is rejected, like every other symlink
+    /// escape in `check`).
+    fn check_downloads(&self, mapped: PathBuf, path_str: &str, line: usize, col: usize) -> RioResult<PathBuf> {
+        let root = self.downloads.as_ref().unwrap();
+        let normalized = Self::normalize(root, &mapped);
+        let root_norm = Self::normalize(root, root);
+        if !normalized.starts_with(&root_norm) {
+            return Err(RioError::new(
+                ErrorKind::Io,
+                format!("الملف {} خارج تخزين/تنزيلات", self.display_str(path_str)),
+                line,
+                col,
+            ));
+        }
+        let canon_candidate = Self::canonicalize_with_suffix(&normalized);
+        let canon_root = Self::canonicalize_with_suffix(&root_norm);
+        if !canon_candidate.starts_with(&canon_root) {
+            return Err(RioError::new(
+                ErrorKind::Io,
+                format!("الملف {} خارج تخزين/تنزيلات عبر رابط رمزي", self.display_str(path_str)),
+                line,
+                col,
+            ));
+        }
+        Ok(normalized)
+    }
+
+    /// Is this resolved path under the downloads root?
+    /// Used by the write variants to refuse every write
+    /// there. `false` when no root is set, or in trusted
+    /// mode (the root does not bind a trusted session).
+    pub fn is_under_downloads(&self, path: &Path) -> bool {
+        if self.trusted {
+            return false;
+        }
+        match &self.downloads {
+            Some(root) => {
+                let normalized = Self::normalize(root, path);
+                let root_norm = Self::normalize(root, root);
+                normalized.starts_with(&root_norm)
+            }
+            None => false,
+        }
+    }
+
+    /// Refuse a write under the downloads root (Meeting 50
+    /// §64): the root is read-only, literally. Any other
+    /// path passes through with the same error as `resolve`.
+    fn refuse_downloads_write(&self, path: &Path, path_str: &str, line: usize, col: usize) -> RioResult<()> {
+        if self.is_under_downloads(path) {
+            return Err(RioError::new(
+                ErrorKind::Io,
+                format!("الملف {} في تخزين/تنزيلات للقراءة فقط", self.display_str(path_str)),
+                line,
+                col,
+            ));
+        }
+        Ok(())
     }
 
     fn normalize(base: &Path, path: &Path) -> PathBuf {
@@ -141,7 +256,9 @@ impl FilePolicy {
 
     /// Display a path the terminal way (owner's order
     /// 2026-11-05 ~22:38: paths look like any Unix terminal):
-    /// home is `~`, below it `~/...`; the program folder is
+    /// home is `~`, below it `~/...`; the downloads root is
+    /// `تخزين/تنزيلات`, below it `تخزين/تنزيلات/...`
+    /// (Meeting 50 §64); the program folder is
     /// `$نيفا`, below it `$نيفا/...` (longest match wins, so
     /// a path under home never shows as `$نيفا/home/...`);
     /// an absolute path inside Android's private /data/ area
@@ -159,6 +276,17 @@ impl FilePolicy {
                 return "~".to_string();
             }
             return format!("~/{}", slash_display(rel));
+        }
+        if let Some(root) = &self.downloads {
+            if path == root {
+                return "تخزين/تنزيلات".to_string();
+            }
+            if let Ok(rel) = path.strip_prefix(root) {
+                if rel.as_os_str().is_empty() {
+                    return "تخزين/تنزيلات".to_string();
+                }
+                return format!("تخزين/تنزيلات/{}", slash_display(rel));
+            }
         }
         if path == self.base {
             return "$نيفا".to_string();
@@ -210,7 +338,23 @@ impl FilePolicy {
     /// or return an Arabic Io error if it escapes the base.
     pub fn resolve(&self, path_str: &str, line: usize, col: usize) -> RioResult<PathBuf> {
         if self.trusted {
+            // The downloads spelling names the root in
+            // trusted mode too (no restriction is lifted
+            // there — only the write refusal is).
+            if let Some(rest) = Self::downloads_rest(path_str) {
+                if let Some(root) = &self.downloads {
+                    let mapped = if rest.is_empty() { root.clone() } else { root.join(rest) };
+                    return Ok(Self::normalize(root, &mapped));
+                }
+            }
             return Ok(self.expand_home(path_str));
+        }
+        // Meeting 50 §64: the downloads spelling is special
+        // in restricted mode — it maps outside the base (or
+        // errors when storage is not exposed), never falls
+        // through to a local folder of the same name.
+        if let Some(mapped) = self.downloads_path(path_str, line, col) {
+            return mapped;
         }
         let given = self.expand_home(path_str);
         let joined = if given.is_absolute() {
@@ -219,6 +363,15 @@ impl FilePolicy {
             self.base.join(given)
         };
         self.check(joined, path_str, line, col)
+    }
+
+    /// Like `resolve`, but a write is refused under the
+    /// downloads root (Meeting 50 §64): the root is
+    /// read-only, literally.
+    pub fn resolve_for_write(&self, path_str: &str, line: usize, col: usize) -> RioResult<PathBuf> {
+        let resolved = self.resolve(path_str, line, col)?;
+        self.refuse_downloads_write(&resolved, path_str, line, col)?;
+        Ok(resolved)
     }
 
     /// Like resolve(), but relative paths start from `cwd`
@@ -234,11 +387,20 @@ impl FilePolicy {
         col: usize,
     ) -> RioResult<PathBuf> {
         if self.trusted {
+            if let Some(rest) = Self::downloads_rest(path_str) {
+                if let Some(root) = &self.downloads {
+                    let mapped = if rest.is_empty() { root.clone() } else { root.join(rest) };
+                    return Ok(Self::normalize(root, &mapped));
+                }
+            }
             let given = self.expand_home(path_str);
             if given.is_absolute() {
                 return Ok(given);
             }
             return Ok(cwd.join(given));
+        }
+        if let Some(mapped) = self.downloads_path(path_str, line, col) {
+            return mapped;
         }
         let given = self.expand_home(path_str);
         let joined = if given.is_absolute() {
@@ -247,6 +409,20 @@ impl FilePolicy {
             cwd.join(given)
         };
         self.check(joined, path_str, line, col)
+    }
+
+    /// Like `resolve_in`, but a write is refused under the
+    /// downloads root (Meeting 50 §64).
+    pub fn resolve_in_for_write(
+        &self,
+        cwd: &Path,
+        path_str: &str,
+        line: usize,
+        col: usize,
+    ) -> RioResult<PathBuf> {
+        let resolved = self.resolve_in(cwd, path_str, line, col)?;
+        self.refuse_downloads_write(&resolved, path_str, line, col)?;
+        Ok(resolved)
     }
 
     /// Shared restricted-mode checks for a joined candidate:
@@ -457,5 +633,108 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&outside);
         assert!(res.is_err(), "symlink escape must be rejected");
+    }
+
+    // Meeting 50 §64 (items 94/96): the downloads root.
+    fn downloads_dirs() -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("niva-dl-base-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("niva-dl-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        (base, root)
+    }
+
+    #[test]
+    fn downloads_unset_spelling_errors() {
+        let base = std::env::temp_dir().join(format!("niva-dl-base-{}", std::process::id()));
+        let p = FilePolicy::restricted(base);
+        let err = p
+            .resolve("تخزين/تنزيلات/ملف.txt", 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("التخزين غير مكشوف"), "got: {}", err);
+        // The bare root spelling errors the same way.
+        assert!(p.resolve("تخزين/تنزيلات", 1, 1).is_err());
+        // A plain `تخزين` folder is local, not special.
+        assert!(p.resolve("تخزين/شيء.txt", 1, 1).is_ok());
+    }
+
+    #[test]
+    fn downloads_root_reads_ok_writes_refused() {
+        let (base, root) = downloads_dirs();
+        std::fs::write(root.join("ملف.txt"), "x").unwrap();
+        let mut p = FilePolicy::restricted(base.clone());
+        p.set_downloads(root.clone());
+        // Read resolve maps under the root.
+        assert_eq!(
+            p.resolve("تخزين/تنزيلات/ملف.txt", 1, 1).unwrap(),
+            root.join("ملف.txt")
+        );
+        assert_eq!(p.resolve("تخزين/تنزيلات", 1, 1).unwrap(), root);
+        // Display shows the terminal spelling.
+        assert_eq!(
+            p.display_path(&root.join("ملف.txt")),
+            "تخزين/تنزيلات/ملف.txt"
+        );
+        // Every write variant refuses under the root.
+        let werr = p
+            .resolve_for_write("تخزين/تنزيلات/ملف.txt", 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(werr.contains("للقراءة فقط"), "got: {}", werr);
+        let werr2 = p
+            .resolve_in_for_write(&base.join("home"), "تخزين/تنزيلات/جديد.txt", 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(werr2.contains("للقراءة فقط"), "got: {}", werr2);
+        // `..` cannot climb out of the root.
+        assert!(p.resolve("تخزين/تنزيلات/../خارج.txt", 1, 1).is_err());
+        // A local file still resolves and writes fine.
+        assert!(p.resolve("ملف.txt", 1, 1).is_ok());
+        assert!(p.resolve_for_write("ملف.txt", 1, 1).is_ok());
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn downloads_symlink_escape_rejected() {
+        let (base, root) = downloads_dirs();
+        let outside = std::env::temp_dir().join(format!("niva-dl-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).unwrap();
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&outside, root.join("رابط")).is_ok();
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_dir(&outside, root.join("رابط")).is_ok();
+        #[cfg(not(any(unix, windows)))]
+        let linked = false;
+        if !linked {
+            let _ = std::fs::remove_dir_all(&base);
+            let _ = std::fs::remove_dir_all(&root);
+            let _ = std::fs::remove_dir_all(&outside);
+            return;
+        }
+        let mut p = FilePolicy::restricted(base.clone());
+        p.set_downloads(root.clone());
+        let res = p.resolve("تخزين/تنزيلات/رابط/سر.txt", 1, 1);
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
+        assert!(res.is_err(), "symlink escape out of downloads must be rejected");
+    }
+
+    #[test]
+    fn downloads_trusted_unrestricted() {
+        let (base, root) = downloads_dirs();
+        let mut p = FilePolicy::trusted(base.clone());
+        p.set_downloads(root.clone());
+        // Trusted mode lifts every restriction, downloads
+        // included — the caller opted out explicitly.
+        assert!(!p.is_under_downloads(&root.join("ملف.txt")));
+        assert!(p.resolve_for_write("تخزين/تنزيلات/ملف.txt", 1, 1).is_ok());
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

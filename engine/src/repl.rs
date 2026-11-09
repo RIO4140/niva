@@ -185,6 +185,16 @@ impl Engine {
         }
     }
 
+    /// Meeting 50 §64 (items 94/96): set the read-only
+    /// downloads root for this session — مرآة set_trusted
+    /// حرفيا.
+    fn set_downloads(&mut self, path: std::path::PathBuf) {
+        match self {
+            Engine::Vm(s) => s.set_downloads(path),
+            Engine::Interp(i) => i.set_downloads(path),
+        }
+    }
+
     /// اجتماع 32، السؤال الثامن: بث حي لمخرجات `اطبع`
     /// — مرآة set_trusted حرفيا.
     fn set_live_output(&mut self, live: bool) {
@@ -229,11 +239,14 @@ impl Engine {
         }
     }
 
-    fn reset(&mut self, trusted: bool, network_allowed: bool, server_allowed: bool, live_output: bool) {
+    fn reset(&mut self, trusted: bool, network_allowed: bool, server_allowed: bool, live_output: bool, downloads: Option<std::path::PathBuf>) {
         match self {
             Engine::Vm(s) => {
                 s.reset();
                 s.set_live_output(live_output);
+                if let Some(d) = downloads {
+                    s.set_downloads(d);
+                }
             }
             Engine::Interp(i) => {
                 *i = Interpreter::new();
@@ -241,6 +254,9 @@ impl Engine {
                 i.set_network_allowed(network_allowed);
                 i.set_server_allowed(server_allowed);
                 i.set_live_output(live_output);
+                if let Some(d) = downloads {
+                    i.set_downloads(d);
+                }
             }
         }
     }
@@ -267,6 +283,10 @@ pub struct Repl {
     // `اطبع` — النمط نفسه: المحرك يحمله لكل نسخة،
     // وreset() يعيد القيمة نفسها (وإلا ضاع عند :مسح).
     live_output: bool,
+    // Meeting 50 §64 (items 94/96): the read-only
+    // downloads root — النمط نفسه: المحرك يحمله لكل
+    // نسخة، وreset() يعيد القيمة نفسها.
+    downloads: Option<std::path::PathBuf>,
     // مجلد البرنامج (جذر الاستيراد والتشغيل) — يُحفظ
     // لأن `شغّل` يشغّل الملف منه؛ والجلسة نفسها تبنيه
     // من مجلد العمل الجاري (new) أو من المعطى (tests).
@@ -295,6 +315,7 @@ impl Repl {
             network_allowed: false,
             server_allowed: false,
             live_output: false,
+            downloads: None,
             program_dir,
             last_control: ReplControl::None,
             pending_reset: false,
@@ -315,6 +336,7 @@ impl Repl {
             network_allowed: false,
             server_allowed: false,
             live_output: false,
+            downloads: None,
             program_dir,
             last_control: ReplControl::None,
             pending_reset: false,
@@ -324,6 +346,25 @@ impl Repl {
     pub fn set_trusted(&mut self, trusted: bool) {
         self.trusted = trusted;
         self.engine.set_trusted(trusted);
+    }
+
+    /// Meeting 50 §64 (items 94/96): set the read-only
+    /// downloads root for this session, live — no restart,
+    /// no lost session state (mirror of set_trusted). The
+    /// path must exist and be a directory; otherwise an
+    /// Arabic error naming the problem, and nothing changes.
+    pub fn set_downloads(&mut self, path: std::path::PathBuf) -> Result<(), String> {
+        if !path.is_dir() {
+            return Err("مسار التنزيلات غير صالح".to_string());
+        }
+        self.downloads = Some(path.clone());
+        self.engine.set_downloads(path);
+        Ok(())
+    }
+
+    /// This session's downloads root, if storage was exposed.
+    pub fn downloads(&self) -> Option<std::path::PathBuf> {
+        self.downloads.clone()
     }
 
     /// REPL rooted at a given directory (tests; the app and the
@@ -494,6 +535,25 @@ impl Repl {
                 self.set_server_allowed(true);
                 ReplOutput {
                     output: String::new(),
+                    prompt: self.prompt(),
+                    ended: false,
+                    needs_network: false,
+                }
+            }
+            Some(ReplCommand::SetDownloads(path)) => {
+                // Meeting 50 §64: set the read-only downloads
+                // root inside the running process — no restart,
+                // no lost session state. The app sends this line
+                // itself when storage permission is granted; it
+                // never appears in the terminal text or in
+                // :اعرض. A bad path is an error line, and
+                // nothing changes.
+                let output = match self.set_downloads(path) {
+                    Ok(()) => String::new(),
+                    Err(msg) => format!("{}\n", msg),
+                };
+                ReplOutput {
+                    output,
                     prompt: self.prompt(),
                     ended: false,
                     needs_network: false,
@@ -1552,8 +1612,9 @@ impl Repl {
         let network_allowed = self.network_allowed;
         let server_allowed = self.server_allowed;
         let live_output = self.live_output;
+        let downloads = self.downloads.clone();
         self.engine
-            .reset(trusted, network_allowed, server_allowed, live_output);
+            .reset(trusted, network_allowed, server_allowed, live_output, downloads);
         self.analyzer = SemanticAnalyzer::new();
         self.history.clear();
         self.pending.clear();
@@ -1631,7 +1692,7 @@ pub fn welcome_text() -> String {
 /// `:مساعدة` output: a BARE command list — terminal convention,
 /// not teaching. No explanations, no examples, no notes.
 pub fn help_text() -> &'static str {
-    ":مساعدة\n:اعرض\n:امسح-المحفوظات\n:مسح\n:اسمح-بالشبكة\n:اسمح-بالخادم\n:خروج\nمعلومات\nأعد-الإعدادات\nأعد-الضبط\n"
+    ":مساعدة\n:اعرض\n:امسح-المحفوظات\n:مسح\n:اسمح-بالشبكة\n:اسمح-بالخادم\n:تنزيلات <مسار>\n:خروج\nمعلومات\nأعد-الإعدادات\nأعد-الضبط\n"
 }
 
 pub enum ReplCommand {
@@ -1650,6 +1711,11 @@ pub enum ReplCommand {
     /// Meeting 27: allow the server inside the running
     /// process (no restart). Sent by the host app on approval.
     AllowServer,
+    /// Meeting 50 §64 (items 94/96): set the read-only
+    /// downloads root inside the running process (no
+    /// restart). Sent by the host app when storage
+    /// permission is granted.
+    SetDownloads(std::path::PathBuf),
     Quit,
 }
 
@@ -1761,7 +1827,18 @@ fn format_shortcut_output(value: &Value) -> String {
 }
 
 pub fn parse_command(line: &str) -> Option<ReplCommand> {
-    match line.trim() {
+    let trimmed = line.trim();
+    // Meeting 50 §64: `:تنزيلات <مسار>` carries its
+    // argument, so it cannot match exactly — strip the
+    // prefix first; an empty path is not a command.
+    if let Some(rest) = trimmed.strip_prefix(":تنزيلات ") {
+        let path = rest.trim();
+        if path.is_empty() {
+            return None;
+        }
+        return Some(ReplCommand::SetDownloads(std::path::PathBuf::from(path)));
+    }
+    match trimmed {
         ":مساعدة" => Some(ReplCommand::Help),
         ":اعرض" => Some(ReplCommand::Show),
         ":امسح-المحفوظات" => Some(ReplCommand::ClearHistory),
@@ -2123,6 +2200,7 @@ pub fn run_repl(
     server_allowed: bool,
     local_hosts: &[String],
     use_interpreter: bool,
+    downloads: Option<std::path::PathBuf>,
 ) -> ExitCode {
     let mut repl = if use_interpreter {
         Repl::new_interpreter()
@@ -2132,6 +2210,11 @@ pub fn run_repl(
     repl.set_trusted(trusted);
     repl.set_network_allowed(network_allowed);
     repl.set_server_allowed(server_allowed);
+    // Meeting 50 §64: the downloads root, when the
+    // launcher passed one (validated in main.rs).
+    if let Some(d) = downloads {
+        let _ = repl.set_downloads(d);
+    }
     // اجتماع 32، السؤال الثامن: REPL التفاعلي يبث
     // `اطبع` حية — السطر يصل فور إنتاجه لا بعد الخروج.
     // (WASM لا يفعّله أبدا: يعرض result.output كما كان.)
@@ -2537,7 +2620,7 @@ mod tests {
         let o = r.feed(":مساعدة");
         assert_eq!(
             o.output,
-            "ألغيت الكتلة غير المكتملة.\n:مساعدة\n:اعرض\n:امسح-المحفوظات\n:مسح\n:اسمح-بالشبكة\n:اسمح-بالخادم\n:خروج\nمعلومات\nأعد-الإعدادات\nأعد-الضبط\n"
+            "ألغيت الكتلة غير المكتملة.\n:مساعدة\n:اعرض\n:امسح-المحفوظات\n:مسح\n:اسمح-بالشبكة\n:اسمح-بالخادم\n:تنزيلات <مسار>\n:خروج\nمعلومات\nأعد-الإعدادات\nأعد-الضبط\n"
         );
         assert_eq!(o.prompt, "~ $ ");
         assert!(!o.ended);

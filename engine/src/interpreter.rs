@@ -176,6 +176,12 @@ impl Interpreter {
         self.file_policy.resolve_in(&self.cwd, path, line, col)
     }
 
+    /// Like `resolve_cwd`, but a write is refused under the
+    /// downloads root (Meeting 50 §64, items 94/96).
+    fn resolve_cwd_for_write(&self, path: &str, line: usize, col: usize) -> RioResult<PathBuf> {
+        self.file_policy.resolve_in_for_write(&self.cwd, path, line, col)
+    }
+
     /// Parse a line-count argument: a whole number, or a text
     /// of (Arabic or Western) digits, like the عدد builtin.
     pub(crate) fn count_arg(v: &Value, line: usize, col: usize) -> RioResult<usize> {
@@ -321,6 +327,13 @@ impl Interpreter {
 
     pub fn set_trusted(&mut self, trusted: bool) {
         self.file_policy.trusted = trusted;
+    }
+
+    /// Meeting 50 §64 (items 94/96): set the read-only
+    /// downloads root for this session. The caller
+    /// validates that the path exists and is a directory.
+    pub fn set_downloads(&mut self, path: std::path::PathBuf) {
+        self.file_policy.set_downloads(path);
     }
 
     /// Meeting 22: network capability. Default OFF; the CLI
@@ -2474,7 +2487,7 @@ impl Interpreter {
                 arity(2)?;
                 match (&args[0], &args[1]) {
                     (Value::Str(path), Value::Str(content)) => {
-                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let resolved = self.resolve_cwd_for_write(path, line, col)?;
                         // Audit م-20: refuse a write that would
                         // push the program dir past its quota
                         // (net growth only — rewriting a file
@@ -2647,7 +2660,7 @@ impl Interpreter {
                 arity(1)?;
                 match &args[0] {
                     Value::Str(dir) => {
-                        let resolved = self.resolve_cwd(dir, line, col)?;
+                        let resolved = self.resolve_cwd_for_write(dir, line, col)?;
                         std::fs::create_dir(&resolved).map(|_| Value::Nil).map_err(|e| {
                             RioError::new(
                                 ErrorKind::Io,
@@ -2668,7 +2681,7 @@ impl Interpreter {
                 arity(1)?;
                 match &args[0] {
                     Value::Str(path) => {
-                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let resolved = self.resolve_cwd_for_write(path, line, col)?;
                         match std::fs::metadata(&resolved) {
                             Ok(m) if m.is_dir() => {
                                 std::fs::remove_dir(&resolved).map(|_| Value::Nil).map_err(|e| {
@@ -2709,7 +2722,7 @@ impl Interpreter {
                 arity(1)?;
                 match &args[0] {
                     Value::Str(path) => {
-                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let resolved = self.resolve_cwd_for_write(path, line, col)?;
                         match std::fs::metadata(&resolved) {
                             Ok(m) if m.is_dir() => {
                                 std::fs::remove_dir(&resolved).map(|_| Value::Nil).map_err(|e| {
@@ -2746,7 +2759,7 @@ impl Interpreter {
                 arity(1)?;
                 match &args[0] {
                     Value::Str(path) => {
-                        let resolved = self.resolve_cwd(path, line, col)?;
+                        let resolved = self.resolve_cwd_for_write(path, line, col)?;
                         match std::fs::metadata(&resolved) {
                             Ok(m) if !m.is_dir() => {
                                 std::fs::remove_file(&resolved).map(|_| Value::Nil).map_err(|e| {
@@ -2784,7 +2797,7 @@ impl Interpreter {
                 match (&args[0], &args[1]) {
                     (Value::Str(src), Value::Str(dst)) => {
                         let src_path = self.resolve_cwd(src, line, col)?;
-                        let mut dst_path = self.resolve_cwd(dst, line, col)?;
+                        let mut dst_path = self.resolve_cwd_for_write(dst, line, col)?;
                         // cp into a directory keeps the file name.
                         if dst_path.is_dir() {
                             if let Some(name) = src_path.file_name() {
@@ -2814,8 +2827,8 @@ impl Interpreter {
                 arity(2)?;
                 match (&args[0], &args[1]) {
                     (Value::Str(src), Value::Str(dst)) => {
-                        let src_path = self.resolve_cwd(src, line, col)?;
-                        let mut dst_path = self.resolve_cwd(dst, line, col)?;
+                        let src_path = self.resolve_cwd_for_write(src, line, col)?;
+                        let mut dst_path = self.resolve_cwd_for_write(dst, line, col)?;
                         // mv into a directory keeps the file name.
                         if dst_path.is_dir() {
                             if let Some(name) = src_path.file_name() {

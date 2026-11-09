@@ -70,6 +70,73 @@ const LISTEN_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:اسمع:";
 /// — أندرويد فقط.
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
 const BATTERY_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:بطارية:";
+/// بادئات الدفعة 4 من الكتالوج (البنود 22–34) —
+/// أندرويد فقط؛ كلها على النمط نفسه (طلب JSON ثم
+/// انتظار نتيجة واحدة).
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const SHARE_FILE_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:شارك_ملف:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const SHARE_TEXT_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:شارك_نص:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const OPEN_FILE_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:افتح_ملف:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const OPEN_URL_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:افتح_رابط:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const CLIPBOARD_SET_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:انسخ_للحافظة:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const CLIPBOARD_GET_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:الحافظة:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const PICK_FILE_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:اختر_ملف:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const LOCATION_LAST_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:موقع:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const LOCATION_ONCE_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:موقع_حي:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const CAMERAS_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:كاميرات:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const CAPTURE_PHOTO_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:التقط_صورة:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const WIFI_INFO_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:واي_فاي:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const WIFI_SCAN_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:مسح_واي_فاي:";
+/// بادئات الدفعة 4ب من الكتالوج (البنود 61 و62 و66–72
+/// و79 و105 و106 و119) — أندرويد فقط؛ النمط نفسه.
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const COPY_LAST_ERROR_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:انسخ_آخر_خطأ:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const SHARE_SESSION_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:شارك_الجلسة:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const PAUSE_AUDIO_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:أوقف_صوت_مؤقتا:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const RESUME_AUDIO_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:استأنف_صوت:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const AUDIO_INFO_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:معلومات_صوت:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const LIST_SENSORS_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:حساسات:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const VOLUME_LEVEL_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:مستوى_الصوت:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const SET_VOLUME_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:اضبط_مستوى_الصوت:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const VIBRATE_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:اهتز:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const TORCH_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:مصباح:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const RECORD_AUDIO_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:سجل_صوت:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const BRIGHTNESS_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:سطوع:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const TOAST_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:توست:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const AUDIO_DEVICE_INFO_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:معلومات_الصوت:";
+/// بادئات الدفعة 5 من الكتالوج (البنود 98 و99
+/// خطوة 1) — أندرويد فقط؛ النمط نفسه.
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const DOWNLOAD_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:نزل:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const READ_DOCUMENT_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:اقرأ_مستند:";
+#[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
+const LIST_FOLDER_CONTROL_PREFIX: &str = "\u{0001}نيفا-تحكم:اعرض_مجلد:";
 /// بادئة سطر نتيجة التحكم على stdin — أندرويد فقط،
 /// وتبقى في اختبارات الوحدة (انتظار SAF القابل
 /// للإلغاء في files.rs — المهمة 28).
@@ -1257,6 +1324,2374 @@ fn remove_notification_native(id: u64, line: usize, col: usize) -> RioResult<Val
     }
 }
 
+// ===== الدفعة 4أ من الكتالوج (البنود 22–28:
+// مشاركة وفتح وحافظة ومنتقي ملف) =====
+// كل دالة على النمط نفسه: تحقق خالص (كل المنصات)،
+// ثم بوابة المنصة، ثم القناة والانتظار؛ والنتيجة
+// المتوقعة تُفحص نوعا قبل إرجاعها (فخرق بروتوكول
+// التطبيق خطأ عربي لا قيمة مشوهة).
+
+/// التحقق الخالص من وسائط `جهاز.شارك_ملف` — معامل
+/// واحد نص (مسار ملف) غير فارغ (البند 22).
+pub fn validate_share_file_args(args: &[Value], line: usize, col: usize) -> RioResult<String> {
+    const DISPLAY: &str = "جهاز.شارك_ملف";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 معامل لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let path = match &args[0] {
+        Value::Str(s) => s.clone(),
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع نصا لمسار الملف لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if path.is_empty() {
+        return Err(RioError::runtime("مسار الملف فارغ", line, col));
+    }
+    Ok(path)
+}
+
+/// التحقق الخالص من وسائط `جهاز.شارك_نص` — معامل
+/// واحد نص غير فارغ (البند 22، الخطوة 2).
+pub fn validate_share_text_args(args: &[Value], line: usize, col: usize) -> RioResult<String> {
+    const DISPLAY: &str = "جهاز.شارك_نص";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 معامل لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let text = match &args[0] {
+        Value::Str(s) => s.clone(),
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع نصا للنص المشارك لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if text.is_empty() {
+        return Err(RioError::runtime("النص المشارك فارغ", line, col));
+    }
+    Ok(text)
+}
+
+/// التحقق الخالص من وسائط `جهاز.افتح_ملف` — معامل
+/// واحد نص (مسار ملف) غير فارغ (البند 23).
+pub fn validate_open_file_args(args: &[Value], line: usize, col: usize) -> RioResult<String> {
+    const DISPLAY: &str = "جهاز.افتح_ملف";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 معامل لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let path = match &args[0] {
+        Value::Str(s) => s.clone(),
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع نصا لمسار الملف لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if path.is_empty() {
+        return Err(RioError::runtime("مسار الملف فارغ", line, col));
+    }
+    Ok(path)
+}
+
+/// التحقق الخالص من وسائط `جهاز.افتح_رابط` — معامل
+/// واحد نص رابط http أو https (البند 23).
+pub fn validate_open_url_args(args: &[Value], line: usize, col: usize) -> RioResult<String> {
+    const DISPLAY: &str = "جهاز.افتح_رابط";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 معامل لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let url = match &args[0] {
+        Value::Str(s) => s.clone(),
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع نصا للرابط لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if url.is_empty() {
+        return Err(RioError::runtime("الرابط فارغ", line, col));
+    }
+    if !(url.starts_with("http://") || url.starts_with("https://")) || url.contains(' ') {
+        return Err(RioError::runtime(
+            "الرابط يجب أن يبدأ بـ http:// أو https://",
+            line,
+            col,
+        ));
+    }
+    Ok(url)
+}
+
+/// التحقق الخالص من وسائط `جهاز.انسخ_للحافظة` —
+/// معامل واحد نص غير فارغ (البند 24).
+pub fn validate_clipboard_set_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    const DISPLAY: &str = "جهاز.انسخ_للحافظة";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 معامل لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let text = match &args[0] {
+        Value::Str(s) => s.clone(),
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع نصا للنص المنسوخ لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if text.is_empty() {
+        return Err(RioError::runtime("النص المنسوخ فارغ", line, col));
+    }
+    Ok(text)
+}
+
+/// التحقق الخالص من وسائط `جهاز.الحافظة` —
+/// بلا معاملات (البند 25).
+pub fn validate_clipboard_get_args(args: &[Value], line: usize, col: usize) -> RioResult<()> {
+    const DISPLAY: &str = "جهاز.الحافظة";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 0 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+/// التحقق الخالص من وسائط `جهاز.اختر_ملف` —
+/// بلا معاملات (البند 28).
+pub fn validate_pick_file_args(args: &[Value], line: usize, col: usize) -> RioResult<()> {
+    const DISPLAY: &str = "جهاز.اختر_ملف";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 0 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+/// تسلسل طلب مشاركة ملف إلى JSON — المسار المطلق
+/// المحلول.
+pub fn serialize_share_file_request(abs_path: &str) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str("\"مسار\":");
+    out.push_str(&json_escape(abs_path));
+    out.push('}');
+    out
+}
+
+/// تسلسل طلب مشاركة نص إلى JSON.
+pub fn serialize_share_text_request(text: &str) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str("\"نص\":");
+    out.push_str(&json_escape(text));
+    out.push('}');
+    out
+}
+
+/// تسلسل طلب فتح ملف إلى JSON — المسار المطلق
+/// المحلول.
+pub fn serialize_open_file_request(abs_path: &str) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str("\"مسار\":");
+    out.push_str(&json_escape(abs_path));
+    out.push('}');
+    out
+}
+
+/// تسلسل طلب فتح رابط إلى JSON.
+pub fn serialize_open_url_request(url: &str) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str("\"رابط\":");
+    out.push_str(&json_escape(url));
+    out.push('}');
+    out
+}
+
+/// تسلسل طلب كتابة الحافظة إلى JSON.
+pub fn serialize_clipboard_set_request(text: &str) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str("\"نص\":");
+    out.push_str(&json_escape(text));
+    out.push('}');
+    out
+}
+
+/// تسلسل طلب قراءة الحافظة إلى JSON — كائن فارغ.
+pub fn serialize_clipboard_get_request() -> String {
+    "{}".to_string()
+}
+
+/// تسلسل طلب منتقي الملف إلى JSON — كائن فارغ.
+pub fn serialize_pick_file_request() -> String {
+    "{}".to_string()
+}
+
+/// نقطة الدخول: `جهاز.شارك_ملف(...)` — التحقق أولا،
+/// ثم حلّ المسار وفحص الوجود ورفض ملفات الخصائص
+/// (البند 22: لا مشاركة لملفات الخصائص)، ثم بوابة
+/// المنصة، ثم القناة والانتظار؛ وترجع `صحيح` عند
+/// عرض المختار. النتيجة تُرسَل فور عرض المختار
+/// (بلا انتظار اختيار المستخدم — فالمشاركة بلا
+/// نتيجة نظامية).
+pub fn share_file(
+    args: &[Value],
+    policy: &crate::permissions::FilePolicy,
+    cwd: &std::path::Path,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let path = validate_share_file_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (&path, policy, cwd);
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        share_file_native(&path, policy, cwd, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn share_file_native(
+    path: &str,
+    policy: &crate::permissions::FilePolicy,
+    cwd: &std::path::Path,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (path, policy, cwd);
+        Err(RioError::runtime(
+            "جهاز.شارك_ملف غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            let resolved = policy.resolve_in(cwd, path, line, col)?;
+            if !resolved.is_file() {
+                return Err(RioError::runtime(
+                    format!("ملف المشاركة غير موجود: {}", policy.display_path(&resolved)),
+                    line,
+                    col,
+                ));
+            }
+            if resolved
+                .extension()
+                .map(|e| e == "properties")
+                .unwrap_or(false)
+            {
+                return Err(RioError::runtime(
+                    "لا مشاركة لملفات الخصائص",
+                    line,
+                    col,
+                ));
+            }
+            let abs = resolved.to_string_lossy().to_string();
+            eprintln!(
+                "{}{}",
+                SHARE_FILE_CONTROL_PREFIX,
+                serialize_share_file_request(&abs)
+            );
+            match wait_for_result(line, col) {
+                Ok(Value::Bool(true)) => Ok(Value::Bool(true)),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("المشاركة متاحة داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.شارك_نص(...)` — التحقق أولا،
+/// ثم بوابة المنصة، ثم القناة والانتظار؛ وترجع
+/// `صحيح` عند عرض المختار (بلا انتظار اختيار
+/// المستخدم — كالمشاركة بالملف).
+pub fn share_text(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let text = validate_share_text_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = text;
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        share_text_native(&text, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn share_text_native(text: &str, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = text;
+        Err(RioError::runtime(
+            "جهاز.شارك_نص غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                SHARE_TEXT_CONTROL_PREFIX,
+                serialize_share_text_request(text)
+            );
+            match wait_for_result(line, col) {
+                Ok(Value::Bool(true)) => Ok(Value::Bool(true)),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("المشاركة متاحة داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.افتح_ملف(...)` — التحقق أولا،
+/// ثم حلّ المسار وفحص الوجود، ثم بوابة المنصة، ثم
+/// القناة والانتظار؛ وترجع `صحيح` عند إطلاق العارض
+/// الخارجي (بلا انتظار إغلاقه).
+pub fn open_file(
+    args: &[Value],
+    policy: &crate::permissions::FilePolicy,
+    cwd: &std::path::Path,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let path = validate_open_file_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (&path, policy, cwd);
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        open_file_native(&path, policy, cwd, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn open_file_native(
+    path: &str,
+    policy: &crate::permissions::FilePolicy,
+    cwd: &std::path::Path,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (path, policy, cwd);
+        Err(RioError::runtime(
+            "جهاز.افتح_ملف غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            let resolved = policy.resolve_in(cwd, path, line, col)?;
+            if !resolved.is_file() {
+                return Err(RioError::runtime(
+                    format!("ملف العرض غير موجود: {}", policy.display_path(&resolved)),
+                    line,
+                    col,
+                ));
+            }
+            let abs = resolved.to_string_lossy().to_string();
+            eprintln!(
+                "{}{}",
+                OPEN_FILE_CONTROL_PREFIX,
+                serialize_open_file_request(&abs)
+            );
+            match wait_for_result(line, col) {
+                Ok(Value::Bool(true)) => Ok(Value::Bool(true)),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("الفتح متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.افتح_رابط(...)` — التحقق أولا
+/// (الرابط http/https فقط)، ثم بوابة المنصة، ثم
+/// القناة والانتظار؛ وترجع `صحيح` عند إطلاق المتصفح.
+pub fn open_url(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let url = validate_open_url_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = url;
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        open_url_native(&url, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn open_url_native(url: &str, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = url;
+        Err(RioError::runtime(
+            "جهاز.افتح_رابط غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                OPEN_URL_CONTROL_PREFIX,
+                serialize_open_url_request(url)
+            );
+            match wait_for_result(line, col) {
+                Ok(Value::Bool(true)) => Ok(Value::Bool(true)),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("الفتح متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.انسخ_للحافظة(...)` — التحقق
+/// أولا، ثم بوابة المنصة، ثم القناة والانتظار؛
+/// وترجع `صحيح` عند النسخ. بلا إذن نظام (الكتابة
+/// بلا تنبيه).
+pub fn clipboard_set(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let text = validate_clipboard_set_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = text;
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        clipboard_set_native(&text, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn clipboard_set_native(text: &str, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = text;
+        Err(RioError::runtime(
+            "جهاز.انسخ_للحافظة غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                CLIPBOARD_SET_CONTROL_PREFIX,
+                serialize_clipboard_set_request(text)
+            );
+            match wait_for_result(line, col) {
+                Ok(Value::Bool(true)) => Ok(Value::Bool(true)),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("الحافظة متاحة داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.الحافظة(...)` — التحقق أولا،
+/// ثم بوابة المنصة، ثم القناة والانتظار؛ وترجع نص
+/// الحافظة (وقد يكون فارغا — إجابة صادقة لا خطأ).
+/// قيد نظام: أندرويد 12+ يُظهر تنبيها عند قراءة
+/// التطبيقات للحافظة — سلوك نظام لا عيب في نيفا.
+pub fn clipboard_get(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_clipboard_get_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        clipboard_get_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn clipboard_get_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.الحافظة غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                CLIPBOARD_GET_CONTROL_PREFIX,
+                serialize_clipboard_get_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Str(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("الحافظة متاحة داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.اختر_ملف(...)` — التحقق أولا،
+/// ثم بوابة المنصة، ثم القناة والانتظار حتى يختار
+/// المستخدم ملفا؛ وترجع اسم الملف المنسوخ إلى مجلد
+/// البرنامج (نسبيا — كما يعرضه الترمنال). إلغاء
+/// المنتقي خطأ عربي «ألغى المستخدم اختيار الملف».
+pub fn pick_file(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_pick_file_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        pick_file_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn pick_file_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.اختر_ملف غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                PICK_FILE_CONTROL_PREFIX,
+                serialize_pick_file_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Str(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("المنتقي متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+// ===== الدفعة 4أ — البنود 29–34: موقع وكاميرا
+// وواي فاي =====
+
+/// التحقق الخالص من وسائط `جهاز.موقع` —
+/// بلا معاملات (البند 29: آخر موقع معروف فقط).
+pub fn validate_location_last_args(args: &[Value], line: usize, col: usize) -> RioResult<()> {
+    const DISPLAY: &str = "جهاز.موقع";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 0 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+/// التحقق الخالص من وسائط `جهاز.موقع_حي` —
+/// بلا معاملات (البند 30: قراءة واحدة حية بمهلة
+/// 10 ثوان في التطبيق).
+pub fn validate_location_once_args(args: &[Value], line: usize, col: usize) -> RioResult<()> {
+    const DISPLAY: &str = "جهاز.موقع_حي";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 0 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+/// التحقق الخالص من وسائط `جهاز.كاميرات` —
+/// بلا معاملات (البند 31: سرد معلومات الكاميرات).
+pub fn validate_cameras_args(args: &[Value], line: usize, col: usize) -> RioResult<()> {
+    const DISPLAY: &str = "جهاز.كاميرات";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 0 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+/// التحقق الخالص من وسائط `جهاز.التقط_صورة` —
+/// معامل واحد نص (مسار الصورة) غير فارغ (البند 32).
+/// بلا معرّف كاميرا: الالتقاط عبر نية كاميرا النظام
+/// (أبسط وأوثق)، وتطبيق الكاميرا يختار الكاميرا من
+/// واجهته — فمعامل بلا أثر مرفوض عمدا.
+pub fn validate_capture_photo_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    const DISPLAY: &str = "جهاز.التقط_صورة";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 معامل لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let path = match &args[0] {
+        Value::Str(s) => s.clone(),
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع نصا لمسار الصورة لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if path.is_empty() {
+        return Err(RioError::runtime("مسار الصورة فارغ", line, col));
+    }
+    Ok(path)
+}
+
+/// التحقق الخالص من وسائط `جهاز.واي_فاي` —
+/// بلا معاملات (البند 33: معلومات الاتصال الحالي).
+pub fn validate_wifi_info_args(args: &[Value], line: usize, col: usize) -> RioResult<()> {
+    const DISPLAY: &str = "جهاز.واي_فاي";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 0 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+/// التحقق الخالص من وسائط `جهاز.مسح_واي_فاي` —
+/// بلا معاملات (البند 34: مسح الشبكات القريبة).
+pub fn validate_wifi_scan_args(args: &[Value], line: usize, col: usize) -> RioResult<()> {
+    const DISPLAY: &str = "جهاز.مسح_واي_فاي";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 0 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+/// تسلسل طلب آخر موقع معروف إلى JSON — كائن فارغ.
+pub fn serialize_location_last_request() -> String {
+    "{}".to_string()
+}
+
+/// تسلسل طلب قراءة موقع حية إلى JSON — كائن فارغ.
+pub fn serialize_location_once_request() -> String {
+    "{}".to_string()
+}
+
+/// تسلسل طلب سرد الكاميرات إلى JSON — كائن فارغ.
+pub fn serialize_cameras_request() -> String {
+    "{}".to_string()
+}
+
+/// تسلسل طلب التقاط صورة إلى JSON — المسار المطلق
+/// المحلول.
+pub fn serialize_capture_photo_request(abs_path: &str) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str("\"مسار\":");
+    out.push_str(&json_escape(abs_path));
+    out.push('}');
+    out
+}
+
+/// تسلسل طلب معلومات الواي فاي إلى JSON — كائن فارغ.
+pub fn serialize_wifi_info_request() -> String {
+    "{}".to_string()
+}
+
+/// تسلسل طلب مسح الواي فاي إلى JSON — كائن فارغ.
+pub fn serialize_wifi_scan_request() -> String {
+    "{}".to_string()
+}
+
+/// نقطة الدخول: `جهاز.موقع(...)` — التحقق أولا، ثم
+/// بوابة المنصة، ثم القناة والانتظار؛ وترجع قاموس
+/// {خط_عرض، خط_طول، دقة} + ارتفاع/سرعة/اتجاه حين
+/// يبلّغها المزوّد. بلا موقع معروف خطأ عربي واضح.
+pub fn location_last(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_location_last_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        location_last_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn location_last_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.موقع غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                LOCATION_LAST_CONTROL_PREFIX,
+                serialize_location_last_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Dict(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("الموقع متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.موقع_حي(...)` — التحقق أولا،
+/// ثم بوابة المنصة، ثم القناة والانتظار حتى تصل
+/// قراءة حية واحدة (مهلة 10 ثوان في التطبيق)؛
+/// وترجع القاموس نفسه كالموقع الأخير. بلا قراءة
+/// خلال المهلة خطأ عربي واضح. البث المستمر مرفوض
+/// — من أراد تتبعا فليكرر القراءة بنفسه.
+pub fn location_once(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_location_once_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        location_once_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn location_once_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.موقع_حي غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                LOCATION_ONCE_CONTROL_PREFIX,
+                serialize_location_once_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Dict(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("الموقع متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.كاميرات(...)` — التحقق أولا،
+/// ثم بوابة المنصة، ثم القناة والانتظار؛ وترجع قائمة
+/// قواميس {معرّف، اتجاه} (أمامية/خلفية/خارجية) —
+/// وقائمة فارغة إجابة صادقة لا خطأ. بلا إذن نظام
+/// (سرد قدرات فقط).
+pub fn list_cameras(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_cameras_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        list_cameras_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn list_cameras_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.كاميرات غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                CAMERAS_CONTROL_PREFIX,
+                serialize_cameras_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::List(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("الكاميرا متاحة داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.التقط_صورة(...)` — التحقق
+/// أولا، ثم حلّ المسار (الملف سيُنشأ — فلا فحص
+/// وجود)، ثم بوابة المنصة، ثم القناة والانتظار حتى
+/// يلتقط المستخدم الصورة؛ وترجع `صحيح` عند الحفظ.
+/// بلا معاينة حية داخل الترمنال — الصورة ملف،
+/// والمستخدم يعرضه بتطبيق خارجي.
+pub fn capture_photo(
+    args: &[Value],
+    policy: &crate::permissions::FilePolicy,
+    cwd: &std::path::Path,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let path = validate_capture_photo_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (&path, policy, cwd);
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        capture_photo_native(&path, policy, cwd, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn capture_photo_native(
+    path: &str,
+    policy: &crate::permissions::FilePolicy,
+    cwd: &std::path::Path,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (path, policy, cwd);
+        Err(RioError::runtime(
+            "جهاز.التقط_صورة غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            // Meeting 50 §64: the photo destination is a
+            // write — refused under the downloads root.
+            let resolved = policy.resolve_in_for_write(cwd, path, line, col)?;
+            let abs = resolved.to_string_lossy().to_string();
+            eprintln!(
+                "{}{}",
+                CAPTURE_PHOTO_CONTROL_PREFIX,
+                serialize_capture_photo_request(&abs)
+            );
+            match wait_for_result(line, col) {
+                Ok(Value::Bool(true)) => Ok(Value::Bool(true)),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("الكاميرا متاحة داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.واي_فاي(...)` — التحقق أولا،
+/// ثم بوابة المنصة، ثم القناة والانتظار؛ وترجع قاموس
+/// {SSID، BSSID، تردد، قوة، سرعة، عنوان}. بلا اتصال
+/// واي فاي خطأ عربي واضح. SSID كما يبلّغه النظام
+/// (وقد يكون «غير معروف» بلا إذن موقع — سلوك نظام).
+pub fn wifi_info(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_wifi_info_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        wifi_info_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn wifi_info_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.واي_فاي غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                WIFI_INFO_CONTROL_PREFIX,
+                serialize_wifi_info_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Dict(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("الواي فاي متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.مسح_واي_فاي(...)` — التحقق
+/// أولا، ثم بوابة المنصة، ثم القناة والانتظار؛ وترجع
+/// قائمة قواميس {SSID، BSSID، تردد، قوة، قدرات}.
+/// المسح بإذن الموقع — يُشرح للمستخدم أنه إذن مسح
+/// لا تتبّع. تشغيل/إيقاف الواي فاي مرفوض — أندرويد
+/// 10+ يمنع التطبيقات من تبديله أصلا.
+pub fn wifi_scan(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_wifi_scan_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        wifi_scan_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn wifi_scan_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.مسح_واي_فاي غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                WIFI_SCAN_CONTROL_PREFIX,
+                serialize_wifi_scan_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::List(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("الواي فاي متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+// ===== الدفعة 4ب من الكتالوج (البنود 61 و62 و66–72
+// و79 و105 و106 و119) — النمط نفسه: تحقق خالص
+// (كل المنصات) + تسلسل + بوابة منصة + قناة تحكم
+// + انتظار نتيجة واحدة. =====
+
+/// مساعد مشترك: التحقق من دالة بلا معاملات —
+/// خطأ العدد قبل المنصة (نمط `validate_battery_args`
+/// نفسه، مستخرجا للاستخدام المشترك).
+fn validate_zero_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+    display: &str,
+) -> RioResult<()> {
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 0 معاملات لكن أعطيت {}",
+                display,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+/// التحقق الخالص من وسائط `جهاز.انسخ_آخر_خطأ` —
+/// بلا معاملات (البند 61).
+pub fn validate_copy_last_error_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    validate_zero_args(args, line, col, "جهاز.انسخ_آخر_خطأ")
+}
+
+/// التحقق الخالص من وسائط `جهاز.شارك_الجلسة` —
+/// بلا معاملات (البند 62).
+pub fn validate_share_session_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    validate_zero_args(args, line, col, "جهاز.شارك_الجلسة")
+}
+
+/// التحقق الخالص من وسائط `جهاز.أوقف_صوت_مؤقتا` —
+/// بلا معاملات (البند 66).
+pub fn validate_pause_audio_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    validate_zero_args(args, line, col, "جهاز.أوقف_صوت_مؤقتا")
+}
+
+/// التحقق الخالص من وسائط `جهاز.استأنف_صوت` —
+/// بلا معاملات (البند 66).
+pub fn validate_resume_audio_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    validate_zero_args(args, line, col, "جهاز.استأنف_صوت")
+}
+
+/// التحقق الخالص من وسائط `جهاز.معلومات_صوت` —
+/// معامل واحد نص (مسار الصوت) غير فارغ (البند 67).
+pub fn validate_audio_info_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    const DISPLAY: &str = "جهاز.معلومات_صوت";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 معامل لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let path = match &args[0] {
+        Value::Str(s) => s.clone(),
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع نصا لمسار الصوت لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if path.is_empty() {
+        return Err(RioError::runtime("مسار الصوت فارغ", line, col));
+    }
+    Ok(path)
+}
+
+/// التحقق الخالص من وسائط `جهاز.حساسات` —
+/// بلا معاملات (البند 68).
+pub fn validate_list_sensors_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    validate_zero_args(args, line, col, "جهاز.حساسات")
+}
+
+/// التحقق الخالص من وسائط `جهاز.مستوى_الصوت` —
+/// بلا معاملات (البند 69).
+pub fn validate_volume_level_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    validate_zero_args(args, line, col, "جهاز.مستوى_الصوت")
+}
+
+/// التحقق الخالص من وسائط `جهاز.اضبط_مستوى_الصوت` —
+/// معامل واحد عدد صحيح ≥ 0 (البند 70)؛ والتطبيق
+/// يقصّه إلى [0، الأقصى] ويرجع المستوى الجديد.
+pub fn validate_set_volume_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<i64> {
+    const DISPLAY: &str = "جهاز.اضبط_مستوى_الصوت";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 معامل لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let level = match &args[0] {
+        Value::Number(n) => *n,
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع عددا للمستوى لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if level.fract() != 0.0 || level < 0.0 || level > 1_000_000.0 {
+        return Err(RioError::runtime(
+            "مستوى الصوت يجب أن يكون عددا صحيحا لا يقل عن 0",
+            line,
+            col,
+        ));
+    }
+    Ok(level as i64)
+}
+
+/// التحقق الخالص من وسائط `جهاز.اهتز` — 0 أو 1
+/// معامل: مدة بالمللي ثانية 1–10000، الافتراضي
+/// 1000 (البند 71).
+pub fn validate_vibrate_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<i64> {
+    const DISPLAY: &str = "جهاز.اهتز";
+    if args.len() > 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 0 أو 1 معامل لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    if args.is_empty() {
+        return Ok(1000);
+    }
+    let ms = match &args[0] {
+        Value::Number(n) => *n,
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع عددا للمدة لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if ms.fract() != 0.0 || ms < 1.0 || ms > 10_000.0 {
+        return Err(RioError::runtime(
+            "مدة الاهتزاز يجب أن تكون عددا صحيحا بين 1 و10000 مللي ثانية",
+            line,
+            col,
+        ));
+    }
+    Ok(ms as i64)
+}
+
+/// التحقق الخالص من وسائط `جهاز.مصباح` — معامل
+/// واحد منطقي (تشغيل/إيقاف) (البند 72).
+pub fn validate_torch_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<bool> {
+    const DISPLAY: &str = "جهاز.مصباح";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 معامل لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    match &args[0] {
+        Value::Bool(b) => Ok(*b),
+        other => Err(typ_error(
+            DISPLAY,
+            &format!("تتوقع منطقيا للحالة لكن أعطيت {}", other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+/// التحقق الخالص من وسائط `جهاز.سجّل_صوت` — معامل
+/// واحد (ملف) أو اثنان (ملف + مدة بالثواني 1–300،
+/// الافتراضي 60) (البند 79).
+pub fn validate_record_audio_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<(String, i64)> {
+    const DISPLAY: &str = "جهاز.سجّل_صوت";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 أو 2 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let path = match &args[0] {
+        Value::Str(s) => s.clone(),
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع نصا لمسار التسجيل لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if path.is_empty() {
+        return Err(RioError::runtime("مسار التسجيل فارغ", line, col));
+    }
+    let seconds = if args.len() == 2 {
+        match &args[1] {
+            Value::Number(n) => *n,
+            other => {
+                return Err(typ_error(
+                    DISPLAY,
+                    &format!("تتوقع عددا للمدة لكن أعطيت {}", other.type_name()),
+                    line,
+                    col,
+                ))
+            }
+        }
+    } else {
+        60.0
+    };
+    if seconds.fract() != 0.0 || seconds < 1.0 || seconds > 300.0 {
+        return Err(RioError::runtime(
+            "مدة التسجيل يجب أن تكون عددا صحيحا بين 1 و300 ثانية",
+            line,
+            col,
+        ));
+    }
+    Ok((path, seconds as i64))
+}
+
+/// التحقق الخالص من وسائط `جهاز.سطوع` — معامل واحد:
+/// عدد 0–100 أو نص «تلقائي» (البند 105)؛ والكتابة
+/// في إعدادات النظام إذن خاص — بلا منح يفتح التطبيق
+/// شاشة الإعدادات ويرجع خطأ يعيد المحاولة بعد المنح.
+pub fn validate_brightness_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<BrightnessArg> {
+    const DISPLAY: &str = "جهاز.سطوع";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 معامل لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    match &args[0] {
+        Value::Number(n) => {
+            if n.fract() != 0.0 || *n < 0.0 || *n > 100.0 {
+                return Err(RioError::runtime(
+                    "مستوى السطوع يجب أن يكون عددا صحيحا بين 0 و100",
+                    line,
+                    col,
+                ));
+            }
+            Ok(BrightnessArg::Level(*n as i64))
+        }
+        Value::Str(s) if s == "تلقائي" => Ok(BrightnessArg::Auto),
+        Value::Str(_) => Err(RioError::runtime(
+            "سطوع النص يجب أن يكون «تلقائي» فقط",
+            line,
+            col,
+        )),
+        other => Err(typ_error(
+            DISPLAY,
+            &format!(
+                "تتوقع عددا أو نص «تلقائي» لكن أعطيت {}",
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// معامل `جهاز.سطوع` بعد التحقق: مستوى أو تلقائي.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BrightnessArg {
+    Level(i64),
+    Auto,
+}
+
+/// التحقق الخالص من وسائط `جهاز.توست` — معامل واحد
+/// (نص) أو اثنان (نص + «قصير»/«طويل»، الافتراضي
+/// «قصير») (البند 106)؛ وقاعدة التوست 196-1:
+/// إلغاء السابق قبل عرض الجديد — في التطبيق.
+pub fn validate_toast_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<(String, bool)> {
+    const DISPLAY: &str = "جهاز.توست";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 1 أو 2 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let text = match &args[0] {
+        Value::Str(s) => s.clone(),
+        other => {
+            return Err(typ_error(
+                DISPLAY,
+                &format!("تتوقع نصا للرسالة لكن أعطيت {}", other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if text.is_empty() {
+        return Err(RioError::runtime("نص التوست فارغ", line, col));
+    }
+    let long = if args.len() == 2 {
+        match &args[1] {
+            Value::Str(s) if s == "قصير" => false,
+            Value::Str(s) if s == "طويل" => true,
+            Value::Str(_) => {
+                return Err(RioError::runtime(
+                    "مدة التوست يجب أن تكون «قصير» أو «طويل»",
+                    line,
+                    col,
+                ))
+            }
+            other => {
+                return Err(typ_error(
+                    DISPLAY,
+                    &format!("تتوقع نصا للمدة لكن أعطيت {}", other.type_name()),
+                    line,
+                    col,
+                ))
+            }
+        }
+    } else {
+        false
+    };
+    Ok((text, long))
+}
+
+/// التحقق الخالص من وسائط `جهاز.معلومات_الصوت` —
+/// بلا معاملات (البند 119).
+pub fn validate_audio_device_info_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    validate_zero_args(args, line, col, "جهاز.معلومات_الصوت")
+}
+
+/// تسلسل طلبات الدفعة 4ب بلا حمولة إلى JSON.
+pub fn serialize_empty_request() -> String {
+    "{}".to_string()
+}
+
+/// تسلسل طلب معلومات صوت إلى JSON — المسار المطلق
+/// المحلول.
+pub fn serialize_audio_info_request(abs_path: &str) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str("\"مسار\":");
+    out.push_str(&json_escape(abs_path));
+    out.push('}');
+    out
+}
+
+/// تسلسل طلب ضبط مستوى الصوت إلى JSON.
+pub fn serialize_set_volume_request(level: i64) -> String {
+    format!("{{\"مستوى\":{}}}", level)
+}
+
+/// تسلسل طلب اهتزاز إلى JSON.
+pub fn serialize_vibrate_request(ms: i64) -> String {
+    format!("{{\"مدة\":{}}}", ms)
+}
+
+/// تسلسل طلب مصباح إلى JSON.
+pub fn serialize_torch_request(on: bool) -> String {
+    format!("{{\"تشغيل\":{}}}", on)
+}
+
+/// تسلسل طلب تسجيل صوت إلى JSON — المسار المطلق
+/// المحلول + المدة بالثواني.
+pub fn serialize_record_audio_request(abs_path: &str, seconds: i64) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str("\"مسار\":");
+    out.push_str(&json_escape(abs_path));
+    out.push_str(&format!(",\"مدة\":{}}}", seconds));
+    out
+}
+
+/// تسلسل طلب سطوع إلى JSON.
+pub fn serialize_brightness_request(arg: &BrightnessArg) -> String {
+    match arg {
+        BrightnessArg::Level(n) => format!("{{\"مستوى\":{}}}", n),
+        BrightnessArg::Auto => "{\"تلقائي\":true}".to_string(),
+    }
+}
+
+/// تسلسل طلب توست إلى JSON.
+pub fn serialize_toast_request(text: &str, long: bool) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str("\"نص\":");
+    out.push_str(&json_escape(text));
+    out.push_str(&format!(",\"طويل\":{}}}", long));
+    out
+}
+
+/// نقطة الدخول: `جهاز.انسخ_آخر_خطأ(...)` — بلا
+/// معاملات؛ وترجع نص آخر سطر خطأ في الجلسة (البند
+/// 61). والتحقق أولا (كل المنصات)، ثم بوابة المنصة،
+/// ثم القناة، ثم الإرسال والانتظار.
+pub fn copy_last_error(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_copy_last_error_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        copy_last_error_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn copy_last_error_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.انسخ_آخر_خطأ غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                COPY_LAST_ERROR_CONTROL_PREFIX,
+                serialize_empty_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Str(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("نسخ الخطأ متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.شارك_الجلسة(...)` — بلا
+/// معاملات؛ وترجع صحيحا بعد إطلاق نافذة المشاركة
+/// بنص الجلسة (آخر 100 ألف حرف) (البند 62).
+pub fn share_session(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_share_session_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        share_session_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn share_session_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.شارك_الجلسة غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                SHARE_SESSION_CONTROL_PREFIX,
+                serialize_empty_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Bool(true)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("مشاركة الجلسة متاحة داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.أوقف_صوت_مؤقتا(...)` — بلا
+/// معاملات؛ وإيقاف مؤقت يبقي المشغّل حيا لا يطلقه
+/// (البند 66)؛ وبلا صوت جارٍ نجاح صامت كـ`أوقف_صوت`.
+pub fn pause_audio(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_pause_audio_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        pause_audio_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn pause_audio_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.أوقف_صوت_مؤقتا غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                PAUSE_AUDIO_CONTROL_PREFIX,
+                serialize_empty_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Bool(true)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("إيقاف الصوت متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.استأنف_صوت(...)` — بلا
+/// معاملات؛ ويعيد تشغيل الصوت الموقوف مؤقتا (البند
+/// 66)؛ وبلا صوت موقوف نجاح صامت.
+pub fn resume_audio(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_resume_audio_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        resume_audio_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn resume_audio_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.استأنف_صوت غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                RESUME_AUDIO_CONTROL_PREFIX,
+                serialize_empty_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Bool(true)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("استئناف الصوت متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.معلومات_صوت(...)` — معلومات
+/// ملف صوت قبل تشغيله: قاموس {مدة} بالثواني (البند
+/// 67)؛ والمسار عبر سياسة الملفات كـ`شغّل_صوت`.
+pub fn audio_info(
+    args: &[Value],
+    policy: &crate::permissions::FilePolicy,
+    cwd: &std::path::Path,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let path = validate_audio_info_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (&path, policy, cwd);
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        audio_info_native(&path, policy, cwd, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn audio_info_native(
+    path: &str,
+    policy: &crate::permissions::FilePolicy,
+    cwd: &std::path::Path,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (path, policy, cwd);
+        Err(RioError::runtime(
+            "جهاز.معلومات_صوت غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            let resolved = policy.resolve_in(cwd, path, line, col)?;
+            if !resolved.is_file() {
+                return Err(RioError::runtime(
+                    "ملف الصوت غير موجود",
+                    line,
+                    col,
+                ));
+            }
+            let abs = resolved.to_string_lossy().to_string();
+            eprintln!(
+                "{}{}",
+                AUDIO_INFO_CONTROL_PREFIX,
+                serialize_audio_info_request(&abs)
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Dict(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("معلومات الصوت متاحة داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.حساسات(...)` — بلا معاملات؛
+/// وترجع قائمة أسماء الحساسات الثمانية الموجودة
+/// على الجهاز (البند 68)؛ والقراءة المستمرة مرفوضة
+/// (البند 143) — من أراد تكرارا كرر الأمر بنفسه.
+pub fn list_sensors(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_list_sensors_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        list_sensors_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn list_sensors_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.حساسات غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                LIST_SENSORS_CONTROL_PREFIX,
+                serialize_empty_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::List(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("سرد الحساسات متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.مستوى_الصوت(...)` — بلا
+/// معاملات؛ وترجع قاموس {مستوى، أقصى} لتيار
+/// الموسيقى (البند 69).
+pub fn volume_level(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_volume_level_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        volume_level_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn volume_level_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.مستوى_الصوت غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                VOLUME_LEVEL_CONTROL_PREFIX,
+                serialize_empty_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Dict(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("مستوى الصوت متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.اضبط_مستوى_الصوت(...)` —
+/// معامل واحد عدد صحيح ≥ 0؛ والتطبيق يقصّه إلى
+/// [0، الأقصى] ويرجع المستوى الجديد (البند 70).
+pub fn set_volume_level(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let level = validate_set_volume_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = level;
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        set_volume_level_native(level, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn set_volume_level_native(level: i64, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = level;
+        Err(RioError::runtime(
+            "جهاز.اضبط_مستوى_الصوت غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                SET_VOLUME_CONTROL_PREFIX,
+                serialize_set_volume_request(level)
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Number(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("ضبط مستوى الصوت متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.اهتز(...)` — 0 أو 1 معامل:
+/// مدة بالمللي ثانية 1–10000، الافتراضي 1000 (البند
+/// 71)؛ وبلا إذن عمليا.
+pub fn vibrate(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let ms = validate_vibrate_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = ms;
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        vibrate_native(ms, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn vibrate_native(ms: i64, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = ms;
+        Err(RioError::runtime(
+            "جهاز.اهتز غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                VIBRATE_CONTROL_PREFIX,
+                serialize_vibrate_request(ms)
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Bool(true)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("الاهتزاز متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.مصباح(...)` — معامل واحد
+/// منطقي (تشغيل/إيقاف)؛ وترجع الحالة الجديدة (البند
+/// 72)؛ ويحتاج إذن الكاميرا في الحقيقة (مدير
+/// الكاميرا هو من يشغّله) — يُطلب عند أول استعمال.
+pub fn torch(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let on = validate_torch_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = on;
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        torch_native(on, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn torch_native(on: bool, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = on;
+        Err(RioError::runtime(
+            "جهاز.مصباح غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                TORCH_CONTROL_PREFIX,
+                serialize_torch_request(on)
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Bool(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("المصباح متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.سجّل_صوت(...)` — تسجيل
+/// ميكروفون بسيط إلى ملف داخل مجلد البرنامج، بمدة
+/// قصوى افتراضية 60 ثانية (1–300) وبلا خيارات
+/// مشفّر/صيغة (الافتراضيات تكفي) (البند 79)؛
+/// والإذن يُطلب عند أول استعمال، مع تنبيه أن الملف
+/// يُحفظ محليا فقط.
+pub fn record_audio(
+    args: &[Value],
+    policy: &crate::permissions::FilePolicy,
+    cwd: &std::path::Path,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let (path, seconds) = validate_record_audio_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = ((&path, seconds), policy, cwd);
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        record_audio_native(&path, seconds, policy, cwd, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn record_audio_native(
+    path: &str,
+    seconds: i64,
+    policy: &crate::permissions::FilePolicy,
+    cwd: &std::path::Path,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (path, seconds, policy, cwd);
+        Err(RioError::runtime(
+            "جهاز.سجّل_صوت غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            // Meeting 50 §64: the recording destination is
+            // a write — refused under the downloads root.
+            let resolved = policy.resolve_in_for_write(cwd, path, line, col)?;
+            let abs = resolved.to_string_lossy().to_string();
+            eprintln!(
+                "{}{}",
+                RECORD_AUDIO_CONTROL_PREFIX,
+                serialize_record_audio_request(&abs, seconds)
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Bool(true)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("تسجيل الصوت متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.سطوع(...)` — معامل واحد عدد
+/// 0–100 أو «تلقائي»؛ وترجع قاموس {مستوى، تلقائي}
+/// (البند 105)؛ والكتابة في إعدادات النظام إذن خاص
+/// — بلا منح يفتح التطبيق شاشة الإعدادات ويرجع
+/// خطأ يعيد المحاولة بعد المنح.
+pub fn brightness(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let arg = validate_brightness_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = arg;
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        brightness_native(&arg, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn brightness_native(arg: &BrightnessArg, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = arg;
+        Err(RioError::runtime(
+            "جهاز.سطوع غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                BRIGHTNESS_CONTROL_PREFIX,
+                serialize_brightness_request(arg)
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Dict(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("السطوع متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.توست(...)` — رسالة عائمة
+/// قصيرة تظهر فوق الشاشة وتختفي وحدها (البند 106)؛
+/// وترجع لا شيء (Nil)؛ والتطبيق يلغي السابق قبل
+/// عرض الجديد (قاعدة التوست 196-1). خطوة تالية
+/// بعد التنبيه الموجود — لا تُعرض قبله.
+pub fn toast(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let (text, long) = validate_toast_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (&text, long);
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        toast_native(&text, long, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn toast_native(text: &str, long: bool, line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (text, long);
+        Err(RioError::runtime(
+            "جهاز.توست غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                TOAST_CONTROL_PREFIX,
+                serialize_toast_request(text, long)
+            );
+            match wait_for_result(line, col) {
+                Ok(Value::Bool(true)) => Ok(Value::Nil),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("التوست متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.معلومات_الصوت(...)` — بلا
+/// معاملات؛ وترجع قاموس {معدل_العينات، حجم_المخزن،
+/// بلوتوث، سماعة_سلكية} (البند 119).
+pub fn audio_device_info(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_audio_device_info_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        audio_device_info_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn audio_device_info_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.معلومات_الصوت غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                AUDIO_DEVICE_INFO_CONTROL_PREFIX,
+                serialize_empty_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Dict(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("معلومات الصوت متاحة داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
 /// أندرويد فقط: إرسال الطلب على stderr ثم انتظار سطر
 /// النتيجة على stdin (آلية `ادخل` نفسها).
 #[cfg(all(target_os = "android", not(target_arch = "wasm32")))]
@@ -1660,6 +4095,295 @@ pub fn parse_control_result(payload: &str, line: usize, col: usize) -> RioResult
         }
     }
     Err(invalid())
+}
+
+// ===== الدفعة 5 من الكتالوج (البنود 98 و99
+// خطوة 1): تنزيل نظامي وقراءة مستند وعرض مجلد
+// عبر منتقيات لمرة واحدة — قرار الاجتماع 50
+// §64 =====
+
+/// تنظيف اسم ملف التنزيل (البند 98): يُؤخذ الجزء
+/// بعد آخر فاصل مسار (`/` أو `\`)، فيسقط أي مسار
+/// مرفق؛ واسم فارغ أو `.` أو `..` بعد التنظيف
+/// مرفوض بخطأ عربي.
+fn clean_download_filename(name: &str) -> Result<String, String> {
+    let base = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .trim();
+    if base.is_empty() || base == "." || base == ".." {
+        return Err("اسم ملف غير صالح".to_string());
+    }
+    Ok(base.to_string())
+}
+
+/// التحقق الخالص من وسائط `جهاز.نزّل` — أربعة
+/// نصوص غير فارغة (رابط، عنوان، وصف، اسم_ملف)
+/// (البند 98): الرابط `https` فقط، واسم الملف
+/// يُنظَّف (بلا `/` وبلا `..`)؛ ويرجع الأربعة
+/// (والاسم بعد التنظيف).
+pub fn validate_download_args(
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<(String, String, String, String)> {
+    const DISPLAY: &str = "جهاز.نزّل";
+    if args.len() != 4 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 4 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let mut texts = Vec::with_capacity(4);
+    for (i, arg) in args.iter().enumerate() {
+        match arg {
+            Value::Str(s) if !s.trim().is_empty() => texts.push(s.clone()),
+            Value::Str(_) => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} المعامل {} نص فارغ", DISPLAY, i + 1),
+                    line,
+                    col,
+                ));
+            }
+            _ => {
+                return Err(typ_error(
+                    DISPLAY,
+                    "تتوقع نصا في كل معامل",
+                    line,
+                    col,
+                ));
+            }
+        }
+    }
+    let url = texts[0].clone();
+    if !url.starts_with("https://") {
+        return Err(RioError::runtime(
+            "رابط التنزيل يجب أن يبدأ بـ https://",
+            line,
+            col,
+        ));
+    }
+    let filename = clean_download_filename(&texts[3]).map_err(|m| RioError::runtime(m, line, col))?;
+    Ok((url, texts[1].clone(), texts[2].clone(), filename))
+}
+
+/// تسلسل طلب تنزيل نظامي إلى JSON.
+pub fn serialize_download_request(url: &str, title: &str, desc: &str, filename: &str) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str("\"رابط\":");
+    out.push_str(&json_escape(url));
+    out.push_str(",\"عنوان\":");
+    out.push_str(&json_escape(title));
+    out.push_str(",\"وصف\":");
+    out.push_str(&json_escape(desc));
+    out.push_str(",\"اسم_ملف\":");
+    out.push_str(&json_escape(filename));
+    out.push('}');
+    out
+}
+
+/// نقطة الدخول: `جهاز.نزّل(...)` — التحقق أولا
+/// (رابط https + اسم ملف منظف)، ثم بوابة المنصة،
+/// ثم القناة والانتظار حتى يُدرج مدير التنزيلات
+/// الطلب؛ ويرجع معرّف التنزيل النظامي عددا
+/// (البند 98). بلا إذن تخزين: مدير التنزيلات
+/// يكتب بنفسه.
+pub fn download(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let (url, title, desc, filename) = validate_download_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (&url, &title, &desc, &filename);
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        download_native(&url, &title, &desc, &filename, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn download_native(
+    url: &str,
+    title: &str,
+    desc: &str,
+    filename: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (url, title, desc, filename);
+        Err(RioError::runtime(
+            "جهاز.نزّل غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                DOWNLOAD_CONTROL_PREFIX,
+                serialize_download_request(url, title, desc, filename)
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Number(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("التنزيل متاح داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// التحقق الخالص من وسائط `جهاز.اقرأ_مستند` —
+/// بلا معاملات (البند 99 خطوة 1).
+pub fn validate_read_document_args(args: &[Value], line: usize, col: usize) -> RioResult<()> {
+    const DISPLAY: &str = "جهاز.اقرأ_مستند";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 0 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+/// التحقق الخالص من وسائط `جهاز.اعرض_مجلد` —
+/// بلا معاملات (البند 99 خطوة 1).
+pub fn validate_list_folder_args(args: &[Value], line: usize, col: usize) -> RioResult<()> {
+    const DISPLAY: &str = "جهاز.اعرض_مجلد";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 0 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+/// نقطة الدخول: `جهاز.اقرأ_مستند(...)` — التحقق
+/// أولا، ثم بوابة المنصة، ثم القناة والانتظار حتى
+/// يختار المستخدم مستندا؛ ويرجع نص المستند
+/// (UTF-8، حد 5 ميغابايت في التطبيق). منتقٍ
+/// لمرة واحدة بلا إذن دائم. إلغاء المنتقي خطأ
+/// عربي «ألغى المستخدم الاختيار» (البند 99
+/// خطوة 1).
+pub fn read_document(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_read_document_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        read_document_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_document_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.اقرأ_مستند غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                READ_DOCUMENT_CONTROL_PREFIX,
+                serialize_empty_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::Str(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("قراءة المستند متاحة داخل التطبيق فقط", line, col))
+        }
+    }
+}
+
+/// نقطة الدخول: `جهاز.اعرض_مجلد(...)` — التحقق
+/// أولا، ثم بوابة المنصة، ثم القناة والانتظار حتى
+/// يختار المستخدم مجلدا؛ ويرجع قائمة أسماء الأبناء
+/// (`/` في نهاية المجلدات — كعلامات `ات`). منتقٍ
+/// لمرة واحدة بلا إذن دائم. إلغاء المنتقي خطأ
+/// عربي «ألغى المستخدم الاختيار» (البند 99
+/// خطوة 1).
+pub fn list_folder(args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    validate_list_folder_args(args, line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        list_folder_native(line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn list_folder_native(line: usize, col: usize) -> RioResult<Value> {
+    #[cfg(not(target_os = "android"))]
+    {
+        Err(RioError::runtime(
+            "جهاز.اعرض_مجلد غير مدعوم على هذه المنصة",
+            line,
+            col,
+        ))
+    }
+    #[cfg(target_os = "android")]
+    {
+        if std::env::var("NIVA_CONTROL_CHANNEL")
+            .map(|v| v == "stderr")
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "{}{}",
+                LIST_FOLDER_CONTROL_PREFIX,
+                serialize_empty_request()
+            );
+            match wait_for_result(line, col) {
+                Ok(value @ Value::List(_)) => Ok(value),
+                Ok(_) => Err(RioError::runtime("نتيجة تحكم غير صالحة", line, col)),
+                Err(e) => Err(e),
+            }
+        } else {
+            Err(RioError::runtime("عرض المجلد متاح داخل التطبيق فقط", line, col))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2674,5 +5398,784 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+    }
+
+    // ===== الدفعة 4أ من الكتالوج (البنود 22–34) =====
+
+    #[test]
+    fn batch4a_share_file_args() {
+        assert_eq!(
+            validate_share_file_args(&[str_val("صورة.png")], 1, 1).unwrap(),
+            "صورة.png"
+        );
+        let err = validate_share_file_args(&[], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+        let err = validate_share_file_args(&[str_val("أ"), str_val("ب")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+        let err = validate_share_file_args(&[num_val(5.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا لمسار الملف"), "got: {}", err);
+        let err = validate_share_file_args(&[str_val("")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("مسار الملف فارغ"), "got: {}", err);
+    }
+
+    #[test]
+    fn batch4a_share_text_and_open_file_args() {
+        assert_eq!(
+            validate_share_text_args(&[str_val("مرحبا")], 1, 1).unwrap(),
+            "مرحبا"
+        );
+        let err = validate_share_text_args(&[str_val("")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("النص المشارك فارغ"), "got: {}", err);
+        let err = validate_share_text_args(&[num_val(1.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا للنص المشارك"), "got: {}", err);
+        assert_eq!(
+            validate_open_file_args(&[str_val("مستند.pdf")], 1, 1).unwrap(),
+            "مستند.pdf"
+        );
+        let err = validate_open_file_args(&[], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+    }
+
+    #[test]
+    fn batch4a_open_url_args() {
+        assert_eq!(
+            validate_open_url_args(&[str_val("https://example.com")], 1, 1).unwrap(),
+            "https://example.com"
+        );
+        assert_eq!(
+            validate_open_url_args(&[str_val("http://x.y/z")], 1, 1).unwrap(),
+            "http://x.y/z"
+        );
+        let err = validate_open_url_args(&[str_val("")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("الرابط فارغ"), "got: {}", err);
+        let err = validate_open_url_args(&[str_val("ftp://x.y")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("يجب أن يبدأ بـ http:// أو https://"), "got: {}", err);
+        let err = validate_open_url_args(&[str_val("https://exa mple.com")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("يجب أن يبدأ بـ http:// أو https://"), "got: {}", err);
+        let err = validate_open_url_args(&[num_val(3.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا للرابط"), "got: {}", err);
+    }
+
+    #[test]
+    fn batch4a_clipboard_args() {
+        assert_eq!(
+            validate_clipboard_set_args(&[str_val("انسخني")], 1, 1).unwrap(),
+            "انسخني"
+        );
+        let err = validate_clipboard_set_args(&[str_val("")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("النص المنسوخ فارغ"), "got: {}", err);
+        let err = validate_clipboard_set_args(&[Value::Bool(true)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا للنص المنسوخ"), "got: {}", err);
+        assert!(validate_clipboard_get_args(&[], 1, 1).is_ok());
+        let err = validate_clipboard_get_args(&[str_val("زائد")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+        assert!(validate_pick_file_args(&[], 1, 1).is_ok());
+        let err = validate_pick_file_args(&[num_val(1.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+    }
+
+    #[test]
+    fn batch4a_zero_arg_device_validators() {
+        // البنود 29–31 و33–34: بلا معاملات؛ وخطأ العدد
+        // قبل المنصة.
+        for f in [
+            validate_location_last_args as fn(&[Value], usize, usize) -> RioResult<()>,
+            validate_location_once_args,
+            validate_cameras_args,
+            validate_wifi_info_args,
+            validate_wifi_scan_args,
+        ] {
+            assert!(f(&[], 1, 1).is_ok());
+            let err = f(&[str_val("زائد")], 1, 1).unwrap_err().to_string();
+            assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+        }
+    }
+
+    #[test]
+    fn batch4a_capture_photo_args() {
+        // معامل واحد فقط (مسار الصورة) — بلا معرّف
+        // كاميرا: نية كاميرا النظام لا تقبله، فمعامل
+        // بلا أثر مرفوض عمدا.
+        assert_eq!(
+            validate_capture_photo_args(&[str_val("صورة.jpg")], 1, 1).unwrap(),
+            "صورة.jpg"
+        );
+        let err = validate_capture_photo_args(&[], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+        let err = validate_capture_photo_args(
+            &[str_val("أ"), str_val("1")],
+            1,
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+        let err = validate_capture_photo_args(&[str_val("")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("مسار الصورة فارغ"), "got: {}", err);
+        let err = validate_capture_photo_args(&[num_val(2.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا لمسار الصورة"), "got: {}", err);
+    }
+
+    #[test]
+    fn batch4a_serializers() {
+        assert_eq!(
+            serialize_share_file_request("/بيت/صورة.png"),
+            "{\"مسار\":\"/بيت/صورة.png\"}"
+        );
+        assert_eq!(
+            serialize_share_text_request("مرحبا"),
+            "{\"نص\":\"مرحبا\"}"
+        );
+        assert_eq!(
+            serialize_open_file_request("/بيت/مستند.pdf"),
+            "{\"مسار\":\"/بيت/مستند.pdf\"}"
+        );
+        assert_eq!(
+            serialize_open_url_request("https://example.com"),
+            "{\"رابط\":\"https://example.com\"}"
+        );
+        assert_eq!(
+            serialize_clipboard_set_request("انسخني"),
+            "{\"نص\":\"انسخني\"}"
+        );
+        assert_eq!(serialize_clipboard_get_request(), "{}");
+        assert_eq!(serialize_pick_file_request(), "{}");
+        assert_eq!(serialize_location_last_request(), "{}");
+        assert_eq!(serialize_location_once_request(), "{}");
+        assert_eq!(serialize_cameras_request(), "{}");
+        assert_eq!(
+            serialize_capture_photo_request("/بيت/صورة.jpg"),
+            "{\"مسار\":\"/بيت/صورة.jpg\"}"
+        );
+        assert_eq!(serialize_wifi_info_request(), "{}");
+        assert_eq!(serialize_wifi_scan_request(), "{}");
+        // تهريب علامتي التنصيص والخط الجديد.
+        assert_eq!(
+            serialize_share_text_request("قال \"مرحبا\"\nثم سكت"),
+            "{\"نص\":\"قال \\\"مرحبا\\\"\\nثم سكت\"}"
+        );
+    }
+
+    #[test]
+    fn batch4a_refuses_off_android() {
+        // على هذه الآلة (لينكس): الوسائط الصحيحة تصل
+        // إلى بوابة المنصة وترفض بالعربية؛ والوسائط
+        // الخاطئة ترفض قبل المنصة.
+        let policy = crate::permissions::FilePolicy::restricted(
+            std::path::PathBuf::from("/tmp/لا-يوجد"),
+        );
+        let cwd = std::path::Path::new("/tmp/لا-يوجد");
+        for (got, want) in [
+            (
+                share_file(&[str_val("صورة.png")], &policy, cwd, 1, 1)
+                    .unwrap_err()
+                    .to_string(),
+                "جهاز.شارك_ملف غير مدعوم على هذه المنصة",
+            ),
+            (
+                share_text(&[str_val("مرحبا")], 1, 1)
+                    .unwrap_err()
+                    .to_string(),
+                "جهاز.شارك_نص غير مدعوم على هذه المنصة",
+            ),
+            (
+                open_file(&[str_val("مستند.pdf")], &policy, cwd, 1, 1)
+                    .unwrap_err()
+                    .to_string(),
+                "جهاز.افتح_ملف غير مدعوم على هذه المنصة",
+            ),
+            (
+                open_url(&[str_val("https://example.com")], 1, 1)
+                    .unwrap_err()
+                    .to_string(),
+                "جهاز.افتح_رابط غير مدعوم على هذه المنصة",
+            ),
+            (
+                clipboard_set(&[str_val("انسخني")], 1, 1)
+                    .unwrap_err()
+                    .to_string(),
+                "جهاز.انسخ_للحافظة غير مدعوم على هذه المنصة",
+            ),
+            (
+                clipboard_get(&[], 1, 1).unwrap_err().to_string(),
+                "جهاز.الحافظة غير مدعوم على هذه المنصة",
+            ),
+            (
+                pick_file(&[], 1, 1).unwrap_err().to_string(),
+                "جهاز.اختر_ملف غير مدعوم على هذه المنصة",
+            ),
+            (
+                location_last(&[], 1, 1).unwrap_err().to_string(),
+                "جهاز.موقع غير مدعوم على هذه المنصة",
+            ),
+            (
+                location_once(&[], 1, 1).unwrap_err().to_string(),
+                "جهاز.موقع_حي غير مدعوم على هذه المنصة",
+            ),
+            (
+                list_cameras(&[], 1, 1).unwrap_err().to_string(),
+                "جهاز.كاميرات غير مدعوم على هذه المنصة",
+            ),
+            (
+                capture_photo(&[str_val("صورة.jpg")], &policy, cwd, 1, 1)
+                    .unwrap_err()
+                    .to_string(),
+                "جهاز.التقط_صورة غير مدعوم على هذه المنصة",
+            ),
+            (
+                wifi_info(&[], 1, 1).unwrap_err().to_string(),
+                "جهاز.واي_فاي غير مدعوم على هذه المنصة",
+            ),
+            (
+                wifi_scan(&[], 1, 1).unwrap_err().to_string(),
+                "جهاز.مسح_واي_فاي غير مدعوم على هذه المنصة",
+            ),
+        ] {
+            assert!(got.contains(want), "got: {}", got);
+        }
+        // والوسائط الخاطئة ترفض قبل المنصة.
+        let err = open_url(&[str_val("ftp://x.y")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("يجب أن يبدأ بـ http:// أو https://"), "got: {}", err);
+        let err = share_text(&[str_val("")], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("النص المشارك فارغ"), "got: {}", err);
+    }
+
+    // ===== الدفعة 4ب من الكتالوج (البنود 61 و62 و66–72
+    // و79 و105 و106 و119) =====
+
+    #[test]
+    fn batch4b_zero_arg_device_validators() {
+        // بلا معاملات؛ وخطأ العدد قبل المنصة.
+        for f in [
+            validate_copy_last_error_args
+                as fn(&[Value], usize, usize) -> RioResult<()>,
+            validate_share_session_args,
+            validate_pause_audio_args,
+            validate_resume_audio_args,
+            validate_list_sensors_args,
+            validate_volume_level_args,
+            validate_audio_device_info_args,
+        ] {
+            assert!(f(&[], 1, 1).is_ok());
+            let err = f(&[str_val("زائد")], 1, 1).unwrap_err().to_string();
+            assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+        }
+    }
+
+    #[test]
+    fn batch4b_audio_info_args() {
+        assert_eq!(
+            validate_audio_info_args(&[str_val("صوت.mp3")], 1, 1).unwrap(),
+            "صوت.mp3"
+        );
+        let err = validate_audio_info_args(&[], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+        let err = validate_audio_info_args(&[str_val("")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("مسار الصوت فارغ"), "got: {}", err);
+        let err = validate_audio_info_args(&[num_val(1.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا لمسار الصوت"), "got: {}", err);
+    }
+
+    #[test]
+    fn batch4b_set_volume_args() {
+        assert_eq!(validate_set_volume_args(&[num_val(5.0)], 1, 1).unwrap(), 5);
+        assert_eq!(validate_set_volume_args(&[num_val(0.0)], 1, 1).unwrap(), 0);
+        let err = validate_set_volume_args(&[num_val(-1.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("لا يقل عن 0"), "got: {}", err);
+        let err = validate_set_volume_args(&[num_val(2.5)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("عددا صحيحا"), "got: {}", err);
+        let err = validate_set_volume_args(&[str_val("عال")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع عددا للمستوى"), "got: {}", err);
+        let err = validate_set_volume_args(&[], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+    }
+
+    #[test]
+    fn batch4b_vibrate_args() {
+        assert_eq!(validate_vibrate_args(&[], 1, 1).unwrap(), 1000);
+        assert_eq!(validate_vibrate_args(&[num_val(250.0)], 1, 1).unwrap(), 250);
+        assert_eq!(
+            validate_vibrate_args(&[num_val(10_000.0)], 1, 1).unwrap(),
+            10_000
+        );
+        let err = validate_vibrate_args(&[num_val(0.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("بين 1 و10000"), "got: {}", err);
+        let err = validate_vibrate_args(&[num_val(10_001.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("بين 1 و10000"), "got: {}", err);
+        let err = validate_vibrate_args(&[num_val(1.5)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("عددا صحيحا"), "got: {}", err);
+        let err = validate_vibrate_args(&[str_val("طويل")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع عددا للمدة"), "got: {}", err);
+        let err = validate_vibrate_args(&[num_val(1.0), num_val(2.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 أو 1 معامل"), "got: {}", err);
+    }
+
+    #[test]
+    fn batch4b_torch_args() {
+        assert!(validate_torch_args(&[Value::Bool(true)], 1, 1).unwrap());
+        assert!(!validate_torch_args(&[Value::Bool(false)], 1, 1).unwrap());
+        let err = validate_torch_args(&[str_val("شغل")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع منطقيا للحالة"), "got: {}", err);
+        let err = validate_torch_args(&[], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+    }
+
+    #[test]
+    fn batch4b_record_audio_args() {
+        // معامل واحد: المدة الافتراضية 60.
+        assert_eq!(
+            validate_record_audio_args(&[str_val("تسجيل.m4a")], 1, 1).unwrap(),
+            ("تسجيل.m4a".to_string(), 60)
+        );
+        assert_eq!(
+            validate_record_audio_args(
+                &[str_val("تسجيل.m4a"), num_val(30.0)],
+                1,
+                1
+            )
+            .unwrap(),
+            ("تسجيل.m4a".to_string(), 30)
+        );
+        let err = validate_record_audio_args(&[], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("تتوقع 1 أو 2 معاملات"), "got: {}", err);
+        let err = validate_record_audio_args(&[str_val("")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("مسار التسجيل فارغ"), "got: {}", err);
+        let err = validate_record_audio_args(
+            &[str_val("أ"), num_val(0.0)],
+            1,
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("بين 1 و300"), "got: {}", err);
+        let err = validate_record_audio_args(
+            &[str_val("أ"), num_val(301.0)],
+            1,
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("بين 1 و300"), "got: {}", err);
+        let err = validate_record_audio_args(
+            &[str_val("أ"), num_val(1.5)],
+            1,
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("عددا صحيحا"), "got: {}", err);
+        let err = validate_record_audio_args(&[num_val(1.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا لمسار التسجيل"), "got: {}", err);
+    }
+
+    #[test]
+    fn batch4b_brightness_args() {
+        assert_eq!(
+            validate_brightness_args(&[num_val(50.0)], 1, 1).unwrap(),
+            BrightnessArg::Level(50)
+        );
+        assert_eq!(
+            validate_brightness_args(&[num_val(0.0)], 1, 1).unwrap(),
+            BrightnessArg::Level(0)
+        );
+        assert_eq!(
+            validate_brightness_args(&[num_val(100.0)], 1, 1).unwrap(),
+            BrightnessArg::Level(100)
+        );
+        assert_eq!(
+            validate_brightness_args(&[str_val("تلقائي")], 1, 1).unwrap(),
+            BrightnessArg::Auto
+        );
+        let err = validate_brightness_args(&[num_val(101.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("بين 0 و100"), "got: {}", err);
+        let err = validate_brightness_args(&[num_val(-1.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("بين 0 و100"), "got: {}", err);
+        let err = validate_brightness_args(&[num_val(50.5)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("عددا صحيحا"), "got: {}", err);
+        let err = validate_brightness_args(&[str_val("ساطع")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("«تلقائي» فقط"), "got: {}", err);
+        let err = validate_brightness_args(&[Value::Bool(true)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع عددا أو نص «تلقائي»"), "got: {}", err);
+        let err = validate_brightness_args(&[], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("تتوقع 1 معامل"), "got: {}", err);
+    }
+
+    #[test]
+    fn batch4b_toast_args() {
+        assert_eq!(
+            validate_toast_args(&[str_val("تم")], 1, 1).unwrap(),
+            ("تم".to_string(), false)
+        );
+        assert_eq!(
+            validate_toast_args(&[str_val("تم"), str_val("طويل")], 1, 1).unwrap(),
+            ("تم".to_string(), true)
+        );
+        assert_eq!(
+            validate_toast_args(&[str_val("تم"), str_val("قصير")], 1, 1).unwrap(),
+            ("تم".to_string(), false)
+        );
+        let err = validate_toast_args(&[str_val("")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("نص التوست فارغ"), "got: {}", err);
+        let err = validate_toast_args(&[str_val("تم"), str_val("متوسط")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("«قصير» أو «طويل»"), "got: {}", err);
+        let err = validate_toast_args(&[], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("تتوقع 1 أو 2 معاملات"), "got: {}", err);
+        let err = validate_toast_args(
+            &[str_val("أ"), str_val("قصير"), str_val("زائد")],
+            1,
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("تتوقع 1 أو 2 معاملات"), "got: {}", err);
+        let err = validate_toast_args(&[num_val(1.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع نصا للرسالة"), "got: {}", err);
+    }
+
+    #[test]
+    fn batch4b_serializers() {
+        assert_eq!(serialize_empty_request(), "{}");
+        assert_eq!(
+            serialize_audio_info_request("/بيت/صوت.mp3"),
+            "{\"مسار\":\"/بيت/صوت.mp3\"}"
+        );
+        assert_eq!(serialize_set_volume_request(5), "{\"مستوى\":5}");
+        assert_eq!(serialize_vibrate_request(250), "{\"مدة\":250}");
+        assert_eq!(serialize_torch_request(true), "{\"تشغيل\":true}");
+        assert_eq!(serialize_torch_request(false), "{\"تشغيل\":false}");
+        assert_eq!(
+            serialize_record_audio_request("/بيت/تسجيل.m4a", 30),
+            "{\"مسار\":\"/بيت/تسجيل.m4a\",\"مدة\":30}"
+        );
+        assert_eq!(
+            serialize_brightness_request(&BrightnessArg::Level(50)),
+            "{\"مستوى\":50}"
+        );
+        assert_eq!(
+            serialize_brightness_request(&BrightnessArg::Auto),
+            "{\"تلقائي\":true}"
+        );
+        assert_eq!(
+            serialize_toast_request("تم", false),
+            "{\"نص\":\"تم\",\"طويل\":false}"
+        );
+        assert_eq!(
+            serialize_toast_request("تم", true),
+            "{\"نص\":\"تم\",\"طويل\":true}"
+        );
+    }
+
+    #[test]
+    fn batch4b_refuses_off_android() {
+        // على هذه الآلة (لينكس): الوسائط الصحيحة تصل
+        // إلى بوابة المنصة وترفض بالعربية؛ والوسائط
+        // الخاطئة ترفض قبل المنصة.
+        let policy = crate::permissions::FilePolicy::restricted(
+            std::path::PathBuf::from("/tmp/لا-يوجد"),
+        );
+        let cwd = std::path::Path::new("/tmp/لا-يوجد");
+        for (got, want) in [
+            (
+                copy_last_error(&[], 1, 1).unwrap_err().to_string(),
+                "جهاز.انسخ_آخر_خطأ غير مدعوم على هذه المنصة",
+            ),
+            (
+                share_session(&[], 1, 1).unwrap_err().to_string(),
+                "جهاز.شارك_الجلسة غير مدعوم على هذه المنصة",
+            ),
+            (
+                pause_audio(&[], 1, 1).unwrap_err().to_string(),
+                "جهاز.أوقف_صوت_مؤقتا غير مدعوم على هذه المنصة",
+            ),
+            (
+                resume_audio(&[], 1, 1).unwrap_err().to_string(),
+                "جهاز.استأنف_صوت غير مدعوم على هذه المنصة",
+            ),
+            (
+                audio_info(&[str_val("صوت.mp3")], &policy, cwd, 1, 1)
+                    .unwrap_err()
+                    .to_string(),
+                "جهاز.معلومات_صوت غير مدعوم على هذه المنصة",
+            ),
+            (
+                list_sensors(&[], 1, 1).unwrap_err().to_string(),
+                "جهاز.حساسات غير مدعوم على هذه المنصة",
+            ),
+            (
+                volume_level(&[], 1, 1).unwrap_err().to_string(),
+                "جهاز.مستوى_الصوت غير مدعوم على هذه المنصة",
+            ),
+            (
+                set_volume_level(&[num_val(5.0)], 1, 1)
+                    .unwrap_err()
+                    .to_string(),
+                "جهاز.اضبط_مستوى_الصوت غير مدعوم على هذه المنصة",
+            ),
+            (
+                vibrate(&[], 1, 1).unwrap_err().to_string(),
+                "جهاز.اهتز غير مدعوم على هذه المنصة",
+            ),
+            (
+                torch(&[Value::Bool(true)], 1, 1)
+                    .unwrap_err()
+                    .to_string(),
+                "جهاز.مصباح غير مدعوم على هذه المنصة",
+            ),
+            (
+                record_audio(&[str_val("تسجيل.m4a")], &policy, cwd, 1, 1)
+                    .unwrap_err()
+                    .to_string(),
+                "جهاز.سجّل_صوت غير مدعوم على هذه المنصة",
+            ),
+            (
+                brightness(&[num_val(50.0)], 1, 1)
+                    .unwrap_err()
+                    .to_string(),
+                "جهاز.سطوع غير مدعوم على هذه المنصة",
+            ),
+            (
+                toast(&[str_val("تم")], 1, 1).unwrap_err().to_string(),
+                "جهاز.توست غير مدعوم على هذه المنصة",
+            ),
+            (
+                audio_device_info(&[], 1, 1).unwrap_err().to_string(),
+                "جهاز.معلومات_الصوت غير مدعوم على هذه المنصة",
+            ),
+        ] {
+            assert!(got.contains(want), "got: {}", got);
+        }
+        // والوسائط الخاطئة ترفض قبل المنصة.
+        let err = set_volume_level(&[num_val(-1.0)], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("لا يقل عن 0"), "got: {}", err);
+        let err = vibrate(&[num_val(0.0)], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("بين 1 و10000"), "got: {}", err);
+        let err = torch(&[str_val("شغل")], 1, 1).unwrap_err().to_string();
+        assert!(err.contains("تتوقع منطقيا للحالة"), "got: {}", err);
+        let err = brightness(&[str_val("ساطع")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("«تلقائي» فقط"), "got: {}", err);
+        let err = toast(&[str_val("تم"), str_val("متوسط")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("«قصير» أو «طويل»"), "got: {}", err);
+        let err = record_audio(&[str_val("أ"), num_val(0.0)], &policy, cwd, 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("بين 1 و300"), "got: {}", err);
+    }
+
+    // الدفعة 5 (البند 98): التحقق من وسائط
+    // `جهاز.نزّل` — العدد والنوع والفراغ وhttps
+    // وتنظيف اسم الملف.
+    #[test]
+    fn validate_download_args_ok_and_bad() {
+        let ok = validate_download_args(
+            &[
+                str_val("https://مثال.موقع/ملف"),
+                str_val("عنوان"),
+                str_val("وصف"),
+                str_val("ملف.نيفا"),
+            ],
+            1,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            ok,
+            (
+                "https://مثال.موقع/ملف".to_string(),
+                "عنوان".to_string(),
+                "وصف".to_string(),
+                "ملف.نيفا".to_string()
+            )
+        );
+        // اسم ملف بمسار مرفق يُنظَّف إلى آخر جزء.
+        let ok = validate_download_args(
+            &[
+                str_val("https://مثال.موقع/ملف"),
+                str_val("عنوان"),
+                str_val("وصف"),
+                str_val("مجلد/فرعي/ملف.نيفا"),
+            ],
+            1,
+            1,
+        )
+        .unwrap();
+        assert_eq!(ok.3, "ملف.نيفا".to_string());
+        // عدد معاملات خاطئ.
+        let err = validate_download_args(
+            &[str_val("https://مثال.موقع/ملف"), str_val("عنوان")],
+            1,
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("تتوقع 4 معاملات"), "got: {}", err);
+        // معامل غير نص.
+        let err = validate_download_args(
+            &[
+                str_val("https://مثال.موقع/ملف"),
+                num_val(5.0),
+                str_val("وصف"),
+                str_val("ملف.نيفا"),
+            ],
+            1,
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("تتوقع نصا"), "got: {}", err);
+        // رابط غير https.
+        let err = validate_download_args(
+            &[
+                str_val("http://مثال.موقع/ملف"),
+                str_val("عنوان"),
+                str_val("وصف"),
+                str_val("ملف.نيفا"),
+            ],
+            1,
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("https://"), "got: {}", err);
+        // اسم ملف `..` بعد التنظيف مرفوض.
+        let err = validate_download_args(
+            &[
+                str_val("https://مثال.موقع/ملف"),
+                str_val("عنوان"),
+                str_val("وصف"),
+                str_val("../.."),
+            ],
+            1,
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("اسم ملف غير صالح"), "got: {}", err);
+        // اسم ملف فارغ مرفوض.
+        let err = validate_download_args(
+            &[
+                str_val("https://مثال.موقع/ملف"),
+                str_val("عنوان"),
+                str_val("وصف"),
+                str_val("   "),
+            ],
+            1,
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("فارغ"), "got: {}", err);
+    }
+
+    // الدفعة 5 (البند 99 خطوة 1): التحقق من
+    // وسائط `جهاز.اقرأ_مستند` و`جهاز.اعرض_مجلد`
+    // — بلا معاملات.
+    #[test]
+    fn validate_read_document_and_list_folder_args_ok_and_bad() {
+        assert!(validate_read_document_args(&[], 1, 1).is_ok());
+        assert!(validate_list_folder_args(&[], 1, 1).is_ok());
+        let err = validate_read_document_args(&[str_val("زائد")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+        let err = validate_list_folder_args(&[str_val("زائد")], 1, 1)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("تتوقع 0 معاملات"), "got: {}", err);
+    }
+
+    // الدفعة 5 (البند 98): تسلسل طلب التنزيل —
+    // كل الحقول الأربعة موجودة بقيمها.
+    #[test]
+    fn serialize_download_request_round_trip() {
+        let json = serialize_download_request(
+            "https://مثال.موقع/ملف",
+            "عنوان",
+            "وصف",
+            "ملف.نيفا",
+        );
+        assert!(json.contains("\"رابط\":\"https://مثال.موقع/ملف\""), "got: {}", json);
+        assert!(json.contains("\"عنوان\":\"عنوان\""), "got: {}", json);
+        assert!(json.contains("\"وصف\":\"وصف\""), "got: {}", json);
+        assert!(json.contains("\"اسم_ملف\":\"ملف.نيفا\""), "got: {}", json);
     }
 }

@@ -1565,6 +1565,47 @@ fn device_entries() -> Vec<(&'static str, Value)> {
         // شدة ولا همزة — فلا فخ تهجئة (درس المهمة 24).
         ("اسمع", native("اسمع", device_listen)),
         ("بطارية", native("بطارية", device_battery)),
+        // الدفعة 4أ من الكتالوج (البنود 22–34): المفاتيح
+        // بلا شدة ولا همزة — فلا فخ تهجئة (درس المهمة 24).
+        ("شارك_ملف", native("شارك_ملف", device_share_file)),
+        ("شارك_نص", native("شارك_نص", device_share_text)),
+        ("افتح_ملف", native("افتح_ملف", device_open_file)),
+        ("افتح_رابط", native("افتح_رابط", device_open_url)),
+        ("انسخ_للحافظة", native("انسخ_للحافظة", device_clipboard_set)),
+        ("الحافظة", native("الحافظة", device_clipboard_get)),
+        ("اختر_ملف", native("اختر_ملف", device_pick_file)),
+        ("موقع", native("موقع", device_location_last)),
+        ("موقع_حي", native("موقع_حي", device_location_once)),
+        ("كاميرات", native("كاميرات", device_list_cameras)),
+        ("التقط_صورة", native("التقط_صورة", device_capture_photo)),
+        ("واي_فاي", native("واي_فاي", device_wifi_info)),
+        ("مسح_واي_فاي", native("مسح_واي_فاي", device_wifi_scan)),
+        // الدفعة 4ب من الكتالوج (البنود 61 و62 و66–72
+        // و79 و105 و106 و119): المفاتيح بلا شدة ولا
+        // همزة — فلا فخ تهجئة (درس المهمة 24)؛
+        // و«سجل_صوت» بلا شدة (المكتوب «سجّل_صوت»
+        // يُحلّ إليه بعد حذف الشدة).
+        ("انسخ_آخر_خطأ", native("انسخ_آخر_خطأ", device_copy_last_error)),
+        ("شارك_الجلسة", native("شارك_الجلسة", device_share_session)),
+        ("أوقف_صوت_مؤقتا", native("أوقف_صوت_مؤقتا", device_pause_audio)),
+        ("استأنف_صوت", native("استأنف_صوت", device_resume_audio)),
+        ("معلومات_صوت", native("معلومات_صوت", device_audio_info)),
+        ("حساسات", native("حساسات", device_list_sensors)),
+        ("مستوى_الصوت", native("مستوى_الصوت", device_volume_level)),
+        ("اضبط_مستوى_الصوت", native("اضبط_مستوى_الصوت", device_set_volume_level)),
+        ("اهتز", native("اهتز", device_vibrate)),
+        ("مصباح", native("مصباح", device_torch)),
+        ("سجل_صوت", native("سجل_صوت", device_record_audio)),
+        ("سطوع", native("سطوع", device_brightness)),
+        ("توست", native("توست", device_toast)),
+        ("معلومات_الصوت", native("معلومات_الصوت", device_audio_device_info)),
+        // الدفعة 5 من الكتالوج (البنود 98 و99 خطوة
+        // 1): المفاتيح بلا شدة ولا همزة — فلا فخ
+        // تهجئة (درس المهمة 24)؛ و«نزل» بلا شدة
+        // (المكتوب «نزّل» يُحلّ إليه بعد حذف الشدة).
+        ("نزل", native("نزل", device_download)),
+        ("اقرأ_مستند", native("اقرأ_مستند", device_read_document)),
+        ("اعرض_مجلد", native("اعرض_مجلد", device_list_folder)),
     ]
 }
 
@@ -1608,4 +1649,138 @@ fn device_listen(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col:
 
 fn device_battery(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     crate::device::read_battery(args, line, col)
+}
+
+// الدفعة 4أ من الكتالوج (البنود 22–34).
+
+fn device_share_file(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    crate::device::share_file(args, &policy, &cwd, line, col)
+}
+
+fn device_share_text(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::share_text(args, line, col)
+}
+
+fn device_open_file(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    crate::device::open_file(args, &policy, &cwd, line, col)
+}
+
+fn device_open_url(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::open_url(args, line, col)
+}
+
+fn device_clipboard_set(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::clipboard_set(args, line, col)
+}
+
+fn device_clipboard_get(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::clipboard_get(args, line, col)
+}
+
+fn device_pick_file(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::pick_file(args, line, col)
+}
+
+fn device_location_last(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::location_last(args, line, col)
+}
+
+fn device_location_once(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::location_once(args, line, col)
+}
+
+fn device_list_cameras(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::list_cameras(args, line, col)
+}
+
+fn device_capture_photo(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    crate::device::capture_photo(args, &policy, &cwd, line, col)
+}
+
+fn device_wifi_info(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::wifi_info(args, line, col)
+}
+
+fn device_wifi_scan(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::wifi_scan(args, line, col)
+}
+
+// الدفعة 4ب من الكتالوج (البنود 61 و62 و66–72 و79 و105 و106 و119).
+
+fn device_copy_last_error(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::copy_last_error(args, line, col)
+}
+
+fn device_share_session(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::share_session(args, line, col)
+}
+
+fn device_pause_audio(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::pause_audio(args, line, col)
+}
+
+fn device_resume_audio(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::resume_audio(args, line, col)
+}
+
+fn device_audio_info(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    crate::device::audio_info(args, &policy, &cwd, line, col)
+}
+
+fn device_list_sensors(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::list_sensors(args, line, col)
+}
+
+fn device_volume_level(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::volume_level(args, line, col)
+}
+
+fn device_set_volume_level(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::set_volume_level(args, line, col)
+}
+
+fn device_vibrate(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::vibrate(args, line, col)
+}
+
+fn device_torch(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::torch(args, line, col)
+}
+
+fn device_record_audio(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    crate::device::record_audio(args, &policy, &cwd, line, col)
+}
+
+fn device_brightness(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::brightness(args, line, col)
+}
+
+fn device_toast(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::toast(args, line, col)
+}
+
+fn device_audio_device_info(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::audio_device_info(args, line, col)
+}
+
+fn device_download(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::download(args, line, col)
+}
+
+fn device_read_document(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::read_document(args, line, col)
+}
+
+fn device_list_folder(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    crate::device::list_folder(args, line, col)
 }

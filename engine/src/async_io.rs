@@ -336,7 +336,7 @@ fn submit_write_native(
     line: usize,
     col: usize,
 ) -> RioResult<u64> {
-    let resolved = policy.resolve_in(cwd, path, line, col)?;
+    let resolved = policy.resolve_in_for_write(cwd, path, line, col)?;
     let display = policy.display_str(path);
     let base: PathBuf = policy.base.clone();
     let text_owned = text.to_string();

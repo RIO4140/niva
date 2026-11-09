@@ -30,9 +30,13 @@ use std::sync::{LazyLock, Mutex};
 /// One open file: the handle itself plus the display form of
 /// the path it was opened with (for error messages only — the
 /// resolved filesystem path is never shown to Niva code).
+/// `read_only` (Meeting 50 §64): a file opened under the
+/// downloads root is read-only — `ملفات.اكتب` on its handle
+/// refuses with the read-only Arabic error.
 struct OpenFile {
     file: File,
     display: String,
+    read_only: bool,
 }
 
 /// Open files: handle -> file. One table for the whole OS
@@ -168,23 +172,27 @@ fn open_file_native(
             ));
         }
     }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(&resolved)
-        .map_err(|_| {
-            RioError::new(
-                ErrorKind::Io,
-                format!("تعذر فتح الملف {}", display),
-                line,
-                col,
-            )
-        })?;
+    // Meeting 50 §64: under the downloads root the file
+    // opens read-only (no write, no create) — the handle
+    // remembers it, so `ملفات.اكتب` refuses in Arabic.
+    let read_only = policy.is_under_downloads(&resolved);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    if !read_only {
+        opts.write(true).create(true);
+    }
+    let file = opts.open(&resolved).map_err(|_| {
+        RioError::new(
+            ErrorKind::Io,
+            format!("تعذر فتح الملف {}", display),
+            line,
+            col,
+        )
+    })?;
     let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
     match REGISTRY.lock() {
         Ok(mut reg) => {
-            reg.insert(id, OpenFile { file, display });
+            reg.insert(id, OpenFile { file, display, read_only });
         }
         Err(_) => {
             return Err(RioError::runtime("تعذّر تسجيل الملف الجديد", line, col));
@@ -316,6 +324,16 @@ fn write_file_native(
         RioError::runtime(format!("ملف غير معروف: {}", id), line, col)
     })?;
     let display = entry.display.clone();
+    // Meeting 50 §64: a handle opened under the downloads
+    // root is read-only — refuse before any seek or write.
+    if entry.read_only {
+        return Err(RioError::new(
+            ErrorKind::Io,
+            format!("الملف {} في تخزين/تنزيلات للقراءة فقط", display),
+            line,
+            col,
+        ));
+    }
     // Net growth only (rewriting counts its size difference),
     // against the same 100 MiB quota as `اكتب_ملف`. The
     // quota check and the write are atomic under the shared
