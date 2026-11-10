@@ -525,3 +525,126 @@ jobs:
             done
           done
           echo "DIAG-O2E-DONE cell=${{ matrix.cell }}"
+
+  diag-o2f:
+    name: diag-o2f (${{ matrix.cell }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cell: asan-lib
+            cc: clang
+            flags: "--target=x86_64-pc-windows-gnu -fsanitize=address -g"
+            reps: 5
+          - cell: clang-parity
+            cc: clang
+            flags: "--target=x86_64-pc-windows-gnu"
+            reps: 5
+          - cell: clang-10x
+            cc: clang
+            flags: "--target=x86_64-pc-windows-gnu"
+            reps: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install MinGW (Windows)
+        run: choco install mingw -y
+      - name: Add engine build dir to PATH
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/engine/target/debug" >> $GITHUB_PATH
+      - name: Build niva (debug)
+        shell: bash
+        run: cargo build --manifest-path engine/Cargo.toml
+      - name: Compiler versions
+        shell: bash
+        run: |
+          echo "--- gcc:"; gcc --version | head -1 || true
+          echo "--- clang:"; clang --version | head -1 || true
+          echo "--- clang runtime dir:"; clang --print-runtime-dir --target=x86_64-pc-windows-gnu 2>&1 || true
+          echo "--- clang resource dir:"; clang --print-resource-dir 2>&1 || true
+      - name: Write M1/M3/M8/M2/M5 programs
+        shell: bash
+        run: |
+          mkdir -p diag-m
+          python3 - <<'PYEOF'
+          import os
+          progs = {
+            "m1": "استورد شبكة\nحاول:\n    شبكة.اتصل(\"127.0.0.1\"، 9)\nماعدا:\n    اطبع \"مغلقة كما يجب\"\nحاول:\n    شبكة.مقبس(\"udp\")\nماعدا:\n    اطبع \"مغلقة كما يجب\"\n",
+            "m3": "استورد نظام\nحاول:\n    اطبع نظام.عدد_النداءات() > ٠\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    اطبع طول(نظام.اسم_النداء(٠)) > ٠\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    نظام.اسم_النداء(٩٩٩٩٩)\nماعدا:\n    اطبع \"غير معروف كما يجب\"\n",
+            "m8": "استورد عمليات\nحاول:\n    عمليات.أنشئ(\"/bin/true\")\nماعدا:\n    اطبع \"مغلقة كما يجب\"\nحاول:\n    عمليات.أنشئ(\"/bin/true\")\nماعدا:\n    اطبع \"مغلقة كما يجب\"\n",
+            "m2": "استورد شبكة\nحاول:\n    شبكة.أرسل(١)\nماعدا:\n    اطبع \"وسائط كما يجب\"\nحاول:\n    شبكة.استقبل()\nماعدا:\n    اطبع \"وسائط كما يجب\"\n",
+            "m5": "استورد ذاكرة\nحاول:\n    اطبع ذاكرة.المتاح() > ٠\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    اطبع ذاكرة.حجم_الصفحة() > ٠\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\n",
+          }
+          for name, src in progs.items():
+              with open(os.path.join("diag-m", name + ".نيفا"), "w", encoding="utf-8") as f:
+                  f.write(src)
+          print("wrote", len(progs), "programs")
+          PYEOF
+      - name: Run o2f cell
+        shell: bash
+        env:
+          NIVA_NATIVE_OPT: "-O2"
+          NIVA_NATIVE_CC: ${{ matrix.cc }}
+          NIVA_NATIVE_EXTRA_CFLAGS: ${{ matrix.flags }}
+          ASAN_OPTIONS: "detect_leaks=0"
+        run: |
+          if [ "${{ matrix.cell }}" = "clang-parity" ]; then
+            echo "===== clang-parity: full c_parity_integration_scenarios under clang -O2"
+            PARITY_CODE=0
+            cargo test --manifest-path engine/Cargo.toml --test c_parity c_parity_integration_scenarios -- --test-threads=1 > parity.log 2>&1 || PARITY_CODE=$?
+            echo "PARITY-EXIT=$PARITY_CODE"
+            echo "--- failing scenario (if any):"
+            grep -iE "FAILED|panicked|test result|نظام-جدول|مقابس-بوابة-مغلقة|مقابس-وسائط-خاطئة" parity.log | head -20 || true
+            echo "--- parity.log tail:"
+            tail -40 parity.log
+            echo "DIAG-O2F-DONE cell=${{ matrix.cell }}"
+            exit 0
+          fi
+          cd diag-m
+          ASAN_OK=1
+          if [ "${{ matrix.cell }}" = "asan-lib" ]; then
+            echo "--- asan setup:"
+            RTDIR_RAW=$(clang --print-runtime-dir --target=x86_64-pc-windows-gnu 2>/dev/null || true)
+            RTDIR=$(cygpath -u "$RTDIR_RAW" 2>/dev/null || echo "$RTDIR_RAW")
+            echo "clang runtime dir: $RTDIR"
+            if [ -z "$RTDIR" ] || [ ! -f "$RTDIR/libclang_rt.asan_dynamic-x86_64.dll" ]; then
+              RESDIR_RAW=$(clang --print-resource-dir 2>/dev/null || true)
+              RESDIR=$(cygpath -u "$RESDIR_RAW" 2>/dev/null || echo "$RESDIR_RAW")
+              echo "clang resource dir: $RESDIR"
+              RTDIR="$RESDIR/lib/windows"
+              echo "fallback runtime dir: $RTDIR"
+            fi
+            echo "asan libs in $RTDIR:"
+            ls "$RTDIR" 2>/dev/null | grep -i asan || echo "(no asan libs listed)"
+            mkdir -p "$GITHUB_WORKSPACE/asanlib"
+            cp "$RTDIR/clang_rt.asan_dynamic-x86_64.lib" "$GITHUB_WORKSPACE/asanlib/libclang_rt.asan_dynamic.dll.a" 2>/dev/null || true
+            cp "$RTDIR/clang_rt.asan_dynamic_runtime_thunk-x86_64.lib" "$GITHUB_WORKSPACE/asanlib/libclang_rt.asan_dynamic_runtime_thunk.a" 2>/dev/null || true
+            cp "$RTDIR/libclang_rt.asan_dynamic-x86_64.dll" . 2>/dev/null || true
+            ASANLIB=$(cygpath -m "$GITHUB_WORKSPACE/asanlib" 2>/dev/null || echo "$GITHUB_WORKSPACE/asanlib")
+            echo "asan lib dir: $ASANLIB"
+            ls "$ASANLIB" || true
+            if [ ! -f "$ASANLIB/libclang_rt.asan_dynamic.dll.a" ] || [ ! -f "$ASANLIB/libclang_rt.asan_dynamic_runtime_thunk.a" ] || [ ! -f ./libclang_rt.asan_dynamic-x86_64.dll ]; then
+              echo "ASAN-SETUP-FAIL: missing asan runtime files (RTDIR=$RTDIR)"
+              ASAN_OK=0
+            else
+              echo "asan-rt: libs ready (renamed .lib -> .a for the windows-gnu driver)"
+              export NIVA_NATIVE_EXTRA_CFLAGS="${{ matrix.flags }} -L$ASANLIB"
+            fi
+          fi
+          for m in m1 m3 m8 m2 m5; do
+            if [ "$ASAN_OK" = "0" ]; then echo "ASAN-SETUP-FAIL $m: skipped (see setup above)"; continue; fi
+            echo "===== $m (cell=${{ matrix.cell }}) build:"
+            niva ابن --أصلي "$m.نيفا" > "build-$m.log" 2>&1 || { echo "BUILD-FAIL $m:"; cat "build-$m.log"; continue; }
+            echo "build ok: $m"
+            for r in $(seq 1 ${{ matrix.reps }}); do
+              rm -f diag-d2.log
+              code=0
+              "./$m.exe" > "$m-run$r.out" 2> "$m-run$r.err" || code=$?
+              echo "----- $m run $r EXIT=$code"
+              echo "stdout:"; cat "$m-run$r.out"
+              echo "stderr:"; cat "$m-run$r.err"
+              echo "diag-d2.log:"; cat diag-d2.log 2>/dev/null || echo "(no diag-d2.log)"
+            done
+          done
+          echo "DIAG-O2F-DONE cell=${{ matrix.cell }}"
