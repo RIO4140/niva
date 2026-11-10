@@ -89,3 +89,147 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+
+  # [DIAG] فرع diag/o2-deep فقط: مصفوفة تشخيص عيب -O2 العميق.
+  # لا تُدمج — الفرع تشخيصي ويُغلق بلا دمج ويُحذف.
+  # كل برنامج حدّي يُبنى ويُشغَّل منفردا (بلا إيقاف عند أول
+  # فشل) 3 مرات متتالية في الخلية نفسها.
+  diag-o2b:
+    name: diag-o2b (${{ matrix.os }} / ${{ matrix.opt }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        opt: ["-O0", "-O1", "-Os", "-O2"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install MinGW (Windows)
+        if: runner.os == 'Windows'
+        run: choco install mingw -y
+      - name: Add engine build dir to PATH
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/engine/target/debug" >> $GITHUB_PATH
+      - name: Build niva (debug)
+        shell: bash
+        run: cargo build --manifest-path engine/Cargo.toml
+      - name: Compiler version + -Wclobbered check
+        shell: bash
+        run: |
+          gcc --version | head -1
+          echo "--- -Wclobbered (niva_rt.c, -O2):"
+          cc -O2 -Wclobbered -Wall -Wextra -std=gnu11 -I engine/src/crt -c engine/src/crt/niva_rt.c -o diag-wclobbered.o 2>&1 | head -50 || true
+          echo "--- -Wclobbered done"
+      - name: Write M0-M8 programs
+        shell: bash
+        run: |
+          mkdir -p diag-m
+          python3 - <<'PYEOF'
+          import os
+          progs = {
+            "m0": "استورد شبكة\nاطبع \"تم\"\n",
+            "m1": "استورد شبكة\nحاول:\n    شبكة.اتصل(\"127.0.0.1\"، 9)\nماعدا:\n    اطبع \"مغلقة كما يجب\"\nحاول:\n    شبكة.مقبس(\"udp\")\nماعدا:\n    اطبع \"مغلقة كما يجب\"\n",
+            "m2": "استورد شبكة\nحاول:\n    شبكة.أرسل(١)\nماعدا:\n    اطبع \"وسائط كما يجب\"\nحاول:\n    شبكة.استقبل()\nماعدا:\n    اطبع \"وسائط كما يجب\"\n",
+            "m3": "استورد نظام\nحاول:\n    اطبع نظام.عدد_النداءات() > ٠\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    اطبع طول(نظام.اسم_النداء(٠)) > ٠\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    نظام.اسم_النداء(٩٩٩٩٩)\nماعدا:\n    اطبع \"غير معروف كما يجب\"\n",
+            "m4": "استورد ملفات\nحاول:\n    ملفات.افتح(٥)\nماعدا:\n    اطبع \"نص كما يجب\"\nحاول:\n    ملفات.اقرأ()\nماعدا:\n    اطبع \"وسائط كما يجب\"\n",
+            "m5": "استورد ذاكرة\nحاول:\n    اطبع ذاكرة.المتاح() > ٠\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    اطبع ذاكرة.حجم_الصفحة() > ٠\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\n",
+            "m6": "استورد شبكة\nحاول:\n    شبكة.اتصل(\"127.0.0.1\"، 9)\nماعدا:\n    اطبع \"مغلقة كما يجب\"\n",
+            "m7": "استورد شبكة\nشبكة.اتصل(\"127.0.0.1\"، 9)\nاطبع \"تم\"\n",
+            "m8": "استورد عمليات\nحاول:\n    عمليات.أنشئ(\"/bin/true\")\nماعدا:\n    اطبع \"مغلقة كما يجب\"\nحاول:\n    عمليات.أنشئ(\"/bin/true\")\nماعدا:\n    اطبع \"مغلقة كما يجب\"\n",
+          }
+          for name, src in progs.items():
+              with open(os.path.join("diag-m", name + ".نيفا"), "w", encoding="utf-8") as f:
+                  f.write(src)
+          print("wrote", len(progs), "programs")
+          PYEOF
+      - name: Run matrix cell (M0-M8 x3)
+        shell: bash
+        env:
+          NIVA_NATIVE_OPT: ${{ matrix.opt }}
+        run: |
+          cd diag-m
+          if [ "$RUNNER_OS" = "Windows" ]; then EXT=".exe"; else EXT=""; fi
+          for m in m0 m1 m2 m3 m4 m5 m6 m7 m8; do
+            echo "===== $m (opt=$NIVA_NATIVE_OPT) build:"
+            niva ابن --أصلي "$m.نيفا" > "build-$m.log" 2>&1 || { echo "BUILD-FAIL $m:"; cat "build-$m.log"; continue; }
+            echo "build ok: $m"
+            for r in 1 2 3; do
+              code=0
+              "./$m$EXT" > "$m-run$r.out" 2> "$m-run$r.err" || code=$?
+              echo "----- $m run $r EXIT=$code"
+              echo "stdout:"; cat "$m-run$r.out"
+              echo "stderr:"; cat "$m-run$r.err"
+            done
+          done
+          echo "DIAG-MATRIX-DONE opt=$NIVA_NATIVE_OPT os=$RUNNER_OS"
+
+  # [DIAG] فرع diag/o2-deep فقط: خلايا -g وASan وبلا جامع
+  # (ويندوز فقط، -O2) على M1-M3. أي خلية تفشل في الإعداد
+  # تُسجَّل كذلك ولا تُحسب دليلا.
+  diag-o2b-extra:
+    name: diag-o2b-extra (${{ matrix.cell }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cell: g
+            flags: "-g -fno-omit-frame-pointer"
+          - cell: asan
+            flags: "-fsanitize=address -g"
+          - cell: nogc
+            flags: "-DNIVA_NO_GC"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install MinGW (Windows)
+        run: choco install mingw -y
+      - name: Add engine build dir to PATH
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/engine/target/debug" >> $GITHUB_PATH
+      - name: Build niva (debug)
+        shell: bash
+        run: cargo build --manifest-path engine/Cargo.toml
+      - name: Write M1-M3 programs
+        shell: bash
+        run: |
+          mkdir -p diag-m
+          python3 - <<'PYEOF'
+          import os
+          progs = {
+            "m1": "استورد شبكة\nحاول:\n    شبكة.اتصل(\"127.0.0.1\"، 9)\nماعدا:\n    اطبع \"مغلقة كما يجب\"\nحاول:\n    شبكة.مقبس(\"udp\")\nماعدا:\n    اطبع \"مغلقة كما يجب\"\n",
+            "m2": "استورد شبكة\nحاول:\n    شبكة.أرسل(١)\nماعدا:\n    اطبع \"وسائط كما يجب\"\nحاول:\n    شبكة.استقبل()\nماعدا:\n    اطبع \"وسائط كما يجب\"\n",
+            "m3": "استورد نظام\nحاول:\n    اطبع نظام.عدد_النداءات() > ٠\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    اطبع طول(نظام.اسم_النداء(٠)) > ٠\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    نظام.اسم_النداء(٩٩٩٩٩)\nماعدا:\n    اطبع \"غير معروف كما يجب\"\n",
+          }
+          for name, src in progs.items():
+              with open(os.path.join("diag-m", name + ".نيفا"), "w", encoding="utf-8") as f:
+                  f.write(src)
+          print("wrote", len(progs), "programs")
+          PYEOF
+      - name: Run extra cell (M1-M3 x3)
+        shell: bash
+        env:
+          NIVA_NATIVE_OPT: "-O2"
+          NIVA_NATIVE_EXTRA_CFLAGS: ${{ matrix.flags }}
+        run: |
+          cd diag-m
+          for m in m1 m2 m3; do
+            echo "===== $m (cell=${{ matrix.cell }}) build:"
+            niva ابن --أصلي "$m.نيفا" > "build-$m.log" 2>&1 || { echo "BUILD-FAIL $m:"; cat "build-$m.log"; continue; }
+            echo "build ok: $m"
+            for r in 1 2 3; do
+              code=0
+              "./$m.exe" > "$m-run$r.out" 2> "$m-run$r.err" || code=$?
+              echo "----- $m run $r EXIT=$code"
+              echo "stdout:"; cat "$m-run$r.out"
+              echo "stderr:"; cat "$m-run$r.err"
+              if [ "${{ matrix.cell }}" = "g" ]; then
+                echo "addr2line:"
+                grep -oE '0x[0-9a-fA-F]+' "$m-run$r.err" | sort -u | while read -r addr; do
+                  echo "  $addr -> $(addr2line -e "./$m.exe" -f -C "$addr" 2>&1 | tr '\n' ' ')"
+                done || true
+              fi
+            done
+          done
+          echo "DIAG-EXTRA-DONE cell=${{ matrix.cell }}"
