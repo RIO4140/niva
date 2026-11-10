@@ -1234,6 +1234,16 @@ fn enc_stmt_kind(w: &mut Writer, k: &StmtKind) -> RioResult<()> {
                 w.usize(*arity);
             }
         }
+        // البند 8 — الزخارف: الوسم 18 (جديد؛ فلا تصادم
+        // مع مصنوعات قديمة تحمل وسوما 0..17).
+        StmtKind::Decorated { decorators, def } => {
+            w.u8(18);
+            w.u64(decorators.len() as u64);
+            for d in decorators {
+                enc_expr(w, d)?;
+            }
+            enc_stmts(w, std::slice::from_ref(def))?;
+        }
     }
     Ok(())
 }
@@ -1334,6 +1344,21 @@ fn dec_stmt_kind(r: &mut Reader) -> RioResult<StmtKind> {
             }
             StmtKind::InterfaceDef { name, methods }
         }
+        18 => {
+            let n = r.u64()? as usize;
+            let mut decorators = Vec::with_capacity(n.min(1_000_000));
+            for _ in 0..n {
+                decorators.push(dec_expr(r)?);
+            }
+            let mut defs = dec_stmts(r)?;
+            if defs.len() != 1 {
+                return Err(bad(
+                    "مصنوع تالف: زخرفة بلا تعريف واحد".to_string(),
+                ));
+            }
+            let def = defs.pop().unwrap();
+            StmtKind::Decorated { decorators, def: Box::new(def) }
+        }
         t => return Err(bad(format!("مصنوع تالف: وسم جملة غير معروف {}", t))),
     };
     Ok(kind)
@@ -1372,6 +1397,11 @@ mod tests {
         ع = ع + ١
         ارجع ع
     ارجع زد
+دالة غلف_اختبار(د):
+    ارجع د
+@غلف_اختبار
+دالة مختارة():
+    ارجع ٩
 مضاعف = دالة_مجهولة(س): س * ٢
 حاول:
     س = ١ / ٠

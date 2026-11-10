@@ -1963,10 +1963,111 @@ void nv_dot_assign(NvValue target, const char *name, NvValue val, int line, int 
 }
 
 // ---------- فحص الأنواع المعلنة ----------
+// البند 8 — مطابقة نوع معلن بنيويا: اسم مسمى، أو عام
+// `اسم[نوع، نوع]` (مثل `قائمة[عدد]` و`قاموس[نص، عدد]`).
+// العام يطابقه أساسه زائد فحص العناصر: كل عنصر في
+// القائمة يطابق معامل النوع الواحد، وكل قيمة في
+// القاموس تطابق معامل النوع الثاني (ومفتاحه نص
+// دائما). الفاصلة عربية `،` (بايتا UTF-8) أو لاتينية،
+// والتداخل مسموح (`قائمة[قائمة[عدد]]`).
+static int nv_match_type_at(const char **pp, NvValue v);
+
+static void nv_skip_type_ws(const char **pp) {
+    while (**pp == ' ' || **pp == '\t') (*pp)++;
+}
+
+// هل الحرف الحالي فاصلة نوع (عربية U+060C أو لاتينية)؟
+static int nv_is_type_comma(const char *p) {
+    if (p[0] == ',') return 1;
+    // الفاصلة العربية `،` بايتا UTF-8: D8 8C.
+    return (unsigned char)p[0] == 0xD8 && (unsigned char)p[1] == 0x8C;
+}
+
+// انسخ معامل نوع واحد (حتى فاصلة أو `]` على هذا المستوى)
+// إلى مخزن مؤقت، مع احترام تداخل الأقواس.
+static int nv_copy_type_arg(const char **pp, char *buf, size_t cap) {
+    size_t n = 0;
+    int depth = 0;
+    while (**pp) {
+        if (**pp == '[') depth++;
+        if (**pp == ']') {
+            if (depth == 0) break;
+            depth--;
+        }
+        if (depth == 0 && nv_is_type_comma(*pp)) break;
+        if (n + 1 < cap) buf[n++] = **pp;
+        (*pp)++;
+    }
+    buf[n] = '\0';
+    return n > 0;
+}
+
+static int nv_value_matches_decl(const char *decl, NvValue v) {
+    if (!decl || strcmp(decl, "أي") == 0) return 1;
+    const char *p = decl;
+    return nv_match_type_at(&p, v);
+}
+
+static int nv_match_type_at(const char **pp, NvValue v) {
+    nv_skip_type_ws(pp);
+    char name[128];
+    size_t n = 0;
+    while (**pp && **pp != '[' && **pp != ']' && **pp != ',' && **pp != ' '
+           && **pp != '\t' && !nv_is_type_comma(*pp)) {
+        if (n + 1 < sizeof(name)) name[n++] = **pp;
+        (*pp)++;
+    }
+    name[n] = '\0';
+    if (n == 0) return 0;
+    if (strcmp(nv_type_name(v), name) != 0) return 0;
+    nv_skip_type_ws(pp);
+    if (**pp != '[') return 1;
+    (*pp)++; // [
+    // معاملات النوع كنصوص (بحد أقصى 8).
+    char args[8][256];
+    int nargs = 0;
+    for (;;) {
+        nv_skip_type_ws(pp);
+        if (nargs < 8 && nv_copy_type_arg(pp, args[nargs], sizeof(args[0]))) {
+            nargs++;
+        } else if (nargs >= 8) {
+            return 0;
+        } else {
+            return 0;
+        }
+        nv_skip_type_ws(pp);
+        if (nv_is_type_comma(*pp)) {
+            (*pp) += (**pp == ',') ? 1 : 2;
+            continue;
+        }
+        break;
+    }
+    if (**pp != ']') return 0;
+    (*pp)++; // ]
+    if (strcmp(name, "قائمة") == 0 && nargs == 1 && v.tag == NV_LIST) {
+        NvList *l = v.u.list;
+        for (size_t i = 0; i < l->len; i++) {
+            if (!nv_value_matches_decl(args[0], l->items[i])) return 0;
+        }
+        return 1;
+    }
+    if (strcmp(name, "قاموس") == 0 && nargs == 2 && v.tag == NV_DICT) {
+        // المفتاح نص دائما: معامل المفتاح نص أو أي فقط.
+        if (strcmp(args[0], "نص") != 0 && strcmp(args[0], "أي") != 0) return 0;
+        NvDict *d = v.u.dict;
+        for (size_t i = 0; i < d->len; i++) {
+            if (!nv_value_matches_decl(args[1], d->entries[i].val)) return 0;
+        }
+        return 1;
+    }
+    // عام على غير حاوية: الأساس وحده يكفي.
+    return 1;
+}
+
 void nv_check_type(NvValue v, const char *type_name, const char *what,
                    const char *func_name, int line, int col) {
     if (!type_name || strcmp(type_name, "أي") == 0) return;
-    if (strcmp(nv_type_name(v), type_name) != 0) {
+    if (!nv_value_matches_decl(type_name, v)) {
         nv_error_fmt(NV_ERR_TYPE, line, col, "نوع غير متطابق: %s معلن %s، لكن القيمة %s",
                      what, type_name, nv_type_name(v));
     }
@@ -1976,7 +2077,7 @@ void nv_check_type(NvValue v, const char *type_name, const char *what,
 static void nv_check_param_type(NvValue v, const char *param_name, const char *pt,
                                 const char *func_name, int is_method, int line, int col) {
     if (!pt || strcmp(pt, "أي") == 0) return;
-    if (strcmp(nv_type_name(v), pt) != 0) {
+    if (!nv_value_matches_decl(pt, v)) {
         nv_error_fmt(NV_ERR_TYPE, line, col,
                      "نوع غير متطابق: معامل %s في %s %s معلن %s، لكن القيمة %s",
                      param_name, is_method ? "الطريقة" : "الدالة", func_name, pt, nv_type_name(v));
@@ -2043,7 +2144,7 @@ static NvValue nv_call_func_impl(NvFunc *f, NvValue self, int has_self,
     if (exit_flow == NV_FLOW_RETURN) {
         NvValue v = result;
         if (f->return_type && strcmp(f->return_type, "أي") != 0 &&
-            strcmp(nv_type_name(v), f->return_type) != 0) {
+            !nv_value_matches_decl(f->return_type, v)) {
             nv_error_fmt(NV_ERR_TYPE, line, col,
                          "نوع غير متطابق: %s %s معلنة أن ترجع %s، لكن رجعت %s",
                          is_method ? "الطريقة" : "الدالة", f->name, f->return_type, nv_type_name(v));
@@ -6499,7 +6600,7 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
 // ---------- مساعدات المولد ----------
 void nv_check_assign_type(NvValue v, const char *type_name, const char *var_name, int line, int col) {
     if (!type_name || strcmp(type_name, "أي") == 0) return;
-    if (strcmp(nv_type_name(v), type_name) != 0) {
+    if (!nv_value_matches_decl(type_name, v)) {
         nv_error_fmt(NV_ERR_TYPE, line, col, "نوع غير متطابق: المتغير %s معلن %s، لكن القيمة %s",
                      var_name, type_name, nv_type_name(v));
     }

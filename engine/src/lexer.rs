@@ -76,6 +76,11 @@ pub enum TokenKind {
     Comma,
     Semicolon,
     Dot, // .  (Phase 1A Step 2: module.member; numbers consume '.' internally)
+    // البند 8 — الزخارف (الاجتماع 72 §87): `@` رمز زخرفة
+    // في بداية سطر قبل تعريف دالة أو فئة فقط؛ وفي أي
+    // موضع آخر يرفضه المحلل النحوي (لا استيفاء خارج
+    // كتلة `_س_`، ولا كتلة `_س_` أصلا في هذا البند).
+    At,
     Newline,
     Indent,
     Dedent,
@@ -415,6 +420,7 @@ pub fn tokenize(source: &str) -> RioResult<Vec<Token>> {
                     '}' => (TokenKind::RBrace, 1),
                     ':' => (TokenKind::Colon, 1),
                     '.' => (TokenKind::Dot, 1),
+                    '@' => (TokenKind::At, 1),
                     ',' | '،' => (TokenKind::Comma, 1),
                     ';' | '؛' => (TokenKind::Semicolon, 1),
                     '!' => {

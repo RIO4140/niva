@@ -5,7 +5,7 @@
 //! Types: عدد (Number), نص (String), منطقي (Bool), قائمة (List),
 //! قاموس (Dict), لاشيء (Nil), دالة (Function).
 
-use crate::ast::Stmt;
+use crate::ast::{Stmt, TypeExpr};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -190,6 +190,54 @@ impl Value {
             Value::Instance(_) => "كائن",
             Value::BoundMethod { .. } => "دالة",
             Value::NativeFunction { .. } => "دالة",
+        }
+    }
+
+    /// هل تطابق هذه القيمة النوع المعلن بنيويا (البند 8)؟
+    /// الاسم المسمى يطابقه اسم النوع؛ والعام يطابقه أساسه
+    /// زائد فحص العناصر: `قائمة[عدد]` تتطلب كل عنصر عددا،
+    /// و`قاموس[نص، عدد]` تتطلب كل مفتاح نصا وكل قيمة عددا.
+    /// `أي` بلا فحص؛ ونص غير قابل للتحليل يُقارَن حرفيا
+    /// كما كان (توافق دفاعي).
+    pub fn matches_declared_type(&self, declared: &str) -> bool {
+        if declared == "أي" {
+            return true;
+        }
+        let Some(t) = TypeExpr::parse(declared) else {
+            return self.type_name() == declared;
+        };
+        self.matches_type_expr(&t)
+    }
+
+    fn matches_type_expr(&self, t: &TypeExpr) -> bool {
+        match t {
+            TypeExpr::Named(n) => n == "أي" || self.type_name() == n,
+            TypeExpr::Generic { name, args } => {
+                if self.type_name() != name {
+                    return false;
+                }
+                match (name.as_str(), args.as_slice()) {
+                    ("قائمة", [elem]) => match self {
+                        Value::List(items) => {
+                            items.iter().all(|v| v.matches_type_expr(elem))
+                        }
+                        _ => false,
+                    },
+                    ("قاموس", [key, val]) => match self {
+                        Value::Dict(entries) => {
+                            let key_ok = matches!(key, TypeExpr::Named(k) if k == "أي" || k == "نص");
+                            key_ok
+                                && entries
+                                    .iter()
+                                    .all(|(_, v)| v.matches_type_expr(val))
+                        }
+                        _ => false,
+                    },
+                    // عام على غير حاوية (لا يبنيه المحلل):
+                    // الأساس وحده يكفي.
+                    _ => true,
+                }
+            }
         }
     }
 

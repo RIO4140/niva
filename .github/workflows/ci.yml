@@ -89,3 +89,142 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+
+  verify-clang-o2:
+    # وظيفة تحقق مؤقتة لتبديل clang (§88 شرط 8) — فرعية فقط، لا تفشل أبدا.
+    # ملاحظة: خطوات GitHub تعمل bash مع -e (أي أمر يرجع غير صفر
+    # يوقف الخطوة فورا) — فكل أمر قد يرجع غير صفر محمي هنا
+    # بنمط الالتقاط (X=0; cmd || X=$?) أو || true.
+    name: verify-clang-o2 (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install MinGW (Windows)
+        run: choco install mingw -y
+      - name: Add engine build dir to PATH
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/engine/target/debug" >> $GITHUB_PATH
+      - name: Build niva (debug)
+        shell: bash
+        run: cargo build --manifest-path engine/Cargo.toml || echo "BUILD-NIVA-FAIL"
+      - name: Compiler versions
+        shell: bash
+        run: |
+          echo "--- gcc:"; gcc --version | head -1 || true
+          echo "--- clang:"; clang --version | head -1 || true
+          echo "--- windres:"; windres --version | head -1 || true
+          echo "--- clang runtime dir:"; clang --print-runtime-dir --target=x86_64-pc-windows-gnu 2>&1 || true
+      - name: Cell A - clang parity (default clang -O2)
+        shell: bash
+        run: |
+          echo "===== cell-a: full c_parity_integration_scenarios under DEFAULT clang -O2 (switch)"
+          PARITY_CODE=0
+          cargo test --manifest-path engine/Cargo.toml --test c_parity c_parity_integration_scenarios -- --test-threads=1 > parity-clang.log 2>&1 || PARITY_CODE=$?
+          echo "PARITY-EXIT=$PARITY_CODE"
+          echo "--- failing scenario (if any):"
+          grep -iE "FAILED|panicked|test result|نظام-جدول|مقابس-بوابة-مغلقة|مقابس-وسائط-خاطئة" parity-clang.log | head -20 || true
+          echo "--- parity-clang.log tail:"
+          tail -30 parity-clang.log || true
+          echo "CELL-A-DONE"
+      - name: Cell B - GCC control (same test under GCC -O2 via wrapper)
+        shell: bash
+        run: |
+          echo "===== cell-b: GCC control - same test under GCC -O2 (wrapper swaps -O0 -> -O2)"
+          mkdir -p "$GITHUB_WORKSPACE/gcc-o2"
+          cat > /tmp/gcc-o2.c <<'EOF'
+          #include <string.h>
+          #include <stdlib.h>
+          #include <unistd.h>
+          #include <process.h>
+          int main(int argc, char **argv) {
+              char **nargv = (char **)malloc(sizeof(char *) * (argc + 2));
+              nargv[0] = "gcc";
+              int j = 1;
+              for (int i = 1; i < argc; i++) {
+                  if (strcmp(argv[i], "-O0") == 0) nargv[j++] = "-O2";
+                  else nargv[j++] = argv[i];
+              }
+              nargv[j] = NULL;
+              execvp("gcc", nargv);
+              return 1;
+          }
+          EOF
+          cc -x c -o "$GITHUB_WORKSPACE/gcc-o2/gcc-o2.exe" /tmp/gcc-o2.c && echo "GCC-WRAPPER-BUILT" || echo "GCC-WRAPPER-BUILD-FAIL"
+          ls "$GITHUB_WORKSPACE/gcc-o2/"
+          export PATH="$GITHUB_WORKSPACE/gcc-o2:$PATH"
+          if command -v gcc-o2 >/dev/null 2>&1; then gcc-o2 --version | head -1 || true; echo "GCC-WRAPPER-FOUND"; else echo "GCC-WRAPPER-NOT-FOUND"; fi
+          GCC_CODE=0
+          NIVA_CC=gcc-o2 cargo test --manifest-path engine/Cargo.toml --test c_parity c_parity_integration_scenarios -- --test-threads=1 > parity-gcc.log 2>&1 || GCC_CODE=$?
+          echo "GCC-CONTROL-EXIT=$GCC_CODE"
+          echo "--- failing scenario (if any):"
+          grep -iE "FAILED|panicked|test result|نظام-جدول|مقابس-بوابة-مغلقة|مقابس-وسائط-خاطئة" parity-gcc.log | head -20 || true
+          echo "--- parity-gcc.log tail:"
+          tail -30 parity-gcc.log || true
+          echo "CELL-B-DONE"
+      - name: Cell C - windres live proof (manifest acceptance gate via windres only)
+        shell: bash
+        run: |
+          echo "===== cell-c: windres live proof - manifest acceptance gate via windres only (Meeting 80, (a)+(3))"
+          chcp 65001 || true
+          export PYTHONIOENCODING=utf-8
+          echo "--- tools on PATH before re-assert (inherited from job setup):"
+          echo "PATH=$PATH"
+          for t in clang cc gcc windres niva; do command -v "$t" || echo "MISSING-TOOL: $t"; done
+          echo "--- windres location (mandatory diagnostic):"
+          command -v windres || echo "MISSING-TOOL: windres"
+          echo "--- windres version:"
+          windres --version 2>&1 | head -5 || true
+          echo "--- windres help:"
+          windres --help 2>&1 | head -30 || true
+          echo "--- clang version:"; clang --version 2>&1 | head -1 || true
+          export PATH="/c/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin:/c/Program Files/LLVM/bin:$PATH"
+          echo "--- tools on PATH after re-assert (same installs as job setup: choco mingw + runner LLVM):"
+          for t in clang cc gcc windres niva; do command -v "$t" || echo "MISSING-TOOL-AFTER: $t"; done
+          echo "--- windres location after re-assert (must be real MinGW windres):"
+          command -v windres || echo "MISSING-TOOL-AFTER: windres"
+          mkdir -p diag-m
+          python3 - <<'PYEOF' || echo "PY-WRITE-FAIL"
+          src = "استورد شبكة\nحاول:\n    شبكة.اتصل(\"127.0.0.1\"، 9)\nماعدا:\n    اطبع \"مغلقة كما يجب\"\nحاول:\n    شبكة.مقبس(\"udp\")\nماعدا:\n    اطبع \"مغلقة كما يجب\"\n"
+          open("diag-m/m1.نيفا", "w", encoding="utf-8").write(src)
+          print("WROTE-M1-OK")
+          PYEOF
+          ls -l diag-m/ || true
+          cd diag-m
+          WINDRES_BUILD=0; niva ابن --أصلي "m1.نيفا" > build-m1-windres.log 2>&1 || WINDRES_BUILD=$?; echo "WINDRES-BUILD-EXIT=$WINDRES_BUILD"
+          if [ -f m1.exe ]; then echo "WINDRES-BUILD-OK: m1.exe exists"; else echo "WINDRES-BUILD-MISSING: no m1.exe"; cat build-m1-windres.log || true; fi
+          if [ -f m1.exe ]; then
+            WINDRES_RUN=0; ./m1.exe > m1-windres.out 2> m1-windres.err || WINDRES_RUN=$?; echo "WINDRES-RUN-EXIT=$WINDRES_RUN"
+            echo "m1 stdout:"; cat m1-windres.out || true
+            echo "m1 stderr:"; cat m1-windres.err || true
+            python3 -c "data=open('m1.exe','rb').read(); print('MANIFEST-UTF8-COUNT:', data.count(b'UTF-8')); print('MANIFEST-ACTIVECODEPAGE-COUNT:', data.count(b'activeCodePage')); print('MANIFEST-ASSEMBLY-COUNT:', data.count(b'assembly'))" || echo "MANIFEST-CHECK-FAIL"
+          fi
+          echo "CELL-C-DONE"
+      - name: Cell D - fallback proof (clang hidden from PATH)
+        shell: bash
+        run: |
+          echo "===== cell-d: fallback proof - clang hidden, expect cc -O0 + Arabic notice"
+          cd diag-m
+          cp m1.نيفا m1fb.نيفا || echo "FALLBACK-CP-FAIL"
+          (
+            export PATH="$(echo "$PATH" | tr ':' '\n' | grep -v -i 'llvm' | paste -sd: -)"
+            echo "--- clang check (must be missing):"
+            command -v clang && echo "FALLBACK-CLANG-STILL-FOUND" || echo "FALLBACK-CLANG-HIDDEN"
+            clang --version 2>&1 | head -1 || true
+            echo "--- cc check (must be present):"
+            command -v cc && cc --version | head -1 || echo "FALLBACK-CC-MISSING"
+            FALLBACK_BUILD=0; niva ابن --أصلي "m1fb.نيفا" > build-m1fb.log 2>&1 || FALLBACK_BUILD=$?; echo "FALLBACK-BUILD-EXIT=$FALLBACK_BUILD"
+            echo "--- build log:"
+            cat build-m1fb.log || true
+            if grep -q "clang غير موجود" build-m1fb.log; then echo "FALLBACK-NOTICE-FOUND=1"; else echo "FALLBACK-NOTICE-FOUND=0"; fi
+            if [ -f m1fb.exe ]; then
+              echo "FALLBACK-BUILD-OK: m1fb.exe exists"
+              FALLBACK_RUN=0; ./m1fb.exe > m1fb.out 2> m1fb.err || FALLBACK_RUN=$?; echo "FALLBACK-RUN-EXIT=$FALLBACK_RUN"
+              echo "m1fb stdout:"; cat m1fb.out || true
+              echo "m1fb stderr:"; cat m1fb.err || true
+            else
+              echo "FALLBACK-BUILD-MISSING: no m1fb.exe"
+            fi
+          )
+          echo "CELL-D-DONE"
+          echo "VERIFY-CLANG-O2-DONE"
