@@ -167,12 +167,23 @@ jobs:
         shell: bash
         run: |
           echo "===== cell-c: llvm-rc live proof - windres neutralized, build native binary"
+          chcp 65001 || true
+          export PYTHONIOENCODING=utf-8
+          echo "--- tools on PATH before re-assert (inherited from job setup):"
+          echo "PATH=$PATH"
+          for t in clang cc gcc windres llvm-rc niva; do command -v "$t" || echo "MISSING-TOOL: $t"; done
+          echo "--- llvm-rc version:"; llvm-rc --version 2>&1 | head -2 || true
+          echo "--- clang version:"; clang --version 2>&1 | head -1 || true
+          export PATH="/c/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin:/c/Program Files/LLVM/bin:$PATH"
+          echo "--- tools on PATH after re-assert (same installs as job setup: choco mingw + runner LLVM):"
+          for t in clang cc gcc windres llvm-rc niva; do command -v "$t" || echo "MISSING-TOOL-AFTER: $t"; done
           mkdir -p diag-m
           python3 - <<'PYEOF' || echo "PY-WRITE-FAIL"
           src = "استورد شبكة\nحاول:\n    شبكة.اتصل(\"127.0.0.1\"، 9)\nماعدا:\n    اطبع \"مغلقة كما يجب\"\nحاول:\n    شبكة.مقبس(\"udp\")\nماعدا:\n    اطبع \"مغلقة كما يجب\"\n"
           open("diag-m/m1.نيفا", "w", encoding="utf-8").write(src)
-          print("wrote diag-m/m1.نيفا")
+          print("WROTE-M1-OK")
           PYEOF
+          ls -l diag-m/ || true
           mkdir -p "$GITHUB_WORKSPACE/windres-shim"
           SHIM_OK=0
           if [ -f /usr/bin/false.exe ]; then cp /usr/bin/false.exe "$GITHUB_WORKSPACE/windres-shim/windres.exe" && SHIM_OK=1 || echo "WINDRES-SHIM-CP-FAIL"; else printf 'int main(){return 1;}\n' | cc -x c -o "$GITHUB_WORKSPACE/windres-shim/windres.exe" - && SHIM_OK=1 || echo "WINDRES-SHIM-CC-FAIL"; fi
