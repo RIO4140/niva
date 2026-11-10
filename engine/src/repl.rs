@@ -1358,6 +1358,28 @@ impl Repl {
         })
     }
 
+    /// `حدث حزم` (أمر المالك 2026-11-10 ~03:07، قاعدة
+    /// مؤكدة): أي مستخدم يكتبها في الموجه تُحدَّث حزم
+    /// نيفا مباشرة عبر موزّع المدير — بلا برنامج ولا
+    /// استيراد من المستخدم. العبارة تبني مقتطفا يستورد
+    /// المدير (المدمج في المحرك؛ وملف على القرص يسبقه
+    /// دائما) وينفّذ `أوامر.نفّذ(["حدث", "حزم"])` ويطبع
+    /// نص النجاح أو رسالة الخطأ العربية. المقتطف
+    /// المولَّد لا يُسجَّل (كالاختصارات)، والسطر المكتوب
+    /// نفسه يُسجَّل كغيره.
+    fn run_update_packages_phrase(&mut self) -> ReplOutput {
+        self.history.suspend_recording();
+        let snippet = "استورد أوامر\nنتيجة_حدث_حزم = أوامر.نفّذ([\"حدث\", \"حزم\"], لاشيء, لاشيء)\nإذا نتيجة_حدث_حزم[\"نجاح\"]:\n  اطبع نتيجة_حدث_حزم[\"نص\"]\nوإلا:\n  اطبع نتيجة_حدث_حزم[\"خطأ\"]";
+        let (out, ended) = self.eval_display(snippet);
+        self.history.resume_recording();
+        ReplOutput {
+            output: out,
+            prompt: self.prompt(),
+            ended,
+            needs_network: false,
+        }
+    }
+
     /// أمر تفاعلي `شغّل <اسم>` (اجتماع 43 §58 + تجاوز
     /// المالك «بلا تعقيد»): يشغّل ملف أداة من مجلد
     /// البرنامج كبرنامج — الاسم العاري بلا امتداد يُلحق
@@ -2062,6 +2084,10 @@ impl Repl {
             ["احذف_مستعار", ..] => ("احذف_مستعار", 1, 1, 1),
             ["أكمل", ..] => ("أكمل", 1, 0, 1),
             ["خيارات", ..] => ("خيارات", 1, 0, 2),
+            // أمر المالك 2026-11-10 ~03:07 (قاعدة مؤكدة):
+            // `حدث حزم` أمر مباشر في الموجه لأي مستخدم —
+            // بلا معاملات، وأي كلمة بعدها خطأ عدد معاملات.
+            ["حدث", "حزم", ..] => ("حدث حزم", 2, 0, 0),
             _ => return None,
         };
         let args: Vec<String> = words[nwords..].iter().map(|w| w.to_string()).collect();
@@ -2158,6 +2184,13 @@ impl Repl {
                     ended: false,
                     needs_network: false,
                 })
+            }
+            // أمر المالك 2026-11-10 ~03:07 (قاعدة مؤكدة):
+            // `حدث حزم` أمر مباشر في الموجه — يحدّث حزم
+            // نيفا عبر موزّع المدير، بلا برنامج ولا استيراد.
+            "حدث حزم" => {
+                self.history.record(line);
+                Some(self.run_update_packages_phrase())
             }
             "أعد-الإعدادات" => {
                 self.history.record(line);
@@ -5200,7 +5233,7 @@ pub fn banner() -> String {
 /// مجتمع (لا قناة مخصصة لنيفا بعد — يُضاف حين يحددها
 /// المالك، ولا يُختلق رابط).
 pub fn welcome_text() -> String {
-    "أهلا بك في نيفا\n\nالوثائق: https://github.com/RIO4140/niva\nبلّغ عن مشكلة: https://github.com/RIO4140/niva/issues\n\nأوامر يومية:\n ات — اعرض الملفات\n شغل <اسم> — شغّل ملف\n تثبيت <رابط> — ثبّت أداة\n تن — حدّث التطبيق".to_string()
+    "أهلا بك في نيفا\n\nالوثائق: https://github.com/RIO4140/niva\nبلّغ عن مشكلة: https://github.com/RIO4140/niva/issues\n\nأوامر يومية:\n ات — اعرض الملفات\n شغل <اسم> — شغّل ملف\n تثبيت <رابط> — ثبّت أداة\n حدث حزم — حدّث حزم نيفا\n تن — حدّث التطبيق".to_string()
 }
 
 /// `:مساعدة` output: a BARE command list — terminal convention,
@@ -7325,7 +7358,7 @@ mod tests {
             "got: {}",
             text
         );
-        for cmd in ["ات", "شغل", "تثبيت", "تن"] {
+        for cmd in ["ات", "شغل", "تثبيت", "حدث حزم", "تن"] {
             assert!(text.contains(cmd), "got: {}", text);
         }
         assert!(!text.contains("المجتمع"), "got: {}", text);
@@ -8057,6 +8090,92 @@ mod tests {
             o.output
         );
         assert!(!dir.join("أداة.نيفا").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // `حدث حزم` (أمر المالك 2026-11-10 ~03:07، قاعدة
+    // مؤكدة): أمر مباشر في الموجه لأي مستخدم — في
+    // الوضعين، ومن مجلد مؤقت بلا ملفات مدير (فالمدمج
+    // هو الذي يُحمَّل). التنزيل يفشل هنا (الشبكة مغلقة
+    // في الجلسة، والشهادة مرفوضة على هذه الآلة أصلا)
+    // فيرجع الخطأ العربي النظيف من خطوة التنزيل؛ وإن
+    // نجح التنزيل في بيئة أخرى فالنص الآخر يثبت
+    // الوصول نفسه — لا «متغير غير معرف» في الحالين.
+    #[test]
+    fn repl_hadath_huzam_phrase() {
+        for interpreter in [false, true] {
+            let dir = shortcut_dir();
+            let mut r = if interpreter {
+                Repl::with_program_dir_interpreter(dir.clone())
+            } else {
+                Repl::with_program_dir(dir.clone())
+            };
+            let o = r.feed("حدث حزم");
+            assert!(
+                o.output.contains("تعذّر تنزيل الفهرس")
+                    || o.output.contains("جارٍ تحديث قائمة الحزم"),
+                "got: {}",
+                o.output
+            );
+            assert!(
+                !o.output.contains("متغير غير معرف"),
+                "got: {}",
+                o.output
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    // المدير المدمج وحده: `استورد أوامر` من مجلد مؤقت
+    // بلا ملفات يحمّل المدمج، ومساعدته تسرد `حدث حزم`.
+    #[test]
+    fn repl_embedded_manager_import() {
+        for interpreter in [false, true] {
+            let dir = shortcut_dir();
+            let mut r = if interpreter {
+                Repl::with_program_dir_interpreter(dir.clone())
+            } else {
+                Repl::with_program_dir(dir.clone())
+            };
+            let o = r.feed("استورد أوامر");
+            assert!(
+                !o.output.contains("وحدة غير موجودة"),
+                "got: {}",
+                o.output
+            );
+            let o = r.feed("اطبع أوامر.استعمال()");
+            assert!(o.output.contains("حدث حزم"), "got: {}", o.output);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    // `حدث حزم` بلا معاملات فقط: أي كلمة زائدة خطأ
+    // عدد معاملات بأسلوب العبارات.
+    #[test]
+    fn repl_hadath_huzam_args() {
+        let dir = shortcut_dir();
+        let mut r = Repl::with_program_dir(dir.clone());
+        let o = r.feed("حدث حزم زيادة");
+        assert!(
+            o.output.contains("تتوقع بدون معاملات"),
+            "got: {}",
+            o.output
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // `حدث` وحدها بلا `حزم` بعدها ليست عبارة — تبقى
+    // كودا عاديا فيرد «متغير غير معرف» كما قبل.
+    #[test]
+    fn repl_hadath_bare_still_code() {
+        let dir = shortcut_dir();
+        let mut r = Repl::with_program_dir(dir.clone());
+        let o = r.feed("حدث");
+        assert!(
+            o.output.contains("متغير غير معرف: حدث"),
+            "got: {}",
+            o.output
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

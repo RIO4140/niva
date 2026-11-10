@@ -2500,22 +2500,31 @@ impl Vm {
             crate::packages::find_module_file(&self.program_dir, module).map_err(|msg| {
                 RioError::new(crate::error::ErrorKind::Io, msg, line, col)
             })?;
-        let path = match found.found {
-            Some(p) => p,
-            None => {
-                let searched = found
-                    .searched
-                    .iter()
-                    .map(|p| crate::permissions::slash_display(p))
-                    .collect::<Vec<_>>()
-                    .join("؛ ");
-                return Err(RioError::module_not_found(module, &searched, line, col));
-            }
-        };
-        let source = self.read_module_file(&path, module, line, col)?;
+        // المدير المدمج (أمر المالك 2026-11-10 ~03:07):
+        // ملاذ أخير بعد فشل بحث القرص كله — كالمفسر
+        // حرفيا، فالعبارة `حدث حزم` تعمل لأي مستخدم
+        // بلا تثبيت مسبق.
         // اجتماع 32، السؤال الخامس: ملف الوحدة هو الذي
         // تُسنَد إليه أخطاؤها — كالمفسر حرفيا.
-        let display = crate::permissions::slash_display(&path);
+        let (source, display) = match found.found {
+            Some(p) => {
+                let src = self.read_module_file(&p, module, line, col)?;
+                let disp = crate::permissions::slash_display(&p);
+                (src, disp)
+            }
+            None => match crate::packages::مصدر_مدمج(module) {
+                Some(src) => (src.to_string(), format!("مدمج/{}.نيفا", module)),
+                None => {
+                    let searched = found
+                        .searched
+                        .iter()
+                        .map(|p| crate::permissions::slash_display(p))
+                        .collect::<Vec<_>>()
+                        .join("؛ ");
+                    return Err(RioError::module_not_found(module, &searched, line, col));
+                }
+            },
+        };
         self.module_files
             .borrow_mut()
             .insert(module.to_string(), display.clone());

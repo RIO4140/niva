@@ -1550,24 +1550,33 @@ impl Interpreter {
         let found = crate::packages::find_module_file(&self.program_dir, module).map_err(|msg| {
             RioError::new(ErrorKind::Io, msg, line, col)
         })?;
-        let path = match found.found {
-            Some(p) => p,
-            None => {
-                let searched = found
-                    .searched
-                    .iter()
-                    .map(|p| crate::permissions::slash_display(p))
-                    .collect::<Vec<_>>()
-                    .join("؛ ");
-                return Err(RioError::module_not_found(module, &searched, line, col));
-            }
-        };
-        let source = Self::read_file_capped(&path, module, line, col)?;
+        // المدير المدمج (أمر المالك 2026-11-10 ~03:07):
+        // ملاذ أخير بعد فشل بحث القرص كله — فالعبارة
+        // `حدث حزم` تعمل لأي مستخدم بلا تثبيت مسبق.
         // اجتماع 32، السؤال الخامس: ملف الوحدة هو الذي
         // تُسنَد إليه أخطاؤها — العرض بشرطة مائلة كما
         // يراه المستخدم؛ والبادئة «في وحدة X: » تبقى
-        // توافقا مع الرسائل القديمة.
-        let display = crate::permissions::slash_display(&path);
+        // توافقا مع الرسائل القديمة. والمدمج يُسنَد
+        // إلى «مدمج/<الوحدة>.نيفا».
+        let (source, display) = match found.found {
+            Some(p) => {
+                let src = Self::read_file_capped(&p, module, line, col)?;
+                let disp = crate::permissions::slash_display(&p);
+                (src, disp)
+            }
+            None => match crate::packages::مصدر_مدمج(module) {
+                Some(src) => (src.to_string(), format!("مدمج/{}.نيفا", module)),
+                None => {
+                    let searched = found
+                        .searched
+                        .iter()
+                        .map(|p| crate::permissions::slash_display(p))
+                        .collect::<Vec<_>>()
+                        .join("؛ ");
+                    return Err(RioError::module_not_found(module, &searched, line, col));
+                }
+            },
+        };
         self.module_files
             .insert(module.to_string(), display.clone());
         let tokens = lexer::tokenize_named(&source, &display).map_err(|e| {
