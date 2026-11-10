@@ -2011,6 +2011,81 @@ fn cc_install_hint() -> &'static str {
     }
 }
 
+/// بيان ويندوز يجعل صفحة أكواد العملية UTF-8
+/// (activeCodePage) — تكافؤ C على ويندوز، التشغيل
+/// 42706100129: واجهات الملفات الضيقة في وقت
+/// التشغيل C تحوّل المسارات عبر صفحة ANSI (1252
+/// افتراضيا) فتضيع أسماء الملفات والأدوات العربية
+/// (مكان_الاداة يرجع لاشيء ونسخ/لمس الملفات
+/// العربية تفشل)؛ وبهذا البيان تصبح UTF-8 فيطابق
+/// الأصلي المفسر. يُضمَّن في كل ثنائي أصلي يُبنى
+/// على ويندوز.
+#[cfg(windows)]
+const NATIVE_UTF8_MANIFEST: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">\n  <assemblyIdentity version=\"1.0.0.0\" name=\"niva\" type=\"win32\"/>\n  <application>\n    <windowsSettings>\n      <activeCodePage xmlns=\"http://schemas.microsoft.com/SMI/2019/WindowsSettings\">UTF-8</activeCodePage>\n    </windowsSettings>\n  </application>\n</assembly>\n";
+
+/// اكتب البيان وملف الموارد وضمّنهما بـwindres إلى
+/// ملف موارد (‎.res) جاهز للربط — ويندوز فقط.
+/// windres يأتي مع MinGW نفسه (مع cc)؛ وغيابه
+/// خطأ عربي صريح لا بناء صامت مكسور (فالثنائي
+/// بلا البيان يفشل في المسارات العربية).
+#[cfg(windows)]
+fn embed_utf8_manifest(
+    tmp: &std::path::Path,
+) -> RioResult<std::path::PathBuf> {
+    let manifest = tmp.join("niva.manifest");
+    std::fs::write(&manifest, NATIVE_UTF8_MANIFEST).map_err(|e| {
+        RioError::new(
+            ErrorKind::Io,
+            format!("تعذر كتابة niva.manifest: {}", e),
+            0,
+            0,
+        )
+    })?;
+    let rc = tmp.join("niva.rc");
+    std::fs::write(&rc, "1 24 \"niva.manifest\"\n").map_err(|e| {
+        RioError::new(
+            ErrorKind::Io,
+            format!("تعذر كتابة niva.rc: {}", e),
+            0,
+            0,
+        )
+    })?;
+    let res = tmp.join("niva.res");
+    let wr = std::process::Command::new("windres")
+        .arg("--input-format=rc")
+        .arg("-i")
+        .arg(&rc)
+        .arg("--output-format=coff")
+        .arg("-o")
+        .arg(&res)
+        .current_dir(tmp)
+        .output();
+    match wr {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(RioError::new(
+            ErrorKind::Io,
+            "windres غير موجود — لا يمكن تضمين بيان UTF-8 في الثنائي الأصلي. ثبّت MinGW كاملا (يأتي مع cc).".to_string(),
+            0,
+            0,
+        )),
+        Err(e) => Err(RioError::new(
+            ErrorKind::Io,
+            format!("تعذر تشغيل windres: {}", e),
+            0,
+            0,
+        )),
+        Ok(o) if !o.status.success() => Err(RioError::new(
+            ErrorKind::Io,
+            format!(
+                "فشل windres في تضمين بيان UTF-8: {}",
+                String::from_utf8_lossy(&o.stderr)
+            ),
+            0,
+            0,
+        )),
+        Ok(_) => Ok(res),
+    }
+}
+
 /// ابنِ ثنائيا أصليا من ملف مصدر نيفا إلى مسار الخرج.
 /// يكتب C المولد + ملفات وقت التشغيل إلى مجلد مؤقت،
 /// ثم يشغّل cc النظام. كل الرسائل عربية.
@@ -2077,8 +2152,16 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
         }
         Ok(_) => {}
     }
+    // ويندوز فقط: بيان UTF-8 في الثنائي (انظر
+    // NATIVE_UTF8_MANIFEST) — بلا بيان تضيع
+    // المسارات العربية في الثنائي الأصلي.
+    #[cfg(windows)]
+    let res_arg = Some(embed_utf8_manifest(&tmp)?);
+    #[cfg(not(windows))]
+    let res_arg: Option<std::path::PathBuf> = None;
     let out_arg = out_path.to_string_lossy().to_string();
-    let output = std::process::Command::new("cc")
+    let mut cc_cmd = std::process::Command::new("cc");
+    cc_cmd
         // مؤقت (اجتماع 41 §56): -O0 بدلا من -O2 حتى
         // يشخص انهيار ويندوز الحساس للمحسن على
         // العداء نفسه؛ يستعاد -O2 فور العثور على
@@ -2094,7 +2177,11 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
         .arg(&prog_c)
         .arg(&rt_c)
         .arg(&std_c)
-        .arg(&net_c)
+        .arg(&net_c);
+    if let Some(res) = &res_arg {
+        cc_cmd.arg(res);
+    }
+    let output = cc_cmd
         .arg("-lm")
         .arg("-lpthread")
         .output()
@@ -2150,4 +2237,28 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
         let _ = std::fs::set_permissions(out_path, std::fs::Permissions::from_mode(0o755));
     }
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::NATIVE_UTF8_MANIFEST;
+
+    #[test]
+    fn native_utf8_manifest_declares_utf8_code_page() {
+        assert!(
+            NATIVE_UTF8_MANIFEST.contains("activeCodePage"),
+            "got: {}",
+            NATIVE_UTF8_MANIFEST
+        );
+        assert!(
+            NATIVE_UTF8_MANIFEST.contains(">UTF-8<"),
+            "got: {}",
+            NATIVE_UTF8_MANIFEST
+        );
+        assert!(
+            NATIVE_UTF8_MANIFEST.contains("manifestVersion=\"1.0\""),
+            "got: {}",
+            NATIVE_UTF8_MANIFEST
+        );
+    }
 }

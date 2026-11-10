@@ -1513,7 +1513,28 @@ static int nv_mkdir_p(const char *path) {
         if (sep) {
             char save = buf[i];
             buf[i] = '\0';
-            if (buf[0] != '\0') {
+#ifdef _WIN32
+            // جذر القرص (C:) وجذر UNC (\\خادم و\\خادم\مشاركة)
+            // موجودان دائما — ومحاولة إنشائهما تفشل
+            // ENOENT فتفسد mkdir -p كله على ويندوز
+            // (تكافؤ C على ويندوز، التشغيل 42706100129:
+            // كل `أنشئ_مجلد` أصلي فشل بـ«No such file»
+            // لأن أول مكون مُنشأ كان "C:"). يُتخطى
+            // إنشاؤهما ويُنشأ ما بعدهما فقط.
+            int is_root = 0;
+            if (i == 2 && buf[1] == ':' && isalpha((unsigned char)buf[0])) {
+                is_root = 1;
+            } else if (len >= 2 && buf[0] == '\\' && buf[1] == '\\') {
+                size_t seps = 0;
+                for (size_t j = 2; j < i; j++) {
+                    if (buf[j] == '\\' || buf[j] == '/') seps++;
+                }
+                if (seps <= 1) is_root = 1;
+            }
+#else
+            const int is_root = 0;
+#endif
+            if (buf[0] != '\0' && !is_root) {
                 int rc;
 #ifdef _WIN32
                 rc = mkdir(buf);
@@ -1546,8 +1567,22 @@ static int nv_mkdir_p(const char *path) {
     return 0;
 }
 
+// وحّد فواصل مسار إلى `/` في موضعه (ويندوز فقط):
+// getcwd يرجع `\` بينما المسارات المقنّنة ترجع `/`
+// (nv_win32_realpath)، فيفشل طيّ العرض بالمقارنة
+// النصية؛ والتوحيد عند البدء يجعل كل المسارات
+// المخزنة بصيغة واحدة مطابقة للمفسر.
+#ifdef _WIN32
+static void nv_normalize_seps(char *s) {
+    for (size_t i = 0; s[i]; i++) if (s[i] == '\\') s[i] = '/';
+}
+#endif
+
 void nv_init(const char *program_dir) {
     nv_program_dir = nv_strdup(program_dir);
+#ifdef _WIN32
+    nv_normalize_seps(nv_program_dir);
+#endif
     // الدفعة 4 — المتغيرات (اجتماع 58 §73): بدء
     // العملية بالثواني (لـ`بيئة("ثواني")`).
     nv_start_secs = (unsigned long long)time(NULL);
@@ -1555,17 +1590,20 @@ void nv_init(const char *program_dir) {
     // يُنشأ بأفضل جهد (بلا رسالة إن نجح، وبلا خطأ
     // إن تعذّر — البرنامج المستقل لا يملك جلسة
     // تفاعلية تشرح له).
-    size_t n = strlen(program_dir) + 6;
+    size_t n = strlen(nv_program_dir) + 6;
     nv_home_dir = (char *)malloc(n);
-    snprintf(nv_home_dir, n, "%s/home", program_dir);
+    snprintf(nv_home_dir, n, "%s/home", nv_program_dir);
     nv_mkdir_best_effort(nv_home_dir);
-    size_t tn = strlen(program_dir) + 5;
+    size_t tn = strlen(nv_program_dir) + 5;
     char *tmpdir = (char *)malloc(tn);
-    snprintf(tmpdir, tn, "%s/tmp", program_dir);
+    snprintf(tmpdir, tn, "%s/tmp", nv_program_dir);
     nv_mkdir_best_effort(tmpdir);
     free(tmpdir);
     char *cwd = getcwd(NULL, 0);
     nv_cwd = cwd ? cwd : nv_strdup(".");
+#ifdef _WIN32
+    nv_normalize_seps(nv_cwd);
+#endif
 }
 
 void nv_shutdown(void) {
@@ -2447,6 +2485,22 @@ static char *nv_expand_home(const char *path) {
     return nv_strdup(path);
 }
 
+// هل المسار مطلق؟ يونكس: يبدأ بـ`/`. ويندوز: محرك
+// (`C:\...` أو `C:/...`) أو UNC (`\\خادم\مشاركة`) —
+// فحص `/` وحده يعتبر مسار `~` الموسّع على ويندوز
+// (يبدأ بحرف المحرك) نسبيا فيُلحق به مجلد الجلسة
+// فينتج مسارا مشوها لا يجده stat أبدا.
+static int nv_is_absolute_path(const char *p) {
+    if (!p || !p[0]) return 0;
+    if (p[0] == '/') return 1;
+#ifdef _WIN32
+    if (((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z'))
+        && p[1] == ':' && (p[2] == '/' || p[2] == '\\' || p[2] == '\0')) return 1;
+    if (p[0] == '\\' && p[1] == '\\') return 1;
+#endif
+    return 0;
+}
+
 char *nv_display_path(const char *path) {
     // أطول مطابقة أولا: تحت البيت يظهر ~/...
     // لا $نيفا/home/... أبدا.
@@ -2481,7 +2535,7 @@ char *nv_display_path(const char *path) {
 char *nv_display_str(const char *s) {
     if (strcmp(s, "~") == 0 || strncmp(s, "~/", 2) == 0) return nv_strdup(s);
     if (strcmp(s, "$نيفا") == 0 || strncmp(s, "$نيفا/", 10) == 0) return nv_strdup(s);
-    if (s[0] == '/') return nv_display_path(s);
+    if (nv_is_absolute_path(s)) return nv_display_path(s);
     return nv_strdup(s);
 }
 
@@ -2641,7 +2695,7 @@ static char *nv_resolve_path_soft(const char *path, int line, int col, int *poli
     char *given = plus ? plus : nv_expand_home(path);
     char *joined = NULL;
     if (nv_trusted) {
-        if (given[0] == '/') {
+        if (nv_is_absolute_path(given)) {
             joined = given;
         } else {
             size_t n = strlen(nv_cwd) + 1 + strlen(given) + 1;
@@ -2653,7 +2707,7 @@ static char *nv_resolve_path_soft(const char *path, int line, int col, int *poli
         free(joined);
         return norm;
     }
-    if (given[0] == '/') {
+    if (nv_is_absolute_path(given)) {
         joined = given;
     } else {
         size_t n = strlen(nv_cwd) + 1 + strlen(given) + 1;
@@ -3545,7 +3599,7 @@ static int nv_try_candidate(const char *raw, int physical, int line, int col, ch
     char *plus = nv_expand_tilde_plus(raw, line, col);
     char *gate_given = plus ? plus : nv_expand_home(raw);
     char *gate_joined;
-    if (gate_given[0] == '/') {
+    if (nv_is_absolute_path(gate_given)) {
         gate_joined = gate_given;
     } else {
         size_t n = strlen(nv_cwd) + 1 + strlen(gate_given) + 1;
@@ -3574,7 +3628,7 @@ static int nv_try_candidate(const char *raw, int physical, int line, int col, ch
 static char *nv_resolve_literal_soft(const char *raw) {
     char *given = nv_expand_home(raw);
     char *joined;
-    if (given[0] == '/') {
+    if (nv_is_absolute_path(given)) {
         joined = given;
     } else {
         size_t n = strlen(nv_cwd) + 1 + strlen(given) + 1;
@@ -4092,7 +4146,7 @@ static int nv_is_filesystem_root(const char *path) {
 // الساندبوكس برسالة عامة.
 static int nv_delete_target_is_root(const char *path) {
     char *joined;
-    if (path[0] == '/') {
+    if (nv_is_absolute_path(path)) {
         joined = nv_strdup(path);
     } else {
         size_t n = strlen(nv_cwd) + 1 + strlen(path) + 1;

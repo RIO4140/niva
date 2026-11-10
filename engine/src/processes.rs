@@ -452,14 +452,16 @@ fn check_executable(
 
 /// Resolve symlinks in an executable path before the check
 /// and the spawn: `/bin/true` is a symlink (to
-/// `/usr/bin/true`) on macOS and on Linux, and the check +
-/// spawn must see the real file, never the link (CI
-/// 2026-11-06: the macOS runner refused `/bin/true` as
-/// "not found" through the symlinked path). Falls back to
-/// the given path when it does not exist, so the caller's
-/// Arabic "not found" error stays exact. The display in
-/// error messages still uses the program as the user typed
-/// it — the canonical path never leaks out.
+/// `/usr/bin/true`) on Linux (usrmerge); and on the macOS
+/// 26 runner `/bin/true` is absent entirely while
+/// `/usr/bin/true` exists (CI 2026-11-06: 332/333; and
+/// integration.rs `os_program` documents the same) — so
+/// the check + spawn must see the real file, never a
+/// missing link. Falls back to the given path when it
+/// does not exist, so the caller's Arabic "not found"
+/// error stays exact. The display in error messages
+/// still uses the program as the user typed it — the
+/// canonical path never leaks out.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn canonical_executable(path: &std::path::Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
@@ -610,8 +612,10 @@ pub(crate) fn build_spawn_command(
 /// فيفشل توليد ابن يخرج فورا بينما ينجح توليد ابن طويل
 /// قبله — فأعد المحاولة مرة واحدة بعد مهلة قصيرة.
 /// الفشل الدائم (غير موجود، إذن مرفوض) لا يُعاد إطلاقا.
-/// (CI 2026-11-09: توليد `/bin/true` الخلفي فشل على
-/// macOS بينما توليد `/bin/sleep 30` نفسه نجح.)
+/// (ملاحظة: فشل `/bin/true` على macOS في الجولة
+/// الأولى لم يكن عابرا أصلا — الملف غائب عن العدّاء؛
+/// فأصلح الاختباران باستعمال `/bin/sleep 0` بدلا منه.
+/// هذه المحاولة باقية متانة عامة للفشل العابر فقط.)
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn spawn_with_retry(cmd: &mut Command) -> std::io::Result<Child> {
     match cmd.spawn() {
@@ -1196,13 +1200,14 @@ mod tests {
         PROC_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Unix fixture: an instantly-exiting program. `/bin/true`
-    /// is a symlink on macOS (and on Linux); prefer it so the
-    /// engine's symlink handling is exercised, and fall back
-    /// to the real file `/usr/bin/true` when the link itself
-    /// is missing on a runner image. The test's purpose is
-    /// the process cap, not the OS layout — but if neither
-    /// exists the test fails loudly instead of skipping.
+    /// Unix fixture: an instantly-exiting program.
+    /// `/bin/true` is a symlink (usrmerge) on Linux; on
+    /// the macOS 26 runner it is absent entirely while
+    /// `/usr/bin/true` exists — so prefer the link, then
+    /// fall back to the real file, and fail loudly when
+    /// neither exists. The test's purpose is the process
+    /// cap, not the OS layout — but if neither exists the
+    /// test fails loudly instead of skipping.
     #[cfg(unix)]
     fn true_program() -> &'static str {
         if std::path::Path::new("/bin/true").exists() {

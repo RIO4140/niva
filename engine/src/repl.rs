@@ -9413,7 +9413,13 @@ mod tests {
                 r.set_trusted(true);
                 let o = r.feed("استورد عمليات");
                 assert_eq!(r.last_exit_code(), 0, "got: {}", o.output);
-                let o = r.feed("عمليات.أنشئ \"/bin/true\" &");
+                // برنامج ينتهي فورا برمز ٠: /bin/sleep 0 —
+                // فـ/bin/true غائب عن عدّاء macOS 26
+                // بينما /usr/bin/true موجود (ipc.rs:
+                // recv_eof_after_child_exit يوثق ذلك)،
+                // وsleep 0 موجود على يونكس كله وينتهي
+                // فورا كما true تماما.
+                let o = r.feed("عمليات.أنشئ \"/bin/sleep 0\" &");
                 assert_eq!(r.last_exit_code(), 0, "got: {}", o.output);
                 assert!(o.output.starts_with("[١] "), "got: {}", o.output);
                 // انتظر أي: يرجع رمز أول منتهية ويطبع
@@ -9522,7 +9528,9 @@ mod tests {
             r.set_trusted(true);
             let o = r.feed("استورد عمليات");
             assert_eq!(r.last_exit_code(), 0, "got: {}", o.output);
-            let o = r.feed("عمليات.أنشئ \"/bin/true\" &");
+            // /bin/sleep 0 لا /bin/true: true غائب عن
+            // عدّاء macOS 26 (انظر الاختبار السابق).
+            let o = r.feed("عمليات.أنشئ \"/bin/sleep 0\" &");
             assert_eq!(r.last_exit_code(), 0, "got: {}", o.output);
             // انتظر خروجها ثم اجمع: سطر واحد يحمل
             // «انتهت (رمز ٠)»، ثم الجمع التالي فراغ.
