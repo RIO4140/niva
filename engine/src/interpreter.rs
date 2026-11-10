@@ -37,7 +37,6 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::Instant;
 
 pub(crate) const MAX_LOOP_ITERATIONS: usize = 1_000_000;
 // P0 fix (2026-11-05, v1.2 final review): a hard call-depth limit for
@@ -167,7 +166,7 @@ pub struct Interpreter {
     // الجلسة (لـ`بيئة("ثواني")`).
     frozen: HashSet<String>,
     namerefs: HashMap<String, String>,
-    started: Instant,
+    started: crate::time::SessionClock,
 }
 
 impl Interpreter {
@@ -198,7 +197,7 @@ impl Interpreter {
             physical_mode: false,
             frozen: HashSet::new(),
             namerefs: HashMap::new(),
-            started: Instant::now(),
+            started: crate::time::SessionClock::now(),
         }
     }
 
@@ -3019,7 +3018,7 @@ impl Interpreter {
             "المستخدم" => Some(crate::env::username().map_err(|m| RioError::runtime(m, line, col))),
             "اسم_المضيف" => Some(crate::env::hostname().map_err(|m| RioError::runtime(m, line, col))),
             "عشوائي" => Some(Ok(Value::Number(crate::env::random_0_32767() as f64).fmt_value())),
-            "ثواني" => Some(Ok(Value::Number(self.started.elapsed().as_secs() as f64).fmt_value())),
+            "ثواني" => Some(Ok(Value::Number(self.started.elapsed_secs() as f64).fmt_value())),
             "رقم_السطر" => Some(Ok(Value::Number(line as f64).fmt_value())),
             _ => None,
         }

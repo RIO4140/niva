@@ -194,6 +194,7 @@ dependencies = [
  "h2",
  "http",
  "js-sys",
+ "libc",
  "rustls",
  "tokio",
  "tokio-rustls",

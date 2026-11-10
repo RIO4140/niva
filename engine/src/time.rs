@@ -18,6 +18,42 @@
 use crate::error::{RioError, RioResult};
 use crate::value::Value;
 
+/// ساعة بدء الجلسة لـ`بيئة("ثواني")` — ثوان منذ بدء الجلسة.
+/// أصليا `Instant` (ساعة أحادية)؛ وعلى WASM `js_sys::Date::now()`
+/// (فـ`Instant::now()` يذعر على wasm32-unknown-unknown — بلا ساعة
+/// أحادية في std هناك — كما في `next_u64` في stdlib.rs؛ والذعر
+/// كان يكسر كل تشغيل `run_source` على WASM منذ الدفعة 4، فلا
+/// برنامج يعمل في الملعب أصلا). على WASM الساعة ساعة حائط
+/// فتُقيد النتيجة بلا سالب. المعنى واحد على المنصتين: ثوان
+/// صحيحة منذ بدء الجلسة.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SessionClock {
+    #[cfg(target_arch = "wasm32")]
+    start_ms: f64,
+    #[cfg(not(target_arch = "wasm32"))]
+    start: std::time::Instant,
+}
+
+impl SessionClock {
+    pub(crate) fn now() -> Self {
+        #[cfg(target_arch = "wasm32")]
+        return Self {
+            start_ms: js_sys::Date::now(),
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        return Self {
+            start: std::time::Instant::now(),
+        };
+    }
+
+    pub(crate) fn elapsed_secs(&self) -> u64 {
+        #[cfg(target_arch = "wasm32")]
+        return ((js_sys::Date::now() - self.start_ms) / 1000.0).max(0.0) as u64;
+        #[cfg(not(target_arch = "wasm32"))]
+        return self.start.elapsed().as_secs();
+    }
+}
+
 /// The WASM refusal: the flat builtins' own message.
 #[cfg(target_arch = "wasm32")]
 const WASM_REFUSAL: &str = "هذه الدالة غير مدعومة في متصفح الويب";

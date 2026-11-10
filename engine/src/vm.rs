@@ -1396,7 +1396,7 @@ pub struct Vm {
     // يضيع التجميد داخل دالة.
     frozen: Rc<RefCell<HashSet<String>>>,
     namerefs: Rc<RefCell<HashMap<String, String>>>,
-    started: Rc<std::time::Instant>,
+    started: Rc<crate::time::SessionClock>,
 }
 
 impl Vm {
@@ -1437,7 +1437,7 @@ impl Vm {
             pipe_status: Vec::new(),
             frozen: Rc::new(RefCell::new(HashSet::new())),
             namerefs: Rc::new(RefCell::new(HashMap::new())),
-            started: Rc::new(std::time::Instant::now()),
+            started: Rc::new(crate::time::SessionClock::now()),
         }
     }
 
@@ -1644,7 +1644,7 @@ impl Vm {
             "المستخدم" => Some(crate::env::username().map_err(|m| RioError::runtime(m, line, col))),
             "اسم_المضيف" => Some(crate::env::hostname().map_err(|m| RioError::runtime(m, line, col))),
             "عشوائي" => Some(Ok(Value::Number(crate::env::random_0_32767() as f64).fmt_value())),
-            "ثواني" => Some(Ok(Value::Number(self.started.elapsed().as_secs() as f64).fmt_value())),
+            "ثواني" => Some(Ok(Value::Number(self.started.elapsed_secs() as f64).fmt_value())),
             "رقم_السطر" => Some(Ok(Value::Number(line as f64).fmt_value())),
             _ => None,
         }

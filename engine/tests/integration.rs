@@ -4860,3 +4860,26 @@ fn exit_code_missing_module_is_127() {
     assert_eq!(code_i, 127);
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn wasm_playground_build_declares_16mb_stack() {
+    // الاجتماع 71 §86 (المرحلة 3 — فخ عمق WASM): مكدس WASM
+    // 16MB معلن في حزمة الملعب نفسها (build.rs)، لا في متغير
+    // بيئة CI وحده — فالبناء المحلي بـ wasm-pack كان ينال
+    // المكدس الافتراضي 1MB وينهار التكرار العميق عند N=250
+    // (والشكل الأقصى عند N=100) دون أن تطلق رسالة الحد العربي.
+    // هذا الاختبار حارس للملف: إن أُزيل الإعلان عاد الفخ.
+    // (الدليل السلوكي الحي: playground/test-wasm-depth.mjs.)
+    let build_rs = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../playground/wasm/build.rs");
+    let text = std::fs::read_to_string(&build_rs)
+        .unwrap_or_else(|_| panic!("build.rs غائب: {}", build_rs.display()));
+    assert!(
+        text.contains("wasm32-unknown-unknown"),
+        "build.rs must gate on wasm32"
+    );
+    assert!(
+        text.contains("-zstack-size=16777216"),
+        "build.rs must declare the 16MB WASM stack"
+    );
+}
