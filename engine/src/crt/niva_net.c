@@ -935,22 +935,23 @@ NvValue nv_net_download(NvValue *args, int nargs, int line, int col) {
     // عند الخطأ يُحذف الملف الجزئي: نلتقط الخطأ عبر
     // معالج مؤقت (longjmp) ثم نحذف ونعيد الرفع.
     NvHandler h;
-    NvCheckpoint cp = nv_checkpoint();
+    volatile NvCheckpoint cp = nv_checkpoint();
     h.prev = nv_handlers;
+    NvHandler *volatile hp = h.prev;
     h.has_except = 0;
     nv_handlers = &h;
     if (setjmp(h.jb) == 0) {
         nv_fetch_loop(url, &req, line, col, &sink);
     } else {
         nv_restore_checkpoint(cp);
-        nv_handlers = h.prev;
+        nv_handlers = hp;
         fclose(f);
         remove(resolved);
         free(resolved);
         free(display);
         nv_reraise_current();
     }
-    nv_handlers = h.prev;
+    nv_handlers = hp;
     fclose(f);
     size_t written = sink.written;
     free(resolved);
@@ -1026,8 +1027,9 @@ static void nv_run_handler(NvValue handler, NvValue req_dict, int line, int col,
                            int *nhdr_out, unsigned char **body_out, size_t *body_len_out) {
     // معالج مؤقت يلتقط خطأ المعالج.
     NvHandler h;
-    NvCheckpoint cp = nv_checkpoint();
+    volatile NvCheckpoint cp = nv_checkpoint();
     h.prev = nv_handlers;
+    NvHandler *volatile hp = h.prev;
     h.has_except = 0;
     nv_handlers = &h;
     NvValue result;
@@ -1044,7 +1046,7 @@ static void nv_run_handler(NvValue handler, NvValue req_dict, int line, int col,
         nv_restore_checkpoint(cp);
         failed = 1;
     }
-    nv_handlers = h.prev;
+    nv_handlers = hp;
     if (failed) {
         NvError *e = nv_current_error();
         if (e) {

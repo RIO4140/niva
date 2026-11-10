@@ -1522,9 +1522,11 @@ impl Gen {
             // أخيرا ثم أعد الرفع إلى ما تحت هذه المحاولة.
             let sub = self.fresh_label("hs");
             let subcp = self.fresh_label("cps");
+            let subhp = self.fresh_label("hps");
             out.push_str(&format!("NvHandler {};\n", sub));
             out.push_str(&format!("volatile NvCheckpoint {} = nv_checkpoint();\n", subcp));
             out.push_str(&format!("{}.prev = nv_handlers;\n", sub));
+            out.push_str(&format!("NvHandler *volatile {} = {}.prev;\n", subhp, sub));
             out.push_str(&format!("{}.has_except = 0;\n", sub));
             out.push_str(&format!("nv_handlers = &{};\n", sub));
             out.push_str(&format!("if (setjmp({}.jb) == 0) {{\n", sub));
@@ -1556,7 +1558,7 @@ impl Gen {
             // يقفز إلى ما تحت المحاولة الحالية.)
             out.push_str("nv_reraise_current();\n");
             out.push_str("}\n");
-            out.push_str(&format!("nv_handlers = {}.prev;\n", sub));
+            out.push_str(&format!("nv_handlers = {};\n", subhp));
         } else {
             // بلا ماعدا: أخيرا ثم أعد الرفع.
             if let Some(fin) = finally {
@@ -1672,10 +1674,11 @@ impl Gen {
         // المفسر حرفيا (الاستيراد المتداخل يضاعف البادئة
         // كما هناك). النمط نفسه في emit_try.
         let mh = self.fresh_label("mh");
+        let mhp = self.fresh_label("mhp");
         let prefix = format!("في وحدة {}: ", module);
         out.push_str(&format!(
-            "{{ NvHandler {}; {}.prev = nv_handlers; {}.has_except = 0; nv_handlers = &{}; if (setjmp({}.jb) == 0) {{ ",
-            mh, mh, mh, mh, mh
+            "{{ NvHandler {}; {}.prev = nv_handlers; NvHandler *volatile {} = {}.prev; {}.has_except = 0; nv_handlers = &{}; if (setjmp({}.jb) == 0) {{ ",
+            mh, mh, mhp, mh, mh, mh, mh
         ));
         let bind = alias.clone().unwrap_or_else(|| module.to_string());
         out.push_str(&format!(
@@ -1683,9 +1686,9 @@ impl Gen {
             info.loaded_flag, info.init_fn, info.val_var, info.loaded_flag
         ));
         out.push_str(&format!(
-            "}} else {{ nv_prefix_error({}); nv_reraise_current(); }} nv_handlers = {}.prev; }}\n",
+            "}} else {{ nv_prefix_error({}); nv_reraise_current(); }} nv_handlers = {}; }}\n",
             c_str(&prefix),
-            mh
+            mhp
         ));
         match names {
             Some(ns) => {
