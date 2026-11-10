@@ -114,7 +114,6 @@ jobs:
           echo "--- gcc:"; gcc --version | head -1 || true
           echo "--- clang:"; clang --version | head -1 || true
           echo "--- windres:"; windres --version | head -1 || true
-          echo "--- llvm-rc:"; llvm-rc --version 2>&1 | head -2 || echo "(llvm-rc: no --version output)"
           echo "--- clang runtime dir:"; clang --print-runtime-dir --target=x86_64-pc-windows-gnu 2>&1 || true
       - name: Cell A - clang parity (default clang -O2)
         shell: bash
@@ -163,35 +162,27 @@ jobs:
           echo "--- parity-gcc.log tail:"
           tail -30 parity-gcc.log || true
           echo "CELL-B-DONE"
-      - name: Cell C - llvm-rc live proof (windres neutralized)
+      - name: Cell C - windres live proof (manifest acceptance gate via windres only)
         shell: bash
         run: |
-          echo "===== cell-c: llvm-rc live proof - windres neutralized, build native binary"
+          echo "===== cell-c: windres live proof - manifest acceptance gate via windres only (Meeting 80, (a)+(3))"
           chcp 65001 || true
           export PYTHONIOENCODING=utf-8
           echo "--- tools on PATH before re-assert (inherited from job setup):"
           echo "PATH=$PATH"
-          for t in clang cc gcc windres llvm-rc llvm-cvtres niva; do command -v "$t" || echo "MISSING-TOOL: $t"; done
-          echo "--- llvm-rc version:"; llvm-rc --version 2>&1 | head -2 || true
+          for t in clang cc gcc windres niva; do command -v "$t" || echo "MISSING-TOOL: $t"; done
+          echo "--- windres location (mandatory diagnostic):"
+          command -v windres || echo "MISSING-TOOL: windres"
+          echo "--- windres version:"
+          windres --version 2>&1 | head -5 || true
+          echo "--- windres help:"
+          windres --help 2>&1 | head -30 || true
           echo "--- clang version:"; clang --version 2>&1 | head -1 || true
           export PATH="/c/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin:/c/Program Files/LLVM/bin:$PATH"
           echo "--- tools on PATH after re-assert (same installs as job setup: choco mingw + runner LLVM):"
-          for t in clang cc gcc windres llvm-rc llvm-cvtres niva; do command -v "$t" || echo "MISSING-TOOL-AFTER: $t"; done
-          echo "===== cell-c install: full LLVM via choco (Meeting 76 option 1) - llvm-cvtres was absent from the runner image"
-          echo "--- choco check:"
-          command -v choco || echo "MISSING-TOOL: choco"
-          LLVM_INSTALL_START=$(date +%s)
-          LLVM_INSTALL_EXIT=0; choco install llvm -y || LLVM_INSTALL_EXIT=$?
-          LLVM_INSTALL_END=$(date +%s)
-          echo "LLVM-INSTALL-EXIT=$LLVM_INSTALL_EXIT"
-          echo "LLVM-INSTALL-SECONDS=$((LLVM_INSTALL_END - LLVM_INSTALL_START))"
-          export PATH="/c/Program Files/LLVM/bin:$PATH"
-          echo "--- tools on PATH after LLVM install + PATH re-assert:"
-          for t in clang cc gcc windres llvm-rc llvm-cvtres niva; do command -v "$t" || echo "MISSING-TOOL-POST-INSTALL: $t"; done
-          echo "--- llvm-cvtres location (Meeting 75 mandatory diagnostic):"
-          command -v llvm-cvtres || echo "MISSING-TOOL: llvm-cvtres"
-          echo "--- llvm-cvtres help (correct usage if formula wrong):"
-          llvm-cvtres --help 2>&1 | head -40 || echo "LLVM-CVTRES-HELP-FAIL"
+          for t in clang cc gcc windres niva; do command -v "$t" || echo "MISSING-TOOL-AFTER: $t"; done
+          echo "--- windres location after re-assert (must be real MinGW windres):"
+          command -v windres || echo "MISSING-TOOL-AFTER: windres"
           mkdir -p diag-m
           python3 - <<'PYEOF' || echo "PY-WRITE-FAIL"
           src = "استورد شبكة\nحاول:\n    شبكة.اتصل(\"127.0.0.1\"، 9)\nماعدا:\n    اطبع \"مغلقة كما يجب\"\nحاول:\n    شبكة.مقبس(\"udp\")\nماعدا:\n    اطبع \"مغلقة كما يجب\"\n"
@@ -199,22 +190,13 @@ jobs:
           print("WROTE-M1-OK")
           PYEOF
           ls -l diag-m/ || true
-          mkdir -p "$GITHUB_WORKSPACE/windres-shim"
-          SHIM_OK=0
-          if [ -f /usr/bin/false.exe ]; then cp /usr/bin/false.exe "$GITHUB_WORKSPACE/windres-shim/windres.exe" && SHIM_OK=1 || echo "WINDRES-SHIM-CP-FAIL"; else printf 'int main(){return 1;}\n' | cc -x c -o "$GITHUB_WORKSPACE/windres-shim/windres.exe" - && SHIM_OK=1 || echo "WINDRES-SHIM-CC-FAIL"; fi
-          echo "WINDRES-SHIM-OK=$SHIM_OK"
-          ls "$GITHUB_WORKSPACE/windres-shim/"
-          export PATH="$GITHUB_WORKSPACE/windres-shim:$PATH"
-          echo "--- which windres (must be the shim):"
-          which windres || echo "(which windres: not found)"
-          WINDRES_EXIT=0; windres --version || WINDRES_EXIT=$?; echo "windres-shim exit=$WINDRES_EXIT"
           cd diag-m
-          LLVMRC_BUILD=0; niva ابن --أصلي "m1.نيفا" > build-m1-llvmrc.log 2>&1 || LLVMRC_BUILD=$?; echo "LLVMRC-BUILD-EXIT=$LLVMRC_BUILD"
-          if [ -f m1.exe ]; then echo "LLVMRC-BUILD-OK: m1.exe exists"; else echo "LLVMRC-BUILD-MISSING: no m1.exe"; cat build-m1-llvmrc.log || true; fi
+          WINDRES_BUILD=0; niva ابن --أصلي "m1.نيفا" > build-m1-windres.log 2>&1 || WINDRES_BUILD=$?; echo "WINDRES-BUILD-EXIT=$WINDRES_BUILD"
+          if [ -f m1.exe ]; then echo "WINDRES-BUILD-OK: m1.exe exists"; else echo "WINDRES-BUILD-MISSING: no m1.exe"; cat build-m1-windres.log || true; fi
           if [ -f m1.exe ]; then
-            LLVMRC_RUN=0; ./m1.exe > m1-llvmrc.out 2> m1-llvmrc.err || LLVMRC_RUN=$?; echo "LLVMRC-RUN-EXIT=$LLVMRC_RUN"
-            echo "m1 stdout:"; cat m1-llvmrc.out || true
-            echo "m1 stderr:"; cat m1-llvmrc.err || true
+            WINDRES_RUN=0; ./m1.exe > m1-windres.out 2> m1-windres.err || WINDRES_RUN=$?; echo "WINDRES-RUN-EXIT=$WINDRES_RUN"
+            echo "m1 stdout:"; cat m1-windres.out || true
+            echo "m1 stderr:"; cat m1-windres.err || true
             python3 -c "data=open('m1.exe','rb').read(); print('MANIFEST-UTF8-COUNT:', data.count(b'UTF-8')); print('MANIFEST-ACTIVECODEPAGE-COUNT:', data.count(b'activeCodePage')); print('MANIFEST-ASSEMBLY-COUNT:', data.count(b'assembly'))" || echo "MANIFEST-CHECK-FAIL"
           fi
           echo "CELL-C-DONE"
