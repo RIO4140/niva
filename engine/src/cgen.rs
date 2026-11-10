@@ -2162,11 +2162,12 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
     let out_arg = out_path.to_string_lossy().to_string();
     let mut cc_cmd = std::process::Command::new("cc");
     cc_cmd
-        // -O2 (المرحلة 2 من خطة الإصلاح الشامل — قيد
-        // التشخيص): أُعيد المحسّن لإعادة إنتاج عيب -O2
-        // وتحديد سببه الجذري؛ لا يُسلَّم إلا بعد إثبات
-        // التطابق الكامل على -O2.
-        .arg("-O2")
+        // -O0 (المرحلة 2 — إرجاع مؤقت): انهيار ويندوز
+        // الأصلي في سيناريو «نظام-جدول» على -O2 (تشغيل CI
+        // رقم 42750995204، اختبار c_parity_integration_scenarios)؛
+        // والعودة إلى -O2 معلقة على التشخيص على فرع منفصل
+        // بلا مساس بـmain.
+        .arg("-O0")
         // gnu11 لا c11 الصارم (اجتماع 35 §50): يفتح
         // إعلانات memmem وstrcasestr على ماك (clang
         // يخفيها تحت __STRICT_ANSI__ مع c11)؛ ولينكس
