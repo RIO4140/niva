@@ -2501,6 +2501,29 @@ static int nv_is_absolute_path(const char *p) {
     return 0;
 }
 
+// هل base بادئة path على حدّ مكوّن (نهاية أو '/')؟
+// على ويندوز المقارنة بلا حساسية لحالة الأحرف
+// (مسارات ويندوز بلا حساسية)؛ وعلى يونكس بايتات
+// حرفية. تستعمل في الطيّ القانوني للعرض.
+static int nv_path_prefix_is(const char *path, const char *base) {
+    size_t bl = strlen(base);
+    if (bl == 0) return 0;
+#ifdef _WIN32
+    size_t i;
+    for (i = 0; i < bl; i++) {
+        unsigned char a = (unsigned char)path[i];
+        unsigned char b = (unsigned char)base[i];
+        if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + ('a' - 'A'));
+        if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + ('a' - 'A'));
+        if (a != b) return 0;
+    }
+#else
+    if (strncmp(path, base, bl) != 0) return 0;
+#endif
+    if (base[bl - 1] == '/') return 1;
+    return path[bl] == '\0' || path[bl] == '/';
+}
+
 char *nv_display_path(const char *path) {
     // أطول مطابقة أولا: تحت البيت يظهر ~/...
     // لا $نيفا/home/... أبدا.
@@ -2528,6 +2551,44 @@ char *nv_display_path(const char *path) {
             const char *leaf = strrchr(path, '/');
             return nv_strdup(leaf ? leaf + 1 : path);
         }
+    }
+    // طيّ قانوني للطرفين (مرآة المرحلة الثانية من
+    // الطيّ في Rust — permissions.rs): المسار الفيزيائي
+    // يأتي مقنّنا بينما المرساة خام، فتقنين الطرفين
+    // يعيد الطيّ حين تختلف الصياغة (حالة أحرف أو اسم
+    // قصير على ويندوز). يطبَّق فقط حين يفشل الطيّ
+    // الخام والمسار مطلق — وإلا يبقى المسار كما هو.
+    if (nv_is_absolute_path(path)) {
+        char *canon = nv_canonical_with_suffix(path);
+        char *canon_home = nv_canonical_with_suffix(nv_home_dir);
+        char *canon_prog = nv_canonical_with_suffix(nv_program_dir);
+        const char *anchor = NULL;
+        const char *label = NULL;
+        if (canon && canon_home && nv_path_prefix_is(canon, canon_home)) {
+            anchor = canon_home;
+            label = "~";
+        } else if (canon && canon_prog && nv_path_prefix_is(canon, canon_prog)) {
+            anchor = canon_prog;
+            label = "$نيفا";
+        }
+        if (anchor) {
+            size_t alen = strlen(anchor);
+            char *out;
+            if (canon[alen] == '\0') {
+                out = nv_strdup(label);
+            } else {
+                size_t n = strlen(label) + strlen(canon + alen) + 1;
+                out = (char *)malloc(n);
+                snprintf(out, n, "%s%s", label, canon + alen);
+            }
+            free(canon);
+            free(canon_home);
+            free(canon_prog);
+            return out;
+        }
+        free(canon);
+        free(canon_home);
+        free(canon_prog);
     }
     return nv_strdup(path);
 }
@@ -3925,6 +3986,40 @@ int nv_is_builtin(const char *name) {
     return 0;
 }
 
+
+// هل المساران ملف واحد؟ مرآة `paths_same_file` في
+// files.rs: على يونكس جهاز+عقدة من stat؛ أما على
+// ويندوز فـstat عبر MinGW كاذب — يعيد st_ino=0 لكل
+// الملفات (مثبت بمسبار C تحت Wine: ملفان مختلفان
+// يعيدان st_dev=25 وst_ino=0) فيرفض أي نسخ بين
+// ملفين مختلفين — فالهوية الحقيقية من
+// GetFileInformationByHandle (رقم المجلد + فهرس
+// الملف). يرجع 0 عند أي فشل (لا تطابق مفترضا).
+static int nv_same_file(const char *a, const char *b) {
+#ifdef _WIN32
+    HANDLE ha = CreateFileA(a, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (ha == INVALID_HANDLE_VALUE) return 0;
+    HANDLE hb = CreateFileA(b, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (hb == INVALID_HANDLE_VALUE) {
+        CloseHandle(ha);
+        return 0;
+    }
+    BY_HANDLE_FILE_INFORMATION ia, ib;
+    int same = 0;
+    if (GetFileInformationByHandle(ha, &ia) && GetFileInformationByHandle(hb, &ib)) {
+        same = (ia.dwVolumeSerialNumber == ib.dwVolumeSerialNumber
+            && ia.nFileIndexHigh == ib.nFileIndexHigh
+            && ia.nFileIndexLow == ib.nFileIndexLow);
+    }
+    CloseHandle(ha);
+    CloseHandle(hb);
+    return same;
+#else
+    struct stat sa, sb;
+    if (stat(a, &sa) != 0 || stat(b, &sb) != 0) return 0;
+    return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+#endif
+}
 
 // نسخ ملف واحد (الميزة 204): يشارك فيه `انسخ`
 // ومسار نسخ-ثم-حذف في `انقل`. يرجع 0 عند النجاح،
@@ -5704,9 +5799,9 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
             }
             // الميزة 202: نسخ الملف على نفسه يفرّغه
             // (فتح الهدف "wb" يقطعه قبل القراءة) —
-            // ارفض قبل أي كتابة (جهاز+عقدة).
-            if (src_ok && dst_ok
-                && sst.st_dev == dst_e.st_dev && sst.st_ino == dst_e.st_ino) {
+            // ارفض قبل أي كتابة (هوية ملف حقيقية عبر
+            // nv_same_file — لا st_ino مباشرة).
+            if (src_ok && dst_ok && nv_same_file(src_path, dst_path)) {
                 nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن نسخ الملف على نفسه");
             }
             unsigned long long extra = src_len > dst_existing ? src_len - dst_existing : 0;
@@ -5820,8 +5915,7 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
             }
             free(src_c);
             free(dst_c);
-        } else if (src_ok && dst_ok
-            && sst.st_dev == dst_e.st_dev && sst.st_ino == dst_e.st_ino) {
+        } else if (src_ok && dst_ok && nv_same_file(src_path, dst_path)) {
             nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن نسخ الملف على نفسه");
         }
         unsigned long long extra = 0;
@@ -5874,8 +5968,7 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
         if (src_ok && S_ISDIR(sst.st_mode)) {
             nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن نسخ المجلد بلا خيار تكراري — استخدم انسخ_تكراري");
         }
-        if (src_ok && dst_ok
-            && sst.st_dev == dst_e.st_dev && sst.st_ino == dst_e.st_ino) {
+        if (src_ok && dst_ok && nv_same_file(src_path, dst_path)) {
             nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن نسخ الملف على نفسه");
         }
         // ينسخ فقط حين يكون المصدر أحدث من الهدف
@@ -5930,8 +6023,7 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
         if (src_ok && S_ISDIR(sst.st_mode)) {
             nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن نسخ المجلد بلا خيار تكراري — استخدم انسخ_تكراري");
         }
-        if (src_ok && dst_ok
-            && sst.st_dev == dst_e.st_dev && sst.st_ino == dst_e.st_ino) {
+        if (src_ok && dst_ok && nv_same_file(src_path, dst_path)) {
             nv_error_fmt(NV_ERR_IO, line, col, "لا يمكن نسخ الملف على نفسه");
         }
         unsigned long long src_len = src_ok ? (unsigned long long)sst.st_size : 0;

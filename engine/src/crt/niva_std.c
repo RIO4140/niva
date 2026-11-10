@@ -2723,7 +2723,11 @@ static ssize_t nv_std_exe_path(char *buf, size_t cap) {
     }
     char *real = realpath(buf, NULL);
     if (!real) {
-        return -1;
+        // realpath تقنين تجميلي فقط — فشله لا يلغي
+        // المسار الخام: يصلح لفحص الجذع وللتشغيل.
+        // (فشل متقطع هنا كان يُسقط إنشاء العملية كله
+        // رغم وجود محرك مثبت في PATH.)
+        return (ssize_t)strlen(buf);
     }
     size_t rl = strlen(real);
     if (rl >= cap) {
@@ -2769,12 +2773,14 @@ static NvValue nv_std_proc_spawn(NvValue *args, int nargs, int line, int col) {
         char exe[4096];
         ssize_t elen = nv_std_exe_path(exe, sizeof(exe));
         if (elen <= 0) {
-            nv_std_proc_free_argv(argv, ntok);
-            free(display);
-            free(resolved);
-            nv_error(NV_ERR_RUNTIME, "تعذّر تحديد مسار ثنائي نيفا الحالي", line, col);
+            // مسار الثنائي الحالي مجهول — لا خطأ فوري:
+            // الجذع الفارغ ليس نيفا فيسلك فرع المحرك
+            // المثبت (البديل المصمم) أدناه، والرفض فقط
+            // إن لم يوجد محرك إطلاقا.
+            exe[0] = '\0';
+        } else {
+            exe[elen] = '\0';
         }
-        exe[elen] = '\0';
         const char *base = strrchr(exe, '/');
         base = base ? base + 1 : exe;
         char stem[4096];
