@@ -423,8 +423,14 @@ void nv_collect_major(void) {
 // العمليات الأصلية الطويلة؛ والجمع الفعلي يجري عند
 // التخصيص، فهنا فحص العتبة فقط.
 void nv_safepoint(void) {
+#ifdef NIVA_NO_GC
+    // [DIAG] فرع diag/o2-deep فقط: خلية «بلا جامع» —
+    // توقف الجمع كاملا لعزل فرضية الجامع (H3).
+    return;
+#else
     if (nv_since_minor >= NV_MINOR_THRESHOLD) nv_collect_minor();
     else if (nv_since_major >= NV_MAJOR_THRESHOLD) nv_collect_major();
+#endif
 }
 
 void *nv_alloc(size_t size, uint8_t kind) {
@@ -6586,6 +6592,52 @@ static char *nv_exe_dir(void) {
     return NULL;
 }
 
+#ifdef _WIN32
+// [DIAG] فرع diag/o2-deep فقط: معالج انهيار ويندوز —
+// يطبع بعد وقوع الخطأ فقط، بلا أي طبعة في المسار الساخن.
+// v2 (جولة -fno-*): قناتان — stderr (مع fflush) وملف
+// diag-d2.log عبر WriteFile بلا تخزين مؤقت، حتى لو ضاع
+// stderr؛ وملف السجل نفسه دليل تثبيت (يُفتح عند البدء).
+// يعيد EXCEPTION_CONTINUE_SEARCH فيبقى رمز خروج العملية
+// كما هو (-1073741819 لانتهاك الوصول) ولا يتغير مخرج
+// البرنامج في الحالة السليمة.
+static HANDLE nv_diag_log = INVALID_HANDLE_VALUE;
+
+static void nv_diag_write_file(const char *s) {
+    if (nv_diag_log != INVALID_HANDLE_VALUE) {
+        DWORD w = 0;
+        WriteFile(nv_diag_log, s, (DWORD)strlen(s), &w, NULL);
+    }
+}
+
+static void nv_diag_write(const char *s) {
+    nv_diag_write_file(s);
+    fputs(s, stderr);
+}
+
+static LONG WINAPI nv_diag_crash_filter(struct _EXCEPTION_POINTERS *info) {
+    DWORD code = info->ExceptionRecord->ExceptionCode;
+    void *addr = info->ExceptionRecord->ExceptionAddress;
+    void *fault = NULL;
+    if (code == EXCEPTION_ACCESS_VIOLATION && info->ExceptionRecord->NumberParameters >= 2) {
+        fault = (void *)(uintptr_t)info->ExceptionRecord->ExceptionInformation[1];
+    }
+    void *trace[32];
+    USHORT n = CaptureStackBackTrace(2, 32, trace, NULL);
+    char buf[256];
+    int len = snprintf(buf, sizeof(buf),
+            "[DIAG-D2] crash code=0x%08lX addr=%p fault=%p frames=%u\n",
+            (unsigned long)code, addr, fault, (unsigned)n);
+    if (len > 0) nv_diag_write(buf);
+    for (USHORT i = 0; i < n; i++) {
+        len = snprintf(buf, sizeof(buf), "[DIAG-D2] frame %u: %p\n", (unsigned)i, trace[i]);
+        if (len > 0) nv_diag_write(buf);
+    }
+    fflush(stderr);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
+
 int nv_main(int argc, char **argv, void (*body)(NvScope *top)) {
 #ifdef _WIN32
     // الوضع الثنائي للمخرجات على ويندوز حتى تطابق
@@ -6596,6 +6648,15 @@ int nv_main(int argc, char **argv, void (*body)(NvScope *top)) {
     // حتى --مساعدة و--نسخة.
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stderr), _O_BINARY);
+    // [DIAG] فرع diag/o2-deep فقط: ثبّت معالج الانهيار.
+    // افتح ملف السجل أولا (يُفرَّغ مع كل تشغيل) — وجود
+    // الملف بعد التشغيل يثبت التثبيت ولو لم يقع انهيار،
+    // بلا أي طبعة stderr إضافية (حتى لا يكسر مقارنة
+    // stderr في اختبار c_parity على ويندوز).
+    nv_diag_log = CreateFileA("diag-d2.log", GENERIC_WRITE, FILE_SHARE_READ,
+                               NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    SetUnhandledExceptionFilter(nv_diag_crash_filter);
+    nv_diag_write_file("[DIAG-D2] installed\n");
 #endif
     setlocale(LC_ALL, "");
     // الدفعة 1: اسم البرنامج كما استُدعي (argv[0]) —
