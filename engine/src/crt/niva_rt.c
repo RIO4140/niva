@@ -423,8 +423,14 @@ void nv_collect_major(void) {
 // العمليات الأصلية الطويلة؛ والجمع الفعلي يجري عند
 // التخصيص، فهنا فحص العتبة فقط.
 void nv_safepoint(void) {
+#ifdef NIVA_NO_GC
+    // [DIAG] فرع diag/o2-deep فقط: خلية «بلا جامع» —
+    // توقف الجمع كاملا لعزل فرضية الجامع (H3).
+    return;
+#else
     if (nv_since_minor >= NV_MINOR_THRESHOLD) nv_collect_minor();
     else if (nv_since_major >= NV_MAJOR_THRESHOLD) nv_collect_major();
+#endif
 }
 
 void *nv_alloc(size_t size, uint8_t kind) {
@@ -6586,6 +6592,31 @@ static char *nv_exe_dir(void) {
     return NULL;
 }
 
+#ifdef _WIN32
+// [DIAG] فرع diag/o2-deep فقط: معالج انهيار ويندوز —
+// يطبع بعد وقوع الخطأ فقط، بلا أي طبعة في المسار الساخن.
+// يعيد EXCEPTION_CONTINUE_SEARCH فيبقى رمز خروج العملية
+// كما هو (-1073741819 لانتهاك الوصول) ولا يتغير مخرج
+// البرنامج في الحالة السليمة.
+static LONG WINAPI nv_diag_crash_filter(struct _EXCEPTION_POINTERS *info) {
+    DWORD code = info->ExceptionRecord->ExceptionCode;
+    void *addr = info->ExceptionRecord->ExceptionAddress;
+    void *fault = NULL;
+    if (code == EXCEPTION_ACCESS_VIOLATION && info->ExceptionRecord->NumberParameters >= 2) {
+        fault = (void *)(uintptr_t)info->ExceptionRecord->ExceptionInformation[1];
+    }
+    void *trace[32];
+    USHORT n = CaptureStackBackTrace(2, 32, trace, NULL);
+    fprintf(stderr, "[DIAG-D2] crash code=0x%08lX addr=%p fault=%p frames=%u\n",
+            (unsigned long)code, addr, fault, (unsigned)n);
+    for (USHORT i = 0; i < n; i++) {
+        fprintf(stderr, "[DIAG-D2] frame %u: %p\n", (unsigned)i, trace[i]);
+    }
+    fflush(stderr);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+#endif
+
 int nv_main(int argc, char **argv, void (*body)(NvScope *top)) {
 #ifdef _WIN32
     // الوضع الثنائي للمخرجات على ويندوز حتى تطابق
@@ -6596,6 +6627,8 @@ int nv_main(int argc, char **argv, void (*body)(NvScope *top)) {
     // حتى --مساعدة و--نسخة.
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stderr), _O_BINARY);
+    // [DIAG] فرع diag/o2-deep فقط: ثبّت معالج الانهيار.
+    SetUnhandledExceptionFilter(nv_diag_crash_filter);
 #endif
     setlocale(LC_ALL, "");
     // الدفعة 1: اسم البرنامج كما استُدعي (argv[0]) —
