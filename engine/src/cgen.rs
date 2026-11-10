@@ -2131,8 +2131,11 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
     let std_c = write("niva_std.c", include_str!("crt/niva_std.c"))?;
     let net_c = write("niva_net.c", include_str!("crt/niva_net.c"))?;
     let _ = rt_h;
+    // [DIAG] فرع diag/o2-deep فقط: مبدّل المترجم (خلية
+    // clang-ASan في diag-o2d)؛ الافتراضي cc كما قبل.
+    let cc_bin = std::env::var("NIVA_NATIVE_CC").unwrap_or_else(|_| "cc".to_string());
     // تحقق من وجود cc أولا.
-    let cc_probe = std::process::Command::new("cc")
+    let cc_probe = std::process::Command::new(&cc_bin)
         .arg("--version")
         .output();
     match cc_probe {
@@ -2165,9 +2168,10 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
     #[cfg(not(windows))]
     let res_arg: Option<std::path::PathBuf> = None;
     let out_arg = out_path.to_string_lossy().to_string();
-    // [DIAG] فرع diag/o2-deep فقط: متغيرا بيئة تشخيصيان
-    // يبدّلان مستوى التحسين (مصفوفة diag-o2b) والأعلام
-    // الإضافية (خلايا -g وASan وبلا جامع)؛ الافتراضي -O2.
+    // [DIAG] فرع diag/o2-deep فقط: متغيرات بيئة تشخيصية
+    // تبدّل مستوى التحسين (مصفوفة diag-o2b) والأعلام
+    // الإضافية (خلايا -g وASan وبلا جامع) والمترجم
+    // (خلية clang-ASan في diag-o2d)؛ الافتراضي -O2.
     // (main على -O0 بإرجاع مؤقت؛ الفرع يختبر -O2 هنا.)
     let opt_flag = match std::env::var("NIVA_NATIVE_OPT") {
         Ok(v) if ["-O0", "-O1", "-Os", "-O2"].contains(&v.as_str()) => v,
@@ -2176,7 +2180,7 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
     let extra_flags: Vec<String> = std::env::var("NIVA_NATIVE_EXTRA_CFLAGS")
         .map(|v| v.split_whitespace().map(|s| s.to_string()).collect())
         .unwrap_or_default();
-    let mut cc_cmd = std::process::Command::new("cc");
+    let mut cc_cmd = std::process::Command::new(&cc_bin);
     cc_cmd
         .arg(&opt_flag)
         // gnu11 لا c11 الصارم (اجتماع 35 §50): يفتح
