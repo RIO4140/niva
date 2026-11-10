@@ -203,6 +203,9 @@ NvCheckpoint nv_checkpoint(void) {
 }
 
 void nv_restore_checkpoint(NvCheckpoint cp) {
+    fprintf(stderr, "[DIAG] restore_checkpoint roots=%d frames=%d depth=%d\n",
+            (int)cp.roots, cp.frames, cp.depth);
+    fflush(stderr);
     nv_root_len = cp.roots;
     while (nv_frames_depth() > cp.frames) nv_frames_pop();
     nv_call_depth = cp.depth;
@@ -546,9 +549,15 @@ void nv_error(NvErrKind kind, const char *message, int line, int col) {
     nv_last_error.col = col;
     nv_last_error.file_idx = nv_cur_file_idx;
     nv_has_error = 1;
+    fprintf(stderr, "[DIAG] nv_error kind=%d line=%d col=%d handlers=%p\n",
+            (int)kind, line, col, (void *)nv_handlers);
+    fflush(stderr);
     if (nv_handlers) {
         NvHandler *h = nv_handlers;
         nv_handlers = h->prev;
+        fprintf(stderr, "[DIAG] nv_error longjmp handler=%p prev=%p\n",
+                (void *)h, (void *)h->prev);
+        fflush(stderr);
         longjmp(h->jb, 1);
     }
     // بلا معالج: اطبع واخرج برمز 1 كما يفعل CLI.
@@ -6644,6 +6653,8 @@ int nv_main(int argc, char **argv, void (*body)(NvScope *top)) {
     if (setjmp(top_h.jb) == 0) {
         body(top);
     } else {
+        fprintf(stderr, "[DIAG] top handler caught\n");
+        fflush(stderr);
         nv_restore_checkpoint(cp);
         // الدفعة 1: خروج معلق → الرمز كما طُلب بلا
         // طباعة خطأ؛ وإلا خطأ وقت تشغيل غير ممسوك → 1.

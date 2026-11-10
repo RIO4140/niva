@@ -2413,6 +2413,8 @@ static char *nv_std_sys_proc_kernel(const char *name, int line, int col) {
 /* ---------- نظام: الدوال الأصلية ---------- */
 
 static NvValue nv_std_sys_name(NvValue *args, int nargs, int line, int col) {
+    fprintf(stderr, "[DIAG] sys_name enter\n");
+    fflush(stderr);
     long long num = 0;
     nv_std_need_args("نظام.اسم_النداء", args, nargs, 1, line, col);
     num = nv_std_need_integer("نظام.اسم_النداء", args[0], line, col);
@@ -2444,12 +2446,16 @@ static NvValue nv_std_sys_name(NvValue *args, int nargs, int line, int col) {
 #endif
 #else
     (void)num;
+    fprintf(stderr, "[DIAG] sys_name unsupported -> nv_error\n");
+    fflush(stderr);
     nv_error(NV_ERR_RUNTIME, "نظام.اسم_النداء غير مدعوم على هذه المنصة", line, col);
     return nv_nil();
 #endif
 }
 
 static NvValue nv_std_sys_count(NvValue *args, int nargs, int line, int col) {
+    fprintf(stderr, "[DIAG] sys_count enter\n");
+    fflush(stderr);
     nv_std_need_args("نظام.عدد_النداءات", args, nargs, 0, line, col);
 #if defined(__linux__) || defined(__ANDROID__)
 #if defined(__x86_64__) || defined(__aarch64__) || defined(_M_X64) || defined(_M_ARM64)
@@ -2459,6 +2465,8 @@ static NvValue nv_std_sys_count(NvValue *args, int nargs, int line, int col) {
     return nv_nil();
 #endif
 #else
+    fprintf(stderr, "[DIAG] sys_count unsupported -> nv_error\n");
+    fflush(stderr);
     nv_error(NV_ERR_RUNTIME, "نظام.عدد_النداءات غير مدعوم على هذه المنصة", line, col);
     return nv_nil();
 #endif

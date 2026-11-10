@@ -1489,8 +1489,10 @@ impl Gen {
         });
         let has_except = except.is_some();
         out.push_str(&format!("if (setjmp({}.jb) == 0) {{\n", hid));
+        out.push_str(&format!("fprintf(stderr, \"[DIAG] try {} enter\\n\"); fflush(stderr);\n", hid));
         self.emit_stmts(body, ctx, out)?;
         out.push_str("} else {\n");
+        out.push_str(&format!("fprintf(stderr, \"[DIAG] try {} caught\\n\"); fflush(stderr);\n", hid));
         // مسار الخطأ: استعد النقاط. (nv_error أزال المعالج
         // نفسه قبل القفز، فـ nv_handlers تحته الآن.)
         out.push_str(&format!("nv_restore_checkpoint({});\n", cpid));
@@ -1526,6 +1528,7 @@ impl Gen {
             out.push_str(&format!("{}.has_except = 0;\n", sub));
             out.push_str(&format!("nv_handlers = &{};\n", sub));
             out.push_str(&format!("if (setjmp({}.jb) == 0) {{\n", sub));
+            out.push_str(&format!("fprintf(stderr, \"[DIAG] try {} enter\\n\"); fflush(stderr);\n", sub));
             let ebody = except.as_ref().unwrap();
             // الدفعة 1: الخطأ الممسوك رمز خروج 1 —
             // يُضبط قبل جسم ماعدا، فتقرأه
@@ -1533,6 +1536,7 @@ impl Gen {
             out.push_str("nv_last_exit_code = 1;\n");
             self.emit_stmts(ebody, ctx, out)?;
             out.push_str("} else {\n");
+            out.push_str(&format!("fprintf(stderr, \"[DIAG] try {} caught\\n\"); fflush(stderr);\n", sub));
             out.push_str(&format!("nv_restore_checkpoint({});\n", subcp));
             if let Some(fin) = finally {
                 let fmark = self.checkpoint_live();
