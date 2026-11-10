@@ -2165,15 +2165,20 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
     #[cfg(not(windows))]
     let res_arg: Option<std::path::PathBuf> = None;
     let out_arg = out_path.to_string_lossy().to_string();
+    // [DIAG] فرع diag/o2-deep فقط: متغيرا بيئة تشخيصيان
+    // يبدّلان مستوى التحسين (مصفوفة diag-o2b) والأعلام
+    // الإضافية (خلايا -g وASan وبلا جامع)؛ الافتراضي -O2.
+    // (main على -O0 بإرجاع مؤقت؛ الفرع يختبر -O2 هنا.)
+    let opt_flag = match std::env::var("NIVA_NATIVE_OPT") {
+        Ok(v) if ["-O0", "-O1", "-Os", "-O2"].contains(&v.as_str()) => v,
+        _ => "-O2".to_string(),
+    };
+    let extra_flags: Vec<String> = std::env::var("NIVA_NATIVE_EXTRA_CFLAGS")
+        .map(|v| v.split_whitespace().map(|s| s.to_string()).collect())
+        .unwrap_or_default();
     let mut cc_cmd = std::process::Command::new("cc");
     cc_cmd
-        // -O0 (إرجاع مؤقت ثان): انهيار ويندوز الأصلي
-        // في سيناريوهات مسارات الخطأ على -O2 (تشغيلات
-        // CI رقم 42750995204 و42783618569 و42798623169
-        // — آخرها «مقابس-وسائط-خاطئة» على c6ae898e)؛
-        // والعودة إلى -O2 معلقة على التشخيص الأعمق
-        // على فرع منفصل بلا مساس بـmain.
-        .arg("-O0")
+        .arg(&opt_flag)
         // gnu11 لا c11 الصارم (اجتماع 35 §50): يفتح
         // إعلانات memmem وstrcasestr على ماك (clang
         // يخفيها تحت __STRICT_ANSI__ مع c11)؛ ولينكس
@@ -2187,6 +2192,9 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
         .arg(&net_c);
     if let Some(res) = &res_arg {
         cc_cmd.arg(res);
+    }
+    for f in &extra_flags {
+        cc_cmd.arg(f);
     }
     let output = cc_cmd
         .arg("-lm")
