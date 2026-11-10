@@ -2167,11 +2167,13 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
     let out_arg = out_path.to_string_lossy().to_string();
     let mut cc_cmd = std::process::Command::new("cc");
     cc_cmd
-        // -O2 (تشخيص الفرع PR #2: مترجم ويندوز نفسه
-        // MinGW GCC 15.2.0 يعلّم -Wclobbered على نقطة
-        // التفتيش في nv_main — فصارت نقاط التفتيش
-        // والمعالجات volatile حول setjmp/longjmp).
-        .arg("-O2")
+        // -O0 (إرجاع مؤقت ثان): انهيار ويندوز الأصلي
+        // في سيناريوهات مسارات الخطأ على -O2 (تشغيلات
+        // CI رقم 42750995204 و42783618569 و42798623169
+        // — آخرها «مقابس-وسائط-خاطئة» على c6ae898e)؛
+        // والعودة إلى -O2 معلقة على التشخيص الأعمق
+        // على فرع منفصل بلا مساس بـmain.
+        .arg("-O0")
         // gnu11 لا c11 الصارم (اجتماع 35 §50): يفتح
         // إعلانات memmem وstrcasestr على ماك (clang
         // يخفيها تحت __STRICT_ANSI__ مع c11)؛ ولينكس
