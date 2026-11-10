@@ -1839,6 +1839,27 @@ int nv_check_bool_op(NvValue v, const char *word, int line, int col) {
     return v.u.boolean;
 }
 
+// تحويل عدد إلى فهرس بلا سلوك غير معرّف: تحويل double
+// خارج [0، 2^64) إلى size_t غير معرّف في C — وعلى
+// x86-64 يلتف إلى 0 فيلتقط الفهرس الضخم العنصر الأول
+// بصمت بدلا من خطأ خارج النطاق. التشبع عند SIZE_MAX
+// يجعل الفحص التالي يرفضه، كما يفعل تحويل Rust
+// المشبع (`as usize`) — فتتطابق رسالة الخطأ حرفيا.
+static size_t nv_num_to_index(double x) {
+    if (!(x < 18446744073709551616.0)) return SIZE_MAX;
+    return (size_t)x;
+}
+
+// تحويل عدد إلى long long مشبعا كما يفعل `as i64` في
+// Rust: خارج [−2^63، 2^63) يلتف بلا حارس إلى
+// INT64_MIN فيفسد حدود مدى (نهاية تصير سالبة ضخمة
+// فتفرغ النطاق، وخطوة تصير سالبة فتقلبه).
+static long long nv_num_to_i64(double x) {
+    if (x >= 9223372036854775808.0) return LLONG_MAX;
+    if (x < -9223372036854775808.0) return LLONG_MIN;
+    return (long long)x;
+}
+
 // ---------- الفهرسة والنقطة ----------
 NvValue nv_index(NvValue target, NvValue index, int line, int col, int idx_line, int idx_col) {
     if (target.tag == NV_LIST && index.tag == NV_NUM) {
@@ -1846,7 +1867,7 @@ NvValue nv_index(NvValue target, NvValue index, int line, int col, int idx_line,
         if (x != trunc(x) || x < 0.0) {
             nv_error(NV_ERR_TYPE, "فهرس القائمة يجب أن يكون عددا صحيحا", idx_line, idx_col);
         }
-        size_t idx = (size_t)x;
+        size_t idx = nv_num_to_index(x);
         if (idx >= target.u.list->len) {
             nv_error_fmt(NV_ERR_RUNTIME, idx_line, idx_col, "فهرس خارج النطاق: %zu والقائمة طولها %zu",
                          idx, target.u.list->len);
@@ -1866,7 +1887,7 @@ NvValue nv_index(NvValue target, NvValue index, int line, int col, int idx_line,
             nv_error(NV_ERR_TYPE, "فهرس النص يجب أن يكون عددا صحيحا", idx_line, idx_col);
         }
         size_t clen = 0;
-        const char *p = nv_utf8_char_at(target.u.str->data, target.u.str->len, (size_t)x, &clen);
+        const char *p = nv_utf8_char_at(target.u.str->data, target.u.str->len, nv_num_to_index(x), &clen);
         if (!p) nv_error(NV_ERR_RUNTIME, "فهرس خارج النطاق في النص", idx_line, idx_col);
         return nv_str_new(p, clen);
     }
@@ -1887,7 +1908,7 @@ void nv_index_assign(NvValue *slot, NvValue index, NvValue val,
             nv_error_fmt(NV_ERR_TYPE, idx_line, idx_col, "فهرس القائمة يجب أن يكون عددا صحيحا، وليس %s",
                          nv_type_name(index));
         }
-        size_t idx = (size_t)x;
+        size_t idx = nv_num_to_index(x);
         if (idx >= target.u.list->len) {
             nv_error_fmt(NV_ERR_RUNTIME, idx_line, idx_col, "فهرس خارج النطاق: %zu والقائمة طولها %zu",
                          idx, target.u.list->len);
@@ -3231,7 +3252,7 @@ NvValue nv_call_list_method(NvValue *slot, const char *name, NvValue *args, int 
         if (args[0].tag != NV_NUM || args[0].u.num != trunc(args[0].u.num) || args[0].u.num < 0.0) {
             nv_error(NV_ERR_TYPE, "طريقة أزل تتوقع فهرسا عددا صحيحا", line, col);
         }
-        size_t idx = (size_t)args[0].u.num;
+        size_t idx = nv_num_to_index(args[0].u.num);
         if (idx >= l->len) {
             nv_error_fmt(NV_ERR_RUNTIME, line, col, "فهرس خارج النطاق: %zu والقائمة طولها %zu", idx, l->len);
         }
@@ -3265,7 +3286,7 @@ NvValue nv_call_dot(NvValue target, const char *name, NvValue *args, int nargs, 
 // ---------- عدّاد معاملات (للبداية/النهاية) ----------
 static size_t nv_count_arg(NvValue v, int line, int col) {
     if (v.tag == NV_NUM && v.u.num >= 0.0 && v.u.num == trunc(v.u.num)) {
-        return (size_t)v.u.num;
+        return nv_num_to_index(v.u.num);
     }
     if (v.tag == NV_STR) {
         const char *s = v.u.str->data;
@@ -4892,7 +4913,7 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
             if (args[i].tag != NV_NUM || args[i].u.num != trunc(args[i].u.num)) {
                 nv_error_fmt(NV_ERR_TYPE, line, col, "مدى يتطلب أعدادا صحيحة، وليس %s", nv_type_name(args[i]));
             }
-            ints[i] = (long long)args[i].u.num;
+            ints[i] = nv_num_to_i64(args[i].u.num);
         }
         long long start = 0, end = ints[0], step = 1;
         if (nargs == 2) { start = ints[0]; end = ints[1]; }
@@ -6635,7 +6656,7 @@ int nv_main(int argc, char **argv, void (*body)(NvScope *top)) {
     // النطاق العلوي + إطار الجذر.
     NvScope *top = nv_scope_new(NULL);
     nv_frames_push(top);
-    NvCheckpoint cp = nv_checkpoint();
+    volatile NvCheckpoint cp = nv_checkpoint();
     NvHandler top_h;
     top_h.prev = NULL;
     top_h.has_except = 0;

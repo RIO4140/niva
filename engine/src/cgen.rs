@@ -1478,9 +1478,11 @@ impl Gen {
         // هو الذي يشغّل أخيرا ثم يعيد الرفع.
         let hid = self.fresh_label("h");
         let cpid = self.fresh_label("cp");
+        let hpid = self.fresh_label("hp");
         out.push_str(&format!("NvHandler {};\n", hid));
-        out.push_str(&format!("NvCheckpoint {} = nv_checkpoint();\n", cpid));
+        out.push_str(&format!("volatile NvCheckpoint {} = nv_checkpoint();\n", cpid));
         out.push_str(&format!("{}.prev = nv_handlers;\n", hid));
+        out.push_str(&format!("NvHandler *volatile {} = {}.prev;\n", hpid, hid));
         out.push_str(&format!("{}.has_except = {};\n", hid, if except.is_some() { 1 } else { 0 }));
         out.push_str(&format!("nv_handlers = &{};\n", hid));
         ctx.try_stack.push(TryCtx {
@@ -1521,7 +1523,7 @@ impl Gen {
             let sub = self.fresh_label("hs");
             let subcp = self.fresh_label("cps");
             out.push_str(&format!("NvHandler {};\n", sub));
-            out.push_str(&format!("NvCheckpoint {} = nv_checkpoint();\n", subcp));
+            out.push_str(&format!("volatile NvCheckpoint {} = nv_checkpoint();\n", subcp));
             out.push_str(&format!("{}.prev = nv_handlers;\n", sub));
             out.push_str(&format!("{}.has_except = 0;\n", sub));
             out.push_str(&format!("nv_handlers = &{};\n", sub));
@@ -1593,7 +1595,7 @@ impl Gen {
             self.emit_stmts(fin, &mut fctx, out)?;
             self.restore_live(fmark);
         }
-        out.push_str(&format!("nv_handlers = {}.prev;\n", hid));
+        out.push_str(&format!("nv_handlers = {};\n", hpid));
         ctx.try_stack.pop();
         let _ = s;
         Ok(())
@@ -2162,12 +2164,11 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
     let out_arg = out_path.to_string_lossy().to_string();
     let mut cc_cmd = std::process::Command::new("cc");
     cc_cmd
-        // -O0 (المرحلة 2 — إرجاع مؤقت): انهيار ويندوز
-        // الأصلي في سيناريو «نظام-جدول» على -O2 (تشغيل CI
-        // رقم 42750995204، اختبار c_parity_integration_scenarios)؛
-        // والعودة إلى -O2 معلقة على التشخيص على فرع منفصل
-        // بلا مساس بـmain.
-        .arg("-O0")
+        // -O2 (تشخيص الفرع PR #2: مترجم ويندوز نفسه
+        // MinGW GCC 15.2.0 يعلّم -Wclobbered على نقطة
+        // التفتيش في nv_main — فصارت نقاط التفتيش
+        // والمعالجات volatile حول setjmp/longjmp).
+        .arg("-O2")
         // gnu11 لا c11 الصارم (اجتماع 35 §50): يفتح
         // إعلانات memmem وstrcasestr على ماك (clang
         // يخفيها تحت __STRICT_ANSI__ مع c11)؛ ولينكس
