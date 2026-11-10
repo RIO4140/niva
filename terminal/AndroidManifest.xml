@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.rio4140.niva"
-    android:versionCode="30"
-    android:versionName="1.2.17">
+    android:versionCode="31"
+    android:versionName="1.2.18">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- قفل الاستيقاظ أثناء الجلب (بند 11): إذن عادي، بلا حوار. -->
