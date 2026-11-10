@@ -241,6 +241,9 @@ pub(crate) fn is_builtin(name: &str) -> bool {
 /// Static type check helper: if both types are known and differ,
 /// and neither is `أي`, return a semantic type-mismatch error.
 /// Unknown on either side passes (gradual typing).
+/// البند 8: المقارنة بنيوية — العام يطابقه أساسه
+/// (`قائمة` تطابق `قائمة[عدد]` ستاتيكيا؛ وفحص العناصر
+/// وقت التشغيل وحده).
 fn check_type_match(
     expected: &str,
     actual: Option<String>,
@@ -252,7 +255,14 @@ fn check_type_match(
         return Ok(());
     }
     if let Some(a) = actual {
-        if a != "أي" && a != expected {
+        if a == "أي" {
+            return Ok(());
+        }
+        let ok = match crate::ast::TypeExpr::parse(expected) {
+            Some(t) => t.matches_declared(&a),
+            None => a == expected,
+        };
+        if !ok {
             return Err(RioError::semantic(
                 format!("نوع غير متطابق: {} معلن {}، لكن القيمة {}", what, expected, a),
                 line,
@@ -665,6 +675,26 @@ impl SemanticAnalyzer {
                 Ok(())
             }
             StmtKind::ExprStmt { expr } => self.analyze_expr(expr),
+            // البند 8 — الزخارف: الزخرفة يجب أن تكون معرفة
+            // قبلها (من أعلى إلى أسفل، كالدوال)؛ ثم يُحلَّل
+            // التعريف نفسه؛ وبعدها يُنسى توقيع المعرف —
+            // فالزخرفة تستبدله بنتيجتها، ونوعها وقيمتها
+            // مجهولان ستاتيكيا، والفحص الدقيق وقت التشغيل.
+            StmtKind::Decorated { decorators, def } => {
+                for d in decorators {
+                    self.analyze_expr(d)?;
+                }
+                self.analyze_stmt(def)?;
+                let name = match &def.kind {
+                    StmtKind::FuncDef { name, .. } => Some(name.clone()),
+                    StmtKind::ClassDef { name, .. } => Some(name.clone()),
+                    _ => None,
+                };
+                if let Some(n) = name {
+                    self.define(&n, VarInfo::var());
+                }
+                Ok(())
+            }
             StmtKind::ClassDef { name, base, interfaces, methods } => {
                 // Base and interfaces must already be defined
                 // (top-down, like functions). Compliance itself

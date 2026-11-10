@@ -850,6 +850,47 @@ impl Compiler {
                 Ok(())
             }
             StmtKind::Pass => Ok(()),
+            // البند 8 — الزخارف: ترجمة التعريف أولا (تعليمة
+            // تعريف الإغلاق/الفئة)، ثم لكل زخرفة من الأسفل
+            // إلى الأعلى: المعرف معاملا، ثم الزخرفة مستدعاة،
+            // ثم الاستدعاء قيمة (CallValue: المعاملات أولا
+            // ثم المستدعى)، ثم إعادة ربط الاسم بالنتيجة.
+            // البحث في البيئة أولا وقت التشغيل فيجعل
+            // الاستدعاءات اللاحقة ترى القيمة المزخرفة.
+            StmtKind::Decorated { decorators, def } => {
+                self.compile_stmt(def)?;
+                let name = match &def.kind {
+                    StmtKind::FuncDef { name, .. } | StmtKind::ClassDef { name, .. } => {
+                        name.clone()
+                    }
+                    _ => {
+                        return Err(RioError::parse(
+                            "الزخرفة يجب أن تسبق تعريف دالة أو فئة",
+                            stmt.line,
+                            stmt.col,
+                        ));
+                    }
+                };
+                for dec in decorators.iter().rev() {
+                    self.compile_expr(&Expr::new(
+                        ExprKind::Ident(name.clone()),
+                        def.line,
+                        def.col,
+                    ))?;
+                    self.compile_expr(dec)?;
+                    self.emit(
+                        Op::CallValue {
+                            nargs: 1,
+                            callee_line: dec.line,
+                            callee_col: dec.col,
+                        },
+                        stmt.line,
+                        stmt.col,
+                    );
+                    self.emit(Op::Store(name.clone()), stmt.line, stmt.col);
+                }
+                Ok(())
+            }
             StmtKind::FuncDef { name, params, param_types, return_type, body } => {
                 // Phase ك-1: every دالة definition becomes a
                 // closure value at runtime (DefineClosure), so
@@ -2331,7 +2372,8 @@ impl Vm {
     ) -> RioResult<()> {
         for (i, arg) in args.iter().enumerate() {
             if let Some(Some(pt)) = param_types.get(i) {
-                if pt != "أي" && arg.type_name() != pt {
+                // البند 8: الفحص بنيوي (قائمة[عدد] تفحص عناصرها).
+                if !arg.matches_declared_type(pt) {
                     return Err(RioError::typ(
                         format!(
                             "نوع غير متطابق: معامل {} في {} {} معلن {}، لكن القيمة {}",
@@ -2361,7 +2403,8 @@ impl Vm {
         if let Some(rt) = return_type {
             if rt != "أي" {
                 if returned {
-                    if v.type_name() != rt {
+                    // البند 8: الفحص بنيوي.
+                    if !v.matches_declared_type(rt) {
                         return Err(RioError::typ(
                             format!(
                                 "نوع غير متطابق: {} {} معلنة أن ترجع {}، لكن رجعت {}",
@@ -6586,8 +6629,8 @@ impl Vm {
                 // التالي)؛ فإن خالف نوعها المعلن أخطأ
                 // برسالة المفسر نفسها.
                 Op::CheckAssignType { name, expected } => {
-                    let actual = match self.stack.last() {
-                        Some(v) => v.type_name(),
+                    let top = match self.stack.last() {
+                        Some(v) => v,
                         None => {
                             return Err(RioError::runtime(
                                 "مكدس VM فارغ عند فحص نوع التعيين",
@@ -6596,11 +6639,14 @@ impl Vm {
                             ));
                         }
                     };
-                    if actual != expected.as_str() {
+                    // البند 8: الفحص بنيوي (قائمة[عدد] تفحص عناصرها).
+                    if !top.matches_declared_type(expected.as_str()) {
                         return Err(RioError::typ(
                             format!(
                                 "نوع غير متطابق: المتغير {} معلن {}، لكن القيمة {}",
-                                name, expected, actual
+                                name,
+                                expected,
+                                top.type_name()
                             ),
                             line,
                             col,

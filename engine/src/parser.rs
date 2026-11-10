@@ -3,7 +3,7 @@
 //! Blocks are colon + indented lines (INDENT/DEDENT from the lexer),
 //! or a single statement on the same line after the colon.
 
-use crate::ast::{AssignTarget, BinOp, Expr, ExprKind, Stmt, StmtKind, UnOp};
+use crate::ast::{AssignTarget, BinOp, Expr, ExprKind, Stmt, StmtKind, TypeExpr, UnOp};
 use crate::error::{RioError, RioResult};
 use crate::lexer::{Keyword, Token, TokenKind};
 
@@ -243,6 +243,8 @@ impl Parser {
     fn parse_statement(&mut self) -> RioResult<Stmt> {
         let tok = self.peek().clone();
         match &tok.kind {
+            // البند 8 — الزخارف: `@` في بداية جملة فقط.
+            TokenKind::At => self.parse_decorated(),
             TokenKind::Keyword(Keyword::Print) => self.parse_print(),
             TokenKind::Keyword(Keyword::If) => self.parse_if(),
             TokenKind::Keyword(Keyword::While) => self.parse_while(),
@@ -280,6 +282,74 @@ impl Parser {
             TokenKind::Keyword(Keyword::Export) => self.parse_export(),
             _ => self.parse_assign_or_expr(),
         }
+    }
+
+    /// البند 8 — الزخارف (الاجتماع 72 §87): سطر أو أكثر
+    /// من `@اسم` (كل زخرفة وحدها في سطرها)، يتبعها تعريف
+    /// دالة أو فئة. أي موضع آخر لـ`@` مرفوض هنا: قبل غير
+    /// تعريف، أو بلا تعريف بعده، أو بغير اسم بعد `@`.
+    /// والزخرفة اسم أو سلسلة منقوطة (`وحدة.غلف`) فقط —
+    /// لا استدعاء ولا تعبير، فتُستدعى وقت التعريف بلا
+    /// معاملات إلا المعرف نفسه.
+    fn parse_decorated(&mut self) -> RioResult<Stmt> {
+        let tok = self.peek().clone(); // @
+        let mut decorators: Vec<Expr> = Vec::new();
+        loop {
+            self.advance(); // @
+            decorators.push(self.parse_decorator_expr()?);
+            if matches!(self.peek().kind, TokenKind::Newline) {
+                self.advance();
+            } else if matches!(self.peek().kind, TokenKind::Eof) {
+                // بلا سطر بعدها: يخطئ فحص التعريف أدناه.
+            } else {
+                let t = self.peek().clone();
+                return Err(RioError::parse(
+                    "الزخرفة يجب أن تكون وحدها في السطر",
+                    t.line,
+                    t.col,
+                ));
+            }
+            if matches!(self.peek().kind, TokenKind::At) {
+                continue;
+            }
+            break;
+        }
+        if self.is_eof() {
+            return Err(RioError::parse(
+                "الزخرفة يجب أن تسبق تعريف دالة أو فئة",
+                tok.line,
+                tok.col,
+            ));
+        }
+        let def = self.parse_statement()?;
+        match &def.kind {
+            StmtKind::FuncDef { .. } | StmtKind::ClassDef { .. } => Ok(Stmt::new(
+                StmtKind::Decorated { decorators, def: Box::new(def) },
+                tok.line,
+                tok.col,
+            )),
+            _ => Err(RioError::parse(
+                "الزخرفة يجب أن تسبق تعريف دالة أو فئة",
+                def.line,
+                def.col,
+            )),
+        }
+    }
+
+    /// اسم زخرفة: معرّف، أو سلسلة منقوطة من معرّفات.
+    fn parse_decorator_expr(&mut self) -> RioResult<Expr> {
+        let (name, line, col) = self.expect_ident("اسم الزخرفة بعد @")?;
+        let mut expr = Expr::new(ExprKind::Ident(name), line, col);
+        while matches!(self.peek().kind, TokenKind::Dot) {
+            let tok = self.advance();
+            let (mname, _, _) = self.expect_member_name()?;
+            expr = Expr::new(
+                ExprKind::Dot { target: Box::new(expr), name: mname },
+                tok.line,
+                tok.col,
+            );
+        }
+        Ok(expr)
     }
 
     fn parse_import(&mut self) -> RioResult<Stmt> {
@@ -474,20 +544,17 @@ impl Parser {
             self.expect_ident("اسم الدالة")?
         };
         let (params, param_types) = self.parse_param_list()?;
-        // Optional return type: ): عدد:
-        // After ')', a Colon followed by a type name and another
-        // Colon is a return type; a Colon followed by a block
-        // (Newline/Indent) is just the block colon.
+        // Optional return type: ): عدد:  — أو عام: ): قائمة[عدد]:
+        // After ')', a Colon followed by a type name (with optional
+        // [ ... ] type arguments) and another Colon is a return
+        // type; a Colon followed by a block (Newline/Indent) is
+        // just the block colon.
         // Meeting 26 (§41.3): لاشيء is a type name too, but it
         // lexes as Keyword::Nil — the lookahead must accept it.
         let mut return_type: Option<String> = None;
-        if matches!(self.peek().kind, TokenKind::Colon) {
-            let next_is_type = matches!(self.peek_at(1).kind, TokenKind::Ident(_))
-                || matches!(self.peek_at(1).kind, TokenKind::Keyword(Keyword::Nil));
-            if next_is_type && matches!(self.peek_at(2).kind, TokenKind::Colon) {
-                self.advance(); // :
-                return_type = Some(self.parse_type_name()?);
-            }
+        if matches!(self.peek().kind, TokenKind::Colon) && self.return_type_follows() {
+            self.advance(); // :
+            return_type = Some(self.parse_type_name()?);
         }
         self.expect_colon()?;
         let body = self.parse_block()?;
@@ -545,6 +612,15 @@ impl Parser {
                     methods.push(stmt);
                 }
                 StmtKind::Pass => {}
+                // البند 8: الزخرفة على طريقة فئة غير مدعومة —
+                // الزخرفة قبل تعريف دالة أو فئة وحدهما.
+                StmtKind::Decorated { .. } => {
+                    return Err(RioError::parse(
+                        "الزخرفة على طريقة فئة غير مدعومة — ضعها على الدالة أو الفئة نفسها",
+                        stmt.line,
+                        stmt.col,
+                    ));
+                }
                 _ => {
                     return Err(RioError::parse(
                         "جسم الفئة يجب أن يحتوي على دوال فقط",
@@ -629,21 +705,121 @@ impl Parser {
         ))
     }
 
+    /// هل بعد `:` الحالية نوع إرجاع ثم `:` كتلة؟ يمسح
+    /// اسم نوع (معرّف أو لاشيء)، ثم معاملات نوع اختيارية
+    /// `[ ... ]` متوازنة، ثم `:` — فالنوع العام
+    /// `قائمة[عدد]` نوع إرجاع أيضا لا كتلة.
+    fn return_type_follows(&self) -> bool {
+        let k = |j: usize| &self.peek_at(j).kind;
+        let mut i = 1usize;
+        // أسماء أنواع تُقرأ كلمات محجوزة لا معرّفات
+        // (كـ لاشيء في الاجتماع 26): دالة وفئة وواجهة.
+        if !(matches!(k(i), TokenKind::Ident(_))
+            || matches!(
+                k(i),
+                TokenKind::Keyword(Keyword::Nil)
+                    | TokenKind::Keyword(Keyword::Func)
+                    | TokenKind::Keyword(Keyword::Class)
+                    | TokenKind::Keyword(Keyword::Interface)
+            ))
+        {
+            return false;
+        }
+        i += 1;
+        if matches!(k(i), TokenKind::LBracket) {
+            let mut depth = 0i32;
+            loop {
+                match k(i) {
+                    TokenKind::LBracket => depth += 1,
+                    TokenKind::RBracket => {
+                        depth -= 1;
+                        if depth == 0 {
+                            i += 1;
+                            break;
+                        }
+                    }
+                    TokenKind::Eof | TokenKind::Newline | TokenKind::Dedent => {
+                        return false;
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+        }
+        matches!(k(i), TokenKind::Colon)
+    }
+
     fn parse_type_name(&mut self) -> RioResult<String> {
+        Ok(self.parse_type_expr()?.display())
+    }
+
+    /// البند 8 — تمثيل نوعي حقيقي: اسم مسمى، أو نوع عام
+    /// مطبَّق `اسم[نوع، نوع]` (تداخل مسموح). الأساس يجب
+    /// أن يكون نوعا معروفا؛ والمعاملات: `قائمة` معامل
+    /// واحد، و`قاموس` معاملان، وغيرهما لا يقبل معاملات
+    /// نوع. العرض المخزّن قانوني (`قائمة[عدد]`) فيُحلَّل
+    /// من جديد بنيويا عند كل فحص.
+    fn parse_type_expr(&mut self) -> RioResult<TypeExpr> {
         // Meeting 26 (§41.3): لاشيء is a writable type name, but
         // it lexes as Keyword::Nil, not Ident — accept it here
         // only (params, return type, variable annotation all pass
-        // through this one function). The semantic analyzer is
-        // unchanged: it compares type names as text.
-        if matches!(self.peek().kind, TokenKind::Keyword(Keyword::Nil)) {
-            self.advance();
-            return Ok("لاشيء".to_string());
+        // through this one function). والبند 8: دالة وفئة
+        // وواجهة كلمات محجوزة أيضا فتُقبل أسماء أنواع هنا
+        // وحدها باللفظ نفسه.
+        let (name, line, col) = match &self.peek().kind {
+            TokenKind::Keyword(kw) => {
+                let spelled = match kw {
+                    Keyword::Nil => Some("لاشيء"),
+                    Keyword::Func => Some("دالة"),
+                    Keyword::Class => Some("فئة"),
+                    Keyword::Interface => Some("واجهة"),
+                    _ => None,
+                };
+                match spelled {
+                    Some(n) => {
+                        let t = self.advance();
+                        (n.to_string(), t.line, t.col)
+                    }
+                    None => self.expect_ident("اسم نوع")?,
+                }
+            }
+            _ => self.expect_ident("اسم نوع")?,
+        };
+        if !crate::ast::is_known_type(&name) {
+            return Err(RioError::parse(format!("نوع غير معروف: {}", name), line, col));
         }
-        let (name, line, col) = self.expect_ident("اسم نوع")?;
-        if crate::ast::is_known_type(&name) {
-            Ok(name)
+        if matches!(self.peek().kind, TokenKind::LBracket) {
+            self.advance(); // [
+            let mut args = Vec::new();
+            loop {
+                args.push(self.parse_type_expr()?);
+                if matches!(self.peek().kind, TokenKind::Comma) {
+                    self.advance();
+                    continue;
+                }
+                break;
+            }
+            self.expect(&TokenKind::RBracket, "قوس إغلاق ] بعد معاملات النوع")?;
+            match (name.as_str(), args.len()) {
+                ("قائمة", 1) | ("قاموس", 2) => Ok(TypeExpr::Generic { name, args }),
+                ("قائمة", n) => Err(RioError::parse(
+                    format!("النوع قائمة يقبل معامل نوع واحدا، لكن أعطيت {}", n),
+                    line,
+                    col,
+                )),
+                ("قاموس", n) => Err(RioError::parse(
+                    format!("النوع قاموس يقبل معاملي نوع، لكن أعطيت {}", n),
+                    line,
+                    col,
+                )),
+                _ => Err(RioError::parse(
+                    format!("النوع {} لا يقبل معاملات نوع", name),
+                    line,
+                    col,
+                )),
+            }
         } else {
-            Err(RioError::parse(format!("نوع غير معروف: {}", name), line, col))
+            Ok(TypeExpr::Named(name))
         }
     }
 

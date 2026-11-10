@@ -1123,7 +1123,8 @@ impl Interpreter {
                 // `أي` means no check. Static checking for the main
                 // program happens earlier, in the analyzer.
                 if let Some(ann) = annotation {
-                    if ann != "أي" && v.type_name() != ann {
+                    // البند 8: الفحص بنيوي (قائمة[عدد] تفحص عناصرها).
+                    if !v.matches_declared_type(ann) {
                         let var_name = match target {
                             AssignTarget::Var(n) => n.clone(),
                             _ => String::new(),
@@ -1302,6 +1303,50 @@ impl Interpreter {
                         Flow::Return => return Ok(Flow::Return),
                         Flow::Exit(code) => return Ok(Flow::Exit(code)),
                     }
+                }
+                Ok(Flow::Normal)
+            }
+            StmtKind::Decorated { decorators, def } => {
+                // البند 8 — الزخارف: نفّذ التعريف أولا، ثم
+                // طبّق الزخارف من الأسفل إلى الأعلى: كل زخرفة
+                // تُستدعى بالمعرف الحالي، ونتيجتها تحل محله
+                // في النطاق نفسه (على طريقة بايثون).
+                self.exec_stmt(def)?;
+                let name = match &def.kind {
+                    StmtKind::FuncDef { name, .. } | StmtKind::ClassDef { name, .. } => {
+                        name.clone()
+                    }
+                    _ => {
+                        return Err(RioError::runtime(
+                            "الزخرفة يجب أن تسبق تعريف دالة أو فئة",
+                            stmt.line,
+                            stmt.col,
+                        ));
+                    }
+                };
+                let mut value = self.lookup(&name).ok_or_else(|| {
+                    RioError::runtime(
+                        format!("تعريف مفقود بعد الزخرفة: {}", name),
+                        stmt.line,
+                        stmt.col,
+                    )
+                })?;
+                for dec in decorators.iter().rev() {
+                    let call = Expr::new(
+                        ExprKind::Call {
+                            callee: Box::new(dec.clone()),
+                            args: vec![Expr::new(
+                                ExprKind::Ident(name.clone()),
+                                def.line,
+                                def.col,
+                            )],
+                        },
+                        dec.line,
+                        dec.col,
+                    );
+                    value = self.eval_expr(&call)?;
+                    self.check_not_frozen(&name, stmt.line, stmt.col)?;
+                    self.define_local(&name, value.clone());
                 }
                 Ok(Flow::Normal)
             }
@@ -2372,7 +2417,7 @@ impl Interpreter {
         // Phase 1A Step 3 (runtime part): param types, `أي` = no check.
         for (i, arg) in args.iter().enumerate() {
             if let Some(Some(pt)) = param_types.get(i) {
-                if pt != "أي" && arg.type_name() != pt {
+                if !arg.matches_declared_type(pt) {
                     return Err(RioError::typ(
                         format!(
                             "نوع غير متطابق: معامل {} في الدالة {} معلن {}، لكن القيمة {}",
@@ -2455,7 +2500,7 @@ impl Interpreter {
                 let v = self.return_value.take().unwrap_or(Value::Nil);
                 // Phase 1A Step 3 (runtime part): return type.
                 if let Some(rt) = &return_type {
-                    if rt != "أي" && v.type_name() != rt {
+                    if !v.matches_declared_type(rt) {
                         return Err(RioError::typ(
                             format!(
                                 "نوع غير متطابق: الدالة {} معلنة أن ترجع {}، لكن رجعت {}",
@@ -2533,7 +2578,7 @@ impl Interpreter {
         }
         for (i, arg) in args.iter().enumerate() {
             if let Some(Some(pt)) = param_types.get(i) {
-                if pt != "أي" && arg.type_name() != pt {
+                if !arg.matches_declared_type(pt) {
                     return Err(RioError::typ(
                         format!(
                             "نوع غير متطابق: معامل {} في الطريقة {} معلن {}، لكن القيمة {}",
@@ -2603,7 +2648,7 @@ impl Interpreter {
             Flow::Return => {
                 let v = self.return_value.take().unwrap_or(Value::Nil);
                 if let Some(rt) = &return_type {
-                    if rt != "أي" && v.type_name() != rt {
+                    if !v.matches_declared_type(rt) {
                         return Err(RioError::typ(
                             format!(
                                 "نوع غير متطابق: الطريقة {} معلنة أن ترجع {}، لكن رجعت {}",

@@ -908,6 +908,48 @@ impl Gen {
                 self.emit_while(cond, body, s, ctx, out)?;
             }
             StmtKind::Pass => {}
+            // البند 8 — الزخارف: إصدار التعريف أولا، ثم لكل
+            // زخرفة من الأسفل إلى الأعلى: استدعاء الزخرفة
+            // بالمعرف، وإعادة ربط الاسم بنتيجته في النطاق.
+            StmtKind::Decorated { decorators, def } => {
+                self.emit_stmt(def, ctx, out)?;
+                let name = match &def.kind {
+                    StmtKind::FuncDef { name, .. } | StmtKind::ClassDef { name, .. } => {
+                        name.clone()
+                    }
+                    _ => {
+                        return Err(RioError::parse(
+                            "الزخرفة يجب أن تسبق تعريف دالة أو فئة",
+                            s.line,
+                            s.col,
+                        ));
+                    }
+                };
+                for dec in decorators.iter().rev() {
+                    let call = Expr::new(
+                        ExprKind::Call {
+                            callee: Box::new(dec.clone()),
+                            args: vec![Expr::new(
+                                ExprKind::Ident(name.clone()),
+                                def.line,
+                                def.col,
+                            )],
+                        },
+                        dec.line,
+                        dec.col,
+                    );
+                    let t = self.eval_into_temp(&call, ctx, out);
+                    let n = self.root_live(out);
+                    out.push_str(&format!(
+                        "nv_scope_define({}, {}, {});\n",
+                        ctx.scope_var,
+                        c_str(&name),
+                        t
+                    ));
+                    self.unroot(out, n);
+                    self.release(&t);
+                }
+            }
             StmtKind::FuncDef {
                 name,
                 params,
@@ -2008,7 +2050,7 @@ fn cc_install_hint() -> &'static str {
     if cfg!(target_os = "android") {
         "ثبّت المترجم بالأمر: pkg install clang"
     } else if cfg!(target_os = "windows") {
-        "ثبّت المترجم MinGW ثم أضفه إلى PATH"
+        "ثبّت LLVM (ومعه clang) ثم أضفه إلى PATH، أو ثبّت MinGW بديلا"
     } else if cfg!(target_os = "macos") {
         "ثبّت أدوات المطور بالأمر: xcode-select --install"
     } else {
@@ -2028,11 +2070,13 @@ fn cc_install_hint() -> &'static str {
 #[cfg(windows)]
 const NATIVE_UTF8_MANIFEST: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">\n  <assemblyIdentity version=\"1.0.0.0\" name=\"niva\" type=\"win32\"/>\n  <application>\n    <windowsSettings>\n      <activeCodePage xmlns=\"http://schemas.microsoft.com/SMI/2019/WindowsSettings\">UTF-8</activeCodePage>\n    </windowsSettings>\n  </application>\n</assembly>\n";
 
-/// اكتب البيان وملف الموارد وضمّنهما بـwindres إلى
-/// ملف موارد (‎.res) جاهز للربط — ويندوز فقط.
-/// windres يأتي مع MinGW نفسه (مع cc)؛ وغيابه
-/// خطأ عربي صريح لا بناء صامت مكسور (فالثنائي
-/// بلا البيان يفشل في المسارات العربية).
+/// اكتب البيان وملف الموارد وضمّنهما إلى ملف موارد
+/// (‎.res) جاهز للربط — ويندوز فقط.
+/// جرّب windres أولا (يأتي مع MinGW نفسه، مع cc)،
+/// ثم llvm-rc بديلا (يأتي مع LLVM نفسه، مع clang)؛
+/// وغياب الأداتين معا خطأ عربي صريح لا بناء صامت
+/// مكسور (فالثنائي بلا البيان يفشل في المسارات
+/// العربية). اجتماع 73 §88 شرط 5.
 #[cfg(windows)]
 fn embed_utf8_manifest(
     tmp: &std::path::Path,
@@ -2056,6 +2100,7 @@ fn embed_utf8_manifest(
         )
     })?;
     let res = tmp.join("niva.res");
+    // windres أولا.
     let wr = std::process::Command::new("windres")
         .arg("--input-format=rc")
         .arg("-i")
@@ -2066,34 +2111,190 @@ fn embed_utf8_manifest(
         .current_dir(tmp)
         .output();
     match wr {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(RioError::new(
-            ErrorKind::Io,
-            "windres غير موجود — لا يمكن تضمين بيان UTF-8 في الثنائي الأصلي. ثبّت MinGW كاملا (يأتي مع cc).".to_string(),
-            0,
-            0,
-        )),
-        Err(e) => Err(RioError::new(
-            ErrorKind::Io,
-            format!("تعذر تشغيل windres: {}", e),
-            0,
-            0,
-        )),
-        Ok(o) if !o.status.success() => Err(RioError::new(
+        Ok(o) if o.status.success() => return Ok(res),
+        Ok(o) => {
+            let windres_err = String::from_utf8_lossy(&o.stderr).to_string();
+            return compile_resource_with_llvm_rc(tmp, &rc, &res, &windres_err);
+        }
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return compile_resource_with_llvm_rc(
+                tmp,
+                &rc,
+                &res,
+                &format!("تعذر تشغيل windres: {}", e),
+            );
+        }
+        Err(_) => {}
+    }
+    // windres غائب: جرّب llvm-rc.
+    compile_resource_with_llvm_rc(tmp, &rc, &res, "windres غير موجود")
+}
+
+/// المحاولة الثانية لملف الموارد عبر llvm-rc.
+/// تنجح فتُرجع الملف؛ وتفشل فتُرجع خطأ عربيا صريحا
+/// يذكر الأداتين معا — ولا ثنائي بلا بيان أبدا.
+#[cfg(windows)]
+fn compile_resource_with_llvm_rc(
+    tmp: &std::path::Path,
+    rc: &std::path::Path,
+    res: &std::path::Path,
+    windres_err: &str,
+) -> RioResult<std::path::PathBuf> {
+    let lr = std::process::Command::new("llvm-rc")
+        .arg("/fo")
+        .arg(res)
+        .arg(rc)
+        .current_dir(tmp)
+        .output();
+    match lr {
+        Ok(o) if o.status.success() => Ok(res.to_path_buf()),
+        Ok(o) => Err(RioError::new(
             ErrorKind::Io,
             format!(
-                "فشل windres في تضمين بيان UTF-8: {}",
+                "فشل تضمين بيان UTF-8: windres: {}؛ وllvm-rc: {}",
+                windres_err,
                 String::from_utf8_lossy(&o.stderr)
             ),
             0,
             0,
         )),
-        Ok(_) => Ok(res),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(RioError::new(
+            ErrorKind::Io,
+            "لا windres ولا llvm-rc موجودان — لا يمكن تضمين بيان UTF-8 في الثنائي الأصلي. ثبّت LLVM (ومعه clang) أو MinGW كاملا (يأتي مع cc).".to_string(),
+            0,
+            0,
+        )),
+        Err(e) => Err(RioError::new(
+            ErrorKind::Io,
+            format!(
+                "فشل تضمين بيان UTF-8: windres: {}؛ وتعذر تشغيل llvm-rc: {}",
+                windres_err, e
+            ),
+            0,
+            0,
+        )),
     }
 }
 
+/// ---------- اختيار مترجم البناء الأصلي ----------
+///
+/// اجتماع 73 §88 قرار clang: على ويندوز الافتراضي
+/// clang عند -O2؛ وإن غاب clang أو فشل رجع البناء
+/// تلقائيا إلى cc عند -O0 الآمنة؛ ولينكس وmacOS
+/// وأندرويد كما هي (cc عند -O0)؛ وGCC لا يعمل أبدا
+/// عند -O2. القرار هنا دالة نقية قابلة للاختبار
+/// (مدخلاتها: المنصة، وحالة clang، ومتغير التجاوز)
+/// لأن فرع ويندوز لا ينفذ على لينكس؛ والاستدعاء
+/// الفعلي وحده مغطى بـ#[cfg(windows)] في build_native.
+
+/// حالة clang على الجهاز (مدخل نقي للاختيار).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClangStatus {
+    /// موجود ويعمل.
+    Available,
+    /// غائب.
+    Missing,
+    /// موجود لكن استدعاؤه فشل.
+    Failed,
+}
+
+/// نتيجة اختيار المترجم: البرنامج، ومستوى التحسين،
+/// وهل يمرَّر هدف MinGW، وهل يُطبع سطر الرجوع.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeCompilerChoice {
+    pub program: String,
+    pub opt: &'static str,
+    pub windows_target: bool,
+    pub fallback_notice: bool,
+}
+
+/// اختر مترجم البناء الأصلي.
+/// - التجاوز (NIVA_CC) يسبق الكشف التلقائي: قيمة
+///   clang تعني clang، وأي اسم آخر يعني ذلك البرنامج
+///   عند -O0 دائما (أبدا -O2 لغير clang على ويندوز).
+/// - بلا تجاوز: ويندوز + clang موجود = clang عند -O2
+///   مع هدف MinGW؛ وويندوز + clang غائب أو فاشل = cc
+///   عند -O0 مع سطر رجوع؛ وغير ويندوز = cc عند -O0.
+pub fn select_native_compiler(
+    windows: bool,
+    clang: ClangStatus,
+    override_cc: Option<&str>,
+) -> NativeCompilerChoice {
+    if let Some(raw) = override_cc {
+        let name = raw.trim();
+        if !name.is_empty() {
+            if name.eq_ignore_ascii_case("clang") {
+                return NativeCompilerChoice {
+                    program: "clang".to_string(),
+                    opt: if windows { "-O2" } else { "-O0" },
+                    windows_target: windows,
+                    fallback_notice: false,
+                };
+            }
+            return NativeCompilerChoice {
+                program: name.to_string(),
+                opt: "-O0",
+                windows_target: false,
+                fallback_notice: false,
+            };
+        }
+    }
+    if windows && clang == ClangStatus::Available {
+        return NativeCompilerChoice {
+            program: "clang".to_string(),
+            opt: "-O2",
+            windows_target: true,
+            fallback_notice: false,
+        };
+    }
+    NativeCompilerChoice {
+        program: "cc".to_string(),
+        opt: "-O0",
+        windows_target: false,
+        fallback_notice: windows && clang != ClangStatus::Available,
+    }
+}
+
+/// تجاوز المترجم الصريح بمتغير البيئة NIVA_CC:
+/// سطر واحد، لا خيار واجهة؛ قيمة فارغة تُهمل.
+fn native_compiler_override() -> Option<String> {
+    match std::env::var("NIVA_CC") {
+        Ok(v) => {
+            let t = v.trim().to_string();
+            if t.is_empty() {
+                None
+            } else {
+                Some(t)
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+/// هل يبدأ البرنامج (فحص --version يُشغَّل)؟ يكفي
+/// بدء التشغيل نفسه — فالمترجم المعطوب الذي يفشل
+/// عند البناء يلتقطه الرجوع التلقائي في build_native.
+fn program_available(program: &str) -> bool {
+    matches!(
+        std::process::Command::new(program)
+            .arg("--version")
+            .output(),
+        Ok(_)
+    )
+}
+
+/// سطر الرجوع الواحد حين يغيب clang على ويندوز:
+/// سرعة منخفضة + كيف يثبّت clang.
+const CLANG_MISSING_NOTICE: &str = "تنبيه: clang غير موجود — يُبنى الثنائي بالمترجم cc على -O0 بسرعة منخفضة. ثبّت LLVM (ومعه clang) ثم أضفه إلى PATH.";
+/// سطر الرجوع الواحد حين يفشل clang على ويندوز.
+const CLANG_FAILED_NOTICE: &str = "تنبيه: فشل clang — يُبنى الثنائي بالمترجم cc على -O0 بسرعة منخفضة. ثبّت LLVM (ومعه clang) ثم أضفه إلى PATH.";
+
 /// ابنِ ثنائيا أصليا من ملف مصدر نيفا إلى مسار الخرج.
 /// يكتب C المولد + ملفات وقت التشغيل إلى مجلد مؤقت،
-/// ثم يشغّل cc النظام. كل الرسائل عربية.
+/// ثم يشغّل مترجم النظام المختار (اجتماع 73 §88:
+/// clang عند -O2 على ويندوز، وcc عند -O0 غيرها،
+/// مع رجوع تلقائي إلى cc عند غياب clang أو فشله).
+/// كل الرسائل عربية.
 pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
     let source = std::fs::read_to_string(source_path).map_err(|e| {
         RioError::new(
@@ -2131,32 +2332,8 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
     let std_c = write("niva_std.c", include_str!("crt/niva_std.c"))?;
     let net_c = write("niva_net.c", include_str!("crt/niva_net.c"))?;
     let _ = rt_h;
-    // تحقق من وجود cc أولا.
-    let cc_probe = std::process::Command::new("cc")
-        .arg("--version")
-        .output();
-    match cc_probe {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Err(RioError::new(
-                ErrorKind::Io,
-                format!(
-                    "المترجم cc غير موجود — لا يمكن بناء ثنائي أصلي. {}",
-                    cc_install_hint()
-                ),
-                0,
-                0,
-            ));
-        }
-        Err(e) => {
-            return Err(RioError::new(
-                ErrorKind::Io,
-                format!("تعذر تشغيل المترجم cc: {}", e),
-                0,
-                0,
-            ));
-        }
-        Ok(_) => {}
-    }
+    // المترجم يُختار بعد البيان أدناه (اختيار المترجم
+    // في اجتماع 73 §88 — انظر select_native_compiler).
     // ويندوز فقط: بيان UTF-8 في الثنائي (انظر
     // NATIVE_UTF8_MANIFEST) — بلا بيان تضيع
     // المسارات العربية في الثنائي الأصلي.
@@ -2164,37 +2341,128 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
     let res_arg = Some(embed_utf8_manifest(&tmp)?);
     #[cfg(not(windows))]
     let res_arg: Option<std::path::PathBuf> = None;
-    let out_arg = out_path.to_string_lossy().to_string();
-    let mut cc_cmd = std::process::Command::new("cc");
-    cc_cmd
-        // -O0 (إرجاع مؤقت ثان): انهيار ويندوز الأصلي
-        // في سيناريوهات مسارات الخطأ على -O2 (تشغيلات
-        // CI رقم 42750995204 و42783618569 و42798623169
-        // — آخرها «مقابس-وسائط-خاطئة» على c6ae898e)؛
-        // والعودة إلى -O2 معلقة على التشخيص الأعمق
-        // على فرع منفصل بلا مساس بـmain.
-        .arg("-O0")
-        // gnu11 لا c11 الصارم (اجتماع 35 §50): يفتح
-        // إعلانات memmem وstrcasestr على ماك (clang
-        // يخفيها تحت __STRICT_ANSI__ مع c11)؛ ولينكس
-        // أخضر كما كان (_GNU_SOURCE معرّف أصلا).
-        .arg("-std=gnu11")
-        .arg("-o")
-        .arg(&out_arg)
-        .arg(&prog_c)
-        .arg(&rt_c)
-        .arg(&std_c)
-        .arg(&net_c);
-    if let Some(res) = &res_arg {
-        cc_cmd.arg(res);
+    // اختيار المترجم (اجتماع 73 §88): التجاوز أولا،
+    // ثم الكشف التلقائي؛ وويندوز وحده يبدّل إلى clang
+    // عند -O2، وغيره كما كان (cc عند -O0).
+    let on_windows = cfg!(windows);
+    let override_cc = native_compiler_override();
+    let override_is_clang = matches!(
+        override_cc.as_deref().map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("clang")
+    );
+    let clang_status = if on_windows && (override_cc.is_none() || override_is_clang) {
+        if program_available("clang") {
+            ClangStatus::Available
+        } else {
+            ClangStatus::Missing
+        }
+    } else {
+        ClangStatus::Missing
+    };
+    let mut choice =
+        select_native_compiler(on_windows, clang_status, override_cc.as_deref());
+    if choice.fallback_notice {
+        eprintln!("{}", CLANG_MISSING_NOTICE);
     }
-    let output = cc_cmd
-        .arg("-lm")
-        .arg("-lpthread")
-        .output()
-        .map_err(|e| {
-            RioError::new(ErrorKind::Io, format!("تعذر تشغيل المترجم cc: {}", e), 0, 0)
-        })?;
+    // تحقق من وجود المترجم المختار أولا.
+    if !program_available(&choice.program) {
+        if choice.program == "clang" {
+            // سباق نادر (اختفى بين الفحص والاستدعاء):
+            // رجوع تلقائي إلى cc عند -O0.
+            choice = select_native_compiler(
+                on_windows,
+                ClangStatus::Failed,
+                override_cc.as_deref(),
+            );
+            eprintln!("{}", CLANG_FAILED_NOTICE);
+        } else {
+            return Err(RioError::new(
+                ErrorKind::Io,
+                format!(
+                    "المترجم {} غير موجود — لا يمكن بناء ثنائي أصلي. {}",
+                    choice.program,
+                    cc_install_hint()
+                ),
+                0,
+                0,
+            ));
+        }
+    }
+    let out_arg = out_path.to_string_lossy().to_string();
+    // محاولة البناء؛ وإن فشل clang على ويندوز فمحاولة
+    // واحدة أخيرة بـcc عند -O0 (رجوع تلقائي إلزامي
+    // §88 شرط 2 — ولا يفشل بناء مستخدم أبدا بسبب
+    // غياب clang أو فشله؛ وGCC لا يعمل أبدا عند -O2).
+    let mut retried = false;
+    let output = loop {
+        let mut cc_cmd = std::process::Command::new(&choice.program);
+        if choice.windows_target {
+            // clang عبر LLVM يستهدف MSVC افتراضيا؛
+            // ومكتبات نيفا (-lm -lpthread و.res) ABI
+            // MinGW — فالهدف هنا إلزامي وإلا ربط
+            // مكتبات خاطئة (§88 شرط 4).
+            cc_cmd.arg("--target=x86_64-pc-windows-gnu");
+        }
+        cc_cmd
+            // الافتراضي على ويندوز clang عند -O2
+            // (اجتماع 73 §88: التكافؤ الكامل اجتاز
+            // تحت clang عند -O2 بـ75/75 تشغيلا نظيفا
+            // مقابل انهيار GCC ‏13/25‏)؛ و-O0 تبقى
+            // البديل الآمن (رجوع تلقائي + NIVA_CC=cc).
+            .arg(choice.opt)
+            // gnu11 لا c11 الصارم (اجتماع 35 §50): يفتح
+            // إعلانات memmem وstrcasestr على ماك (clang
+            // يخفيها تحت __STRICT_ANSI__ مع c11)؛ ولينكس
+            // أخضر كما كان (_GNU_SOURCE معرّف أصلا).
+            .arg("-std=gnu11")
+            .arg("-o")
+            .arg(&out_arg)
+            .arg(&prog_c)
+            .arg(&rt_c)
+            .arg(&std_c)
+            .arg(&net_c);
+        if let Some(res) = &res_arg {
+            cc_cmd.arg(res);
+        }
+        let run = cc_cmd
+            .arg("-lm")
+            .arg("-lpthread")
+            .output();
+        match run {
+            Ok(o) if o.status.success() => break o,
+            Ok(o) if choice.program == "clang" && on_windows && !retried => {
+                choice = select_native_compiler(
+                    on_windows,
+                    ClangStatus::Failed,
+                    override_cc.as_deref(),
+                );
+                eprintln!("{}", CLANG_FAILED_NOTICE);
+                retried = true;
+                let _ = o;
+                continue;
+            }
+            Ok(o) => break o,
+            Err(e) if choice.program == "clang" && on_windows && !retried => {
+                choice = select_native_compiler(
+                    on_windows,
+                    ClangStatus::Failed,
+                    override_cc.as_deref(),
+                );
+                eprintln!("{}", CLANG_FAILED_NOTICE);
+                retried = true;
+                let _ = e;
+                continue;
+            }
+            Err(e) => {
+                return Err(RioError::new(
+                    ErrorKind::Io,
+                    format!("تعذر تشغيل المترجم {}: {}", choice.program, e),
+                    0,
+                    0,
+                ));
+            }
+        }
+    };
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         let mut translated: Vec<String> = Vec::new();
@@ -2267,5 +2535,94 @@ mod tests {
             "got: {}",
             NATIVE_UTF8_MANIFEST
         );
+    }
+}
+
+/// اختبارات اختيار المترجم (اجتماع 73 §88 شرط 8):
+/// الدالة نقية فتُختبر على كل منصة بلا ويندوز —
+/// clang موجود، وغائب، وموجود لكنه فشل، والتجاوز.
+#[cfg(test)]
+mod native_compiler_tests {
+    use super::{select_native_compiler, ClangStatus};
+
+    #[test]
+    fn windows_clang_available_uses_clang_o2_with_mingw_target() {
+        let c = select_native_compiler(true, ClangStatus::Available, None);
+        assert_eq!(c.program, "clang", "got: {:?}", c);
+        assert_eq!(c.opt, "-O2", "got: {:?}", c);
+        assert!(c.windows_target, "got: {:?}", c);
+        assert!(!c.fallback_notice, "got: {:?}", c);
+    }
+
+    #[test]
+    fn windows_clang_missing_falls_back_to_cc_o0_with_notice() {
+        let c = select_native_compiler(true, ClangStatus::Missing, None);
+        assert_eq!(c.program, "cc", "got: {:?}", c);
+        assert_eq!(c.opt, "-O0", "got: {:?}", c);
+        assert!(!c.windows_target, "got: {:?}", c);
+        assert!(c.fallback_notice, "got: {:?}", c);
+    }
+
+    #[test]
+    fn windows_clang_failed_falls_back_to_cc_o0_with_notice() {
+        let c = select_native_compiler(true, ClangStatus::Failed, None);
+        assert_eq!(c.program, "cc", "got: {:?}", c);
+        assert_eq!(c.opt, "-O0", "got: {:?}", c);
+        assert!(!c.windows_target, "got: {:?}", c);
+        assert!(c.fallback_notice, "got: {:?}", c);
+    }
+
+    #[test]
+    fn override_cc_forces_cc_o0_on_windows() {
+        let c = select_native_compiler(true, ClangStatus::Available, Some("cc"));
+        assert_eq!(c.program, "cc", "got: {:?}", c);
+        assert_eq!(c.opt, "-O0", "got: {:?}", c);
+        assert!(!c.windows_target, "got: {:?}", c);
+        assert!(!c.fallback_notice, "got: {:?}", c);
+    }
+
+    #[test]
+    fn override_clang_forces_clang_o2_on_windows() {
+        let c = select_native_compiler(true, ClangStatus::Missing, Some("clang"));
+        assert_eq!(c.program, "clang", "got: {:?}", c);
+        assert_eq!(c.opt, "-O2", "got: {:?}", c);
+        assert!(c.windows_target, "got: {:?}", c);
+        assert!(!c.fallback_notice, "got: {:?}", c);
+    }
+
+    #[test]
+    fn override_custom_compiler_uses_it_at_o0_never_o2() {
+        let c = select_native_compiler(true, ClangStatus::Available, Some("gcc"));
+        assert_eq!(c.program, "gcc", "got: {:?}", c);
+        assert_eq!(c.opt, "-O0", "got: {:?}", c);
+        assert!(!c.windows_target, "got: {:?}", c);
+        assert!(!c.fallback_notice, "got: {:?}", c);
+    }
+
+    #[test]
+    fn non_windows_stays_cc_o0_even_when_clang_available() {
+        let c = select_native_compiler(false, ClangStatus::Available, None);
+        assert_eq!(c.program, "cc", "got: {:?}", c);
+        assert_eq!(c.opt, "-O0", "got: {:?}", c);
+        assert!(!c.windows_target, "got: {:?}", c);
+        assert!(!c.fallback_notice, "got: {:?}", c);
+    }
+
+    #[test]
+    fn non_windows_override_honoured_at_o0() {
+        let c = select_native_compiler(false, ClangStatus::Missing, Some("clang"));
+        assert_eq!(c.program, "clang", "got: {:?}", c);
+        assert_eq!(c.opt, "-O0", "got: {:?}", c);
+        assert!(!c.windows_target, "got: {:?}", c);
+        assert!(!c.fallback_notice, "got: {:?}", c);
+    }
+
+    #[test]
+    fn empty_override_is_ignored() {
+        let c = select_native_compiler(true, ClangStatus::Available, Some("   "));
+        assert_eq!(c.program, "clang", "got: {:?}", c);
+        assert_eq!(c.opt, "-O2", "got: {:?}", c);
+        let c = select_native_compiler(true, ClangStatus::Available, Some(""));
+        assert_eq!(c.program, "clang", "got: {:?}", c);
     }
 }
