@@ -177,6 +177,17 @@ jobs:
           export PATH="/c/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin:/c/Program Files/LLVM/bin:$PATH"
           echo "--- tools on PATH after re-assert (same installs as job setup: choco mingw + runner LLVM):"
           for t in clang cc gcc windres llvm-rc llvm-cvtres niva; do command -v "$t" || echo "MISSING-TOOL-AFTER: $t"; done
+          echo "===== cell-c install: full LLVM via choco (Meeting 76 option 1) - llvm-cvtres was absent from the runner image"
+          echo "--- choco check:"
+          command -v choco || echo "MISSING-TOOL: choco"
+          LLVM_INSTALL_START=$(date +%s)
+          LLVM_INSTALL_EXIT=0; choco install llvm -y || LLVM_INSTALL_EXIT=$?
+          LLVM_INSTALL_END=$(date +%s)
+          echo "LLVM-INSTALL-EXIT=$LLVM_INSTALL_EXIT"
+          echo "LLVM-INSTALL-SECONDS=$((LLVM_INSTALL_END - LLVM_INSTALL_START))"
+          export PATH="/c/Program Files/LLVM/bin:$PATH"
+          echo "--- tools on PATH after LLVM install + PATH re-assert:"
+          for t in clang cc gcc windres llvm-rc llvm-cvtres niva; do command -v "$t" || echo "MISSING-TOOL-POST-INSTALL: $t"; done
           echo "--- llvm-cvtres location (Meeting 75 mandatory diagnostic):"
           command -v llvm-cvtres || echo "MISSING-TOOL: llvm-cvtres"
           echo "--- llvm-cvtres help (correct usage if formula wrong):"
