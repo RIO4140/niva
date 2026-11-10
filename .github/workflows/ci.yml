@@ -233,3 +233,88 @@ jobs:
             done
           done
           echo "DIAG-EXTRA-DONE cell=${{ matrix.cell }}"
+
+  # [DIAG] فرع diag/o2-deep فقط: جولة عزل أعلام -fno-* المنفردة
+  # (§5.5 خطوة 1 — -O0 سليم و-O1/-Os/-O2 تنهار). ويندوز فقط،
+  # -O2 مع علم إلغاء تحسين واحد لكل خلية + خلية ضبط بلا علم.
+  # البرامج: M1 وM3 وM8 (أسوأ الانهيارات) وM2 وM5، كل واحد
+  # 5 مرات. كل تشغيل يمسح diag-d2.log قبله ويعرضه بعده —
+  # وجود الملف يثبت تثبيت معالج D2 ولو لم يقع انهيار.
+  diag-o2c:
+    name: diag-o2c (${{ matrix.cell }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cell: control
+            flags: ""
+          - cell: no-strict-aliasing
+            flags: "-fno-strict-aliasing"
+          - cell: no-omit-frame-pointer
+            flags: "-fno-omit-frame-pointer"
+          - cell: no-ipa-pure-const
+            flags: "-fno-ipa-pure-const"
+          - cell: no-tree-vectorize
+            flags: "-fno-tree-vectorize"
+          - cell: no-inline
+            flags: "-fno-inline"
+          - cell: no-gcse
+            flags: "-fno-gcse"
+          - cell: no-tree-scev-cprop
+            flags: "-fno-tree-scev-cprop"
+          - cell: no-tree-dce
+            flags: "-fno-tree-dce"
+          - cell: no-strict-overflow
+            flags: "-fno-strict-overflow"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install MinGW (Windows)
+        run: choco install mingw -y
+      - name: Add engine build dir to PATH
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/engine/target/debug" >> $GITHUB_PATH
+      - name: Build niva (debug)
+        shell: bash
+        run: cargo build --manifest-path engine/Cargo.toml
+      - name: Write M1/M3/M8/M2/M5 programs
+        shell: bash
+        run: |
+          mkdir -p diag-m
+          python3 - <<'PYEOF'
+          import os
+          progs = {
+            "m1": "استورد شبكة\nحاول:\n    شبكة.اتصل(\"127.0.0.1\"، 9)\nماعدا:\n    اطبع \"مغلقة كما يجب\"\nحاول:\n    شبكة.مقبس(\"udp\")\nماعدا:\n    اطبع \"مغلقة كما يجب\"\n",
+            "m3": "استورد نظام\nحاول:\n    اطبع نظام.عدد_النداءات() > ٠\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    اطبع طول(نظام.اسم_النداء(٠)) > ٠\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    نظام.اسم_النداء(٩٩٩٩٩)\nماعدا:\n    اطبع \"غير معروف كما يجب\"\n",
+            "m8": "استورد عمليات\nحاول:\n    عمليات.أنشئ(\"/bin/true\")\nماعدا:\n    اطبع \"مغلقة كما يجب\"\nحاول:\n    عمليات.أنشئ(\"/bin/true\")\nماعدا:\n    اطبع \"مغلقة كما يجب\"\n",
+            "m2": "استورد شبكة\nحاول:\n    شبكة.أرسل(١)\nماعدا:\n    اطبع \"وسائط كما يجب\"\nحاول:\n    شبكة.استقبل()\nماعدا:\n    اطبع \"وسائط كما يجب\"\n",
+            "m5": "استورد ذاكرة\nحاول:\n    اطبع ذاكرة.المتاح() > ٠\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\nحاول:\n    اطبع ذاكرة.حجم_الصفحة() > ٠\nماعدا:\n    اطبع \"غير مدعوم كما يجب\"\n",
+          }
+          for name, src in progs.items():
+              with open(os.path.join("diag-m", name + ".نيفا"), "w", encoding="utf-8") as f:
+                  f.write(src)
+          print("wrote", len(progs), "programs")
+          PYEOF
+      - name: Run fno cell (M1/M3/M8/M2/M5 x5)
+        shell: bash
+        env:
+          NIVA_NATIVE_OPT: "-O2"
+          NIVA_NATIVE_EXTRA_CFLAGS: ${{ matrix.flags }}
+        run: |
+          cd diag-m
+          for m in m1 m3 m8 m2 m5; do
+            echo "===== $m (cell=${{ matrix.cell }}) build:"
+            niva ابن --أصلي "$m.نيفا" > "build-$m.log" 2>&1 || { echo "BUILD-FAIL $m:"; cat "build-$m.log"; continue; }
+            echo "build ok: $m"
+            for r in 1 2 3 4 5; do
+              rm -f diag-d2.log
+              code=0
+              "./$m.exe" > "$m-run$r.out" 2> "$m-run$r.err" || code=$?
+              echo "----- $m run $r EXIT=$code"
+              echo "stdout:"; cat "$m-run$r.out"
+              echo "stderr:"; cat "$m-run$r.err"
+              echo "diag-d2.log:"; cat diag-d2.log 2>/dev/null || echo "(no diag-d2.log)"
+            done
+          done
+          echo "DIAG-FNO-DONE cell=${{ matrix.cell }}"
