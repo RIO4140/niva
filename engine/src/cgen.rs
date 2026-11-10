@@ -2125,7 +2125,15 @@ pub fn build_native(source_path: &Path, out_path: &Path) -> RioResult<()> {
         })?;
         Ok(p)
     };
-    let prog_c = write("برنامج.c", &c_source)?;
+    // [DIAG] فرع diag/o2-deep فقط (جولة diag-o2e):
+    // اسم ASCII لملف C المولّد بدلا من «برنامج.c» —
+    // clang يشتق اسم ملفه المؤقت ‎.o من جذع المصدر،
+    // فالجذع العربي يتحول إلى ‎??????‎ عند تمريره إلى
+    // ld عبر صفحة رموز ANSI فيفشل الربط (خلية asan
+    // في diag-o2d: ‎??????-cebcd3.o: Invalid argument)؛
+    // وGCC لا يتأثر لأنه يسمّي ملفاته المؤقتة ASCII.
+    // بلا دمج — يُحذف مع الفرع.
+    let prog_c = write("program.c", &c_source)?;
     let rt_h = write("niva_rt.h", include_str!("crt/niva_rt.h"))?;
     let rt_c = write("niva_rt.c", include_str!("crt/niva_rt.c"))?;
     let std_c = write("niva_std.c", include_str!("crt/niva_std.c"))?;
