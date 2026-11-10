@@ -57,6 +57,167 @@ jobs:
             cargo test -- --test-threads=1
           fi
 
+  diag-o2:
+    name: diag-o2 (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install MinGW (Windows)
+        if: runner.os == 'Windows'
+        run: choco install mingw -y
+      - name: Add engine build dir to PATH
+        shell: bash
+        run: echo "$GITHUB_WORKSPACE/engine/target/debug" >> $GITHUB_PATH
+      - name: Build debug engine
+        run: cargo build --manifest-path engine/Cargo.toml
+      - name: Write mini programs
+        shell: bash
+        run: |
+          mkdir -p diag
+          python3 - <<'PYEOF'
+          import io
+          minis = {
+              "M0": [
+                  "استورد نظام",
+                  "حاول:",
+                  "    اطبع نظام.عدد_النداءات() > ٠",
+                  "ماعدا:",
+                  "    اطبع \"غير مدعوم كما يجب\"",
+                  "حاول:",
+                  "    اطبع طول(نظام.اسم_النداء(٠)) > ٠",
+                  "ماعدا:",
+                  "    اطبع \"غير مدعوم كما يجب\"",
+                  "حاول:",
+                  "    نظام.اسم_النداء(٩٩٩٩٩)",
+                  "ماعدا:",
+                  "    اطبع \"غير معروف كما يجب\"",
+              ],
+              "M1": [
+                  "استورد نظام",
+                  "حاول:",
+                  "    اطبع نظام.عدد_النداءات() > ٠",
+                  "ماعدا:",
+                  "    اطبع \"غير مدعوم كما يجب\"",
+              ],
+              "M2": [
+                  "استورد نظام",
+                  "حاول:",
+                  "    نظام.عدد_النداءات()",
+                  "ماعدا:",
+                  "    اطبع \"غير مدعوم كما يجب\"",
+              ],
+              "M3": [
+                  "استورد نظام",
+                  "حاول:",
+                  "    ع = نظام.عدد_النداءات()",
+                  "    اطبع ع",
+                  "ماعدا:",
+                  "    اطبع \"غير مدعوم كما يجب\"",
+              ],
+              "M4": [
+                  "استورد نظام",
+                  "حاول:",
+                  "    اطبع طول(نظام.نسخة_النواة()) > ٠",
+                  "ماعدا:",
+                  "    اطبع \"غير مدعوم كما يجب\"",
+              ],
+              "M5": [
+                  "استورد نظام",
+                  "حاول:",
+                  "    اطبع نظام.عدد_النداءات() > ٠",
+                  "ماعدا:",
+                  "    اطبع \"غير مدعوم كما يجب\"",
+                  "حاول:",
+                  "    اطبع طول(نظام.اسم_النداء(٠)) > ٠",
+                  "ماعدا:",
+                  "    اطبع \"غير مدعوم كما يجب\"",
+              ],
+              "M6": [
+                  "استورد نظام",
+                  "حاول:",
+                  "    اطبع طول(نظام.نسخة_النواة()) > ٠",
+                  "ماعدا:",
+                  "    اطبع \"غير مدعوم كما يجب\"",
+                  "حاول:",
+                  "    اطبع نظام.اسم_النظام()",
+                  "ماعدا:",
+                  "    اطبع \"غير مدعوم كما يجب\"",
+                  "حاول:",
+                  "    اطبع نظام.معرف_المستخدم() >= ٠",
+                  "ماعدا:",
+                  "    اطبع \"غير مدعوم كما يجب\"",
+                  "حاول:",
+                  "    اطبع نظام.معرف_المجموعة() >= ٠",
+                  "ماعدا:",
+                  "    اطبع \"غير مدعوم كما يجب\"",
+              ],
+              "M7": [
+                  "استورد نظام",
+                  "حاول:",
+                  "    اطبع طول(نظام.اسم_النداء(٠)) > ٠",
+                  "ماعدا:",
+                  "    اطبع \"غير مدعوم كما يجب\"",
+              ],
+          }
+          for name, lines in minis.items():
+              with io.open("diag/" + name + ".نيفا", "w", encoding="utf-8", newline="\n") as f:
+                  f.write("\n".join(lines) + "\n")
+          print("wrote", len(minis), "minis")
+          PYEOF
+      - name: Run minis at -O2
+        shell: bash
+        continue-on-error: true
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then NIVA="../../engine/target/debug/niva.exe"; BIN="prog.exe"; else NIVA="../../engine/target/debug/niva"; BIN="prog"; fi
+          rm -f diag/results.txt
+          for m in M0 M1 M2 M3 M4 M5 M6 M7; do
+            echo "===== $m -O2 ====="
+            rm -rf "diag/$m-run"; mkdir -p "diag/$m-run"
+            cp "diag/$m.نيفا" "diag/$m-run/prog.نيفا"
+            (cd "diag/$m-run" && "$NIVA" ابن --أصلي prog.نيفا) || echo "BUILD_EXIT=$?"
+            rc=0
+            (cd "diag/$m-run" && ./"$BIN") || rc=$?
+            echo "$m -O2 $rc" >> diag/results.txt
+            echo "EXIT=$rc"
+          done
+      - name: Flip flag to -O0 and rebuild
+        shell: bash
+        run: |
+          sed -i 's/\.arg("-O2")/.arg("-O0")/' engine/src/cgen.rs
+          grep -n '"-O0"' engine/src/cgen.rs
+          cargo build --manifest-path engine/Cargo.toml
+      - name: Run minis at -O0
+        shell: bash
+        continue-on-error: true
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then NIVA="../../engine/target/debug/niva.exe"; BIN="prog.exe"; else NIVA="../../engine/target/debug/niva"; BIN="prog"; fi
+          for m in M0 M1 M2 M3 M4 M5 M6 M7; do
+            echo "===== $m -O0 ====="
+            rm -rf "diag/$m-run"; mkdir -p "diag/$m-run"
+            cp "diag/$m.نيفا" "diag/$m-run/prog.نيفا"
+            (cd "diag/$m-run" && "$NIVA" ابن --أصلي prog.نيفا) || echo "BUILD_EXIT=$?"
+            rc=0
+            (cd "diag/$m-run" && ./"$BIN") || rc=$?
+            echo "$m -O0 $rc" >> diag/results.txt
+            echo "EXIT=$rc"
+          done
+      - name: Print comparison table
+        shell: bash
+        run: |
+          echo "===== comparison (program flag exit) ====="
+          cat diag/results.txt
+      - name: Check -Wclobbered on runner compiler
+        shell: bash
+        continue-on-error: true
+        run: |
+          cc --version
+          cc -O2 -Wclobbered -std=gnu11 -I engine/src/crt -c engine/src/crt/niva_rt.c -o niva_rt.o || echo "CC_EXIT=$?"
+
   release:
     name: release (${{ matrix.os }})
     needs: test
