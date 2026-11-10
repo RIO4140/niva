@@ -171,12 +171,16 @@ jobs:
           export PYTHONIOENCODING=utf-8
           echo "--- tools on PATH before re-assert (inherited from job setup):"
           echo "PATH=$PATH"
-          for t in clang cc gcc windres llvm-rc niva; do command -v "$t" || echo "MISSING-TOOL: $t"; done
+          for t in clang cc gcc windres llvm-rc llvm-cvtres niva; do command -v "$t" || echo "MISSING-TOOL: $t"; done
           echo "--- llvm-rc version:"; llvm-rc --version 2>&1 | head -2 || true
           echo "--- clang version:"; clang --version 2>&1 | head -1 || true
           export PATH="/c/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin:/c/Program Files/LLVM/bin:$PATH"
           echo "--- tools on PATH after re-assert (same installs as job setup: choco mingw + runner LLVM):"
-          for t in clang cc gcc windres llvm-rc niva; do command -v "$t" || echo "MISSING-TOOL-AFTER: $t"; done
+          for t in clang cc gcc windres llvm-rc llvm-cvtres niva; do command -v "$t" || echo "MISSING-TOOL-AFTER: $t"; done
+          echo "--- llvm-cvtres location (Meeting 75 mandatory diagnostic):"
+          command -v llvm-cvtres || echo "MISSING-TOOL: llvm-cvtres"
+          echo "--- llvm-cvtres help (correct usage if formula wrong):"
+          llvm-cvtres --help 2>&1 | head -40 || echo "LLVM-CVTRES-HELP-FAIL"
           mkdir -p diag-m
           python3 - <<'PYEOF' || echo "PY-WRITE-FAIL"
           src = "استورد شبكة\nحاول:\n    شبكة.اتصل(\"127.0.0.1\"، 9)\nماعدا:\n    اطبع \"مغلقة كما يجب\"\nحاول:\n    شبكة.مقبس(\"udp\")\nماعدا:\n    اطبع \"مغلقة كما يجب\"\n"
