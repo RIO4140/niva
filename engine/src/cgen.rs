@@ -2071,12 +2071,13 @@ fn cc_install_hint() -> &'static str {
 const NATIVE_UTF8_MANIFEST: &str = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<assembly xmlns=\"urn:schemas-microsoft-com:asm.v1\" manifestVersion=\"1.0\">\n  <assemblyIdentity version=\"1.0.0.0\" name=\"niva\" type=\"win32\"/>\n  <application>\n    <windowsSettings>\n      <activeCodePage xmlns=\"http://schemas.microsoft.com/SMI/2019/WindowsSettings\">UTF-8</activeCodePage>\n    </windowsSettings>\n  </application>\n</assembly>\n";
 
 /// اكتب البيان وملف الموارد وضمّنهما إلى ملف موارد
-/// (‎.res) جاهز للربط — ويندوز فقط.
+/// (‎.res أو ‎.obj) جاهز للربط — ويندوز فقط.
 /// جرّب windres أولا (يأتي مع MinGW نفسه، مع cc)،
-/// ثم llvm-rc بديلا (يأتي مع LLVM نفسه، مع clang)؛
-/// وغياب الأداتين معا خطأ عربي صريح لا بناء صامت
-/// مكسور (فالثنائي بلا البيان يفشل في المسارات
-/// العربية). اجتماع 73 §88 شرط 5.
+/// ثم llvm-rc بديلا (يأتي مع LLVM نفسه، مع clang)
+/// يليه llvm-cvtres ليحوّل ‎.res إلى ‎.obj بصيغة COFF
+/// (اجتماع 75 §90)؛ وغياب الأدوات خطأ عربي صريح
+/// لا بناء صامت مكسور (فالثنائي بلا البيان يفشل
+/// في المسارات العربية). اجتماع 73 §88 شرط 5.
 #[cfg(windows)]
 fn embed_utf8_manifest(
     tmp: &std::path::Path,
@@ -2130,9 +2131,11 @@ fn embed_utf8_manifest(
     compile_resource_with_llvm_rc(tmp, &rc, &res, "windres غير موجود")
 }
 
-/// المحاولة الثانية لملف الموارد عبر llvm-rc.
-/// تنجح فتُرجع الملف؛ وتفشل فتُرجع خطأ عربيا صريحا
-/// يذكر الأداتين معا — ولا ثنائي بلا بيان أبدا.
+/// المحاولة الثانية لملف الموارد عبر llvm-rc ثم
+/// llvm-cvtres (اجتماع 75 §90): تنجح فتُرجع ملف كائن
+/// (‎.obj) بصيغة COFF جاهزا للربط؛ وتفشل فتُرجع خطأ
+/// عربيا صريحا يذكر الأدوات الثلاث معا — ولا ثنائي
+/// بلا بيان أبدا.
 #[cfg(windows)]
 fn compile_resource_with_llvm_rc(
     tmp: &std::path::Path,
@@ -2147,7 +2150,7 @@ fn compile_resource_with_llvm_rc(
         .current_dir(tmp)
         .output();
     match lr {
-        Ok(o) if o.status.success() => Ok(res.to_path_buf()),
+        Ok(o) if o.status.success() => convert_res_to_obj(tmp, res, windres_err),
         Ok(o) => Err(RioError::new(
             ErrorKind::Io,
             format!(
@@ -2168,6 +2171,68 @@ fn compile_resource_with_llvm_rc(
             ErrorKind::Io,
             format!(
                 "فشل تضمين بيان UTF-8: windres: {}؛ وتعذر تشغيل llvm-rc: {}",
+                windres_err, e
+            ),
+            0,
+            0,
+        )),
+    }
+}
+
+/// وسائط استدعاء llvm-cvtres لتحويل ملف الموارد (‎.res
+/// بصيغة RES) إلى ملف كائن (‎.obj بصيغة COFF) — دالة
+/// نقية قابلة للاختبار بلا ويندوز؛ الصيغة المأذون بها
+/// في اجتماع 75 §90: `/machine:X64 /out:<obj> <res>`
+/// (مؤيدة باختبارات LLVM نفسها: help.test وmachine.test
+/// D41270). عامة كـselect_native_compiler لتبقى حية
+/// على المنصات التي لا تستدعيها.
+pub fn llvm_cvtres_args(obj: &std::path::Path, res: &std::path::Path) -> Vec<String> {
+    vec![
+        "/machine:X64".to_string(),
+        format!("/out:{}", obj.display()),
+        res.to_string_lossy().into_owned(),
+    ]
+}
+
+/// حوّل ملف الموارد (‎.res بصيغة RES من llvm-rc) إلى ملف
+/// كائن (‎.obj بصيغة COFF) عبر llvm-cvtres — رابط MinGW
+/// يقبل COFF وحدها. تنجح فتُرجع مسار الـ‎.obj للربط؛
+/// وتفشل (أو يغيب llvm-cvtres) فتُرجع خطأ عربيا صريحا
+/// يذكر الأدوات الثلاث معا — ولا ثنائي بلا بيان أبدا.
+/// اجتماع 75 §90.
+#[cfg(windows)]
+fn convert_res_to_obj(
+    tmp: &std::path::Path,
+    res: &std::path::Path,
+    windres_err: &str,
+) -> RioResult<std::path::PathBuf> {
+    let obj = tmp.join("niva.obj");
+    let cv = std::process::Command::new("llvm-cvtres")
+        .args(llvm_cvtres_args(&obj, res))
+        .current_dir(tmp)
+        .output();
+    match cv {
+        Ok(o) if o.status.success() => Ok(obj),
+        Ok(o) => Err(RioError::new(
+            ErrorKind::Io,
+            format!(
+                "فشل تضمين بيان UTF-8: windres: {}؛ وllvm-rc نجح لكن llvm-cvtres فشل: {}",
+                windres_err,
+                String::from_utf8_lossy(&o.stderr)
+            ),
+            0,
+            0,
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(RioError::new(
+            ErrorKind::Io,
+            "llvm-rc موجود لكن llvm-cvtres غائب — لا يمكن تحويل ملف الموارد إلى صيغة COFF التي يقبلها رابط MinGW. ثبّت LLVM كاملا (ومعه clang وllvm-rc وllvm-cvtres) أو MinGW كاملا (يأتي مع windres وcc).".to_string(),
+            0,
+            0,
+        )),
+        Err(e) => Err(RioError::new(
+            ErrorKind::Io,
+            format!(
+                "فشل تضمين بيان UTF-8: windres: {}؛ وllvm-rc نجح لكن تعذر تشغيل llvm-cvtres: {}",
                 windres_err, e
             ),
             0,
@@ -2624,5 +2689,34 @@ mod native_compiler_tests {
         assert_eq!(c.opt, "-O2", "got: {:?}", c);
         let c = select_native_compiler(true, ClangStatus::Available, Some(""));
         assert_eq!(c.program, "clang", "got: {:?}", c);
+    }
+}
+
+/// اختبارات صيغة llvm-cvtres (اجتماع 75 §90): الدالة
+/// نقية فتُختبر على كل منصة بلا ويندوز — الصيغة المأذون
+/// بها حرفيا `/machine:X64 /out:<obj> <res>`.
+#[cfg(test)]
+mod manifest_cvtres_tests {
+    use super::llvm_cvtres_args;
+    use std::path::Path;
+
+    #[test]
+    fn cvtres_args_use_authorized_machine_and_out_form() {
+        let args = llvm_cvtres_args(Path::new("/tmp/niva.obj"), Path::new("/tmp/niva.res"));
+        assert_eq!(args.len(), 3, "got: {:?}", args);
+        assert_eq!(args[0], "/machine:X64", "got: {:?}", args);
+        assert_eq!(args[1], "/out:/tmp/niva.obj", "got: {:?}", args);
+        assert_eq!(args[2], "/tmp/niva.res", "got: {:?}", args);
+    }
+
+    #[test]
+    fn cvtres_args_keep_arabic_paths_verbatim() {
+        let args = llvm_cvtres_args(
+            Path::new("/tmp/بناء/niva.obj"),
+            Path::new("/tmp/بناء/niva.res"),
+        );
+        assert_eq!(args.len(), 3, "got: {:?}", args);
+        assert_eq!(args[1], "/out:/tmp/بناء/niva.obj", "got: {:?}", args);
+        assert_eq!(args[2], "/tmp/بناء/niva.res", "got: {:?}", args);
     }
 }
