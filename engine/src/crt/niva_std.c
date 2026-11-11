@@ -1,9 +1,9 @@
 // مكتبة الوحدات الأصلية — خلفية C (مهمة 29).
-// 37 وحدة: رياضيات، عشوائي، وقت، شبكة، عمليات، ذاكرة،
+// 38 وحدة: رياضيات، عشوائي، وقت، شبكة، عمليات، ذاكرة،
 // ملفات، نظام، تواصل، تشفير، أمن، غير_متزامن، جهاز،
 // نمط، بحث، جسون، اكسمل، يامال، قوالب، تحقق،
 // نص، أسس، وحدات، أرشيف، كلمة_مرور، وهمي، تقويم، ألوان، إيموجي،
-// قوائم، علمي، تمويل، اكتواري، إحصاء، توزيعات، دوال، تنفيذ.
+// قوائم، علمي، تمويل، اكتواري، إحصاء، توزيعات، دوال، تنفيذ، تدفق.
 // كل رسائل الأخطاء عربية كما في المحرك (stdlib.rs).
 // شبكة.اجلب/نزّل/اخدم والمقابس في niva_net.c.
 #include "niva_rt.h"
@@ -145,6 +145,7 @@ void nv_std_stats_fill(NvDict *d);
 void nv_std_distrib_fill(NvDict *d);
 void nv_std_funcs_fill(NvDict *d);
 void nv_std_exec_fill(NvDict *d);
+void nv_std_flow_fill(NvDict *d);
 // J3: إعلانات مسبقة — تعريف هذه الدوال في آخر الملف،
 // لكن تعبئة قوائم ونص (أسبق في الملف) تسجلها.
 static NvValue nv_std_lists_table(NvValue *args, int nargs, int line, int col);
@@ -162,14 +163,14 @@ static NvValue nv_std_text_split_words_all(NvValue *args, int nargs, int line, i
 
 // ---------- السجل ----------
 // وحدة أصلية بالاسم أو NULL (مؤشر إلى قيمة ساكنة مخزنة).
-static NvValue nv_std_modules[37];
-static const char *nv_std_names[37] = {
+static NvValue nv_std_modules[38];
+static const char *nv_std_names[38] = {
     "رياضيات", "عشوائي", "وقت", "شبكة", "عمليات", "ذاكرة",
     "ملفات", "نظام", "تواصل", "تشفير", "أمن", "غير_متزامن", "جهاز",
     "نمط", "جسون", "اكسمل", "يامال", "قوالب", "تحقق",
     "نص", "أسس", "وحدات", "أرشيف", "كلمة_مرور", "وهمي", "تقويم", "ألوان", "إيموجي",
     "قوائم", "علمي", "تمويل", "اكتواري", "إحصاء", "توزيعات",
-    "دوال", "تنفيذ", "بحث",
+    "دوال", "تنفيذ", "بحث", "تدفق",
 };
 static int nv_std_built = 0;
 
@@ -177,7 +178,7 @@ static void nv_std_build(void) {
     if (nv_std_built) return;
     nv_std_built = 1;
     nv_handle_set_finalizer(nv_std_handle_finalize);
-    for (int i = 0; i < 37; i++) {
+    for (int i = 0; i < 38; i++) {
         nv_std_modules[i] = nv_module_new(nv_std_names[i], NULL);
         NvDict *exports = nv_std_modules[i].u.module->exports;
         if (!exports) {
@@ -222,6 +223,7 @@ static void nv_std_build(void) {
             case 34: nv_std_funcs_fill(exports); break;
             case 35: nv_std_exec_fill(exports); break;
             case 36: nv_std_search_fill(exports); break;
+            case 37: nv_std_flow_fill(exports); break;
         }
         nv_add_global_root(nv_std_modules[i]);
     }
@@ -229,7 +231,7 @@ static void nv_std_build(void) {
 
 NvValue *nv_native_module(const char *name) {
     nv_std_build();
-    for (int i = 0; i < 37; i++) {
+    for (int i = 0; i < 38; i++) {
         if (strcmp(name, nv_std_names[i]) == 0) return &nv_std_modules[i];
     }
     return NULL;
@@ -7135,6 +7137,14 @@ typedef struct {
     int show_filename;
     int json;
     int color;
+    int include_hidden;
+    int respect_ignore;
+    int recursive;
+    const char *file_pattern;
+    const char *exclude_files;
+    const char *exclude_dirs;
+    const char *file_type;
+    const char *not_file_type;
     long long max_depth; // -1 بلا حد
 } SearchOptsC;
 
@@ -7155,6 +7165,57 @@ static long long search_need_count_c(const char *display, const char *key, NvVal
         nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الخيار %s لا يقبل عددا سالبا", display, key);
     }
     return n;
+}
+
+typedef struct {
+    char **items;
+    size_t len, cap;
+} SearchIgnoreC;
+
+typedef struct {
+    const char *name;
+    const char *exts[8];
+    int n;
+} SearchFileTypeC;
+
+/// إعلانات مسبقة لدفعة لينكس 2، موجة النص —
+/// تعريفاتها لاحقة في الملف: مترجم كروي وقارئ
+/// تجاهل ونوع ملف وقارئ stdin.
+static int search_glob_match_c(const char *glob, const char *name, int line, int col);
+static void search_ignore_read_c(const char *dir_fs, SearchIgnoreC *out, int line, int col);
+static int search_ignore_match_c(SearchIgnoreC *l, const char *rel, int line, int col);
+static size_t search_ignore_len_c(SearchIgnoreC *l);
+static void search_ignore_truncate_c(SearchIgnoreC *l, size_t n);
+static void search_ignore_free_c(SearchIgnoreC *l);
+static int search_file_ext_matches_c(const char *type, const char *ext, int line, int col);
+static const SearchFileTypeC *search_file_type_c(const char *name, int line, int col);
+static const char *search_need_text_c(const char *display, const char *key, NvValue v, int line, int col);
+static char *search_read_stdin_text_c(size_t *len_out, int line, int col);
+
+/// العمق الفعلي للمشي: تكراري كاذب ≡ أقصى_عمق 0
+/// (البند 97)؛ والتعارض مع أقصى_عمق صريح مرفوض
+/// عند تحليل الخيارات.
+static long long search_eff_max_depth_c(SearchOptsC *o) {
+    if (!o->recursive) return 0;
+    return o->max_depth;
+}
+
+/// امتداد ملف بعد خفض الحالة (ASCII)؛ وNULL بلا
+/// امتداد (بلا نقطة، أو نقطة أولى، أو نقطة أخيرة)
+/// — كما Path.extension في Rust.
+static char *search_file_ext_lower_c(const char *name, int line, int col) {
+    const char *dot = strrchr(name, '.');
+    if (!dot || dot == name || dot[1] == '\0') return NULL;
+    size_t n = strlen(dot + 1);
+    char *ext = (char *)malloc(n + 1);
+    if (!ext) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+    for (size_t i = 0; i < n; i++) {
+        char c = dot[1 + i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        ext[i] = c;
+    }
+    ext[n] = '\0';
+    return ext;
 }
 
 static void search_parse_opts_dict_c(const char *display, NvValue opts, SearchOptsC *o, int line, int col) {
@@ -7183,6 +7244,14 @@ static void search_parse_opts_dict_c(const char *display, NvValue opts, SearchOp
         else if (strcmp(key, "جسون") == 0) o->json = search_need_bool_c(display, key, v, line, col);
         else if (strcmp(key, "لوّن") == 0) o->color = search_need_bool_c(display, key, v, line, col);
         else if (strcmp(key, "أقصى_عمق") == 0) o->max_depth = search_need_count_c(display, key, v, line, col);
+        else if (strcmp(key, "أدرج_المخفية") == 0) o->include_hidden = search_need_bool_c(display, key, v, line, col);
+        else if (strcmp(key, "احترم_التجاهل") == 0) o->respect_ignore = search_need_bool_c(display, key, v, line, col);
+        else if (strcmp(key, "تكراري") == 0) o->recursive = search_need_bool_c(display, key, v, line, col);
+        else if (strcmp(key, "نمط_الملفات") == 0) o->file_pattern = search_need_text_c(display, key, v, line, col);
+        else if (strcmp(key, "استثن_ملفات") == 0) o->exclude_files = search_need_text_c(display, key, v, line, col);
+        else if (strcmp(key, "استثن_مجلدات") == 0) o->exclude_dirs = search_need_text_c(display, key, v, line, col);
+        else if (strcmp(key, "نوع_الملف") == 0) o->file_type = search_need_text_c(display, key, v, line, col);
+        else if (strcmp(key, "ليس_نوع_الملف") == 0) o->not_file_type = search_need_text_c(display, key, v, line, col);
         else {
             nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s خيار غير معروف: %s", display, key);
         }
@@ -7191,6 +7260,19 @@ static void search_parse_opts_dict_c(const char *display, NvValue opts, SearchOp
     if (ncase > 1) {
         nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s خيارات حالة متضاربة: اختر واحدا فقط من تجاهل_الحالة وحساسية_الحالة وحالة_ذكية", display);
     }
+    if (o->file_type && o->not_file_type) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s خيارات متضاربة: اختر واحدا فقط من نوع_الملف وليس_نوع_الملف", display);
+    }
+    if (!o->recursive && o->max_depth >= 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s خياران متضاربان: تكراري كاذب مع أقصى_عمق صريح", display);
+    }
+    // التحقق المبكر من الكروي ونوع الملف — فخطأ
+    // الخيار يظهر ولو كان المجلد فارغا.
+    if (o->file_pattern) (void)search_glob_match_c(o->file_pattern, "", line, col);
+    if (o->exclude_files) (void)search_glob_match_c(o->exclude_files, "", line, col);
+    if (o->exclude_dirs) (void)search_glob_match_c(o->exclude_dirs, "", line, col);
+    if (o->file_type) (void)search_file_type_c(o->file_type, line, col);
+    if (o->not_file_type) (void)search_file_type_c(o->not_file_type, line, col);
 }
 
 static void search_parse_opts_c(const char *display, NvValue *args, int nargs, int line, int col, SearchOptsC *o) {
@@ -7200,6 +7282,8 @@ static void search_parse_opts_c(const char *display, NvValue *args, int nargs, i
     o->after = -1;
     o->context = -1;
     o->max_depth = -1;
+    o->recursive = 1;
+    o->respect_ignore = 1;
     if (nargs < 2 || nargs > 3) {
         nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", display, nargs);
     }
@@ -7215,6 +7299,8 @@ static void search_parse_opts_4_c(const char *display, NvValue *args, int nargs,
     o->after = -1;
     o->context = -1;
     o->max_depth = -1;
+    o->recursive = 1;
+    o->respect_ignore = 1;
     if (nargs < 3 || nargs > 4) {
         nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع ثلاثة معاملات أو أربعة لكن أعطيت %d", display, nargs);
     }
@@ -7864,7 +7950,7 @@ static int search_name_cmp_c(const void *a, const void *b) {
 /// الرمزية تُتخطى؛ والمجلد الفرعي غير المقروء
 /// يُتخطى بصمت؛ والعمق 0 يعني ملفات المجلد الأعلى
 /// وحدها؛ والعمق السالب بلا حد.
-static void search_walk_dir_c(const char *dir_fs, const char *dir_display, long long depth, long long max_depth, SearchFileListC *out, int line, int col) {
+static void search_walk_dir_c(const char *dir_fs, const char *dir_display, long long depth, long long max_depth, SearchOptsC *o, SearchIgnoreC *ignore, SearchFileListC *out, int line, int col) {
     DIR *d = opendir(dir_fs);
     if (!d) return;
     char **names = NULL;
@@ -7895,6 +7981,12 @@ static void search_walk_dir_c(const char *dir_fs, const char *dir_display, long 
     }
     closedir(d);
     qsort(names, n, sizeof(char *), search_name_cmp_c);
+    // أنماط تجاهل هذا المجلد تنضم إلى الموروثة
+    // لشجرته، وتُسحب عند الخروج منه.
+    size_t base_len = search_ignore_len_c(ignore);
+    if (o->respect_ignore) {
+        search_ignore_read_c(dir_fs, ignore, line, col);
+    }
     for (size_t i = 0; i < n; i++) {
         size_t flen = strlen(dir_fs) + 1 + strlen(names[i]) + 1;
         char *child_fs = (char *)malloc(flen);
@@ -7911,11 +8003,43 @@ static void search_walk_dir_c(const char *dir_fs, const char *dir_display, long 
 #endif
             if (!is_link) {
                 if (S_ISDIR(st.st_mode)) {
-                    if (max_depth < 0 || depth < max_depth) {
-                        search_walk_dir_c(child_fs, child_disp, depth + 1, max_depth, out, line, col);
+                    int skip = 0;
+                    // المخفية (69): اسم يبدأ بنقطة.
+                    if (!o->include_hidden && names[i][0] == '.') skip = 1;
+                    // استثن_مجلدات (102): كروي على الاسم العاري مع تقليم النزول.
+                    if (!skip && o->exclude_dirs && search_glob_match_c(o->exclude_dirs, names[i], line, col)) skip = 1;
+                    // احترم_التجاهل (70): مجلد متجاهل لا يُنزَل إليه.
+                    if (!skip && o->respect_ignore && (search_ignore_match_c(ignore, child_disp, line, col) || search_ignore_match_c(ignore, names[i], line, col))) skip = 1;
+                    if (!skip && (max_depth < 0 || depth < max_depth)) {
+                        search_walk_dir_c(child_fs, child_disp, depth + 1, max_depth, o, ignore, out, line, col);
                     }
                 } else if (S_ISREG(st.st_mode)) {
-                    search_files_push_c(out, child_fs, child_disp, line, col);
+                    int skip = 0;
+                    // المخفية (69).
+                    if (!o->include_hidden && names[i][0] == '.') skip = 1;
+                    // احترم_التجاهل (70).
+                    if (!skip && o->respect_ignore && (search_ignore_match_c(ignore, child_disp, line, col) || search_ignore_match_c(ignore, names[i], line, col))) skip = 1;
+                    // نمط_الملفات (77): مسار العرض أو الاسم العاري.
+                    if (!skip && o->file_pattern && !search_glob_match_c(o->file_pattern, child_disp, line, col) && !search_glob_match_c(o->file_pattern, names[i], line, col)) skip = 1;
+                    // نوع_الملف (80) وليس_نوع_الملف (81):
+                    // مقارنة الامتداد بعد خفض الحالة.
+                    if (!skip && o->file_type) {
+                        char *ext = search_file_ext_lower_c(names[i], line, col);
+                        int ok = search_file_ext_matches_c(o->file_type, ext, line, col);
+                        free(ext);
+                        if (!ok) skip = 1;
+                    }
+                    if (!skip && o->not_file_type) {
+                        char *ext = search_file_ext_lower_c(names[i], line, col);
+                        int bad = search_file_ext_matches_c(o->not_file_type, ext, line, col);
+                        free(ext);
+                        if (bad) skip = 1;
+                    }
+                    // استثن_ملفات (101): كروي واحد على العرض أو العاري.
+                    if (!skip && o->exclude_files && (search_glob_match_c(o->exclude_files, child_disp, line, col) || search_glob_match_c(o->exclude_files, names[i], line, col))) skip = 1;
+                    if (!skip) {
+                        search_files_push_c(out, child_fs, child_disp, line, col);
+                    }
                 }
             }
         }
@@ -7924,6 +8048,7 @@ static void search_walk_dir_c(const char *dir_fs, const char *dir_display, long 
         free(names[i]);
     }
     free(names);
+    search_ignore_truncate_c(ignore, base_len);
 }
 
 /// قراءة ملف كاملا؛ NULL عند تعذر القراءة.
@@ -8022,7 +8147,10 @@ static NvValue search_files_impl_c(NvValue *args, int nargs, int want_match, con
     if (S_ISREG(st.st_mode)) {
         search_files_push_c(&list, resolved, path, line, col);
     } else if (S_ISDIR(st.st_mode)) {
-        search_walk_dir_c(resolved, base, 0, o.max_depth, &list, line, col);
+        SearchIgnoreC ignore;
+        memset(&ignore, 0, sizeof(ignore));
+        search_walk_dir_c(resolved, base, 0, search_eff_max_depth_c(&o), &o, &ignore, &list, line, col);
+        search_ignore_free_c(&ignore);
     } else {
         free(resolved);
         free(base);
@@ -8086,6 +8214,431 @@ static NvValue nv_std_search_files_with(NvValue *args, int nargs, int line, int 
 static NvValue nv_std_search_files_without(NvValue *args, int nargs, int line, int col) {
     return search_files_impl_c(args, nargs, 0, "بحث.ملفات_بلا_مطابقة", line, col);
 }
+
+// ---------- وحدة بحث: دفعة لينكس 2، مساعدات يدوية (H1) ----------
+// مرآة قسم Rust نفسه حرفيا (البنود 69 و70 و77 و80
+// و81 و85 و86 و89 و90 من §3): مترجم كروي إلى نص
+// نمط يجمّعه محرك النمط القائم (rx_full_match_c)؛
+// وقارئ تجاهل (`.ignore` ثم `.gitignore` في مجلد،
+// والغائب أو غير المقروء أو غير UTF-8 يُتجاهل
+// بصمت؛ والنفي `!` والمجلدات `/` البند 88 الأصفر
+// لا يُبنيان هنا)؛ وقارئ stdin (كل المدخل نصا،
+// وغير UTF-8 ← خطأ عربي)؛ وجدول أنواع الملفات
+// بالجدول نفسه حرفيا. و`search_glob_match_c`
+// و`search_ignore_read_c` و`search_ignore_match_c`
+// و`search_file_type_c` داخلية يستدعيها مولّد
+// الدفعة (G) في البحث في المجلدات — لا دالة
+// مستخدم لها بعد.
+
+// وضع ليّن للترجمة (قارئ التجاهل وحده): الخطأ
+// يضبط علما ويعود بدلا من القفزة الطويلة، فتُتخطى
+// الأنماط التالفة في الملف بصمت.
+static int search_glob_soft_c = 0;
+static int search_glob_failed_c = 0;
+
+static void search_glob_err_c(int line, int col) {
+    if (search_glob_soft_c) {
+        search_glob_failed_c = 1;
+        return;
+    }
+    nv_error(NV_ERR_RUNTIME, "نمط ملفات غير صالح", line, col);
+}
+
+/// أهرب محرفا حرفيا خارج فئة (للهروب `\` في
+/// الكروي وللمحارف الخاصة في النمط).
+static void search_glob_escape_literal_c(J14Buf *out, uint32_t c) {
+    switch (c) {
+        case '.': case '+': case '(': case ')': case '|':
+        case '^': case '$': case '*': case '?': case '[':
+        case ']': case '{': case '}': case '\\':
+            j14_buf_addc(out, '\\');
+            j14_buf_add_cp(out, c);
+            break;
+        default:
+            j14_buf_add_cp(out, c);
+            break;
+    }
+}
+
+/// محرف واحد داخل فئة (مع هروب محتمل): يقدّم
+/// `*i` ويعيد المحرف، و`*escaped` مهروب؟
+static uint32_t search_glob_class_char_c(uint32_t *chars, int n, int *i, int *escaped, int line, int col) {
+    if (*i >= n) search_glob_err_c(line, col);
+    if (search_glob_failed_c) return 0;
+    if (chars[*i] == '\\') {
+        if (*i + 1 >= n) search_glob_err_c(line, col);
+        if (search_glob_failed_c) return 0;
+        *escaped = 1;
+        uint32_t c = chars[*i + 1];
+        *i += 2;
+        return c;
+    }
+    *escaped = 0;
+    return chars[(*i)++];
+}
+
+/// أصدر محرفا داخل فئة نمط: المهروب الأبجدي
+/// حرفي بلا شرطة؛ و`]` و`^` حرفيان بشرطة.
+static void search_glob_class_emit_c(J14Buf *out, uint32_t c, int escaped) {
+    if (escaped) {
+        if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+            j14_buf_add_cp(out, c);
+        } else {
+            j14_buf_addc(out, '\\');
+            j14_buf_add_cp(out, c);
+        }
+    } else {
+        if (c == ']' || c == '^') {
+            j14_buf_addc(out, '\\');
+            j14_buf_add_cp(out, c);
+        } else {
+            j14_buf_add_cp(out, c);
+        }
+    }
+}
+
+/// فئة `[...]` بدءا من `[` (`*i` عندها): يقدّم
+/// `*i` إلى ما بعد `]` المغلقة.
+static void search_glob_class_c(uint32_t *chars, int n, int *i, J14Buf *out, int line, int col) {
+    int p = *i + 1;
+    j14_buf_addc(out, '[');
+    if (p < n && (chars[p] == '!' || chars[p] == '^')) {
+        j14_buf_addc(out, '^');
+        p++;
+    }
+    int first = 1;
+    for (;;) {
+        if (p >= n) search_glob_err_c(line, col);
+        if (search_glob_failed_c) { *i = p; return; }
+        if (chars[p] == ']' && !first) {
+            j14_buf_addc(out, ']');
+            *i = p + 1;
+            return;
+        }
+        first = 0;
+        int lo_esc = 0;
+        uint32_t lo = search_glob_class_char_c(chars, n, &p, &lo_esc, line, col);
+        if (search_glob_failed_c) { *i = p; return; }
+        // مدى `س-ص` (لا `-` أخيرة ولا `-` قبل `]`).
+        if (p < n && chars[p] == '-' && p + 1 < n && chars[p + 1] != ']') {
+            p++;
+            int hi_esc = 0;
+            uint32_t hi = search_glob_class_char_c(chars, n, &p, &hi_esc, line, col);
+            if (search_glob_failed_c) { *i = p; return; }
+            if (hi < lo) search_glob_err_c(line, col);
+            if (search_glob_failed_c) { *i = p; return; }
+            search_glob_class_emit_c(out, lo, lo_esc);
+            j14_buf_addc(out, '-');
+            search_glob_class_emit_c(out, hi, hi_esc);
+        } else {
+            search_glob_class_emit_c(out, lo, lo_esc);
+        }
+    }
+}
+
+static void search_glob_translate_c(uint32_t *chars, int n, int in_brace, J14Buf *out, int line, int col);
+
+/// بدائل `{a,b}` بدءا من `{` (`*i` عندها): بلا
+/// تداخل؛ والفاصلة داخل فئة لا تقسم.
+static void search_glob_braces_c(uint32_t *chars, int n, int *i, J14Buf *out, int line, int col) {
+    int j = *i + 1;
+    for (;;) {
+        if (j >= n) search_glob_err_c(line, col);
+        if (chars[j] == '{') search_glob_err_c(line, col);
+        if (chars[j] == '}') break;
+        j++;
+    }
+    if (search_glob_failed_c) { *i = j; return; }
+    // قسّم المحتوى على الفاصلة خارج الفئات وحدها.
+    j14_buf_add(out, "(?:");
+    int astart = *i + 1;
+    int k = astart;
+    int in_class = 0;
+    int class_first = 0;
+    int first_alt = 1;
+    int end = *i + 1;
+    while (end < n && chars[end] != '}') end++;
+    while (k < end) {
+        uint32_t c = chars[k];
+        if (in_class) {
+            if (c == '\\') {
+                k += 2;
+                continue;
+            }
+            if ((c == '!' || c == '^') && class_first) {
+                k++;
+                continue;
+            }
+            if (c == ']' && !class_first) in_class = 0;
+            class_first = 0;
+            k++;
+            continue;
+        }
+        if (c == '[') {
+            in_class = 1;
+            class_first = 1;
+            k++;
+        } else if (c == ',') {
+            if (!first_alt) j14_buf_addc(out, '|');
+            first_alt = 0;
+            search_glob_translate_c(chars + astart, k - astart, 1, out, line, col);
+            if (search_glob_failed_c) { *i = end + 1; return; }
+            astart = k + 1;
+            k++;
+        } else {
+            k++;
+        }
+    }
+    if (!first_alt) j14_buf_addc(out, '|');
+    search_glob_translate_c(chars + astart, end - astart, 1, out, line, col);
+    if (search_glob_failed_c) { *i = end + 1; return; }
+    j14_buf_addc(out, ')');
+    *i = end + 1;
+}
+
+/// ترجمة مقطع كروي إلى نص نمط؛ و`in_brace`
+/// صحيحا داخل بديل (فـ`{` ثانية خطأ).
+static void search_glob_translate_c(uint32_t *chars, int n, int in_brace, J14Buf *out, int line, int col) {
+    int i = 0;
+    while (i < n) {
+        uint32_t c = chars[i];
+        if (c == '*') {
+            if (i + 1 < n && chars[i + 1] == '*') {
+                if (i + 2 < n && chars[i + 2] == '/') {
+                    j14_buf_add(out, "(.*/)?");
+                    i += 3;
+                } else {
+                    j14_buf_add(out, ".*");
+                    i += 2;
+                }
+            } else {
+                j14_buf_add(out, "[^/]*");
+                i += 1;
+            }
+        } else if (c == '?') {
+            j14_buf_add(out, "[^/]");
+            i += 1;
+        } else if (c == '[') {
+            search_glob_class_c(chars, n, &i, out, line, col);
+            if (search_glob_failed_c) return;
+        } else if (c == '{') {
+            if (in_brace) search_glob_err_c(line, col);
+            if (search_glob_failed_c) return;
+            search_glob_braces_c(chars, n, &i, out, line, col);
+            if (search_glob_failed_c) return;
+        } else if (c == '}') {
+            j14_buf_add(out, "\\}");
+            i += 1;
+        } else if (c == '\\') {
+            if (i + 1 >= n) search_glob_err_c(line, col);
+            if (search_glob_failed_c) return;
+            search_glob_escape_literal_c(out, chars[i + 1]);
+            i += 2;
+        } else if (c == '/') {
+            if (i + 1 < n && chars[i + 1] == '*' && i + 2 < n && chars[i + 2] == '*' && i + 3 == n) {
+                j14_buf_add(out, "(/.*)?");
+                i += 3;
+            } else {
+                j14_buf_addc(out, '/');
+                i += 1;
+            }
+        } else if (c == '.' || c == '+' || c == '(' || c == ')' || c == '|' || c == '^' || c == '$') {
+            j14_buf_addc(out, '\\');
+            j14_buf_add_cp(out, c);
+            i += 1;
+        } else {
+            j14_buf_add_cp(out, c);
+            i += 1;
+        }
+    }
+}
+
+/// ترجم نمطا كرويا كاملا إلى نص نمط (مملوك،
+/// يحرره المتصل).
+static char *search_glob_to_regex_c(const char *glob, int line, int col) {
+    size_t plen = strlen(glob);
+    size_t nchars = 0;
+    size_t *offs = NULL;
+    uint32_t *chars = j14_decode_all(glob, plen, &nchars, &offs);
+    if (nchars > RX_MAX_PATTERN) {
+        free(chars);
+        free(offs);
+        if (search_glob_soft_c) { search_glob_failed_c = 1; return NULL; }
+        search_glob_err_c(line, col);
+    }
+    J14Buf out;
+    j14_buf_init(&out);
+    search_glob_translate_c(chars, (int)nchars, 0, &out, line, col);
+    free(chars);
+    free(offs);
+    if (search_glob_failed_c) { j14_buf_free(&out); return NULL; }
+    if (nv_utf8_chars(out.data, out.len) > RX_MAX_PATTERN) {
+        j14_buf_free(&out);
+        if (search_glob_soft_c) { search_glob_failed_c = 1; return NULL; }
+        search_glob_err_c(line, col);
+    }
+    j14_buf_reserve(&out, 1);
+    out.data[out.len] = '\0';
+    return out.data;
+}
+
+/// ترجمة ليّنة: NULL عند نمط غير صالح (لا خطأ).
+static char *search_glob_to_regex_soft_c(const char *glob, int line, int col) {
+    search_glob_soft_c = 1;
+    search_glob_failed_c = 0;
+    char *r = search_glob_to_regex_c(glob, line, col);
+    search_glob_soft_c = 0;
+    return r;
+}
+
+/// هل يطابق الاسم النمط الكروي؟ (مطابقة كاملة
+/// بمحرك النمط نفسه.)
+static int search_glob_match_c(const char *glob, const char *name, int line, int col) {
+    char *regex = search_glob_to_regex_c(glob, line, col);
+    int found = rx_full_match_c(regex, name, line, col);
+    free(regex);
+    return found;
+}
+
+static NvValue nv_std_search_glob_match(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("بحث.نمط_ملفات", args, nargs, 2, line, col);
+    const char *glob = nv_std_need_string("بحث.نمط_ملفات", args[0], line, col);
+    const char *name = nv_std_need_string("بحث.نمط_ملفات", args[1], line, col);
+    return nv_bool(search_glob_match_c(glob, name, line, col));
+}
+
+
+static void search_ignore_push_c(SearchIgnoreC *l, const char *pat, int line, int col) {
+    if (l->len >= l->cap) {
+        size_t ncap = l->cap == 0 ? 16 : l->cap * 2;
+        char **grown = (char **)realloc(l->items, ncap * sizeof(char *));
+        if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+        l->items = grown;
+        l->cap = ncap;
+    }
+    l->items[l->len] = strdup(pat);
+    if (!l->items[l->len]) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+    l->len++;
+}
+
+/// أنماط التجاهل في مجلد: سطور `.ignore` ثم
+/// `.gitignore` (فارغ وتعليق `#` يُتخطى، ومسافة
+/// أخيرة تُقلم)؛ والغائب أو غير المقروء أو غير
+/// UTF-8 يُتجاهل بصمت.
+static void __attribute__((unused)) search_ignore_read_c(const char *dir_fs, SearchIgnoreC *out, int line, int col) {
+    static const char *names[2] = {".ignore", ".gitignore"};
+    for (int f = 0; f < 2; f++) {
+        size_t plen = strlen(dir_fs) + 1 + strlen(names[f]) + 1;
+        char *path = (char *)malloc(plen);
+        if (!path) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+        snprintf(path, plen, "%s/%s", dir_fs, names[f]);
+        size_t len = 0;
+        char *content = search_read_file_c(path, &len);
+        free(path);
+        if (!content) continue;
+        if (!nv_std_file_valid_utf8((const unsigned char *)content, len)) {
+            free(content);
+            continue;
+        }
+        size_t pos = 0;
+        while (pos < len) {
+            size_t eol = pos;
+            while (eol < len && content[eol] != '\n') eol++;
+            size_t e = eol;
+            while (e > pos && (content[e - 1] == '\r' || content[e - 1] == ' ' || content[e - 1] == '\t')) e--;
+            if (e > pos && content[pos] != '#') {
+                char save = content[e];
+                content[e] = '\0';
+                search_ignore_push_c(out, content + pos, line, col);
+                content[e] = save;
+            }
+            pos = eol + 1;
+        }
+        free(content);
+    }
+}
+
+/// هل يطابق الاسم النسبي (بشرطات مائلة) أي نمط
+/// تجاهل؟ والنمط التالف في الملف يُتخطى بصمت.
+static int __attribute__((unused)) search_ignore_match_c(SearchIgnoreC *l, const char *rel, int line, int col) {
+    for (size_t i = 0; i < l->len; i++) {
+        // نمط تالف في الملف يُتخطى بصمت (ترجمة ليّنة).
+        char *regex = search_glob_to_regex_soft_c(l->items[i], line, col);
+        if (!regex) continue;
+        int found = rx_full_match_c(regex, rel, line, col);
+        free(regex);
+        if (found) return 1;
+    }
+    return 0;
+}
+
+static void __attribute__((unused)) search_ignore_free_c(SearchIgnoreC *l) {
+    for (size_t i = 0; i < l->len; i++) free(l->items[i]);
+    free(l->items);
+    l->items = NULL;
+    l->len = l->cap = 0;
+}
+/// طول قائمة التجاهل (لقطع الموروثة عند الخروج
+/// من مجلد فرعي).
+static size_t search_ignore_len_c(SearchIgnoreC *l) {
+    return l->len;
+}
+
+/// اقطع قائمة التجاهل إلى الطول المعطى (وتحرير
+/// الزائد).
+static void search_ignore_truncate_c(SearchIgnoreC *l, size_t n) {
+    for (size_t i = n; i < l->len; i++) free(l->items[i]);
+    l->len = n;
+}
+
+
+/// اقرأ كل المدخل القياسي نصا حتى EOF؛ والفارغ
+/// ← نص فارغ؛ وغير UTF-8 ← خطأ عربي؛ والحد
+/// مليون محرف.
+static NvValue nv_std_search_read_stdin(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("بحث.اقرأ_المدخل", args, nargs, 0, line, col);
+    size_t len = 0;
+    char *text = search_read_stdin_text_c(&len, line, col);
+    NvValue v = nv_str_new(text, len);
+    free(text);
+    return v;
+}
+
+/// جدول أنواع الملفات (الاسم ← الامتدادات) —
+/// بالجدول نفسه حرفيا في Rust.
+
+static const SearchFileTypeC SEARCH_FILE_TYPES_C[] __attribute__((unused)) = {
+    {"نيفا", {"niva"}, 1},
+    {"نص", {"txt", "md", "text", "log"}, 4},
+    {"سي", {"c", "h"}, 2},
+    {"بايثون", {"py"}, 1},
+    {"جافا", {"java"}, 1},
+    {"جافاسكربت", {"js"}, 1},
+    {"رست", {"rs"}, 1},
+};
+
+/// صف نوع ملف بالاسم؛ والمجهول ← خطأ عربي
+/// يسرد الأنواع المعروفة.
+__attribute__((unused)) static const SearchFileTypeC *search_file_type_c(const char *name, int line, int col) {
+    size_t n = sizeof(SEARCH_FILE_TYPES_C) / sizeof(SEARCH_FILE_TYPES_C[0]);
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(SEARCH_FILE_TYPES_C[i].name, name) == 0) return &SEARCH_FILE_TYPES_C[i];
+    }
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "نوع ملف غير معروف: %s (الأنواع المعروفة: نيفا، نص، سي، بايثون، جافا، جافاسكربت، رست)", name);
+    return NULL;
+}
+/// هل امتداد الملف (بعد خفض الحالة، أو NULL بلا
+/// امتداد) من امتدادات نوع الملف المعطى؟ والنوع
+/// المجهول ← خطأ عربي (كما search_file_type_c).
+static int search_file_ext_matches_c(const char *type, const char *ext, int line, int col) {
+    const SearchFileTypeC *t = search_file_type_c(type, line, col);
+    if (!ext) return 0;
+    for (int i = 0; i < t->n; i++) {
+        if (strcmp(t->exts[i], ext) == 0) return 1;
+    }
+    return 0;
+}
+
 
 typedef struct {
     NvValue v;
@@ -8210,11 +8763,421 @@ static NvValue nv_std_search_sort(NvValue *args, int nargs, int line, int col) {
     return out;
 }
 
-static const char SEARCH_HELP_C[] = "بحث — البحث في النصوص والملفات.\nالدوال: ابحث_بنمط(نص، نمط، خيارات؟)؛ ابحث_بنص_ثابت(نص، نص_ثابت، خيارات؟)؛ عد_المطابقات(نص، نمط، خيارات؟)؛ عد_كل_المطابقات(نص، نمط، خيارات؟)؛ المطابق_فقط(نص، نمط، خيارات؟)؛ استبدل_معاينة(نص، نمط، بديل، خيارات؟)؛ ملفات_فيها(مسار، نمط، خيارات؟)؛ ملفات_بلا_مطابقة(مسار، نمط، خيارات؟)؛ رتب_النتائج(نتائج، اتجاه؟)؛ أنماط_من_ملف(مسار)؛ مساعدة().\nالخيارات: تجاهل_الحالة وحساسية_الحالة وحالة_ذكية وكلمة_كاملة وسطر_كامل واعكس_المطابقة وأقصى_مطابقات وعمود_المطابقة ورقم_السطر وسياق_قبل وسياق_بعد وسياق وقلم_النتائج وصامت وأظهر_اسم_الملف وجسون ولوّن وأقصى_عمق.\nاتجاه رتب_النتائج: «تصاعدي» أو «تنازلي» والافتراضي «تصاعدي».\nأقصى_عمق 0 يعني المجلد الأعلى وحده؛ ولوّن يغلّف المطابق بالأحمر؛ والملفات الثنائية أو غير المقروءة تُتخطى.";
+static const char SEARCH_HELP_C[] = "بحث — البحث في النصوص والملفات.\nالدوال: ابحث_بنمط(نص، نمط، خيارات؟)؛ ابحث_بنص_ثابت(نص، نص_ثابت، خيارات؟)؛ عد_المطابقات(نص، نمط، خيارات؟)؛ عد_كل_المطابقات(نص، نمط، خيارات؟)؛ المطابق_فقط(نص، نمط، خيارات؟)؛ استبدل_معاينة(نص، نمط، بديل، خيارات؟)؛ ملفات_فيها(مسار، نمط، خيارات؟)؛ ملفات_بلا_مطابقة(مسار، نمط، خيارات؟)؛ رتب_النتائج(نتائج، اتجاه؟)؛ أنماط_من_ملف(مسار)؛ نمط_ملفات(نمط، اسم)؛ اقرأ_المدخل()؛ ابحث_في_مجلدات(قائمة_مسارات، نمط، خيارات؟)؛ ابحث_في_المدخل(نمط، خيارات؟)؛ ابحث_بأنماط(نص، قائمة_أنماط، خيارات؟)؛ مساعدة().\nالخيارات: تجاهل_الحالة وحساسية_الحالة وحالة_ذكية وكلمة_كاملة وسطر_كامل واعكس_المطابقة وأقصى_مطابقات وعمود_المطابقة ورقم_السطر وسياق_قبل وسياق_بعد وسياق وقلم_النتائج وصامت وأظهر_اسم_الملف وجسون ولوّن وأقصى_عمق وأدرج_المخفية واحترم_التجاهل ونمط_الملفات ونوع_الملف وليس_نوع_الملف وتكراري واستثن_ملفات واستثن_مجلدات.\nاتجاه رتب_النتائج: «تصاعدي» أو «تنازلي» والافتراضي «تصاعدي».\nأقصى_عمق 0 يعني المجلد الأعلى وحده؛ ولوّن يغلّف المطابق بالأحمر؛ والملفات الثنائية أو غير المقروءة تُتخطى.";
 
 static NvValue nv_std_search_help(NvValue *args, int nargs, int line, int col) {
     nv_std_need_args("بحث.مساعدة", args, nargs, 0, line, col);
     return nv_str_cstr(SEARCH_HELP_C);
+}
+
+/// خيار نصي في قاموس خيارات بحث: نص لا منطقي.
+static const char *search_need_text_c(const char *display, const char *key, NvValue v, int line, int col) {
+    if (v.tag != NV_STR) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا للخيار %s لكن أعطيت %s", display, key, nv_type_name(v));
+    }
+    return v.u.str->data;
+}
+
+/// اقرأ كل المدخل القياسي نصا حتى EOF؛ والفارغ
+/// ← نص فارغ؛ وغير UTF-8 ← خطأ عربي؛ والحد
+/// مليون محرف. (مملوك، يحرره المتصل؛ والطول في
+/// `*len_out`.)
+static char *search_read_stdin_text_c(size_t *len_out, int line, int col) {
+    char *buf = NULL;
+    size_t len = 0, cap = 0;
+    for (;;) {
+        char chunk[4096];
+        size_t m = fread(chunk, 1, sizeof(chunk), stdin);
+        if (m == 0) break;
+        if (len + m + 1 > cap) {
+            size_t ncap = cap == 0 ? 8192 : cap * 2;
+            while (ncap < len + m + 1) ncap *= 2;
+            char *grown = (char *)realloc(buf, ncap);
+            if (!grown) {
+                free(buf);
+                nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+            }
+            buf = grown;
+            cap = ncap;
+        }
+        memcpy(buf + len, chunk, m);
+        len += m;
+    }
+    if (!buf) {
+        buf = strdup("");
+        len = 0;
+    }
+    buf[len] = '\0';
+    if (!nv_std_file_valid_utf8((const unsigned char *)buf, len)) {
+        free(buf);
+        nv_error(NV_ERR_RUNTIME, "المدخل القياسي ليس نص UTF-8 صالحا", line, col);
+    }
+    if (nv_utf8_chars(buf, len) > RX_MAX_TEXT) {
+        free(buf);
+        nv_error(NV_ERR_RUNTIME, "النص كبير جدا", line, col);
+    }
+    *len_out = len;
+    return buf;
+}
+
+/// اجمع مطابقات ملف واحد في قائمة سجلات مشتركة
+/// (كل سجل {ملف، سطر، رقم_السطر، ...} — والملف
+/// أولا)؛ و`*count` عدّاد إجمالي لأقصى_مطابقات
+/// عبر الملفات. (مرآة حلقة search_run_c نفسها.)
+static void search_collect_file_hits_c(const char *display, const char *text, const char *pattern, SearchOptsC *o, const char *file, NvValue out, long long *count, int line, int col) {
+    SearchCompiledC sc;
+    search_compile_c(text, 1, pattern, o, line, col, &sc);
+    uint32_t *chars = sc.chars;
+    size_t *offs = sc.offs;
+    int total = (int)sc.n;
+    int *ls_arr = NULL, *le_arr = NULL;
+    int nlines = 0, lcap = 0;
+    {
+        int pos = 0;
+        while (pos < total) {
+            int ls = pos;
+            int le = total;
+            int next = total + 1;
+            for (int i = pos; i < total; i++) {
+                if (chars[i] == '\n') {
+                    le = i;
+                    next = i + 1;
+                    break;
+                }
+            }
+            if (le > ls && chars[le - 1] == '\r') le--;
+            if (nlines >= lcap) {
+                int ncap = lcap == 0 ? 16 : lcap * 2;
+                int *nls = (int *)realloc(ls_arr, (size_t)ncap * sizeof(int));
+                int *nle = (int *)realloc(le_arr, (size_t)ncap * sizeof(int));
+                if (!nls || !nle) {
+                    free(ls_arr);
+                    free(le_arr);
+                    search_compiled_free_c(&sc);
+                    nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                }
+                ls_arr = nls;
+                le_arr = nle;
+                lcap = ncap;
+            }
+            ls_arr[nlines] = ls;
+            le_arr[nlines] = le;
+            nlines++;
+            if (next > total) break;
+            pos = next;
+        }
+    }
+    long long ctx_b = 0, ctx_a = 0;
+    search_eff_context_c(o, &ctx_b, &ctx_a);
+    for (int idx = 0; idx < nlines; idx++) {
+        if (o->max_count >= 0 && *count >= o->max_count) break;
+        int ls = ls_arr[idx], le = le_arr[idx];
+        int llen = le - ls;
+        int *ss = NULL, *ee = NULL;
+        int nmatch = search_line_all_c(&sc, o, 1, chars + ls, llen, &ss, &ee, line, col);
+        int has = nmatch > 0;
+        if (has != o->invert) {
+            (*count)++;
+            int ds = ls, de = le;
+            if (o->trim) search_trim_span_c(chars, ls, le, &ds, &de);
+            int s = 0, e = 0;
+            int has_span = 0;
+            if (!o->invert && nmatch > 0) {
+                s = ss[0];
+                e = ee[0];
+                has_span = 1;
+            }
+            int cs = 0, ce = 0;
+            int has_cspan = 0;
+            if (o->color && !o->invert && nmatch > 0) {
+                int *css = NULL, *cee = NULL;
+                int cn = search_line_all_c(&sc, o, 1, chars + ds, de - ds, &css, &cee, line, col);
+                if (cn > 0) {
+                    cs = css[0];
+                    ce = cee[0];
+                    has_cspan = 1;
+                }
+                free(css);
+                free(cee);
+            }
+            NvValue line_val;
+            if (o->color && has_cspan) {
+                line_val = search_color_line_c(text, offs, ds, de, cs, ce);
+            } else {
+                line_val = rx_slice_str(text, offs, ds, de);
+            }
+            size_t didx = nv_root_push_idx();
+            NvValue rec = nv_dict_new();
+            *nv_root_slot(didx) = rec;
+            nv_dict_set_raw(rec.u.dict, "ملف", nv_str_cstr(file));
+            nv_dict_set_raw(rec.u.dict, "سطر", line_val);
+            nv_dict_set_raw(rec.u.dict, "رقم_السطر", nv_num((double)(idx + 1)));
+            if (o->column) {
+                nv_dict_set_raw(rec.u.dict, "عمود", nv_num((double)(has_span ? s + 1 : 1)));
+            }
+            if (o->invert) {
+                nv_dict_set_raw(rec.u.dict, "نص_مطابق", nv_str_cstr(""));
+            } else if (has_span) {
+                nv_dict_set_raw(rec.u.dict, "نص_مطابق", rx_slice_str(text, offs, ls + s, ls + e));
+            } else {
+                nv_dict_set_raw(rec.u.dict, "نص_مطابق", nv_str_cstr(""));
+            }
+            if (search_has_context_c(o)) {
+                size_t bidx = nv_root_push_idx();
+                NvValue before = nv_list_new();
+                *nv_root_slot(bidx) = before;
+                int bfrom = idx - (int)ctx_b;
+                if (bfrom < 0) bfrom = 0;
+                for (int j = bfrom; j < idx; j++) {
+                    int cds = ls_arr[j], cde = le_arr[j];
+                    if (o->trim) search_trim_span_c(chars, ls_arr[j], le_arr[j], &cds, &cde);
+                    nv_list_push_raw(before.u.list, rx_slice_str(text, offs, cds, cde));
+                }
+                nv_dict_set_raw(rec.u.dict, "قبل", before);
+                nv_root_pop();
+                size_t aidx = nv_root_push_idx();
+                NvValue after = nv_list_new();
+                *nv_root_slot(aidx) = after;
+                int ato = idx + 1 + (int)ctx_a;
+                if (ato > nlines) ato = nlines;
+                for (int j = idx + 1; j < ato; j++) {
+                    int cds = ls_arr[j], cde = le_arr[j];
+                    if (o->trim) search_trim_span_c(chars, ls_arr[j], le_arr[j], &cds, &cde);
+                    nv_list_push_raw(after.u.list, rx_slice_str(text, offs, cds, cde));
+                }
+                nv_dict_set_raw(rec.u.dict, "بعد", after);
+                nv_root_pop();
+            }
+            nv_list_push_raw(out.u.list, rec);
+            nv_root_pop();
+        }
+        free(ss);
+        free(ee);
+    }
+    free(ls_arr);
+    free(le_arr);
+    search_compiled_free_c(&sc);
+}
+
+/// بحث.ابحث_في_مجلدات(قائمة_مسارات، نمط، خيارات؟)
+/// — البند 85 (مرآة Rust حرفيا).
+static NvValue nv_std_search_in_dirs(NvValue *args, int nargs, int line, int col) {
+    const char *display = "بحث.ابحث_في_مجلدات";
+    SearchOptsC o;
+    search_parse_opts_c(display, args, nargs, line, col, &o);
+    if (args[0].tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة مسارات لكن أعطيت %s", display, nv_type_name(args[0]));
+    }
+    const char *pattern = nv_std_need_string(display, args[1], line, col);
+    // التحقق من النمط أولا.
+    (void)search_text_has_match_c("", pattern, &o, line, col);
+    NvList *roots = args[0].u.list;
+    SearchFileListC list;
+    memset(&list, 0, sizeof(list));
+    for (size_t r = 0; r < roots->len; r++) {
+        NvValue rv = roots->items[r];
+        if (rv.tag != NV_STR) {
+            for (size_t i = 0; i < list.len; i++) { free(list.fs[i]); free(list.disp[i]); }
+            free(list.fs);
+            free(list.disp);
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة مسارات لكن أعطيت %s", display, nv_type_name(rv));
+        }
+        const char *path = rv.u.str->data;
+        char *resolved = nv_resolve_path(path, line, col);
+        struct stat st;
+        if (nv_lstat(resolved, &st) != 0) {
+            free(resolved);
+            for (size_t i = 0; i < list.len; i++) { free(list.fs[i]); free(list.disp[i]); }
+            free(list.fs);
+            free(list.disp);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "المسار غير موجود: %s", path);
+        }
+        char *base = strdup(path);
+        size_t plen = strlen(base);
+        while (plen > 0 && base[plen - 1] == '/') base[--plen] = '\0';
+        if (strcmp(base, ".") == 0) base[0] = '\0';
+        if (S_ISREG(st.st_mode)) {
+            search_files_push_c(&list, resolved, path, line, col);
+        } else if (S_ISDIR(st.st_mode)) {
+            SearchIgnoreC ignore;
+            memset(&ignore, 0, sizeof(ignore));
+            search_walk_dir_c(resolved, base, 0, search_eff_max_depth_c(&o), &o, &ignore, &list, line, col);
+            search_ignore_free_c(&ignore);
+        } else {
+            free(resolved);
+            free(base);
+            for (size_t i = 0; i < list.len; i++) { free(list.fs[i]); free(list.disp[i]); }
+            free(list.fs);
+            free(list.disp);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "المسار غير موجود: %s", path);
+        }
+        free(resolved);
+        free(base);
+    }
+    // فرز القائمة بالمسار المعروض (إدخال مستقر).
+    for (size_t i = 1; i < list.len; i++) {
+        char *kfs = list.fs[i];
+        char *kd = list.disp[i];
+        size_t j = i;
+        while (j > 0 && strcmp(list.disp[j - 1], kd) > 0) {
+            list.fs[j] = list.fs[j - 1];
+            list.disp[j] = list.disp[j - 1];
+            j--;
+        }
+        list.fs[j] = kfs;
+        list.disp[j] = kd;
+    }
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    long long count = 0;
+    for (size_t i = 0; i < list.len; i++) {
+        size_t flen = 0;
+        char *content = search_read_file_c(list.fs[i], &flen);
+        if (content) {
+            // الثنائي (بايت صفر أو ليس UTF-8 صالحا)
+            // وغير المقروء يُتخطى من القائمتين معا.
+            if (!memchr(content, '\0', flen) && nv_std_file_valid_utf8((const unsigned char *)content, flen)) {
+                search_collect_file_hits_c(display, content, pattern, &o, list.disp[i], out, &count, line, col);
+            }
+            free(content);
+        }
+        free(list.fs[i]);
+        free(list.disp[i]);
+        if (o.max_count >= 0 && count >= o.max_count) {
+            for (size_t j = i + 1; j < list.len; j++) { free(list.fs[j]); free(list.disp[j]); }
+            break;
+        }
+    }
+    free(list.fs);
+    free(list.disp);
+    NvValue result;
+    if (o.quiet) {
+        result = search_maybe_json_c(nv_bool(count > 0), &o, display, line, col);
+    } else {
+        result = search_maybe_json_c(out, &o, display, line, col);
+    }
+    nv_root_pop();
+    return result;
+}
+
+/// بحث.ابحث_في_المدخل(نمط، خيارات؟) — البند 86
+/// (مرآة Rust حرفيا).
+static NvValue nv_std_search_in_stdin(NvValue *args, int nargs, int line, int col) {
+    const char *display = "بحث.ابحث_في_المدخل";
+    if (nargs < 1 || nargs > 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", display, nargs);
+    }
+    SearchOptsC o;
+    memset(&o, 0, sizeof(o));
+    o.max_count = -1;
+    o.before = -1;
+    o.after = -1;
+    o.context = -1;
+    o.max_depth = -1;
+    o.recursive = 1;
+    o.respect_ignore = 1;
+    if (nargs == 2) {
+        search_parse_opts_dict_c(display, args[1], &o, line, col);
+    }
+    const char *pattern = nv_std_need_string(display, args[0], line, col);
+    size_t len = 0;
+    char *text = search_read_stdin_text_c(&len, line, col);
+    NvValue result = search_run_c(display, text, 1, pattern, &o, line, col);
+    free(text);
+    return result;
+}
+
+/// بحث.ابحث_بأنماط(نص، قائمة_أنماط، خيارات؟) —
+/// البند 114 (مرآة Rust حرفيا): اتحاد الأسطر بلا
+/// تكرار مرتبة برقم السطر؛ وكل نمط يُشغَّل بصيغة
+/// سجلات قسرا لاستخراج رقم_السطر، والعرض النهائي
+/// حسب الخيارات الأصلية.
+static NvValue nv_std_search_in_patterns(NvValue *args, int nargs, int line, int col) {
+    const char *display = "بحث.ابحث_بأنماط";
+    SearchOptsC o;
+    search_parse_opts_c(display, args, nargs, line, col, &o);
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    if (args[1].tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة أنماط لكن أعطيت %s", display, nv_type_name(args[1]));
+    }
+    NvList *pats = args[1].u.list;
+    SearchOptsC o2 = o;
+    o2.quiet = 0;
+    o2.json = 0;
+    o2.max_count = -1;
+    o2.line_number = 1;
+    size_t ridx = nv_root_push_idx();
+    NvValue kept = nv_list_new();
+    *nv_root_slot(ridx) = kept;
+    for (size_t p = 0; p < pats->len; p++) {
+        NvValue pat = pats->items[p];
+        if (pat.tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا للنمط لكن أعطيت %s", display, nv_type_name(pat));
+        }
+        NvValue res = search_run_c(display, text, 1, pat.u.str->data, &o2, line, col);
+        size_t pidx = nv_root_push_idx();
+        *nv_root_slot(pidx) = res;
+        NvList *items = res.u.list;
+        for (size_t i = 0; i < items->len; i++) {
+            NvValue rec = items->items[i];
+            int li = nv_dict_find(rec.u.dict, "رقم_السطر");
+            if (li < 0) continue;
+            NvValue nv = rec.u.dict->entries[li].val;
+            if (nv.tag != NV_NUM) continue;
+            long long no = (long long)nv.u.num;
+            int seen = 0;
+            for (size_t k = 0; k < kept.u.list->len; k++) {
+                NvValue kr = kept.u.list->items[k];
+                int ki = nv_dict_find(kr.u.dict, "رقم_السطر");
+                if (ki >= 0 && (long long)kr.u.dict->entries[ki].val.u.num == no) { seen = 1; break; }
+            }
+            if (!seen) nv_list_push_raw(kept.u.list, rec);
+        }
+        nv_root_pop();
+    }
+    // فرز مستقر برقم_السطر.
+    NvList *kl = kept.u.list;
+    for (size_t i = 1; i < kl->len; i++) {
+        NvValue key = kl->items[i];
+        int ki = nv_dict_find(key.u.dict, "رقم_السطر");
+        long long kn = (long long)key.u.dict->entries[ki].val.u.num;
+        size_t j = i;
+        while (j > 0) {
+            NvValue prev = kl->items[j - 1];
+            int pi = nv_dict_find(prev.u.dict, "رقم_السطر");
+            long long pn = (long long)prev.u.dict->entries[pi].val.u.num;
+            if (pn <= kn) break;
+            kl->items[j] = prev;
+            j--;
+        }
+        kl->items[j] = key;
+    }
+    long long total = (long long)kl->len;
+    if (o.max_count >= 0 && total > o.max_count) total = o.max_count;
+    NvValue result;
+    if (o.quiet) {
+        result = search_maybe_json_c(nv_bool(total > 0), &o, display, line, col);
+        nv_root_pop();
+        return result;
+    }
+    size_t fidx = nv_root_push_idx();
+    NvValue final = nv_list_new();
+    *nv_root_slot(fidx) = final;
+    int record_form = search_record_form_c(&o);
+    for (long long i = 0; i < total; i++) {
+        NvValue rec = kl->items[i];
+        if (record_form) {
+            nv_list_push_raw(final.u.list, rec);
+        } else {
+            int si = nv_dict_find(rec.u.dict, "سطر");
+            nv_list_push_raw(final.u.list, rec.u.dict->entries[si].val);
+        }
+    }
+    result = search_maybe_json_c(final, &o, display, line, col);
+    nv_root_pop();
+    nv_root_pop();
+    return result;
 }
 
 void nv_std_search_fill(NvDict *d) {
@@ -8228,6 +9191,11 @@ void nv_std_search_fill(NvDict *d) {
     nv_std_add_fn(d, "ملفات_فيها", nv_std_search_files_with);
     nv_std_add_fn(d, "ملفات_بلا_مطابقة", nv_std_search_files_without);
     nv_std_add_fn(d, "رتب_النتائج", nv_std_search_sort);
+    nv_std_add_fn(d, "نمط_ملفات", nv_std_search_glob_match);
+    nv_std_add_fn(d, "اقرأ_المدخل", nv_std_search_read_stdin);
+    nv_std_add_fn(d, "ابحث_في_مجلدات", nv_std_search_in_dirs);
+    nv_std_add_fn(d, "ابحث_في_المدخل", nv_std_search_in_stdin);
+    nv_std_add_fn(d, "ابحث_بأنماط", nv_std_search_in_patterns);
     nv_std_add_fn(d, "مساعدة", nv_std_search_help);
 }
 
@@ -13842,4 +14810,1308 @@ static NvValue nv_std_exec_text(NvValue *args, int nargs, int line, int col) {
 
 void nv_std_exec_fill(NvDict *d) {
     nv_std_add_fn(d, "نفذ_نصا", nv_std_exec_text);
+}
+
+// ---------- وحدة تدفق: دفعة لينكس 2، البنّاء اليدوي H2 ----------
+// البنود 129–133 (آلية عنوان) و145 (عدل_في_مكانه) و146 (نسخة_احتياطية).
+// آلية العنوان داخلية (بلا دالة مستخدم بعد): تحلّ قيمة
+// عنوان إلى أرقام أسطر (1-based) في نص معطى؛ والمرآة
+// Rust (flow_address_lines في stdlib.rs) بالدلالة نفسها
+// حرفيا — فأي اختلاف بينهما عيب تكافؤ. أشكال العنوان:
+// - عدد: سطر واحد؛ و-1 آخر سطر؛ و0 أو سالب آخر ← خطأ عربي.
+// - قائمة عددين [بداية، نهاية]: مدى شامل؛ وبداية > نهاية ← فارغة.
+// - نص: نمط — الأسطر المطابقة له عبر محرك نمط؛ والنمط غير
+//   الصالح ← خطأ المحرك نفسه.
+// - قائمة نصين [نمط1، نمط2]: من أول سطر يطابق نمط1 حتى أول
+//   سطر يطابق نمط2 بعده شاملا؛ وإن لم يطابق نمط2 أبدا فإلى النهاية.
+// - لاشيء: كل الأسطر.
+// والحد -1 يعني آخر سطر في حدّي المدى أيضا؛ والعدد الموجب
+// خارج النص لا يخطئ — مجموعة فارغة أو مدى مقصوص؛ ونمط2
+// يُبحث بعد سطر نمط1 حتما (فإن طابق السطر نفسه لم ينه المدى).
+// و`display` اسم الدالة المتصلة في رسائل الخطأ (فالآلية
+// داخلية بلا اسم مستخدم ثابت).
+
+typedef struct {
+    const char *ptr;
+    size_t len;
+} FlowLine;
+
+/// قسّم نصا أسطر بمعنى lines() في Rust: الفاصل `\n`
+/// وحده، وتُقلم `\r` أخيرة من كل سطر، ولا سطر أخير
+/// فارغ بعد `\n` أخيرة؛ والنص الفارغ بلا أسطر.
+static FlowLine *flow_split_lines_c(const char *text, size_t *n_out) {
+    size_t cap = 8, n = 0;
+    FlowLine *lines = (FlowLine *)malloc(cap * sizeof(FlowLine));
+    if (!lines) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", 0, 0);
+    const char *p = text;
+    if (*p == '\0') {
+        *n_out = 0;
+        return lines;
+    }
+    for (;;) {
+        const char *e = strchr(p, '\n');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        if (len > 0 && p[len - 1] == '\r') len--;
+        if (n == cap) {
+            cap *= 2;
+            FlowLine *grown = (FlowLine *)realloc(lines, cap * sizeof(FlowLine));
+            if (!grown) {
+                free(lines);
+                nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", 0, 0);
+            }
+            lines = grown;
+        }
+        lines[n].ptr = p;
+        lines[n].len = len;
+        n++;
+        if (!e) break;
+        p = e + 1;
+        if (*p == '\0') break;
+    }
+    *n_out = n;
+    return lines;
+}
+
+/// هل يطابق السطر النمط المجمّع (بحث لا مطابقة كاملة)؟
+static int flow_line_matches_c(RxProg *prog, const char *ptr, size_t len, int line, int col) {
+    if (nv_utf8_chars(ptr, len) > RX_MAX_TEXT) {
+        nv_error(NV_ERR_RUNTIME, "النص كبير جدا", line, col);
+    }
+    size_t n = 0;
+    size_t *offs = NULL;
+    uint32_t *chars = j14_decode_all(ptr, len, &n, &offs);
+    int s = 0, e = 0;
+    int *saved = NULL;
+    int found = rx_find_from(prog, chars, (int)n, 0, &s, &e, &saved, line, col);
+    free(saved);
+    free(chars);
+    free(offs);
+    return found;
+}
+
+/// حدّ مدى (بداية أو نهاية): عدد صحيح؛ و-1 آخر سطر؛
+/// و0 أو سالب آخر ← خطأ عربي.
+static long long flow_address_bound_c(const char *display, NvValue v, long long total, int line, int col) {
+    long long n = nv_std_need_integer(display, v, line, col);
+    if (n == -1) return total;
+    if (n <= 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s عنوان السطر %lld غير صالح (الصالح 1 أو أكثر، و-1 لآخر سطر)", display, n);
+    }
+    return n;
+}
+
+/// حلّ عنوان تدفق إلى قائمة أرقام أسطر (1-based) مرتبة.
+/// الواجهة الدقيقة لمولّد الدفعة (G): يستدعيها في أوامر
+/// تدفق — العنوان قيمة نيفا (عدد/قائمة/نص/لاشيء)، والنص
+/// سلسلة C منتهية بصفر، والطيّ يطوي أنماط العنوان النصية،
+/// والناتج قائمة أعداد.
+static NvValue flow_address_lines_c(const char *display, NvValue address, const char *text, int fold, int line, int col) {
+    size_t nlines = 0;
+    FlowLine *lines = flow_split_lines_c(text, &nlines);
+    long long total = (long long)nlines;
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    if (address.tag == NV_NIL) {
+        for (long long i = 1; i <= total; i++) {
+            nv_list_push_raw(out.u.list, nv_num((double)i));
+        }
+        free(lines);
+        nv_root_pop();
+        return out;
+    }
+    if (address.tag == NV_NUM) {
+        long long n = flow_address_bound_c(display, address, total, line, col);
+        if (total > 0 && n > 0 && n <= total) {
+            nv_list_push_raw(out.u.list, nv_num((double)n));
+        }
+        free(lines);
+        nv_root_pop();
+        return out;
+    }
+    if (address.tag == NV_STR) {
+        const char *pattern = address.u.str->data;
+        RxProg prog = rx_compile_fold_c(pattern, 0, fold, line, col);
+        for (size_t i = 0; i < nlines; i++) {
+            if (flow_line_matches_c(&prog, lines[i].ptr, lines[i].len, line, col)) {
+                nv_list_push_raw(out.u.list, nv_num((double)(i + 1)));
+            }
+        }
+        rx_prog_free(&prog);
+        free(lines);
+        nv_root_pop();
+        return out;
+    }
+    if (address.tag == NV_LIST) {
+        NvList *items = address.u.list;
+        if (items->len != 2) {
+            free(lines);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع قائمة عنوان من عنصرين لكن أعطيت %d", display, (int)items->len);
+        }
+        NvValue first = items->items[0];
+        NvValue second = items->items[1];
+        if (first.tag == NV_NUM && second.tag == NV_NUM) {
+            long long start = flow_address_bound_c(display, first, total, line, col);
+            long long end = flow_address_bound_c(display, second, total, line, col);
+            if (total > 0 && start > 0 && start <= total && start <= end) {
+                if (end > total) end = total;
+                for (long long i = start; i <= end; i++) {
+                    nv_list_push_raw(out.u.list, nv_num((double)i));
+                }
+            }
+            free(lines);
+            nv_root_pop();
+            return out;
+        }
+        if (first.tag == NV_STR && second.tag == NV_STR) {
+            RxProg prog1 = rx_compile_fold_c(first.u.str->data, 0, fold, line, col);
+            RxProg prog2 = rx_compile_fold_c(second.u.str->data, 0, fold, line, col);
+            long long start = -1;
+            for (size_t i = 0; i < nlines; i++) {
+                if (flow_line_matches_c(&prog1, lines[i].ptr, lines[i].len, line, col)) {
+                    start = (long long)i;
+                    break;
+                }
+            }
+            if (start >= 0) {
+                // نمط2 بعد سطر نمط1 حتما؛ وإن لم يطابق
+                // أبدا فالمدى إلى النهاية (دلالة sed).
+                long long end = total;
+                for (size_t i = (size_t)start + 1; i < nlines; i++) {
+                    if (flow_line_matches_c(&prog2, lines[i].ptr, lines[i].len, line, col)) {
+                        end = (long long)i + 1;
+                        break;
+                    }
+                }
+                for (long long i = start + 1; i <= end; i++) {
+                    nv_list_push_raw(out.u.list, nv_num((double)i));
+                }
+            }
+            rx_prog_free(&prog1);
+            rx_prog_free(&prog2);
+            free(lines);
+            nv_root_pop();
+            return out;
+        }
+        free(lines);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع قائمة عنوان من عددين أو نصين", display);
+    }
+    free(lines);
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع عنوانا: عددا أو قائمة عددين أو نصا أو قائمة نصين أو لاشيء لكن أعطيت %s", display, nv_type_name(address));
+    nv_root_pop();
+    return nv_nil();
+}
+
+/// اقرأ ملفا كاملا بايتات (بلا سقف — كما المرآة Rust)؛
+/// والغائب أو غير المقروء ← «تعذر قراءة الملف»؛ وغير
+/// UTF-8 ← «ليس نصا صالحا». يعيد بفرا مملوكا وطوله.
+static unsigned char *flow_read_file_c(const char *path, const char *resolved, size_t *len_out, int line, int col) {
+    FILE *fp = fopen(resolved, "rb");
+    if (!fp) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر قراءة الملف %s", path);
+    }
+    unsigned char *buf = NULL;
+    size_t len = 0, cap = 0;
+    for (;;) {
+        unsigned char chunk[4096];
+        size_t m = fread(chunk, 1, sizeof(chunk), fp);
+        if (m == 0) break;
+        if (len + m + 1 > cap) {
+            size_t ncap = cap == 0 ? 8192 : cap * 2;
+            while (ncap < len + m + 1) ncap *= 2;
+            unsigned char *grown = (unsigned char *)realloc(buf, ncap);
+            if (!grown) {
+                free(buf);
+                fclose(fp);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر قراءة الملف %s", path);
+            }
+            buf = grown;
+            cap = ncap;
+        }
+        memcpy(buf + len, chunk, m);
+        len += m;
+    }
+    if (ferror(fp)) {
+        free(buf);
+        fclose(fp);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر قراءة الملف %s", path);
+    }
+    fclose(fp);
+    if (!buf) {
+        buf = (unsigned char *)strdup("");
+        len = 0;
+    }
+    buf[len] = '\0';
+    if (!nv_std_file_valid_utf8(buf, len)) {
+        free(buf);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الملف %s ليس نصا صالحا (UTF-8)", path);
+    }
+    *len_out = len;
+    return buf;
+}
+
+/// انسخ ملفا بايتات (للنسخة الاحتياطية).
+static void flow_copy_file_c(const char *src, const char *dst, const char *display, int line, int col) {
+    FILE *in = fopen(src, "rb");
+    if (!in) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر كتابة النسخة الاحتياطية %s", display);
+    }
+    FILE *out = fopen(dst, "wb");
+    if (!out) {
+        fclose(in);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر كتابة النسخة الاحتياطية %s", display);
+    }
+    unsigned char chunk[4096];
+    size_t m;
+    int bad = 0;
+    while ((m = fread(chunk, 1, sizeof(chunk), in)) > 0) {
+        size_t off = 0;
+        while (off < m) {
+            size_t w = fwrite(chunk + off, 1, m - off, out);
+            if (w == 0) {
+                bad = 1;
+                break;
+            }
+            off += w;
+        }
+        if (bad) break;
+    }
+    if (ferror(in) || bad || fclose(out) != 0) {
+        fclose(in);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر كتابة النسخة الاحتياطية %s", display);
+    }
+    fclose(in);
+}
+
+/// كتابة ذرية (كما write_atomic في Rust): ملف مؤقت في
+/// المجلد نفسه ثم نقل فوق الهدف — فلا يبقى ملف نصف
+/// مكتوب أبدا. وعلى ويندوز rename يرفض الهدف الموجود،
+/// فيُحذف الهدف أولا ثم يُعاد النقل.
+static int flow_write_counter_c = 0;
+
+static void flow_write_atomic_c(const char *resolved, const char *content, size_t len, const char *display, int line, int col) {
+    size_t rlen = strlen(resolved);
+    size_t tcap = rlen + 64;
+    char *temp = (char *)malloc(tcap);
+    if (!temp) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر كتابة الملف %s", display);
+    }
+    snprintf(temp, tcap, "%s.نيفا-مؤقت-%ld-%d", resolved, (long)getpid(), flow_write_counter_c++);
+    FILE *fp = fopen(temp, "wb");
+    if (!fp) {
+        free(temp);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر كتابة الملف %s", display);
+    }
+    size_t off = 0;
+    int bad = 0;
+    while (off < len) {
+        size_t w = fwrite((const unsigned char *)content + off, 1, len - off, fp);
+        if (w == 0) {
+            bad = 1;
+            break;
+        }
+        off += w;
+    }
+    if (fclose(fp) != 0) bad = 1;
+    if (bad) {
+        remove(temp);
+        free(temp);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر كتابة الملف %s", display);
+    }
+    if (rename(temp, resolved) != 0) {
+        remove(resolved);
+        if (rename(temp, resolved) != 0) {
+            remove(temp);
+            free(temp);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر كتابة الملف %s", display);
+        }
+    }
+    free(temp);
+}
+
+/// تدفق.عدل_في_مكانه(مسار، محول، خيارات؟) — البند 145:
+/// اقرأ الملف نصا، وطبّق عليه دالة التحويل `محول`
+/// (دالة نص→نص)، واكتب الناتج في الملف نفسه؛ ويرجع
+/// لاشيء (كاكتب_ملف). والتحويل قبل أي كتابة — فشل
+/// المحول يبقي الملف الأصلي كما هو، بلا كتابة جزئية.
+/// والخيار نسخة_احتياطية (البند 146): نص بامتداد، أو
+/// كاذب بلا نسخة (الافتراضي)، أو صحيح بامتداد افتراضي
+/// «.bak»؛ وغير النص/المنطقي ← خطأ عربي.
+static NvValue nv_std_flow_edit_in_place(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.عدل_في_مكانه";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", display, nargs);
+    }
+    const char *path = nv_std_need_string(display, args[0], line, col);
+    NvValue func = args[1];
+    if (func.tag != NV_FUNC && func.tag != NV_NATIVE && func.tag != NV_BOUND) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع دالة محولة لكن أعطيت %s", display, nv_type_name(func));
+    }
+    const char *backup_ext = NULL;
+    char backup_default[] = ".bak";
+    if (nargs == 3) {
+        NvValue opts = args[2];
+        if (opts.tag != NV_DICT) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قاموسا لكن أعطيت %s", display, nv_type_name(opts));
+        }
+        NvDict *d = opts.u.dict;
+        for (size_t i = 0; i < d->len; i++) {
+            const char *key = d->entries[i].key;
+            NvValue v = d->entries[i].val;
+            if (strcmp(key, "نسخة_احتياطية") == 0) {
+                if (v.tag == NV_BOOL) {
+                    backup_ext = v.u.boolean ? backup_default : NULL;
+                } else if (v.tag == NV_STR) {
+                    const char *ext = v.u.str->data;
+                    if (ext[0] == '\0' || strchr(ext, '/') || strchr(ext, '\\')) {
+                        nv_error(NV_ERR_RUNTIME, "الدالة تدفق.عدل_في_مكانه الخيار نسخة_احتياطية يتوقع امتدادا غير فارغ بلا فاصل مسار", line, col);
+                    }
+                    backup_ext = ext;
+                } else {
+                    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s الخيار نسخة_احتياطية يتوقع نصا أو قيمة منطقية لكن أعطيت %s", display, nv_type_name(v));
+                }
+            } else {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s خيار غير معروف: %s", display, key);
+            }
+        }
+    }
+    // المسار النسبي يُحل مقابل مجلد الجلسة (كما في
+    // بحث.أنماط_من_ملف عبر nv_resolve_path).
+    char *resolved = nv_resolve_path(path, line, col);
+    size_t clen = 0;
+    unsigned char *content = flow_read_file_c(path, resolved, &clen, line, col);
+    // التحويل قبل أي كتابة.
+    size_t aidx = nv_root_push_idx();
+    NvValue argv[1];
+    argv[0] = nv_str_new((const char *)content, clen);
+    *nv_root_slot(aidx) = argv[0];
+    free(content);
+    NvValue res = nv_call(func, argv, 1, line, col);
+    size_t ridx = nv_root_push_idx();
+    *nv_root_slot(ridx) = res;
+    if (res.tag != NV_STR) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع أن يرجع المحول نصا لكن أعطيت %s", display, nv_type_name(res));
+    }
+    const char *new_text = res.u.str->data;
+    size_t new_len = res.u.str->len;
+    // النسخة الاحتياطية قبل الكتابة (المسار + الامتداد).
+    char *backup_path = NULL;
+    if (backup_ext) {
+        size_t blen = strlen(resolved) + strlen(backup_ext) + 1;
+        backup_path = (char *)malloc(blen);
+        if (!backup_path) {
+            free(resolved);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر كتابة الملف %s", path);
+        }
+        snprintf(backup_path, blen, "%s%s", resolved, backup_ext);
+        size_t dlen = strlen(path) + strlen(backup_ext) + 1;
+        char *bdisplay = (char *)malloc(dlen);
+        if (!bdisplay) {
+            free(backup_path);
+            free(resolved);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر كتابة الملف %s", path);
+        }
+        snprintf(bdisplay, dlen, "%s%s", path, backup_ext);
+        flow_copy_file_c(resolved, backup_path, bdisplay, line, col);
+        free(bdisplay);
+        free(backup_path);
+    }
+    flow_write_atomic_c(resolved, new_text, new_len, path, line, col);
+    free(resolved);
+    nv_root_pop_n(2);
+    return nv_nil();
+}
+
+// ---------- وحدة تدفق: نوى أوامر يدوية (دفعة لينكس 2، المرحلة 2) ----------
+// قسم يدوي معلَّم: مرآة قسم Rust نفسه — نوى مشتركة
+// بين دوال تدفق العامة (يولّدها مولّد الدفعة فوقها)
+// وبين مشغّل الأوامر (نفذ_أوامر ونفذ_من_ملف —
+// البندان 149 و150)؛ وقاعدة إعادة الربط العامة
+// نفسها: النص المنتهي بـ`\n` يعيد نصا منتهيا بـ`\n`،
+// والنص الفارغ يعيد فارغا.
+
+typedef struct {
+    char **items;
+    size_t len, cap;
+} FlowStrListC;
+
+static void flow_str_push_c(FlowStrListC *l, char *s, int line, int col) {
+    if (l->len >= l->cap) {
+        size_t ncap = l->cap == 0 ? 8 : l->cap * 2;
+        char **grown = (char **)realloc(l->items, ncap * sizeof(char *));
+        if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+        l->items = grown;
+        l->cap = ncap;
+    }
+    l->items[l->len++] = s;
+}
+
+static void flow_str_free_c(FlowStrListC *l) {
+    for (size_t i = 0; i < l->len; i++) free(l->items[i]);
+    free(l->items);
+    l->items = NULL;
+    l->len = l->cap = 0;
+}
+
+static char *flow_str_dup_c(const char *ptr, size_t len, int line, int col) {
+    char *s = (char *)malloc(len + 1);
+    if (!s) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+    memcpy(s, ptr, len);
+    s[len] = '\0';
+    return s;
+}
+
+/// قسّم نصا أسطر مملوكة + هل انتهى بـ`\n`؟
+static void flow_split_owned_c(const char *text, FlowStrListC *out, int *trailing, int line, int col) {
+    size_t n = 0;
+    FlowLine *lines = flow_split_lines_c(text, &n);
+    size_t tlen = strlen(text);
+    *trailing = tlen > 0 && text[tlen - 1] == '\n';
+    memset(out, 0, sizeof(*out));
+    for (size_t i = 0; i < n; i++) {
+        flow_str_push_c(out, flow_str_dup_c(lines[i].ptr, lines[i].len, line, col), line, col);
+    }
+    free(lines);
+}
+
+/// أعد ربط الأسطر بالقاعدة العامة (مملوك، يحرره المتصل).
+static char *flow_rejoin_c(FlowStrListC *lines, int trailing, int line, int col) {
+    size_t total = 0;
+    for (size_t i = 0; i < lines->len; i++) total += strlen(lines->items[i]) + 1;
+    char *out = (char *)malloc(total + 1);
+    if (!out) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+    size_t pos = 0;
+    for (size_t i = 0; i < lines->len; i++) {
+        size_t len = strlen(lines->items[i]);
+        memcpy(out + pos, lines->items[i], len);
+        pos += len;
+        if (i + 1 < lines->len) out[pos++] = '\n';
+    }
+    if (trailing && lines->len > 0) out[pos++] = '\n';
+    out[pos] = '\0';
+    return out;
+}
+
+/// استبدال نمط في نص واحد يرجع نصا مملوكا.
+static char *flow_regex_replace_str_c(const char *pattern, const char *text, const char *repl, int fold, int line, int col) {
+    NvValue v = regex_replace_fold_c(pattern, text, repl, fold, line, col);
+    size_t ridx = nv_root_push_idx();
+    *nv_root_slot(ridx) = v;
+    char *out = flow_str_dup_c(v.u.str->data, v.u.str->len, line, col);
+    nv_root_pop();
+    return out;
+}
+
+/// حلّ عنوان إلى مصفوفة أعلام (1 = معنون) بطول
+/// الأسطر؛ ولاشيء (أو غائب) = كل الأسطر.
+static int *flow_address_set_c(const char *display, NvValue address, int has_address, const char *text, int fold, size_t nlines, int line, int col) {
+    int *set = (int *)calloc(nlines == 0 ? 1 : nlines, sizeof(int));
+    if (!set) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+    NvValue addr = has_address ? address : nv_nil();
+    size_t ridx = nv_root_push_idx();
+    NvValue list = flow_address_lines_c(display, addr, text, fold, line, col);
+    *nv_root_slot(ridx) = list;
+    NvList *items = list.u.list;
+    for (size_t i = 0; i < items->len; i++) {
+        NvValue n = items->items[i];
+        if (n.tag == NV_NUM) {
+            long long k = (long long)n.u.num;
+            if (k >= 1 && (size_t)k <= nlines) set[k - 1] = 1;
+        }
+    }
+    nv_root_pop();
+    return set;
+}
+
+/// نواة استبدل_الكل: بلا عنوان ≡ نمط.استبدل حرفيا
+/// على النص كله؛ ومع عنوان يستبدل داخل الأسطر
+/// المعنونة وحدها سطرا سطرا.
+static char *flow_replace_all_core_c(const char *display, const char *text, const char *pattern, const char *repl, NvValue address, int has_address, int fold, int line, int col) {
+    if (!has_address) {
+        return flow_regex_replace_str_c(pattern, text, repl, fold, line, col);
+    }
+    FlowStrListC lines;
+    int trailing = 0;
+    flow_split_owned_c(text, &lines, &trailing, line, col);
+    int *set = flow_address_set_c(display, address, 1, text, fold, lines.len, line, col);
+    FlowStrListC out;
+    memset(&out, 0, sizeof(out));
+    for (size_t i = 0; i < lines.len; i++) {
+        if (set[i]) {
+            char *r = flow_regex_replace_str_c(pattern, lines.items[i], repl, fold, line, col);
+            flow_str_push_c(&out, r, line, col);
+        } else {
+            flow_str_push_c(&out, flow_str_dup_c(lines.items[i], strlen(lines.items[i]), line, col), line, col);
+        }
+    }
+    char *res = flow_rejoin_c(&out, trailing, line, col);
+    free(set);
+    flow_str_free_c(&lines);
+    flow_str_free_c(&out);
+    return res;
+}
+
+/// نواة احذف_أسطر: احذف الأسطر المعنونة؛ والغائب
+/// (لاشيء) = كل الأسطر.
+static char *flow_delete_lines_core_c(const char *display, const char *text, NvValue address, int has_address, int fold, int line, int col) {
+    FlowStrListC lines;
+    int trailing = 0;
+    flow_split_owned_c(text, &lines, &trailing, line, col);
+    int *set = flow_address_set_c(display, address, has_address, text, fold, lines.len, line, col);
+    FlowStrListC out;
+    memset(&out, 0, sizeof(out));
+    for (size_t i = 0; i < lines.len; i++) {
+        if (!set[i]) {
+            flow_str_push_c(&out, flow_str_dup_c(lines.items[i], strlen(lines.items[i]), line, col), line, col);
+        }
+    }
+    char *res = flow_rejoin_c(&out, trailing, line, col);
+    free(set);
+    flow_str_free_c(&lines);
+    flow_str_free_c(&out);
+    return res;
+}
+
+/// نواة اطبع_المطابق: الأسطر المعنونة في قائمة.
+static void flow_matching_lines_core_c(const char *display, const char *text, NvValue address, int has_address, int fold, FlowStrListC *out, int line, int col) {
+    FlowStrListC lines;
+    int trailing = 0;
+    flow_split_owned_c(text, &lines, &trailing, line, col);
+    int *set = flow_address_set_c(display, address, has_address, text, fold, lines.len, line, col);
+    memset(out, 0, sizeof(*out));
+    for (size_t i = 0; i < lines.len; i++) {
+        if (set[i]) {
+            flow_str_push_c(out, flow_str_dup_c(lines.items[i], strlen(lines.items[i]), line, col), line, col);
+        }
+    }
+    free(set);
+    flow_str_free_c(&lines);
+}
+
+/// نواة توقف_عند: الأسطر 1..N شاملة؛ وN أكبر من
+/// المجموع ← النص كله؛ و0 أو سالب (عدا -1) ← خطأ
+/// عربي؛ و-1 ← آخر سطر (أي النص كله).
+static char *flow_take_lines_core_c(const char *display, const char *text, long long n, int line, int col) {
+    if (n == -1) return flow_str_dup_c(text, strlen(text), line, col);
+    if (n <= 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s عدد الأسطر %lld غير صالح (الصالح 1 أو أكثر، و-1 لآخر سطر)", display, n);
+    }
+    FlowStrListC lines;
+    int trailing = 0;
+    flow_split_owned_c(text, &lines, &trailing, line, col);
+    if (n >= (long long)lines.len) {
+        char *res = flow_str_dup_c(text, strlen(text), line, col);
+        flow_str_free_c(&lines);
+        return res;
+    }
+    FlowStrListC head;
+    memset(&head, 0, sizeof(head));
+    for (long long i = 0; i < n; i++) {
+        flow_str_push_c(&head, flow_str_dup_c(lines.items[i], strlen(lines.items[i]), line, col), line, col);
+    }
+    // الأسطر 1..N: كل سطر منها متبوع بـ`\n` في الأصل.
+    char *res = flow_rejoin_c(&head, 1, line, col);
+    flow_str_free_c(&lines);
+    flow_str_free_c(&head);
+    return res;
+}
+
+/// نواة ألحق_بعد: أدخل أسطر النص الملحق بعد كل
+/// سطر معنون؛ والملحق الفارغ بلا أثر.
+static char *flow_append_after_core_c(const char *display, const char *text, NvValue address, int has_address, const char *appended, int fold, int line, int col) {
+    FlowStrListC lines;
+    int trailing = 0;
+    flow_split_owned_c(text, &lines, &trailing, line, col);
+    int *set = flow_address_set_c(display, address, has_address, text, fold, lines.len, line, col);
+    FlowStrListC extra;
+    int etrail = 0;
+    flow_split_owned_c(appended, &extra, &etrail, line, col);
+    FlowStrListC out;
+    memset(&out, 0, sizeof(out));
+    for (size_t i = 0; i < lines.len; i++) {
+        flow_str_push_c(&out, flow_str_dup_c(lines.items[i], strlen(lines.items[i]), line, col), line, col);
+        if (set[i]) {
+            for (size_t j = 0; j < extra.len; j++) {
+                flow_str_push_c(&out, flow_str_dup_c(extra.items[j], strlen(extra.items[j]), line, col), line, col);
+            }
+        }
+    }
+    char *res = flow_rejoin_c(&out, trailing, line, col);
+    free(set);
+    flow_str_free_c(&lines);
+    flow_str_free_c(&extra);
+    flow_str_free_c(&out);
+    return res;
+}
+
+/// نواة أدرج_قبل: أدخل أسطر النص المدرج قبل كل
+/// سطر معنون؛ والمدرج الفارغ بلا أثر.
+static char *flow_insert_before_core_c(const char *display, const char *text, NvValue address, int has_address, const char *inserted, int fold, int line, int col) {
+    FlowStrListC lines;
+    int trailing = 0;
+    flow_split_owned_c(text, &lines, &trailing, line, col);
+    int *set = flow_address_set_c(display, address, has_address, text, fold, lines.len, line, col);
+    FlowStrListC extra;
+    int etrail = 0;
+    flow_split_owned_c(inserted, &extra, &etrail, line, col);
+    FlowStrListC out;
+    memset(&out, 0, sizeof(out));
+    for (size_t i = 0; i < lines.len; i++) {
+        if (set[i]) {
+            for (size_t j = 0; j < extra.len; j++) {
+                flow_str_push_c(&out, flow_str_dup_c(extra.items[j], strlen(extra.items[j]), line, col), line, col);
+            }
+        }
+        flow_str_push_c(&out, flow_str_dup_c(lines.items[i], strlen(lines.items[i]), line, col), line, col);
+    }
+    char *res = flow_rejoin_c(&out, trailing, line, col);
+    free(set);
+    flow_str_free_c(&lines);
+    flow_str_free_c(&extra);
+    flow_str_free_c(&out);
+    return res;
+}
+
+/// نواة غير_أسطر: استبدال كل امتداد متصل من الأسطر
+/// المعنونة بالنص الجديد مرة واحدة (sed المخلصة)،
+/// لا تكرار النص الجديد على كل سطر.
+static char *flow_change_lines_core_c(const char *display, const char *text, NvValue address, int has_address, const char *new_text, int fold, int line, int col) {
+    FlowStrListC lines;
+    int trailing = 0;
+    flow_split_owned_c(text, &lines, &trailing, line, col);
+    int *set = flow_address_set_c(display, address, has_address, text, fold, lines.len, line, col);
+    FlowStrListC repl;
+    int rtrail = 0;
+    flow_split_owned_c(new_text, &repl, &rtrail, line, col);
+    FlowStrListC out;
+    memset(&out, 0, sizeof(out));
+    size_t i = 0;
+    while (i < lines.len) {
+        if (set[i]) {
+            for (size_t j = 0; j < repl.len; j++) {
+                flow_str_push_c(&out, flow_str_dup_c(repl.items[j], strlen(repl.items[j]), line, col), line, col);
+            }
+            while (i < lines.len && set[i]) i++;
+        } else {
+            flow_str_push_c(&out, flow_str_dup_c(lines.items[i], strlen(lines.items[i]), line, col), line, col);
+            i++;
+        }
+    }
+    char *res = flow_rejoin_c(&out, trailing, line, col);
+    free(set);
+    flow_str_free_c(&lines);
+    flow_str_free_c(&repl);
+    flow_str_free_c(&out);
+    return res;
+}
+
+/// خيارات تدفق: عنوان (لاستبدل_الكل) وطيّ حالة
+/// وصامت (للمشغّل). والعنوان قيمة مستعارة من
+/// القاموس (صالحة أثناء الاستدعاء).
+typedef struct {
+    NvValue address;
+    int has_address;
+    int ignore_case;
+    int quiet;
+} FlowOptsC;
+
+static void flow_parse_opts_c(const char *display, NvValue opts, int allow_address, int allow_quiet, FlowOptsC *out, int line, int col) {
+    if (opts.tag != NV_DICT) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قاموسا لكن أعطيت %s", display, nv_type_name(opts));
+    }
+    out->address = nv_nil();
+    out->has_address = 0;
+    out->ignore_case = 0;
+    out->quiet = 0;
+    NvDict *d = opts.u.dict;
+    for (size_t i = 0; i < d->len; i++) {
+        const char *key = d->entries[i].key;
+        NvValue v = d->entries[i].val;
+        if (strcmp(key, "عنوان") == 0) {
+            if (!allow_address) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا تقبل الخيار %s", display, key);
+            out->address = v;
+            out->has_address = 1;
+        } else if (strcmp(key, "تجاهل_الحالة") == 0) {
+            if (!allow_address) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا تقبل الخيار %s", display, key);
+            out->ignore_case = search_need_bool_c(display, key, v, line, col);
+        } else if (strcmp(key, "صامت") == 0) {
+            if (!allow_quiet) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا تقبل الخيار %s", display, key);
+            out->quiet = search_need_bool_c(display, key, v, line, col);
+        } else {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s خيار غير معروف: %s", display, key);
+        }
+    }
+}
+
+/// مفتاح مطلوب في قاموس أمر؛ والناقص ← خطأ عربي
+/// يسمّي الأمر.
+static NvValue flow_cmd_need_c(const char *display, const char *name, NvDict *d, const char *key, int line, int col) {
+    int i = nv_dict_find(d, key);
+    if (i < 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الأمر %s ينقصه المفتاح %s", display, name, key);
+    }
+    return d->entries[i].val;
+}
+
+/// أمر واحد: يرجع نصا جديدا مملوكا، ويضبط `*stop`
+/// عند توقف_عند؛ واطبع_المطابق يُلحق بقائمة مطبوع
+/// (إلا مع صامت).
+static char *flow_run_one_command_c(const char *display, const char *text, NvValue cmd, NvValue printed, int quiet, int *stop, int line, int col) {
+    *stop = 0;
+    if (cmd.tag != NV_DICT) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قاموسا لكل أمر لكن أعطيت %s", display, nv_type_name(cmd));
+    }
+    NvDict *d = cmd.u.dict;
+    int ai = nv_dict_find(d, "أمر");
+    if (ai < 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع مفتاح «أمر» في كل أمر", display);
+    }
+    NvValue namev = d->entries[ai].val;
+    if (namev.tag != NV_STR) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع مفتاح «أمر» نصا لكن أعطيت %s", display, nv_type_name(namev));
+    }
+    const char *name = namev.u.str->data;
+    static const char *keys_replace[] = {"أمر", "نمط", "بديل", "عنوان"};
+    static const char *keys_delete[] = {"أمر", "عنوان"};
+    static const char *keys_print[] = {"أمر", "عنوان"};
+    static const char *keys_take[] = {"أمر", "عدد"};
+    static const char *keys_append[] = {"أمر", "نص", "عنوان"};
+    static const char *keys_insert[] = {"أمر", "نص", "عنوان"};
+    static const char *keys_change[] = {"أمر", "نص", "عنوان"};
+    const char **allowed = NULL;
+    size_t nallowed = 0;
+    if (strcmp(name, "استبدل_الكل") == 0) { allowed = keys_replace; nallowed = 4; }
+    else if (strcmp(name, "احذف_أسطر") == 0) { allowed = keys_delete; nallowed = 2; }
+    else if (strcmp(name, "اطبع_المطابق") == 0) { allowed = keys_print; nallowed = 2; }
+    else if (strcmp(name, "توقف_عند") == 0) { allowed = keys_take; nallowed = 2; }
+    else if (strcmp(name, "ألحق_بعد") == 0) { allowed = keys_append; nallowed = 3; }
+    else if (strcmp(name, "أدرج_قبل") == 0) { allowed = keys_insert; nallowed = 3; }
+    else if (strcmp(name, "غير_أسطر") == 0) { allowed = keys_change; nallowed = 3; }
+    else {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s أمر غير معروف: %s", display, name);
+    }
+    for (size_t i = 0; i < d->len; i++) {
+        const char *k = d->entries[i].key;
+        int ok = 0;
+        for (size_t j = 0; j < nallowed; j++) {
+            if (strcmp(k, allowed[j]) == 0) { ok = 1; break; }
+        }
+        if (!ok) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الأمر %s لا يقبل المفتاح %s", display, name, k);
+        }
+    }
+    int addr_i = nv_dict_find(d, "عنوان");
+    NvValue address = addr_i >= 0 ? d->entries[addr_i].val : nv_nil();
+    int has_address = addr_i >= 0;
+    if (strcmp(name, "استبدل_الكل") == 0) {
+        const char *pattern = nv_std_need_string(display, flow_cmd_need_c(display, name, d, "نمط", line, col), line, col);
+        const char *repl = nv_std_need_string(display, flow_cmd_need_c(display, name, d, "بديل", line, col), line, col);
+        return flow_replace_all_core_c(display, text, pattern, repl, address, has_address, 0, line, col);
+    }
+    if (strcmp(name, "احذف_أسطر") == 0) {
+        return flow_delete_lines_core_c(display, text, address, has_address, 0, line, col);
+    }
+    if (strcmp(name, "اطبع_المطابق") == 0) {
+        FlowStrListC found;
+        flow_matching_lines_core_c(display, text, address, has_address, 0, &found, line, col);
+        if (!quiet) {
+            for (size_t i = 0; i < found.len; i++) {
+                nv_list_push_raw(printed.u.list, nv_str_cstr(found.items[i]));
+            }
+        }
+        flow_str_free_c(&found);
+        return flow_str_dup_c(text, strlen(text), line, col);
+    }
+    if (strcmp(name, "توقف_عند") == 0) {
+        long long n = nv_std_need_integer(display, flow_cmd_need_c(display, name, d, "عدد", line, col), line, col);
+        char *res = flow_take_lines_core_c(display, text, n, line, col);
+        *stop = 1;
+        return res;
+    }
+    if (strcmp(name, "ألحق_بعد") == 0) {
+        const char *appended = nv_std_need_string(display, flow_cmd_need_c(display, name, d, "نص", line, col), line, col);
+        return flow_append_after_core_c(display, text, address, has_address, appended, 0, line, col);
+    }
+    if (strcmp(name, "أدرج_قبل") == 0) {
+        const char *inserted = nv_std_need_string(display, flow_cmd_need_c(display, name, d, "نص", line, col), line, col);
+        return flow_insert_before_core_c(display, text, address, has_address, inserted, 0, line, col);
+    }
+    // غير_أسطر (بقي وحدها بعد فحص الاسم أعلاه).
+    const char *new_text = nv_std_need_string(display, flow_cmd_need_c(display, name, d, "نص", line, col), line, col);
+    return flow_change_lines_core_c(display, text, address, has_address, new_text, 0, line, col);
+}
+
+/// نواة المشغّل: طبّق قائمة أوامر تسلسليا على نص؛
+/// و`اطبع_المطابق` يُلحق أسطره بقائمة مطبوع؛
+/// و`توقف_عند` يقطع النص ويوقف كل ما بعده (دلالة
+/// sed `q`)؛ والإرجاع سجل واحد {نص، مطبوع} — بلا
+/// طباعة جانبية؛ ومع صامت تبقى مطبوع فارغة دائما.
+static NvValue flow_run_commands_core_c(const char *display, const char *text, NvValue commands, int quiet, int line, int col) {
+    if (commands.tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة أوامر لكن أعطيت %s", display, nv_type_name(commands));
+    }
+    char *cur = flow_str_dup_c(text, strlen(text), line, col);
+    size_t ridx = nv_root_push_idx();
+    NvValue printed = nv_list_new();
+    *nv_root_slot(ridx) = printed;
+    size_t didx = nv_root_push_idx();
+    NvValue result = nv_dict_new();
+    *nv_root_slot(didx) = result;
+    NvList *items = commands.u.list;
+    for (size_t i = 0; i < items->len; i++) {
+        int stop = 0;
+        char *next = flow_run_one_command_c(display, cur, items->items[i], printed, quiet, &stop, line, col);
+        free(cur);
+        cur = next;
+        if (stop) break;
+    }
+    nv_dict_set_raw(result.u.dict, "نص", nv_str_cstr(cur));
+    free(cur);
+    nv_dict_set_raw(result.u.dict, "مطبوع", printed);
+    nv_root_pop_n(2);
+    return result;
+}
+
+/// عدد صحيح من نص: لاتيني أو عربي مشرقي، مع
+/// إشارة سالبة اختيارية؛ والفائض أو التالف ← 0 في `*ok`.
+static long long flow_parse_int_text_c(const char *s, int *ok) {
+    *ok = 0;
+    long long out = 0;
+    int neg = 0;
+    int any = 0;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p) {
+        if (*p == '-' && !any && !neg) {
+            neg = 1;
+            p++;
+            continue;
+        }
+        if (*p >= '0' && *p <= '9') {
+            any = 1;
+            int d = *p - '0';
+            if (out > (9223372036854775807LL - d) / 10) return 0;
+            out = out * 10 + d;
+            p++;
+            continue;
+        }
+        // أرقام عربية مشرقية ٠-٩ (U+0660..U+0669 = D9 A0..A9).
+        if (p[0] == 0xD9 && p[1] >= 0xA0 && p[1] <= 0xA9) {
+            any = 1;
+            int d = p[1] - 0xA0;
+            if (out > (9223372036854775807LL - d) / 10) return 0;
+            out = out * 10 + d;
+            p += 2;
+            continue;
+        }
+        return 0;
+    }
+    if (!any) return 0;
+    *ok = 1;
+    return neg ? -out : out;
+}
+
+/// أضف محرفا إلى مخزن بايتات ديناميكي.
+static void flow_buf_add_c(char **buf, size_t *len, size_t *cap, char c, int line, int col) {
+    if (*len + 1 >= *cap) {
+        size_t ncap = *cap == 0 ? 32 : *cap * 2;
+        char *grown = (char *)realloc(*buf, ncap);
+        if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+        *buf = grown;
+        *cap = ncap;
+    }
+    (*buf)[(*len)++] = c;
+}
+
+/// أضف حقلا إلى مصفوفة حقول ديناميكية.
+static void flow_fields_push_c(char ***fields, size_t *n, size_t *cap, char *s, int line, int col) {
+    if (*n >= *cap) {
+        size_t ncap = *cap == 0 ? 4 : *cap * 2;
+        char **grown = (char **)realloc(*fields, ncap * sizeof(char *));
+        if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+        *fields = grown;
+        *cap = ncap;
+    }
+    (*fields)[(*n)++] = s;
+}
+
+/// قسّم سطر أوامر على `|` مع هروب `\|` و`\\`.
+/// يعيد مصفوفة مملوكة من نصوص مملوكة وعددها.
+static char **flow_split_fields_c(const char *line, size_t *n_out, int line_no, int col) {
+    size_t cap = 0, n = 0;
+    char **fields = NULL;
+    char *buf = NULL;
+    size_t blen = 0, bcap = 0;
+    const unsigned char *p = (const unsigned char *)line;
+    while (*p) {
+        unsigned char c = *p;
+        if (c == '\\' && (p[1] == '|' || p[1] == '\\')) {
+            flow_buf_add_c(&buf, &blen, &bcap, (char)p[1], line_no, col);
+            p += 2;
+            continue;
+        }
+        if (c == '|') {
+            flow_buf_add_c(&buf, &blen, &bcap, '\0', line_no, col);
+            flow_fields_push_c(&fields, &n, &cap, buf, line_no, col);
+            buf = NULL;
+            blen = 0;
+            bcap = 0;
+            p++;
+            continue;
+        }
+        flow_buf_add_c(&buf, &blen, &bcap, (char)c, line_no, col);
+        p++;
+    }
+    flow_buf_add_c(&buf, &blen, &bcap, '\0', line_no, col);
+    flow_fields_push_c(&fields, &n, &cap, buf, line_no, col);
+    *n_out = n;
+    return fields;
+}
+
+static void flow_free_fields_c(char **fields, size_t n) {
+    for (size_t i = 0; i < n; i++) free(fields[i]);
+    free(fields);
+}
+
+/// حلّ حقل عنوان نصي (صيغة ملف الأوامر) إلى قيمة
+/// عنوان — يجب تجذيرها فورا لدى المتصل؛ والتالف
+/// ← خطأ عربي يسمّي رقم السطر في الملف.
+static NvValue flow_parse_address_text_c(const char *field, int file_line, int line, int col) {
+    if (field[0] == '\0') return nv_nil();
+    if (strcmp(field, "آخر") == 0) return nv_num(-1.0);
+    int ok = 0;
+    long long n = flow_parse_int_text_c(field, &ok);
+    if (ok) {
+        if (n == -1 || n > 0) return nv_num((double)n);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "السطر %d في الملف: عنوان غير صالح «%s»", file_line, field);
+    }
+    size_t flen = strlen(field);
+    if (flen >= 2 && field[0] == '/' && field[flen - 1] == '/') {
+        // `/نمط1/:/نمط2/` قبل `/نمط/` المنفرد.
+        char *inner = flow_str_dup_c(field + 1, flen - 2, line, col);
+        char *sep = strstr(inner, "/:/");
+        NvValue out;
+        if (sep) {
+            *sep = '\0';
+            const char *p2 = sep + 3;
+            size_t ridx = nv_root_push_idx();
+            out = nv_list_new();
+            *nv_root_slot(ridx) = out;
+            nv_list_push_raw(out.u.list, nv_str_cstr(inner));
+            nv_list_push_raw(out.u.list, nv_str_cstr(p2));
+            nv_root_pop();
+        } else {
+            out = nv_str_cstr(inner);
+        }
+        free(inner);
+        return out;
+    }
+    // مدى `أ-ب` (عدد-عدد).
+    char *dash = strchr(field, '-');
+    if (dash) {
+        char *a = flow_str_dup_c(field, (size_t)(dash - field), line, col);
+        const char *b = dash + 1;
+        int oka = 0, okb = 0;
+        long long x = flow_parse_int_text_c(a, &oka);
+        long long y = flow_parse_int_text_c(b, &okb);
+        free(a);
+        if (oka && okb && (x == -1 || x > 0) && (y == -1 || y > 0)) {
+            size_t ridx = nv_root_push_idx();
+            NvValue out = nv_list_new();
+            *nv_root_slot(ridx) = out;
+            nv_list_push_raw(out.u.list, nv_num((double)x));
+            nv_list_push_raw(out.u.list, nv_num((double)y));
+            nv_root_pop();
+            return out;
+        }
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "السطر %d في الملف: عنوان غير صالح «%s»", file_line, field);
+    }
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "السطر %d في الملف: عنوان غير صالح «%s»", file_line, field);
+    return nv_nil();
+}
+
+/// حلّل محتوى ملف أوامر (صيغة الإصدار 1) إلى قائمة
+/// قواميس الأوامر — يجب تجذيرها فورا لدى المتصل.
+static NvValue flow_parse_command_file_c(const char *content, int line, int col) {
+    size_t ridx = nv_root_push_idx();
+    NvValue commands = nv_list_new();
+    *nv_root_slot(ridx) = commands;
+    const char *p = content;
+    int file_line = 0;
+    while (*p) {
+        const char *eol = strchr(p, '\n');
+        size_t len = eol ? (size_t)(eol - p) : strlen(p);
+        file_line++;
+        char *rawline = flow_str_dup_c(p, len, line, col);
+        // lines() في Rust تقلم `\r` أخيرة من كل سطر.
+        size_t rlen = strlen(rawline);
+        if (rlen > 0 && rawline[rlen - 1] == '\r') rawline[rlen - 1] = '\0';
+        // فارغ أو تعليق `#` (بعد تقليم البداية) يُتخطى.
+        const unsigned char *t = (const unsigned char *)rawline;
+        while (*t == ' ' || *t == '\t' || *t == '\r') t++;
+        int skip = (*t == '\0' || *t == '#');
+        if (!skip) {
+            size_t nfields = 0;
+            char **fields = flow_split_fields_c(rawline, &nfields, line, col);
+            const char *name = fields[0];
+            size_t didx = nv_root_push_idx();
+            NvValue cmd = nv_dict_new();
+            *nv_root_slot(didx) = cmd;
+            nv_dict_set_raw(cmd.u.dict, "أمر", nv_str_cstr(name));
+            if (strcmp(name, "استبدل_الكل") == 0) {
+                if (nfields != 3 && nfields != 4) {
+                    nv_error_fmt(NV_ERR_RUNTIME, line, col, "السطر %d في الملف: الأمر %s يتوقع ٣ أو ٤ حقول لكن أعطيت %d حقول", file_line, name, (int)nfields);
+                }
+                nv_dict_set_raw(cmd.u.dict, "نمط", nv_str_cstr(fields[1]));
+                nv_dict_set_raw(cmd.u.dict, "بديل", nv_str_cstr(fields[2]));
+                if (nfields == 4) {
+                    size_t aidx = nv_root_push_idx();
+                    NvValue addr = flow_parse_address_text_c(fields[3], file_line, line, col);
+                    *nv_root_slot(aidx) = addr;
+                    if (addr.tag != NV_NIL) nv_dict_set_raw(cmd.u.dict, "عنوان", addr);
+                    nv_root_pop();
+                }
+            } else if (strcmp(name, "احذف_أسطر") == 0 || strcmp(name, "اطبع_المطابق") == 0) {
+                if (nfields != 1 && nfields != 2) {
+                    nv_error_fmt(NV_ERR_RUNTIME, line, col, "السطر %d في الملف: الأمر %s يتوقع حقلا أو حقلين لكن أعطيت %d حقول", file_line, name, (int)nfields);
+                }
+                if (nfields == 2) {
+                    size_t aidx = nv_root_push_idx();
+                    NvValue addr = flow_parse_address_text_c(fields[1], file_line, line, col);
+                    *nv_root_slot(aidx) = addr;
+                    if (addr.tag != NV_NIL) nv_dict_set_raw(cmd.u.dict, "عنوان", addr);
+                    nv_root_pop();
+                }
+            } else if (strcmp(name, "توقف_عند") == 0) {
+                if (nfields != 2) {
+                    nv_error_fmt(NV_ERR_RUNTIME, line, col, "السطر %d في الملف: الأمر %s يتوقع حقلين لكن أعطيت %d حقول", file_line, name, (int)nfields);
+                }
+                int ok = 0;
+                long long n = flow_parse_int_text_c(fields[1], &ok);
+                if (!ok) {
+                    nv_error_fmt(NV_ERR_RUNTIME, line, col, "السطر %d في الملف: عدد غير صالح «%s»", file_line, fields[1]);
+                }
+                nv_dict_set_raw(cmd.u.dict, "عدد", nv_num((double)n));
+            } else if (strcmp(name, "ألحق_بعد") == 0 || strcmp(name, "أدرج_قبل") == 0 || strcmp(name, "غير_أسطر") == 0) {
+                if (nfields != 2 && nfields != 3) {
+                    nv_error_fmt(NV_ERR_RUNTIME, line, col, "السطر %d في الملف: الأمر %s يتوقع حقلين أو ثلاثة حقول لكن أعطيت %d حقول", file_line, name, (int)nfields);
+                }
+                nv_dict_set_raw(cmd.u.dict, "نص", nv_str_cstr(fields[1]));
+                if (nfields == 3) {
+                    size_t aidx = nv_root_push_idx();
+                    NvValue addr = flow_parse_address_text_c(fields[2], file_line, line, col);
+                    *nv_root_slot(aidx) = addr;
+                    if (addr.tag != NV_NIL) nv_dict_set_raw(cmd.u.dict, "عنوان", addr);
+                    nv_root_pop();
+                }
+            } else {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "السطر %d في الملف: أمر غير معروف «%s»", file_line, name);
+            }
+            nv_list_push_raw(commands.u.list, cmd);
+            nv_root_pop();
+            flow_free_fields_c(fields, nfields);
+        }
+        free(rawline);
+        if (!eol) break;
+        p = eol + 1;
+    }
+    nv_root_pop();
+    return commands;
+}
+
+/// تدفق.نفذ_أوامر(نص، أوامر، خيارات؟) — البند 150:
+/// طبّق قائمة قواميس أوامر تسلسليا على نص وارجع
+/// سجلا واحدا {نص، مطبوع}. والخيار صامت (البند
+/// 126): صحيحا تبقى مطبوع فارغة دائما.
+static NvValue nv_std_flow_run_commands(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.نفذ_أوامر";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    NvValue commands = args[1];
+    int quiet = 0;
+    if (nargs == 3) {
+        FlowOptsC opts;
+        flow_parse_opts_c(display, args[2], 0, 1, &opts, line, col);
+        quiet = opts.quiet;
+    }
+    return flow_run_commands_core_c(display, text, commands, quiet, line, col);
+}
+
+/// تدفق.نفذ_من_ملف(نص، مسار، خيارات؟) — البند 149:
+/// غلاف قراءة فوق نواة نفذ_أوامر: اقرأ ملف الأوامر
+/// (المسار النسبي يُحل مقابل مجلد الجلسة)، وحوّل
+/// أسطره إلى قواميس الأوامر نفسها، وطبّقها بالنواة
+/// نفسها. والغائب/غير المقروء/غير UTF-8 ← «تعذر
+/// قراءة الملف X» كـأنماط_من_ملف.
+static NvValue nv_std_flow_run_from_file(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.نفذ_من_ملف";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    const char *path = nv_std_need_string(display, args[1], line, col);
+    int quiet = 0;
+    if (nargs == 3) {
+        FlowOptsC opts;
+        flow_parse_opts_c(display, args[2], 0, 1, &opts, line, col);
+        quiet = opts.quiet;
+    }
+    char *resolved = nv_resolve_path(path, line, col);
+    size_t len = 0;
+    char *content = search_read_file_c(resolved, &len);
+    if (!content || !nv_std_file_valid_utf8((const unsigned char *)content, len)) {
+        free(content);
+        free(resolved);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر قراءة الملف %s", path);
+    }
+    free(resolved);
+    size_t cidx = nv_root_push_idx();
+    NvValue commands = flow_parse_command_file_c(content, line, col);
+    *nv_root_slot(cidx) = commands;
+    free(content);
+    NvValue result = flow_run_commands_core_c(display, text, commands, quiet, line, col);
+    nv_root_pop();
+    return result;
+}
+
+/// تدفق.استبدل_الكل(نص، نمط، بديل، خيارات؟) — البند
+/// 117 (مرآة Rust حرفيا).
+static NvValue nv_std_flow_replace_all(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.استبدل_الكل";
+    if (nargs < 3 || nargs > 4) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع ثلاثة معاملات أو أربعة لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    const char *pattern = nv_std_need_string(display, args[1], line, col);
+    const char *repl = nv_std_need_string(display, args[2], line, col);
+    NvValue address = nv_nil();
+    int has_address = 0;
+    int fold = 0;
+    if (nargs == 4) {
+        FlowOptsC fopts;
+        flow_parse_opts_c(display, args[3], 1, 0, &fopts, line, col);
+        address = fopts.address;
+        has_address = fopts.has_address;
+        fold = fopts.ignore_case;
+    }
+    char *r = flow_replace_all_core_c(display, text, pattern, repl, address, has_address, fold, line, col);
+    NvValue v = nv_str_new(r, strlen(r));
+    free(r);
+    return v;
+}
+
+/// تدفق.احذف_أسطر(نص، عنوان؟) — البند 124 (مرآة Rust
+/// حرفيا).
+static NvValue nv_std_flow_delete_lines(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.احذف_أسطر";
+    if (nargs < 1 || nargs > 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    NvValue address = nargs == 2 ? args[1] : nv_nil();
+    int has_address = nargs == 2;
+    char *r = flow_delete_lines_core_c(display, text, address, has_address, 0, line, col);
+    NvValue v = nv_str_new(r, strlen(r));
+    free(r);
+    return v;
+}
+
+/// تدفق.اطبع_المطابق(نص، عنوان؟) — البند 125: ترجع
+/// قائمة الأسطر المعنونة، لا تطبع.
+static NvValue nv_std_flow_print_matching(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.اطبع_المطابق";
+    if (nargs < 1 || nargs > 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    NvValue address = nargs == 2 ? args[1] : nv_nil();
+    int has_address = nargs == 2;
+    FlowStrListC found;
+    memset(&found, 0, sizeof(found));
+    flow_matching_lines_core_c(display, text, address, has_address, 0, &found, line, col);
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    for (size_t i = 0; i < found.len; i++) {
+        nv_list_push_raw(out.u.list, nv_str_cstr(found.items[i]));
+    }
+    flow_str_free_c(&found);
+    nv_root_pop();
+    return out;
+}
+
+/// تدفق.توقف_عند(نص، عدد) — البند 127 (مرآة Rust
+/// حرفيا).
+static NvValue nv_std_flow_take_lines(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.توقف_عند";
+    if (nargs != 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    if (args[1].tag != NV_NUM) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع عددا لكن أعطيت %s", display, nv_type_name(args[1]));
+    }
+    char *r = flow_take_lines_core_c(display, text, (long long)args[1].u.num, line, col);
+    NvValue v = nv_str_new(r, strlen(r));
+    free(r);
+    return v;
+}
+
+/// تدفق.ألحق_بعد(نص، عنوان، نص_ملحق) — البند 135
+/// (مرآة Rust حرفيا).
+static NvValue nv_std_flow_append_after(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.ألحق_بعد";
+    if (nargs != 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع ثلاثة معاملات لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    const char *appended = nv_std_need_string(display, args[2], line, col);
+    char *r = flow_append_after_core_c(display, text, args[1], 1, appended, 0, line, col);
+    NvValue v = nv_str_new(r, strlen(r));
+    free(r);
+    return v;
+}
+
+/// تدفق.أدرج_قبل(نص، عنوان، نص_مدرج) — البند 136
+/// (مرآة Rust حرفيا).
+static NvValue nv_std_flow_insert_before(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.أدرج_قبل";
+    if (nargs != 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع ثلاثة معاملات لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    const char *inserted = nv_std_need_string(display, args[2], line, col);
+    char *r = flow_insert_before_core_c(display, text, args[1], 1, inserted, 0, line, col);
+    NvValue v = nv_str_new(r, strlen(r));
+    free(r);
+    return v;
+}
+
+/// تدفق.غير_أسطر(نص، عنوان، نص_جديد) — البند 137
+/// (مرآة Rust حرفيا).
+static NvValue nv_std_flow_change_lines(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.غير_أسطر";
+    if (nargs != 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع ثلاثة معاملات لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    const char *new_text = nv_std_need_string(display, args[2], line, col);
+    char *r = flow_change_lines_core_c(display, text, args[1], 1, new_text, 0, line, col);
+    NvValue v = nv_str_new(r, strlen(r));
+    free(r);
+    return v;
+}
+
+void nv_std_flow_fill(NvDict *d) {
+    nv_std_add_fn(d, "عدل_في_مكانه", nv_std_flow_edit_in_place);
+    nv_std_add_fn(d, "استبدل_الكل", nv_std_flow_replace_all);
+    nv_std_add_fn(d, "احذف_أسطر", nv_std_flow_delete_lines);
+    nv_std_add_fn(d, "اطبع_المطابق", nv_std_flow_print_matching);
+    nv_std_add_fn(d, "توقف_عند", nv_std_flow_take_lines);
+    nv_std_add_fn(d, "ألحق_بعد", nv_std_flow_append_after);
+    nv_std_add_fn(d, "أدرج_قبل", nv_std_flow_insert_before);
+    nv_std_add_fn(d, "غير_أسطر", nv_std_flow_change_lines);
+    nv_std_add_fn(d, "نفذ_أوامر", nv_std_flow_run_commands);
+    nv_std_add_fn(d, "نفذ_من_ملف", nv_std_flow_run_from_file);
 }

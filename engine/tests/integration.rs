@@ -4380,6 +4380,50 @@ fn cli_latin_flags_are_rejected_in_arabic() {
     }
 }
 
+// البند 115 (دفعة لينكس 2): أول `--` ينهي تحليل
+// الخيارات — ما بعده ملفات لا أعلاما، و`--` ثانية
+// بعد الأولى ملف عادي، و`--` نفسه ليس «خيارا مجهولا».
+// (مجلد جديد لكل فحص فرعي: أول تشغيل في مجلد يهجّر
+// ملفاته إلى home/، فتشغيل ثانٍ في المجلد نفسه لا
+// يجد الملف في مكانه.)
+#[test]
+fn cli_double_dash_separator() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let fresh = || {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir =
+            std::env::temp_dir().join(format!("niva-ddash-{}-{}", std::process::id(), n));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    };
+    // ملف اسمه يبدأ بـ`--` يُشغَّل عبر `نيفا -- <الاسم>`.
+    let dir = fresh();
+    fs::write(dir.join("--مساعدة"), "اطبع \"ملف-مساعدة\"\n").unwrap();
+    let (out, err, code) = run_args_in(&dir, &["--", "--مساعدة"]);
+    assert_eq!(code, 0, "stderr: {}", err);
+    assert_eq!(out, "ملف-مساعدة\n");
+    let _ = fs::remove_dir_all(&dir);
+    // `--` ثانية بعد الأولى ملف عادي.
+    let dir = fresh();
+    fs::write(dir.join("--"), "اطبع \"ملف-فاصل\"\n").unwrap();
+    let (out, err, code) = run_args_in(&dir, &["--", "--"]);
+    assert_eq!(code, 0, "stderr: {}", err);
+    assert_eq!(out, "ملف-فاصل\n");
+    let _ = fs::remove_dir_all(&dir);
+    // علم مجهول بعد `--` يُتخطى — يُعامل ملفا غائبا
+    // (127) لا «خيار غير معروف» (2).
+    let dir = fresh();
+    let (_out, err, code) = run_args_in(&dir, &["--", "--غير-معروف"]);
+    assert_eq!(code, 127, "stderr: {}", err);
+    assert!(!err.contains("خيار غير معروف"), "stderr: {}", err);
+    let _ = fs::remove_dir_all(&dir);
+    // `--مساعدة` ما زالت تعرض المساعدة بلا `--` قبلها.
+    let (out, _err, code) = run_args(&["--مساعدة"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("استخدام: نيفا"), "got: {}", out);
+}
+
 // --- خادم HTTPS (اجتماع 27) ---
 //
 // برنامج الخادم يحجب إلى الأبد، فهذه الاختبارات تشغّل
