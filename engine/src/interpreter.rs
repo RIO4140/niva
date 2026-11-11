@@ -129,6 +129,9 @@ pub struct Interpreter {
     // interpreter that is currently evaluating, and one REPL
     // console's approval never leaks into another.
     network_allowed: bool,
+    // J3-69: مهلة تنفيذ النص (نفّذ_نصا) — بلا قيمة في
+    // التشغيل العادي؛ وحين تُضبَط تُفحَص عند كل جملة.
+    eval_deadline: Option<std::time::Instant>,
     // Meeting 27: the server flag, same per-instance pattern
     // as the network flag — but it is read through the
     // HandlerCaller context (no process-wide static), because
@@ -185,6 +188,7 @@ impl Interpreter {
             loading_stack: Vec::new(),
             file_policy: crate::permissions::FilePolicy::restricted(program_dir),
             network_allowed: false,
+            eval_deadline: None,
             server_allowed: false,
             source_file: None,
             live_output: false,
@@ -1105,6 +1109,18 @@ impl Interpreter {
     /// `أخيرا` الجارية (فهي جمل لاحقة براية فارغة)
     /// ولا تُقطع في منتصفها.
     fn exec_stmt(&mut self, stmt: &Stmt) -> RioResult<Flow> {
+        // J3-69: فحص مهلة تنفيذ النص عند كل جملة (فتطال
+        // الحلقات الطويلة عبر جمل أجسامها)؛ ولا كلفة
+        // حين تكون المهلة بلا قيمة (كل التشغيل العادي).
+        if let Some(deadline) = self.eval_deadline {
+            if std::time::Instant::now() > deadline {
+                return Err(RioError::runtime(
+                    "تجاوز تنفيذ النص حد الزمن المسموح (5 ثوان)",
+                    stmt.line,
+                    stmt.col,
+                ));
+            }
+        }
         let flow = self.exec_stmt_inner(stmt)?;
         if let Some(code) = self.exit_code.take() {
             return Ok(Flow::Exit(code));
@@ -6369,6 +6385,43 @@ impl crate::stdlib::HandlerCaller for Interpreter {
 
     fn server_cwd(&self) -> std::path::PathBuf {
         self.cwd.clone()
+    }
+
+    /// J3-69: تنفيذ نص نيفا كبرنامج معزول في مفسر جديد
+    /// (نطاق فارغ، مجلد برنامج فارغ، شبكة وعمليات
+    /// وخادم معطلة)، بمهلة 5 ثوان؛ وتعيد نص مخرجاته
+    /// الملتقَطة. وبعد الانتهاء تُستعاد أذونات المتصل
+    /// العامة (شبكة وعمليات) كما كانت.
+    fn eval_text(&mut self, text: &str, _line: usize, _col: usize) -> (RioResult<Value>, String) {
+        let toks = match crate::lexer::tokenize(text) {
+            Ok(t) => t,
+            Err(e) => return (Err(e), String::new()),
+        };
+        let program = match crate::parser::Parser::new(toks).parse_program() {
+            Ok(p) => p,
+            Err(e) => return (Err(e), String::new()),
+        };
+        let mut analyzer = crate::semantic::SemanticAnalyzer::new();
+        if let Err(e) = analyzer.analyze_program(&program) {
+            return (Err(e), String::new());
+        }
+        let mut inner = Interpreter::with_program_dir(std::path::PathBuf::new());
+        inner.eval_deadline =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+        // التقاط أذونات المتصل قبل التشغيل الداخلي —
+        // فالتشغيل الداخلي يزامن العامة على قيمه هو.
+        let outer_network = crate::network::network_allowed();
+        let res = inner.run(&program);
+        crate::network::set_network_allowed(outer_network);
+        crate::processes::set_process_policy(
+            self.program_dir.clone(),
+            self.file_policy.trusted,
+            self.cwd.clone(),
+        );
+        match res {
+            Ok(()) => (Ok(Value::Str(inner.output.clone())), String::new()),
+            Err(e) => (Err(e), String::new()),
+        }
     }
 }
 

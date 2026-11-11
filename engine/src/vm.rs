@@ -1438,6 +1438,11 @@ pub struct Vm {
     frozen: Rc<RefCell<HashSet<String>>>,
     namerefs: Rc<RefCell<HashMap<String, String>>>,
     started: Rc<crate::time::SessionClock>,
+    // J3-69: مهلة تنفيذ النص (نفّذ_نصا) — بلا قيمة في
+    // التشغيل العادي؛ وعدّاد تعليمات للفحص الدوري كل
+    // 4096 تعليمة. ترثهما VM الفرعية (دالة) من أمها.
+    pub eval_deadline: Option<std::time::Instant>,
+    pub eval_steps: u64,
 }
 
 impl Vm {
@@ -1479,6 +1484,8 @@ impl Vm {
             frozen: Rc::new(RefCell::new(HashSet::new())),
             namerefs: Rc::new(RefCell::new(HashMap::new())),
             started: Rc::new(crate::time::SessionClock::now()),
+            eval_deadline: None,
+            eval_steps: 0,
         }
     }
 
@@ -2241,6 +2248,9 @@ impl Vm {
             frozen: Rc::clone(&self.frozen),
             namerefs: Rc::clone(&self.namerefs),
             started: Rc::clone(&self.started),
+            // J3-69: الدالة ترث مهلة تنفيذ النص من أمها.
+            eval_deadline: self.eval_deadline,
+            eval_steps: 0,
         }
     }
 
@@ -2293,6 +2303,9 @@ impl Vm {
             frozen: Rc::clone(&self.frozen),
             namerefs: Rc::clone(&self.namerefs),
             started: Rc::clone(&self.started),
+            // J3-69: الوحدة ترث مهلة تنفيذ النص من أمها.
+            eval_deadline: self.eval_deadline,
+            eval_steps: 0,
         }
     }
 
@@ -2339,6 +2352,9 @@ impl Vm {
             frozen: Rc::clone(&self.frozen),
             namerefs: Rc::clone(&self.namerefs),
             started: Rc::clone(&self.started),
+            // J3-69: نسخة المصدر ترث مهلة تنفيذ النص من أمها.
+            eval_deadline: self.eval_deadline,
+            eval_steps: 0,
         }
     }
 
@@ -6356,6 +6372,28 @@ impl Vm {
 
     fn run_inner(&mut self) -> RioResult<()> {
         while self.pc < self.code.len() {
+            // J3-69: فحص مهلة تنفيذ النص كل 4096 تعليمة
+            // (بلا كلفة حين تكون المهلة بلا قيمة — كل
+            // التشغيل العادي)؛ ويرثها كل VM فرعية.
+            if self.eval_deadline.is_some() {
+                self.eval_steps += 1;
+                if self.eval_steps % 4096 == 0 {
+                    if let Some(deadline) = self.eval_deadline {
+                        if std::time::Instant::now() > deadline {
+                            let (line, col) = self
+                                .code
+                                .get(self.pc)
+                                .map(|i| (i.line, i.col))
+                                .unwrap_or((1, 1));
+                            return Err(RioError::runtime(
+                                "تجاوز تنفيذ النص حد الزمن المسموح (5 ثوان)",
+                                line,
+                                col,
+                            ));
+                        }
+                    }
+                }
+            }
             let idx = self.pc;
             let instr = self.code[idx].clone();
             self.pc += 1;
@@ -8101,6 +8139,52 @@ impl crate::stdlib::HandlerCaller for Vm {
 
     fn server_cwd(&self) -> std::path::PathBuf {
         self.cwd.borrow().clone()
+    }
+
+    /// J3-69: تنفيذ نص نيفا كبرنامج معزول في آلة جديدة
+    /// (ترجمة ثم تشغيل؛ نطاق فارغ، مجلد برنامج فارغ،
+    /// شبكة وعمليات معطلة أثناء التنفيذ ثم تُستعاد
+    /// أذونات المتصل)، بمهلة 5 ثوان؛ وتعيد نص مخرجاته
+    /// الملتقَطة. (تشغيل الآلة لا يزامن الأذونات العامة
+    /// بنفسه، فتُصفَّر هنا صراحة قبل التشغيل الداخلي.)
+    fn eval_text(&mut self, text: &str, _line: usize, _col: usize) -> (RioResult<Value>, String) {
+        let toks = match crate::lexer::tokenize(text) {
+            Ok(t) => t,
+            Err(e) => return (Err(e), String::new()),
+        };
+        let program = match crate::parser::Parser::new(toks).parse_program() {
+            Ok(p) => p,
+            Err(e) => return (Err(e), String::new()),
+        };
+        let mut analyzer = crate::semantic::SemanticAnalyzer::new();
+        if let Err(e) = analyzer.analyze_program(&program) {
+            return (Err(e), String::new());
+        }
+        let compiled = match Compiler::compile_program(&program) {
+            Ok(c) => c,
+            Err(e) => return (Err(e), String::new()),
+        };
+        let mut inner = Vm::new(compiled, std::path::PathBuf::new());
+        inner.eval_deadline =
+            Some(std::time::Instant::now() + std::time::Duration::from_secs(5));
+        let outer_network = crate::network::network_allowed();
+        crate::network::set_network_allowed(false);
+        crate::processes::set_process_policy(
+            std::path::PathBuf::new(),
+            false,
+            std::path::PathBuf::new(),
+        );
+        let res = inner.run();
+        crate::network::set_network_allowed(outer_network);
+        crate::processes::set_process_policy(
+            self.program_dir.clone(),
+            self.file_policy.borrow().trusted,
+            self.cwd.borrow().clone(),
+        );
+        match res {
+            Ok(()) => (Ok(Value::Str(inner.output.clone())), String::new()),
+            Err(e) => (Err(e), String::new()),
+        }
     }
 }
 
