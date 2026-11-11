@@ -128,6 +128,7 @@ void nv_std_xml_fill(NvDict *d);
 void nv_std_yaml_fill(NvDict *d);
 void nv_std_template_fill(NvDict *d);
 void nv_std_validate_fill(NvDict *d);
+void nv_std_match_fill(NvDict *d);
 void nv_std_text_fill(NvDict *d);
 void nv_std_bases_fill(NvDict *d);
 void nv_std_units_fill(NvDict *d);
@@ -163,14 +164,14 @@ static NvValue nv_std_text_split_words_all(NvValue *args, int nargs, int line, i
 
 // ---------- السجل ----------
 // وحدة أصلية بالاسم أو NULL (مؤشر إلى قيمة ساكنة مخزنة).
-static NvValue nv_std_modules[38];
-static const char *nv_std_names[38] = {
+static NvValue nv_std_modules[39];
+static const char *nv_std_names[39] = {
     "رياضيات", "عشوائي", "وقت", "شبكة", "عمليات", "ذاكرة",
     "ملفات", "نظام", "تواصل", "تشفير", "أمن", "غير_متزامن", "جهاز",
     "نمط", "جسون", "اكسمل", "يامال", "قوالب", "تحقق",
     "نص", "أسس", "وحدات", "أرشيف", "كلمة_مرور", "وهمي", "تقويم", "ألوان", "إيموجي",
     "قوائم", "علمي", "تمويل", "اكتواري", "إحصاء", "توزيعات",
-    "دوال", "تنفيذ", "بحث", "تدفق",
+    "دوال", "تنفيذ", "بحث", "تدفق", "مطابقة",
 };
 static int nv_std_built = 0;
 
@@ -178,7 +179,7 @@ static void nv_std_build(void) {
     if (nv_std_built) return;
     nv_std_built = 1;
     nv_handle_set_finalizer(nv_std_handle_finalize);
-    for (int i = 0; i < 38; i++) {
+    for (int i = 0; i < 39; i++) {
         nv_std_modules[i] = nv_module_new(nv_std_names[i], NULL);
         NvDict *exports = nv_std_modules[i].u.module->exports;
         if (!exports) {
@@ -224,6 +225,7 @@ static void nv_std_build(void) {
             case 35: nv_std_exec_fill(exports); break;
             case 36: nv_std_search_fill(exports); break;
             case 37: nv_std_flow_fill(exports); break;
+            case 38: nv_std_match_fill(exports); break;
         }
         nv_add_global_root(nv_std_modules[i]);
     }
@@ -231,7 +233,7 @@ static void nv_std_build(void) {
 
 NvValue *nv_native_module(const char *name) {
     nv_std_build();
-    for (int i = 0; i < 38; i++) {
+    for (int i = 0; i < 39; i++) {
         if (strcmp(name, nv_std_names[i]) == 0) return &nv_std_modules[i];
     }
     return NULL;
@@ -11752,6 +11754,47 @@ void nv_std_validate_fill(NvDict *d) {
     nv_std_add_fn(d, "تاريخ", nv_std_validate_date);
     nv_std_add_fn(d, "متوقع", nv_std_validate_assert);
     nv_std_add_fn(d, "فكك", nv_std_validate_unpack);
+}
+
+// ============================================================
+// الدفعة 3 من الـ579 (البنود 99–100 و153–162): مطابقة
+// الأنماط — مرآة Rust حرفيا.
+// ============================================================
+
+static NvValue nv_std_match_class_name(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("مطابقة.اسم_الصنف", args, nargs, 1, line, col);
+    if (args[0].tag != NV_INST) return nv_nil();
+    return nv_str_cstr(args[0].u.inst->klass->name);
+}
+
+static NvValue nv_std_match_dict_without(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("مطابقة.بدون_مفاتيح", args, nargs, 2, line, col);
+    if (args[0].tag != NV_DICT) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة مطابقة.بدون_مفاتيح تتوقع قاموسا لكن أعطيت %s", nv_type_name(args[0]));
+    }
+    if (args[1].tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة مطابقة.بدون_مفاتيح تتوقع قائمة مفاتيح لكن أعطيت %s", nv_type_name(args[1]));
+    }
+    NvValue out_v = nv_dict_new();
+    NvDict *out = out_v.u.dict;
+    for (size_t i = 0; i < args[0].u.dict->len; i++) {
+        const char *key = args[0].u.dict->entries[i].key;
+        int skip = 0;
+        for (size_t j = 0; j < args[1].u.list->len; j++) {
+            NvValue k = args[1].u.list->items[j];
+            if (k.tag != NV_STR) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة مطابقة.بدون_مفاتيح تتوقع قائمة مفاتيح نصية لكن أعطيت %s", nv_type_name(k));
+            }
+            if (strcmp(key, k.u.str->data) == 0) { skip = 1; break; }
+        }
+        if (!skip) nv_dict_set_raw(out, key, args[0].u.dict->entries[i].val);
+    }
+    return out_v;
+}
+
+void nv_std_match_fill(NvDict *d) {
+    nv_std_add_fn(d, "اسم_الصنف", nv_std_match_class_name);
+    nv_std_add_fn(d, "بدون_مفاتيح", nv_std_match_dict_without);
 }
 
 // ============================================================

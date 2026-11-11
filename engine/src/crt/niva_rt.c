@@ -213,6 +213,8 @@ static NvObj *nv_obj_of(NvValue v) {
         case NV_STR: return (NvObj *)v.u.str;
         case NV_LIST: return (NvObj *)v.u.list;
         case NV_DICT: return (NvObj *)v.u.dict;
+        case NV_TUPLE: return (NvObj *)v.u.tuple;
+        case NV_SET: return (NvObj *)v.u.set;
         case NV_FUNC: return (NvObj *)v.u.func;
         case NV_NATIVE: return (NvObj *)v.u.native;
         case NV_MODULE: return (NvObj *)v.u.module;
@@ -235,6 +237,8 @@ static void nv_mark_value(NvValue v) {
         case NV_STR: o = (NvObj *)v.u.str; break;
         case NV_LIST: o = (NvObj *)v.u.list; break;
         case NV_DICT: o = (NvObj *)v.u.dict; break;
+        case NV_TUPLE: o = (NvObj *)v.u.tuple; break;
+        case NV_SET: o = (NvObj *)v.u.set; break;
         case NV_FUNC: o = (NvObj *)v.u.func; break;
         case NV_NATIVE: o = (NvObj *)v.u.native; break;
         case NV_MODULE: o = (NvObj *)v.u.module; break;
@@ -707,6 +711,40 @@ NvValue nv_dict_new(void) {
     return v;
 }
 
+// البندان 138 و139 (الدفعة 3 من الـ579): مترابطة
+// وتشكيلة — التخزين NvList نفسه (نوع الكائن
+// NV_OBJ_LIST، فيتتبعه الجامع كالقائمة تماما).
+NvValue nv_tuple_new(void) {
+    NvList *l = (NvList *)nv_alloc(sizeof(NvList), NV_OBJ_LIST);
+    l->len = 0;
+    l->cap = 0;
+    l->items = NULL;
+    NvValue v;
+    v.tag = NV_TUPLE;
+    v.u.tuple = l;
+    return v;
+}
+
+NvValue nv_set_new(void) {
+    NvList *l = (NvList *)nv_alloc(sizeof(NvList), NV_OBJ_LIST);
+    l->len = 0;
+    l->cap = 0;
+    l->items = NULL;
+    NvValue v;
+    v.tag = NV_SET;
+    v.u.set = l;
+    return v;
+}
+
+// إلحاق بتشكيلة بلا تكرار (أول ظهور يفوز) —
+// مرآة Value::make_set في Rust.
+static void nv_set_push_dedup(NvList *set, NvValue v) {
+    for (size_t i = 0; i < set->len; i++) {
+        if (nv_eq(v, set->items[i])) return;
+    }
+    nv_list_push_raw(set, v);
+}
+
 NvValue nv_func_new(const char *name, NvCFunc cfunc, NvScope *captured,
                     const char *module, NvScope *module_scope,
                     char **param_names, char **param_types,
@@ -889,6 +927,41 @@ NvValue nv_clone_value(NvValue v) {
             nv_root_pop_n(2);
             return out;
         }
+        // البندان 138 و139: نسخ عميق يحفظ الوسم —
+        // فقراءة المتغير في الأصلي تنسخ المترابطة
+        // والتشكيلة كما تنسخ القائمة والقاموس.
+        case NV_TUPLE: {
+            NvValue out = nv_tuple_new();
+            size_t _rd = nv_root_push_idx();
+            *nv_root_slot(_rd) = out;
+            NvList *src = v.u.tuple, *dst = out.u.tuple;
+            for (size_t i = 0; i < src->len; i++) {
+                NvValue e = nv_clone_value(src->items[i]);
+                if (dst->len == dst->cap) {
+                    dst->cap = dst->cap ? dst->cap * 2 : 8;
+                    dst->items = (NvValue *)realloc(dst->items, dst->cap * sizeof(NvValue));
+                }
+                dst->items[dst->len++] = e;
+            }
+            nv_root_pop_n(2);
+            return out;
+        }
+        case NV_SET: {
+            NvValue out = nv_set_new();
+            size_t _rd = nv_root_push_idx();
+            *nv_root_slot(_rd) = out;
+            NvList *src = v.u.set, *dst = out.u.set;
+            for (size_t i = 0; i < src->len; i++) {
+                NvValue e = nv_clone_value(src->items[i]);
+                if (dst->len == dst->cap) {
+                    dst->cap = dst->cap ? dst->cap * 2 : 8;
+                    dst->items = (NvValue *)realloc(dst->items, dst->cap * sizeof(NvValue));
+                }
+                dst->items[dst->len++] = e;
+            }
+            nv_root_pop_n(2);
+            return out;
+        }
         default:
             nv_root_pop_n(1);
             return v;
@@ -907,6 +980,8 @@ const char *nv_type_name(NvValue v) {
         case NV_BOOL: return "منطقي";
         case NV_LIST: return "قائمة";
         case NV_DICT: return "قاموس";
+        case NV_TUPLE: return "مترابطة";
+        case NV_SET: return "تشكيلة";
         case NV_NIL: return "لاشيء";
         case NV_FUNC: return "دالة";
         case NV_NATIVE: return "دالة";
@@ -1214,6 +1289,28 @@ static void nv_fmt_into(NvValue v, int in_collection, char **buf, size_t *blen, 
                 nv_escape_into(v.u.dict->entries[i].key, strlen(v.u.dict->entries[i].key), buf, blen, bcap);
                 nv_buf_append(buf, blen, bcap, "\": ", 3);
                 nv_fmt_into(v.u.dict->entries[i].val, 1, buf, blen, bcap);
+            }
+            nv_buf_append(buf, blen, bcap, "}", 1);
+            break;
+        }
+        // البندان 138 و139 — مرآة fmt_value في Rust:
+        // المترابطة `(أ، ب)` و`(أ،)` للوحيدة و`()`
+        // للفارغة؛ والتشكيلة `{أ، ب}` و`{}` للفارغة.
+        case NV_TUPLE: {
+            nv_buf_append(buf, blen, bcap, "(", 1);
+            for (size_t i = 0; i < v.u.tuple->len; i++) {
+                if (i) nv_buf_append(buf, blen, bcap, ", ", 2);
+                nv_fmt_into(v.u.tuple->items[i], 1, buf, blen, bcap);
+            }
+            if (v.u.tuple->len == 1) nv_buf_append(buf, blen, bcap, ",", 1);
+            nv_buf_append(buf, blen, bcap, ")", 1);
+            break;
+        }
+        case NV_SET: {
+            nv_buf_append(buf, blen, bcap, "{", 1);
+            for (size_t i = 0; i < v.u.set->len; i++) {
+                if (i) nv_buf_append(buf, blen, bcap, ", ", 2);
+                nv_fmt_into(v.u.set->items[i], 1, buf, blen, bcap);
             }
             nv_buf_append(buf, blen, bcap, "}", 1);
             break;
@@ -1690,6 +1787,27 @@ int nv_eq(NvValue l, NvValue r) {
             }
             return 1;
         }
+        // البند 138: المترابطة مرتبة كالقائمة.
+        case NV_TUPLE: {
+            if (l.u.tuple->len != r.u.tuple->len) return 0;
+            for (size_t i = 0; i < l.u.tuple->len; i++) {
+                if (!nv_eq(l.u.tuple->items[i], r.u.tuple->items[i])) return 0;
+            }
+            return 1;
+        }
+        // البند 139: التشكيلة بلا ترتيب — الطول نفسه
+        // وكل عنصر له مساوٍ في الأخرى.
+        case NV_SET: {
+            if (l.u.set->len != r.u.set->len) return 0;
+            for (size_t i = 0; i < l.u.set->len; i++) {
+                int found = 0;
+                for (size_t j = 0; j < r.u.set->len; j++) {
+                    if (nv_eq(l.u.set->items[i], r.u.set->items[j])) { found = 1; break; }
+                }
+                if (!found) return 0;
+            }
+            return 1;
+        }
         case NV_FUNC: return l.u.func == r.u.func;
         case NV_NATIVE: return l.u.native == r.u.native;
         case NV_MODULE: return l.u.module == r.u.module;
@@ -1799,6 +1917,20 @@ int nv_is_in(NvValue item, NvValue coll, int line, int col) {
         }
         return 0;
     }
+    // البندان 138 و139: العضوية في المترابطة
+    // والتشكيلة كالقائمة.
+    if (coll.tag == NV_TUPLE) {
+        for (size_t i = 0; i < coll.u.tuple->len; i++) {
+            if (nv_eq(item, coll.u.tuple->items[i])) return 1;
+        }
+        return 0;
+    }
+    if (coll.tag == NV_SET) {
+        for (size_t i = 0; i < coll.u.set->len; i++) {
+            if (nv_eq(item, coll.u.set->items[i])) return 1;
+        }
+        return 0;
+    }
     if (coll.tag == NV_STR && item.tag == NV_STR) {
         if (item.u.str->len == 0) return 1;
         return strstr(coll.u.str->data, item.u.str->data) != NULL;
@@ -1873,6 +2005,20 @@ NvValue nv_index(NvValue target, NvValue index, int line, int col, int idx_line,
                          idx, target.u.list->len);
         }
         return target.u.list->items[idx];
+    }
+    // البند 138: فهرسة المترابطة كالقائمة برسائلها
+    // الخاصة (المترابطة بدلا من القائمة).
+    if (target.tag == NV_TUPLE && index.tag == NV_NUM) {
+        double x = index.u.num;
+        if (x != trunc(x) || x < 0.0) {
+            nv_error(NV_ERR_TYPE, "فهرس المترابطة يجب أن يكون عددا صحيحا", idx_line, idx_col);
+        }
+        size_t idx = nv_num_to_index(x);
+        if (idx >= target.u.tuple->len) {
+            nv_error_fmt(NV_ERR_RUNTIME, idx_line, idx_col, "فهرس خارج النطاق: %zu والمترابطة طولها %zu",
+                         idx, target.u.tuple->len);
+        }
+        return target.u.tuple->items[idx];
     }
     if (target.tag == NV_DICT && index.tag == NV_STR) {
         int i = nv_dict_find(target.u.dict, index.u.str->data);
@@ -2057,6 +2203,23 @@ static int nv_match_type_at(const char **pp, NvValue v) {
         NvDict *d = v.u.dict;
         for (size_t i = 0; i < d->len; i++) {
             if (!nv_value_matches_decl(args[1], d->entries[i].val)) return 0;
+        }
+        return 1;
+    }
+    // الدفعة 3 من الـ579 — البندان 138 و139: فحص
+    // عناصر المترابطة والتشكيلة كالقائمة (مرآة
+    // matches_type_expr في Rust).
+    if (strcmp(name, "مترابطة") == 0 && nargs == 1 && v.tag == NV_TUPLE) {
+        NvList *l = v.u.tuple;
+        for (size_t i = 0; i < l->len; i++) {
+            if (!nv_value_matches_decl(args[0], l->items[i])) return 0;
+        }
+        return 1;
+    }
+    if (strcmp(name, "تشكيلة") == 0 && nargs == 1 && v.tag == NV_SET) {
+        NvList *l = v.u.set;
+        for (size_t i = 0; i < l->len; i++) {
+            if (!nv_value_matches_decl(args[0], l->items[i])) return 0;
         }
         return 1;
     }
@@ -3365,6 +3528,25 @@ NvValue nv_call_list_method(NvValue *slot, const char *name, NvValue *args, int 
     nv_error_fmt(NV_ERR_TYPE, line, col, "طريقة غير معروفة لنوع قائمة: %s", name);
 }
 
+// طرق المترابطة والتشكيلة (بلا تعديل — `طول`
+// و`يحتوي` فقط، مرآة call_builtin_method في Rust).
+static NvValue nv_call_tuple_set_method(NvValue target, const char *name, NvValue *args, int nargs, int line, int col) {
+    NvList *l = target.tag == NV_TUPLE ? target.u.tuple : target.u.set;
+    const char *tname = target.tag == NV_TUPLE ? "مترابطة" : "تشكيلة";
+    if (strcmp(name, "طول") == 0) {
+        if (nargs != 0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الطريقة %s تتوقع 0 معاملات لكن أعطيت %d", name, nargs);
+        return nv_num((double)l->len);
+    }
+    if (strcmp(name, "يحتوي") == 0) {
+        if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الطريقة %s تتوقع 1 معاملات لكن أعطيت %d", name, nargs);
+        for (size_t i = 0; i < l->len; i++) {
+            if (nv_eq(l->items[i], args[0])) return nv_bool(1);
+        }
+        return nv_bool(0);
+    }
+    nv_error_fmt(NV_ERR_TYPE, line, col, "طريقة غير معروفة لنوع %s: %s", tname, name);
+}
+
 // ---------- استدعاء بنقطة (طريقة نص/قائمة أو عضو وحدة/كائن) ----------
 // يوزع على نوع الهدف وقت التشغيل؛ والقائمة تُعدَّل في
 // مكانها (كائن القائمة مشترك مع متغير المتصل)، فيكتب
@@ -3375,6 +3557,9 @@ NvValue nv_call_dot_at(NvValue target, const char *name, NvValue *args, int narg
     if (target.tag == NV_LIST) {
         NvValue slot = target;
         return nv_call_list_method(&slot, name, args, nargs, line, col);
+    }
+    if (target.tag == NV_TUPLE || target.tag == NV_SET) {
+        return nv_call_tuple_set_method(target, name, args, nargs, line, col);
     }
     NvValue member = nv_dot(target, name, line, col);
     return nv_call_at(member, args, nargs, line, col, callee_line, callee_col);
@@ -4100,7 +4285,10 @@ int nv_is_builtin(const char *name) {
         "جمد", "احذف_متغير", "افحص_متغير", "مرجع", "اعرض_البيئة", "مفاتيح",
         // الدفعة 5 — أدوات الملفات (اجتماع 59 §74).
         "انسخ_تكراري", "انسخ_محدث", "انسخ_أرشيف", "انسخ_خفيف", "احذف_تكراري",
-        "أنشئ_رابط_صلب", "أنشئ_رابط_نسبي", NULL
+        "أنشئ_رابط_صلب", "أنشئ_رابط_نسبي",
+        // الدفعة 3 من الـ579 — الحاويات والفهم
+        // (البنود 138 و139 و141–143).
+        "مترابطة", "تشكيلة", "افهم_قائمة", "افهم_تشكيلة", "افهم_فهرس", NULL
     };
     for (int i = 0; names[i]; i++) {
         if (strcmp(name, names[i]) == 0) return 1;
@@ -5003,7 +5191,84 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
         if (a.tag == NV_LIST) return nv_num((double)a.u.list->len);
         if (a.tag == NV_STR) return nv_num((double)a.u.str->chars);
         if (a.tag == NV_DICT) return nv_num((double)a.u.dict->len);
+        if (a.tag == NV_TUPLE) return nv_num((double)a.u.tuple->len);
+        if (a.tag == NV_SET) return nv_num((double)a.u.set->len);
         nv_error_fmt(NV_ERR_TYPE, line, col, "طول يتطلب قائمة أو نصا أو قاموسا، وليس %s", nv_type_name(a));
+    }
+    // الدفعة 3 من الـ579 — البند 138: `مترابطة(...)`.
+    if (strcmp(name, "مترابطة") == 0) {
+        NvValue out = nv_tuple_new();
+        size_t _ro = nv_root_push_idx();
+        *nv_root_slot(_ro) = out;
+        for (int i = 0; i < nargs; i++) nv_list_push_raw(out.u.tuple, args[i]);
+        nv_root_pop_n(1);
+        return out;
+    }
+    // الدفعة 3 من الـ579 — البند 139: `تشكيلة(...)`
+    // بلا تكرار (أول ظهور يفوز).
+    if (strcmp(name, "تشكيلة") == 0) {
+        NvValue out = nv_set_new();
+        size_t _ro = nv_root_push_idx();
+        *nv_root_slot(_ro) = out;
+        for (int i = 0; i < nargs; i++) nv_set_push_dedup(out.u.set, args[i]);
+        nv_root_pop_n(1);
+        return out;
+    }
+    // الدفعة 3 من الـ579 — البنود 141–143: الفهم
+    // الضمني `افهم_قائمة/افهم_تشكيلة/افهم_فهرس
+    // (دالة التعبير، دالة الشرط أو لاشيء، القابل)` —
+    // مرآة call_builtin في Rust: لقطة القابل عبر
+    // nv_for_snapshot، ثم استدعاء الدالتين بـnv_call
+    // كما في `قوائم.اطو_ب`، والشرط غير المنطقي
+    // والزوج غير الثنائي والمفتاح غير النصي أخطاء
+    // عربية بالرسائل نفسها.
+    if (strcmp(name, "افهم_قائمة") == 0 || strcmp(name, "افهم_تشكيلة") == 0
+        || strcmp(name, "افهم_فهرس") == 0) {
+        nv_arity(args, nargs, 3, name, line, col);
+        int is_dict = strcmp(name, "افهم_فهرس") == 0;
+        int is_set = strcmp(name, "افهم_تشكيلة") == 0;
+        NvValue snap = nv_for_snapshot(args[2], line, col);
+        size_t _rs = nv_root_push_idx();
+        *nv_root_slot(_rs) = snap;
+        NvValue out = is_dict ? nv_dict_new() : is_set ? nv_set_new() : nv_list_new();
+        size_t _ro = nv_root_push_idx();
+        *nv_root_slot(_ro) = out;
+        NvList *items = snap.u.list;
+        for (size_t i = 0; i < items->len; i++) {
+            NvValue item = items->items[i];
+            if (args[1].tag != NV_NIL) {
+                NvValue argv[1];
+                argv[0] = item;
+                NvValue c = nv_call(args[1], argv, 1, line, col);
+                if (c.tag != NV_BOOL) {
+                    nv_error_fmt(NV_ERR_TYPE, line, col, "شرط الفهم يجب أن يكون منطقيا، وليس %s", nv_type_name(c));
+                }
+                if (!c.u.boolean) continue;
+            }
+            NvValue argv[1];
+            argv[0] = item;
+            NvValue v = nv_call(args[0], argv, 1, line, col);
+            size_t _rv = nv_root_push_idx();
+            *nv_root_slot(_rv) = v;
+            if (is_dict) {
+                if (v.tag != NV_LIST || v.u.list->len != 2) {
+                    nv_error(NV_ERR_RUNTIME, "دالة الزوج في فهم الفهرس يجب أن ترجع قائمة من عنصرين", line, col);
+                }
+                NvValue k = v.u.list->items[0];
+                if (k.tag != NV_STR) {
+                    nv_error_fmt(NV_ERR_TYPE, line, col, "مفتاح القاموس يجب أن يكون نصا، وليس %s", nv_type_name(k));
+                }
+                nv_dict_set_raw(out.u.dict, k.u.str->data, v.u.list->items[1]);
+            } else if (is_set) {
+                nv_set_push_dedup(out.u.set, v);
+            } else {
+                nv_list_push_raw(out.u.list, v);
+            }
+            nv_root_pop_n(1);
+            nv_safepoint();
+        }
+        nv_root_pop_n(2);
+        return out;
     }
     if (strcmp(name, "مدى") == 0) {
         if (nargs < 1 || nargs > 3) {
@@ -6792,6 +7057,26 @@ NvValue nv_for_snapshot(NvValue v, int line, int col) {
     if (v.tag == NV_LIST) {
         NvValue snap = nv_list_new();
         NvList *src = v.u.list;
+        NvList *dst = snap.u.list;
+        for (size_t i = 0; i < src->len; i++) {
+            nv_list_push_raw(dst, src->items[i]);
+        }
+        return snap;
+    }
+    // البندان 138 و139: لقطة المترابطة والتشكيلة
+    // كالقائمة (عناصرها بترتيب أول ظهور).
+    if (v.tag == NV_TUPLE) {
+        NvValue snap = nv_list_new();
+        NvList *src = v.u.tuple;
+        NvList *dst = snap.u.list;
+        for (size_t i = 0; i < src->len; i++) {
+            nv_list_push_raw(dst, src->items[i]);
+        }
+        return snap;
+    }
+    if (v.tag == NV_SET) {
+        NvValue snap = nv_list_new();
+        NvList *src = v.u.set;
         NvList *dst = snap.u.list;
         for (size_t i = 0; i < src->len; i++) {
             nv_list_push_raw(dst, src->items[i]);

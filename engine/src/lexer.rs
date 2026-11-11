@@ -31,6 +31,8 @@ pub enum Keyword {
     Except,   // ماعدا
     Finally,  // أخيرا
     Assert,   // متوقع (البند 81 — الدفعة 2 من الـ579)
+    Match,    // طابق (البند 99 — الدفعة 3 من الـ579)
+    Case,     // حال (البند 100 — الدفعة 3 من الـ579)
     Class,    // فئة
     Create,   // أنشئ (إنشاء كائن من فئة)
     Inherit,  // ورث
@@ -185,6 +187,12 @@ fn keyword_for(normalized: &str) -> Option<Keyword> {
         "ماعدا" => Keyword::Except,
         "اخيرا" => Keyword::Finally,
         "متوقع" => Keyword::Assert,
+        // البندان 99 و100 (الدفعة 3 من الـ579): طابق/حال.
+        // لا تصادم: `نمط.طابق` دالة مكتبية يبقى اسم
+        // عضوها "طابق" عبر keyword_spelling بعد النقطة،
+        // و`حال` لم تُستعمل معرّفا عاريا في أي موضع.
+        "طابق" => Keyword::Match,
+        "حال" => Keyword::Case,
         // فئة normalizes to فيه (ئ -> ي, ة -> ه); the فئه key
         // never matches normalized input, but is kept harmless.
         "فئه" => Keyword::Class,
@@ -240,6 +248,8 @@ pub(crate) fn keyword_spelling(kw: Keyword) -> &'static str {
         Keyword::Except => "ماعدا",
         Keyword::Finally => "اخيرا",
         Keyword::Assert => "متوقع",
+        Keyword::Match => "طابق",
+        Keyword::Case => "حال",
         Keyword::Class => "فيه",
         Keyword::Create => "انشي",
         Keyword::Inherit => "ورث",
@@ -586,6 +596,24 @@ mod tests {
     }
 
     #[test]
+    fn match_case_keywords() {
+        // البندان 99 و100 (الدفعة 3 من الـ579): طابق
+        // وحال كلمتان محجوزتان، لا معرّفان؛ والتشكيل
+        // يُجرَّد عنهما كما عن سائر الكلمات.
+        let toks = tokenize("طابق س:\n    حال ١:\n        اطبع ١\n").unwrap();
+        assert!(matches!(toks[0].kind, TokenKind::Keyword(Keyword::Match)));
+        // [طابق، س، :، سطر، مسافة، حال، ...].
+        assert!(matches!(toks[5].kind, TokenKind::Keyword(Keyword::Case)));
+        let toks = tokenize("طابِق س\n").unwrap();
+        assert!(matches!(toks[0].kind, TokenKind::Keyword(Keyword::Match)));
+        // `نمط.طابق` بعد النقطة يبقى اسما: الكلمة
+        // تُقرأ كلمةً والمحلل يسميها عبر التهجئة.
+        let toks = tokenize("اطبع نمط.طابق(\"a\", \"a\")\n").unwrap();
+        // [اطبع، نمط، .، طابق، ...].
+        assert!(matches!(toks[3].kind, TokenKind::Keyword(Keyword::Match)));
+    }
+
+    #[test]
     fn string_is_not_translated() {
         let toks = tokenize("اطبع \"إذا ١٢٣\"\n").unwrap();
         assert!(matches!(toks[1].kind, TokenKind::Str(ref s) if s == "إذا ١٢٣"));
@@ -688,6 +716,8 @@ mod tests {
             Keyword::Except,
             Keyword::Finally,
             Keyword::Assert,
+            Keyword::Match,
+            Keyword::Case,
             Keyword::Class,
             Keyword::Create,
             Keyword::Inherit,
@@ -704,7 +734,7 @@ mod tests {
             Keyword::Equals,
             Keyword::No,
         ];
-        assert_eq!(all.len(), 38);
+        assert_eq!(all.len(), 40);
         for kw in all {
             let spelling = keyword_spelling(kw);
             assert_eq!(keyword_for(spelling), Some(kw), "spelling: {}", spelling);

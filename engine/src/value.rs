@@ -3,7 +3,8 @@
 //! reassigned to another type, but every operation checks types at runtime
 //! and fails with an Arabic type error instead of silently coercing.
 //! Types: عدد (Number), نص (String), منطقي (Bool), قائمة (List),
-//! قاموس (Dict), لاشيء (Nil), دالة (Function).
+//! قاموس (Dict), مترابطة (Tuple), تشكيلة (Set),
+//! لاشيء (Nil), دالة (Function).
 
 use crate::ast::{Stmt, TypeExpr};
 use std::cell::RefCell;
@@ -65,6 +66,14 @@ pub enum Value {
     Bool(bool),
     List(Vec<Value>),
     Dict(Vec<(String, Value)>),
+    // البندان 138 و139 (الدفعة 3 من الـ579):
+    // مترابطة: حاوية مرتبة غير قابلة للتعديل —
+    // والإسناد إلى عنصرها خطأ (يرفضه المفسر والآلة
+    // والأصلي برسالة «لا يمكن تعيين عنصر» نفسها).
+    // تشكيلة: قيم فريدة بلا ترتيب — تُبنى بلا تكرار
+    // (أول ظهور يفوز)، والمساواة بلا ترتيب.
+    Tuple(Vec<Value>),
+    Set(Vec<Value>),
     Nil,
     // module: Some(module_name) for a function defined at the top
     // level of a module, so calls to it can push that module's scope.
@@ -148,6 +157,14 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::List(a), Value::List(b)) => a == b,
             (Value::Dict(a), Value::Dict(b)) => a == b,
+            // المترابطة مرتبة كالقائمة؛ والتشكيلة بلا
+            // ترتيب: الطول نفسه وكل عنصر في إحداهما
+            // له مساوٍ في الأخرى.
+            (Value::Tuple(a), Value::Tuple(b)) => a == b,
+            (Value::Set(a), Value::Set(b)) => {
+                a.len() == b.len()
+                    && a.iter().all(|x| b.iter().any(|y| x == y))
+            }
             (Value::Nil, Value::Nil) => true,
             (
                 Value::Function { name: n1, params: p1, body: b1, module: m1, param_types: pt1, return_type: r1, captured: c1, vm_id: v1 },
@@ -182,6 +199,8 @@ impl Value {
             Value::Bool(_) => "منطقي",
             Value::List(_) => "قائمة",
             Value::Dict(_) => "قاموس",
+            Value::Tuple(_) => "مترابطة",
+            Value::Set(_) => "تشكيلة",
             Value::Nil => "لاشيء",
             Value::Function { .. } => "دالة",
             Value::Module { .. } => "وحدة",
@@ -223,6 +242,18 @@ impl Value {
                         }
                         _ => false,
                     },
+                    ("مترابطة", [elem]) => match self {
+                        Value::Tuple(items) => {
+                            items.iter().all(|v| v.matches_type_expr(elem))
+                        }
+                        _ => false,
+                    },
+                    ("تشكيلة", [elem]) => match self {
+                        Value::Set(items) => {
+                            items.iter().all(|v| v.matches_type_expr(elem))
+                        }
+                        _ => false,
+                    },
                     ("قاموس", [key, val]) => match self {
                         Value::Dict(entries) => {
                             let key_ok = matches!(key, TypeExpr::Named(k) if k == "أي" || k == "نص");
@@ -238,6 +269,34 @@ impl Value {
                     _ => true,
                 }
             }
+        }
+    }
+
+    /// البندان 138 و139 (الدفعة 3 من الـ579): بناء
+    /// تشكيلة من قيم — بلا تكرار (أول ظهور يفوز،
+    /// والترتيب الداخلي ترتيب أول ظهور، لتخرج
+    /// المخرجات حتمية في المحركات الثلاثة).
+    pub fn make_set(items: Vec<Value>) -> Value {
+        let mut out: Vec<Value> = Vec::new();
+        for v in items {
+            if !out.iter().any(|x| x == &v) {
+                out.push(v);
+            }
+        }
+        Value::Set(out)
+    }
+
+    /// عناصر أي قابل للتكرار في `لكل` وفي الفهم
+    /// الضمني (البنود 141–143): قائمة أو نص (محارف)
+    /// أو مترابطة أو تشكيلة (بترتيب أول ظهور)؛ وغيرها
+    /// لا شيء — فيرفض المتصل برسالة `لكل` نفسها.
+    pub fn iterable_items(&self) -> Option<Vec<Value>> {
+        match self {
+            Value::List(items) => Some(items.clone()),
+            Value::Tuple(items) => Some(items.clone()),
+            Value::Set(items) => Some(items.clone()),
+            Value::Str(s) => Some(s.chars().map(|c| Value::Str(c.to_string())).collect()),
+            _ => None,
         }
     }
 
@@ -283,6 +342,18 @@ impl Value {
                     .iter()
                     .map(|(k, v)| format!("\"{}\": {}", escape_str(k), v.fmt_in_collection()))
                     .collect();
+                format!("{{{}}}", inner.join(", "))
+            }
+            Value::Tuple(items) => {
+                let inner: Vec<String> = items.iter().map(|v| v.fmt_in_collection()).collect();
+                if items.len() == 1 {
+                    format!("({},)", inner.join(", "))
+                } else {
+                    format!("({})", inner.join(", "))
+                }
+            }
+            Value::Set(items) => {
+                let inner: Vec<String> = items.iter().map(|v| v.fmt_in_collection()).collect();
                 format!("{{{}}}", inner.join(", "))
             }
             Value::Nil => "لاشيء".to_string(),
