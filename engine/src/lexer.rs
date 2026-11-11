@@ -11,6 +11,7 @@ pub enum Keyword {
     Print,    // اطبع
     If,       // إذا
     Else,     // وإلا
+    Elif,     // اواذا (elif بكلمة واحدة — الدفعة 2)
     While,    // بينما
     For,      // لكل
     In,       // في
@@ -29,6 +30,7 @@ pub enum Keyword {
     Try,      // حاول
     Except,   // ماعدا
     Finally,  // أخيرا
+    Assert,   // متوقع (البند 81 — الدفعة 2 من الـ579)
     Class,    // فئة
     Create,   // أنشئ (إنشاء كائن من فئة)
     Inherit,  // ورث
@@ -51,10 +53,35 @@ pub enum TokenKind {
     Ident(String),
     Number(f64),
     Str(String),
+    /// نص تنفيذي `ف"..."` (البنود 163–165، الدفعة 2 من
+    /// الـ579): المحتوى الخام بين علامتي الاقتباس، يفككه
+    /// المحلل إلى أجزاء نصية وحقول `{تعبير}`.
+    FStr(String),
     Keyword(Keyword),
     Plus,
     // الدفعة 4 — المتغيرات (اجتماع 58 §73): `+=`.
     PlusEq,
+// == مولّد-دفعة2-بدائل-الرموز: بداية ==
+    SlashSlashEq,
+    CaretCaretEq,
+    ShlEq,
+    ShrEq,
+    MinusEq,
+    StarEq,
+    SlashEq,
+    PercentEq,
+    SlashSlash,
+    CaretCaret,
+    Shl,
+    Shr,
+    AmpEq,
+    PipeEq,
+    CaretEq,
+    Pipe,
+    Amp,
+    Caret,
+    Tilde,
+// == مولّد-دفعة2-بدائل-الرموز: نهاية ==
     Minus,
     Star,
     Slash,
@@ -137,6 +164,7 @@ fn keyword_for(normalized: &str) -> Option<Keyword> {
         "اطبع" => Keyword::Print,
         "اذا" => Keyword::If,
         "والا" => Keyword::Else,
+        "اواذا" => Keyword::Elif,
         "بينما" => Keyword::While,
         "لكل" => Keyword::For,
         "في" => Keyword::In,
@@ -156,6 +184,7 @@ fn keyword_for(normalized: &str) -> Option<Keyword> {
         "حاول" => Keyword::Try,
         "ماعدا" => Keyword::Except,
         "اخيرا" => Keyword::Finally,
+        "متوقع" => Keyword::Assert,
         // فئة normalizes to فيه (ئ -> ي, ة -> ه); the فئه key
         // never matches normalized input, but is kept harmless.
         "فئه" => Keyword::Class,
@@ -191,6 +220,7 @@ pub(crate) fn keyword_spelling(kw: Keyword) -> &'static str {
         Keyword::Print => "اطبع",
         Keyword::If => "اذا",
         Keyword::Else => "والا",
+        Keyword::Elif => "اواذا",
         Keyword::While => "بينما",
         Keyword::For => "لكل",
         Keyword::In => "في",
@@ -209,6 +239,7 @@ pub(crate) fn keyword_spelling(kw: Keyword) -> &'static str {
         Keyword::Try => "حاول",
         Keyword::Except => "ماعدا",
         Keyword::Finally => "اخيرا",
+        Keyword::Assert => "متوقع",
         Keyword::Class => "فيه",
         Keyword::Create => "انشي",
         Keyword::Inherit => "ورث",
@@ -387,6 +418,40 @@ pub fn tokenize(source: &str) -> RioResult<Vec<Token>> {
                     }
                 }
                 let norm = normalize_keyword(&word);
+                // النص التنفيذي (البنود 163–165، الدفعة 2 من
+                // الـ579): بادئة `ف` قبل علامة الاقتباس مباشرة
+                // (`ف"..."` أو `ف'...'`) — بلا مسافة بينهما.
+                // المحتوى خام (بما فيه الشرطات المائلة) ليفككه
+                // المحلل إلى أجزاء وحقول؛ والنص سطر واحد ككل
+                // نص في نيفا. `ف` وحدها بلا اقتباس بعدها تبقى
+                // معرّفا عاديا، وكلمة أطول تبدأ بف (فهم) لا تمس.
+                if word == "ف" && i < rest.len() && (rest[i] == '"' || rest[i] == '\'') {
+                    let quote = rest[i];
+                    i += 1;
+                    let mut raw = String::new();
+                    let mut closed = false;
+                    while i < rest.len() {
+                        let ch = rest[i];
+                        if ch == '\\' && i + 1 < rest.len() {
+                            raw.push(ch);
+                            raw.push(rest[i + 1]);
+                            i += 2;
+                            continue;
+                        }
+                        if ch == quote {
+                            closed = true;
+                            i += 1;
+                            break;
+                        }
+                        raw.push(ch);
+                        i += 1;
+                    }
+                    if !closed {
+                        return Err(RioError::lex("نص تنفيذي غير مغلق", line_no, start_col));
+                    }
+                    tokens.push(Token { kind: TokenKind::FStr(raw), line: line_no, col: start_col });
+                    continue;
+                }
                 if let Some(kw) = keyword_for(&norm) {
                     tokens.push(Token { kind: TokenKind::Keyword(kw), line: line_no, col: start_col });
                 } else {
@@ -394,6 +459,21 @@ pub fn tokenize(source: &str) -> RioResult<Vec<Token>> {
                 }
                 continue;
             }
+// == مولّد-دفعة2-رموز-ثلاثية: بداية ==
+            // رموز ثلاثية (الأطول أولا): `//=` و`^^=` و`<<=` و`>>=`.
+            let three = if i + 2 < rest.len() { Some((c, rest[i + 1], rest[i + 2])) } else { None };
+            if let Some((kind, advance)) = match three {
+                Some(('/', '/', '=')) => Some((TokenKind::SlashSlashEq, 3)),
+                Some(('^', '^', '=')) => Some((TokenKind::CaretCaretEq, 3)),
+                Some(('<', '<', '=')) => Some((TokenKind::ShlEq, 3)),
+                Some(('>', '>', '=')) => Some((TokenKind::ShrEq, 3)),
+                _ => None,
+            } {
+                tokens.push(Token { kind, line: line_no, col });
+                i += advance;
+                continue;
+            }
+// == مولّد-دفعة2-رموز-ثلاثية: نهاية ==
             // Operators and punctuation.
             let two = if i + 1 < rest.len() { Some((c, rest[i + 1])) } else { None };
             let (kind, advance): (TokenKind, usize) = match two {
@@ -403,12 +483,31 @@ pub fn tokenize(source: &str) -> RioResult<Vec<Token>> {
                 Some(('>', '=')) => (TokenKind::GtEq, 2),
                 // الدفعة 4 — المتغيرات (اجتماع 58 §73): `+=`.
                 Some(('+', '=')) => (TokenKind::PlusEq, 2),
+// == مولّد-دفعة2-رموز-ثنائية: بداية ==
+                Some(('-', '=')) => (TokenKind::MinusEq, 2),
+                Some(('*', '=')) => (TokenKind::StarEq, 2),
+                Some(('/', '=')) => (TokenKind::SlashEq, 2),
+                Some(('%', '=')) => (TokenKind::PercentEq, 2),
+                Some(('/', '/')) => (TokenKind::SlashSlash, 2),
+                Some(('^', '^')) => (TokenKind::CaretCaret, 2),
+                Some(('<', '<')) => (TokenKind::Shl, 2),
+                Some(('>', '>')) => (TokenKind::Shr, 2),
+                Some(('&', '=')) => (TokenKind::AmpEq, 2),
+                Some(('|', '=')) => (TokenKind::PipeEq, 2),
+                Some(('^', '=')) => (TokenKind::CaretEq, 2),
+// == مولّد-دفعة2-رموز-ثنائية: نهاية ==
                 _ => match c {
                     '+' => (TokenKind::Plus, 1),
                     '-' => (TokenKind::Minus, 1),
                     '*' => (TokenKind::Star, 1),
                     '/' => (TokenKind::Slash, 1),
                     '%' => (TokenKind::Percent, 1),
+// == مولّد-دفعة2-رموز-أحادية: بداية ==
+                    '|' => (TokenKind::Pipe, 1),
+                    '&' => (TokenKind::Amp, 1),
+                    '^' => (TokenKind::Caret, 1),
+                    '~' => (TokenKind::Tilde, 1),
+// == مولّد-دفعة2-رموز-أحادية: نهاية ==
                     '=' => (TokenKind::Eq, 1),
                     '<' => (TokenKind::Lt, 1),
                     '>' => (TokenKind::Gt, 1),
@@ -479,6 +578,14 @@ mod tests {
     }
 
     #[test]
+    fn assert_keyword() {
+        // البند 81 (الدفعة 2 من الـ579): متوقع كلمة
+        // محجوزة، لا معرّفا.
+        let toks = tokenize("متوقع س == ١\n").unwrap();
+        assert!(matches!(toks[0].kind, TokenKind::Keyword(Keyword::Assert)));
+    }
+
+    #[test]
     fn string_is_not_translated() {
         let toks = tokenize("اطبع \"إذا ١٢٣\"\n").unwrap();
         assert!(matches!(toks[1].kind, TokenKind::Str(ref s) if s == "إذا ١٢٣"));
@@ -533,6 +640,26 @@ mod tests {
     }
 
     #[test]
+    fn fstring_prefix() {
+        // البنود 163–165 (الدفعة 2 من الـ579): `ف"..."` رمز
+        // نص تنفيذي بمحتواه الخام؛ و`ف` وحدها معرّف.
+        let toks = tokenize("اطبع ف\"العدد {س}\"\n").unwrap();
+        assert!(matches!(toks[1].kind, TokenKind::FStr(ref s) if s == "العدد {س}"));
+        let toks = tokenize("اطبع ف'نص {س}'\n").unwrap();
+        assert!(matches!(toks[1].kind, TokenKind::FStr(ref s) if s == "نص {س}"));
+        let toks = tokenize("ف = ٥\n").unwrap();
+        assert!(matches!(toks[0].kind, TokenKind::Ident(ref s) if s == "ف"));
+        let toks = tokenize("اطبع فهم\n").unwrap();
+        assert!(matches!(toks[1].kind, TokenKind::Ident(ref s) if s == "فهم"));
+        // `ف` ثم نص بمسافة بينهما: معرّف ونص منفصلان.
+        let toks = tokenize("اطبع ف \"نص\"\n").unwrap();
+        assert!(matches!(toks[1].kind, TokenKind::Ident(ref s) if s == "ف"));
+        assert!(matches!(toks[2].kind, TokenKind::Str(ref s) if s == "نص"));
+        // غير مغلق خطأ لغوي.
+        assert!(tokenize("اطبع ف\"نص\n").is_err());
+    }
+
+    #[test]
     fn keyword_spelling_round_trips() {
         // مهمة 10: كل كلمة مفتاحية لها صيغة قانونية واحدة
         // تعيدها keyword_for إلى نفس الكلمة — فاسم العضو
@@ -541,6 +668,7 @@ mod tests {
             Keyword::Print,
             Keyword::If,
             Keyword::Else,
+            Keyword::Elif,
             Keyword::While,
             Keyword::For,
             Keyword::In,
@@ -559,6 +687,7 @@ mod tests {
             Keyword::Try,
             Keyword::Except,
             Keyword::Finally,
+            Keyword::Assert,
             Keyword::Class,
             Keyword::Create,
             Keyword::Inherit,
@@ -575,7 +704,7 @@ mod tests {
             Keyword::Equals,
             Keyword::No,
         ];
-        assert_eq!(all.len(), 36);
+        assert_eq!(all.len(), 38);
         for kw in all {
             let spelling = keyword_spelling(kw);
             assert_eq!(keyword_for(spelling), Some(kw), "spelling: {}", spelling);
