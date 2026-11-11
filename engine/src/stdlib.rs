@@ -182,6 +182,10 @@ pub fn native_module(name: &str) -> Option<Value> {
         // 1–8 و18–20 و23 و27 و28): بحث بنمط ونص ثابت
         // مع خيارات المطابقة والإخراج.
         "بحث" => search_entries(),
+        // دفعة لينكس 2، البنّاء اليدوي H2 (البنود
+        // 129–133 و145 و146): آلية عنوان تدفق
+        // + عدل_في_مكانه — وحدة جديدة بهذه الدالة أولا.
+        "تدفق" => flow_entries(),
         "جسون" => json_entries(),
         "اكسمل" => xml_entries(),
         "يامال" => yaml_entries(),
@@ -2130,8 +2134,16 @@ fn regex_groups(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: 
 //   منطقيا (هل وُجدت نتيجة؟) في دوال البحث والعد
 //   والملفات؛ وفي استبدل_معاينة مقبول بلا أثر.
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct SearchOpts {
+    include_hidden: bool,
+    respect_ignore: bool,
+    recursive: bool,
+    file_pattern: Option<String>,
+    exclude_files: Option<String>,
+    exclude_dirs: Option<String>,
+    file_type: Option<String>,
+    not_file_type: Option<String>,
     ignore_case: bool,
     case_sensitive: bool,
     smart_case: bool,
@@ -2201,6 +2213,30 @@ fn search_parse_opts_dict(
 ) -> RioResult<()> {
     for (k, v) in pairs {
         match k.as_str() {
+            "أدرج_المخفية" => {
+                opts.include_hidden = search_need_bool(display, k, v, line, col)?;
+            }
+            "احترم_التجاهل" => {
+                opts.respect_ignore = search_need_bool(display, k, v, line, col)?;
+            }
+            "تكراري" => {
+                opts.recursive = search_need_bool(display, k, v, line, col)?;
+            }
+            "نمط_الملفات" => {
+                opts.file_pattern = Some(search_need_text(display, k, v, line, col)?);
+            }
+            "استثن_ملفات" => {
+                opts.exclude_files = Some(search_need_text(display, k, v, line, col)?);
+            }
+            "استثن_مجلدات" => {
+                opts.exclude_dirs = Some(search_need_text(display, k, v, line, col)?);
+            }
+            "نوع_الملف" => {
+                opts.file_type = Some(search_need_text(display, k, v, line, col)?);
+            }
+            "ليس_نوع_الملف" => {
+                opts.not_file_type = Some(search_need_text(display, k, v, line, col)?);
+            }
             "تجاهل_الحالة" => {
                 opts.ignore_case = search_need_bool(display, k, v, line, col)?;
             }
@@ -2278,6 +2314,37 @@ fn search_parse_opts_dict(
             col,
         ));
     }
+    if opts.file_type.is_some() && opts.not_file_type.is_some() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} خيارات متضاربة: اختر واحدا فقط من نوع_الملف وليس_نوع_الملف",
+                display
+            ),
+            line,
+            col,
+        ));
+    }
+    if !opts.recursive && opts.max_depth.is_some() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} خياران متضاربان: تكراري كاذب مع أقصى_عمق صريح",
+                display
+            ),
+            line,
+            col,
+        ));
+    }
+    // التحقق المبكر من الكروي ونوع الملف — فخطأ
+    // الخيار يظهر ولو كان المجلد فارغا.
+    for pat in [&opts.file_pattern, &opts.exclude_files, &opts.exclude_dirs]
+        .into_iter()
+        .flatten()
+    {
+        search_glob_match(pat, "", 0, 0)?;
+    }
+    for t in [&opts.file_type, &opts.not_file_type].into_iter().flatten() {
+        search_file_type_exts(t, 0, 0)?;
+    }
     Ok(())
 }
 
@@ -2299,6 +2366,8 @@ fn search_parse_opts(
         ));
     }
     let mut opts = SearchOpts::default();
+    opts.recursive = true;
+    opts.respect_ignore = true;
     if args.len() == 3 {
         let pairs = need_dict(display, &args[2], line, col)?;
         search_parse_opts_dict(display, pairs, &mut opts, line, col)?;
@@ -2324,6 +2393,8 @@ fn search_parse_opts_4(
         ));
     }
     let mut opts = SearchOpts::default();
+    opts.recursive = true;
+    opts.respect_ignore = true;
     if args.len() == 4 {
         let pairs = need_dict(display, &args[3], line, col)?;
         search_parse_opts_dict(display, pairs, &mut opts, line, col)?;
@@ -2981,11 +3052,25 @@ fn search_resolve_path(
 /// مسار عرض)؛ والروابط الرمزية تُتخطى؛ والمجلد
 /// الفرعي غير المقروء يُتخطى بصمت؛ والعمق 0 يعني
 /// ملفات المجلد الأعلى وحدها.
+/// دفعة لينكس 2، موجة النص: خيارات المشي —
+/// أدرج_المخفية (69) واحترم_التجاهل (70)
+/// ونمط_الملفات (77) ونوع_الملف (80)
+/// وليس_نوع_الملف (81) وتكراري (97)
+/// واستثن_ملفات (101) واستثن_مجلدات (102).
+/// والمخفية اسم يبدأ بنقطة (ملف أو مجلد)؛ وأنماط
+/// التجاهل موروثة من الجذر إلى كل مجلد فرعي
+/// (بلا `!` وبلا `/` وبلا مجلدات أب — قيد H1)؛
+/// والكروي يطابق مسار العرض النسبي أو الاسم
+/// العاري؛ ونوع الملف يقارن الامتداد بعد خفض
+/// الحالة. والكرويات وأنواع الملفات متحقق منها
+/// عند تحليل الخيارات، فلا خطأ هنا.
 fn search_walk_dir(
     dir_fs: &std::path::Path,
     dir_display: &str,
     depth: i64,
     max_depth: i64,
+    opts: &SearchOpts,
+    ignore: &mut Vec<String>,
     out: &mut Vec<(std::path::PathBuf, String)>,
 ) {
     let entries = match std::fs::read_dir(dir_fs) {
@@ -2994,6 +3079,12 @@ fn search_walk_dir(
     };
     let mut items: Vec<_> = entries.filter_map(|e| e.ok()).collect();
     items.sort_by_key(|e| e.file_name());
+    // أنماط تجاهل هذا المجلد تنضم إلى الموروثة
+    // لشجرته، وتُسحب عند الخروج منه.
+    let base_len = ignore.len();
+    if opts.respect_ignore {
+        ignore.extend(search_ignore_patterns(dir_fs));
+    }
     for entry in items {
         let ft = match entry.file_type() {
             Ok(t) => t,
@@ -3008,20 +3099,88 @@ fn search_walk_dir(
         } else {
             format!("{}/{}", dir_display, name)
         };
+        // المخفية (69): اسم يبدأ بنقطة — ملفا كان أو مجلدا.
+        if !opts.include_hidden && name.starts_with('.') {
+            continue;
+        }
         if ft.is_dir() {
+            // استثن_مجلدات (102): كروي على الاسم العاري مع تقليم النزول.
+            if let Some(pat) = &opts.exclude_dirs {
+                if search_glob_match(pat, &name, 0, 0).unwrap_or(false) {
+                    continue;
+                }
+            }
+            // احترم_التجاهل (70): مجلد متجاهل لا يُنزَل إليه.
+            if opts.respect_ignore
+                && (search_ignore_match(ignore, &child_display)
+                    || search_ignore_match(ignore, &name))
+            {
+                continue;
+            }
             if depth < max_depth {
-                search_walk_dir(&entry.path(), &child_display, depth + 1, max_depth, out);
+                search_walk_dir(
+                    &entry.path(),
+                    &child_display,
+                    depth + 1,
+                    max_depth,
+                    opts,
+                    ignore,
+                    out,
+                );
             }
         } else if ft.is_file() {
+            // احترم_التجاهل (70).
+            if opts.respect_ignore
+                && (search_ignore_match(ignore, &child_display)
+                    || search_ignore_match(ignore, &name))
+            {
+                continue;
+            }
+            // نمط_الملفات (77): مسار العرض أو الاسم العاري.
+            if let Some(pat) = &opts.file_pattern {
+                if !search_glob_match(pat, &child_display, 0, 0).unwrap_or(false)
+                    && !search_glob_match(pat, &name, 0, 0).unwrap_or(false)
+                {
+                    continue;
+                }
+            }
+            // نوع_الملف (80) وليس_نوع_الملف (81):
+            // مقارنة الامتداد بعد خفض الحالة.
+            if opts.file_type.is_some() || opts.not_file_type.is_some() {
+                let ext = std::path::Path::new(&name)
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_lowercase());
+                if let Some(t) = &opts.file_type {
+                    let exts = search_file_type_exts(t, 0, 0).unwrap_or(&[]);
+                    if !ext.as_deref().is_some_and(|e| exts.contains(&e)) {
+                        continue;
+                    }
+                }
+                if let Some(t) = &opts.not_file_type {
+                    let exts = search_file_type_exts(t, 0, 0).unwrap_or(&[]);
+                    if ext.as_deref().is_some_and(|e| exts.contains(&e)) {
+                        continue;
+                    }
+                }
+            }
+            // استثن_ملفات (101): كروي واحد على العرض أو العاري.
+            if let Some(pat) = &opts.exclude_files {
+                if search_glob_match(pat, &child_display, 0, 0).unwrap_or(false)
+                    || search_glob_match(pat, &name, 0, 0).unwrap_or(false)
+                {
+                    continue;
+                }
+            }
             out.push((entry.path(), child_display));
         }
     }
+    ignore.truncate(base_len);
 }
 
 fn search_walk_files(
     root_display: &str,
     root_fs: &std::path::Path,
-    max_depth: i64,
+    opts: &SearchOpts,
     line: usize,
     col: usize,
 ) -> RioResult<Vec<(std::path::PathBuf, String)>> {
@@ -3029,6 +3188,8 @@ fn search_walk_files(
         RioError::runtime(format!("المسار غير موجود: {}", root_display), line, col)
     })?;
     if meta.is_file() {
+        // الجذر ملف مسمى صراحة: يُرجع كما هو بلا
+        // ترشيح بخيارات المشي.
         return Ok(vec![(root_fs.to_path_buf(), root_display.to_string())]);
     }
     if !meta.is_dir() {
@@ -3041,7 +3202,16 @@ fn search_walk_files(
     let base = root_display.trim_end_matches('/');
     let base = if base == "." { "" } else { base };
     let mut out: Vec<(std::path::PathBuf, String)> = Vec::new();
-    search_walk_dir(root_fs, base, 0, max_depth, &mut out);
+    let mut ignore: Vec<String> = Vec::new();
+    search_walk_dir(
+        root_fs,
+        base,
+        0,
+        search_eff_max_depth(opts),
+        opts,
+        &mut ignore,
+        &mut out,
+    );
     Ok(out)
 }
 
@@ -3085,9 +3255,8 @@ fn search_files_impl(
     // التحقق من النمط أولا — فلو كانت كل الملفات
     // ثنائية أو غير مقروءة لما ظهر خطأ النمط أبدا.
     let _ = search_scan(display, "", true, &pattern, &opts, line, col)?;
-    let max_depth = opts.max_depth.unwrap_or(i64::MAX);
     let root_fs = search_resolve_path(ctx, &path);
-    let files = search_walk_files(&path, &root_fs, max_depth, line, col)?;
+    let files = search_walk_files(&path, &root_fs, &opts, line, col)?;
     let mut out: Vec<Value> = Vec::new();
     for (fs_path, disp) in &files {
         let has = match search_file_has_match(display, fs_path, &pattern, &opts, line, col)? {
@@ -3261,7 +3430,7 @@ fn search_sort_results(
     Ok(Value::List(keyed.into_iter().map(|(_, v)| v).collect()))
 }
 
-const SEARCH_HELP: &str = "بحث — البحث في النصوص والملفات.\nالدوال: ابحث_بنمط(نص، نمط، خيارات؟)؛ ابحث_بنص_ثابت(نص، نص_ثابت، خيارات؟)؛ عد_المطابقات(نص، نمط، خيارات؟)؛ عد_كل_المطابقات(نص، نمط، خيارات؟)؛ المطابق_فقط(نص، نمط، خيارات؟)؛ استبدل_معاينة(نص، نمط، بديل، خيارات؟)؛ ملفات_فيها(مسار، نمط، خيارات؟)؛ ملفات_بلا_مطابقة(مسار، نمط، خيارات؟)؛ رتب_النتائج(نتائج، اتجاه؟)؛ أنماط_من_ملف(مسار)؛ مساعدة().\nالخيارات: تجاهل_الحالة وحساسية_الحالة وحالة_ذكية وكلمة_كاملة وسطر_كامل واعكس_المطابقة وأقصى_مطابقات وعمود_المطابقة ورقم_السطر وسياق_قبل وسياق_بعد وسياق وقلم_النتائج وصامت وأظهر_اسم_الملف وجسون ولوّن وأقصى_عمق.\nاتجاه رتب_النتائج: «تصاعدي» أو «تنازلي» والافتراضي «تصاعدي».\nأقصى_عمق 0 يعني المجلد الأعلى وحده؛ ولوّن يغلّف المطابق بالأحمر؛ والملفات الثنائية أو غير المقروءة تُتخطى.";
+const SEARCH_HELP: &str = "بحث — البحث في النصوص والملفات.\nالدوال: ابحث_بنمط(نص، نمط، خيارات؟)؛ ابحث_بنص_ثابت(نص، نص_ثابت، خيارات؟)؛ عد_المطابقات(نص، نمط، خيارات؟)؛ عد_كل_المطابقات(نص، نمط، خيارات؟)؛ المطابق_فقط(نص، نمط، خيارات؟)؛ استبدل_معاينة(نص، نمط، بديل، خيارات؟)؛ ملفات_فيها(مسار، نمط، خيارات؟)؛ ملفات_بلا_مطابقة(مسار، نمط، خيارات؟)؛ رتب_النتائج(نتائج، اتجاه؟)؛ أنماط_من_ملف(مسار)؛ نمط_ملفات(نمط، اسم)؛ اقرأ_المدخل()؛ ابحث_في_مجلدات(قائمة_مسارات، نمط، خيارات؟)؛ ابحث_في_المدخل(نمط، خيارات؟)؛ ابحث_بأنماط(نص، قائمة_أنماط، خيارات؟)؛ مساعدة().\nالخيارات: تجاهل_الحالة وحساسية_الحالة وحالة_ذكية وكلمة_كاملة وسطر_كامل واعكس_المطابقة وأقصى_مطابقات وعمود_المطابقة ورقم_السطر وسياق_قبل وسياق_بعد وسياق وقلم_النتائج وصامت وأظهر_اسم_الملف وجسون ولوّن وأقصى_عمق وأدرج_المخفية واحترم_التجاهل ونمط_الملفات ونوع_الملف وليس_نوع_الملف وتكراري واستثن_ملفات واستثن_مجلدات.\nاتجاه رتب_النتائج: «تصاعدي» أو «تنازلي» والافتراضي «تصاعدي».\nأقصى_عمق 0 يعني المجلد الأعلى وحده؛ ولوّن يغلّف المطابق بالأحمر؛ والملفات الثنائية أو غير المقروءة تُتخطى.";
 
 fn search_help(
     _ctx: &mut dyn HandlerCaller,
@@ -3271,6 +3440,251 @@ fn search_help(
 ) -> RioResult<Value> {
     need_args("بحث.مساعدة", args, 0, line, col)?;
     Ok(Value::Str(SEARCH_HELP.to_string()))
+}
+
+/// خيار نصي في قاموس خيارات بحث: نص لا منطقي.
+fn search_need_text(
+    display: &str,
+    key: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    match v {
+        Value::Str(s) => Ok(s.clone()),
+        other => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع نصا للخيار {} لكن أعطيت {}",
+                display,
+                key,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// العمق الفعلي للمشي: تكراري كاذب ≡ أقصى_عمق 0
+/// (البند 97)؛ والتعارض مع أقصى_عمق صريح مرفوض
+/// عند تحليل الخيارات.
+fn search_eff_max_depth(opts: &SearchOpts) -> i64 {
+    if !opts.recursive {
+        0
+    } else {
+        opts.max_depth.unwrap_or(i64::MAX)
+    }
+}
+
+/// اقرأ كل المدخل القياسي نصا حتى EOF عبر مضخة
+/// stdin (كما `ادخل`)؛ والفارغ ← نص فارغ؛ والحد
+/// مليون محرف.
+fn search_read_stdin_text(line: usize, col: usize) -> RioResult<String> {
+    let mut out = String::new();
+    let mut nchars = 0usize;
+    loop {
+        match crate::stdin_pump::stdin_line() {
+            Some(l) => {
+                nchars += l.chars().count();
+                if nchars > RX_MAX_TEXT {
+                    return Err(RioError::runtime("النص كبير جدا", line, col));
+                }
+                out.push_str(&l);
+            }
+            None => break,
+        }
+    }
+    Ok(out)
+}
+
+/// بحث.ابحث_في_مجلدات(قائمة_مسارات، نمط، خيارات؟)
+/// — البند 85: ابحث في نصوص ملفات جذور عدة وارجع
+/// سجلات {ملف، سطر، رقم_السطر} (+ عمود ونص_مطابق
+/// وقبل وبعد حسب الخيارات)، مرتبة بـ(ملف، رقم_السطر)؛
+/// وصامت يرجع منطقيا، وجسون يرجع نص JSON. والملفات
+/// الثنائية أو غير المقروءة تُتخطى كملفات_فيها؛
+/// وخيارات المشي كلها تسري على كل جذر.
+fn search_in_dirs(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "بحث.ابحث_في_مجلدات";
+    let opts = search_parse_opts(DISPLAY, args, line, col)?;
+    let roots = match &args[0] {
+        Value::List(l) => l.clone(),
+        other => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع قائمة مسارات لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    // التحقق من النمط أولا — فلو كانت كل الملفات
+    // ثنائية أو غير مقروءة لما ظهر خطأ النمط أبدا.
+    let _ = search_scan(DISPLAY, "", true, &pattern, &opts, line, col)?;
+    let mut files: Vec<(std::path::PathBuf, String)> = Vec::new();
+    for root in &roots {
+        let path = need_string(DISPLAY, root, line, col)?;
+        let root_fs = search_resolve_path(ctx, &path);
+        let mut found = search_walk_files(&path, &root_fs, &opts, line, col)?;
+        files.append(&mut found);
+    }
+    files.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut records: Vec<Value> = Vec::new();
+    let mut remaining = opts.max_count;
+    for (fs_path, disp) in &files {
+        let bytes = match std::fs::read(fs_path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        if bytes.contains(&0) {
+            continue;
+        }
+        let text = match String::from_utf8(bytes) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let mut scan_opts = opts.clone();
+        scan_opts.max_count = remaining;
+        let hits = search_scan(DISPLAY, &text, true, &pattern, &scan_opts, line, col)?;
+        if let Some(left) = remaining {
+            remaining = Some(left - hits.len() as i64);
+        }
+        for h in &hits {
+            let mut pairs: Vec<(String, Value)> = vec![
+                ("ملف".to_string(), Value::Str(disp.clone())),
+                ("سطر".to_string(), Value::Str(search_color_shown(h, &opts))),
+                (
+                    "رقم_السطر".to_string(),
+                    Value::Number((h.idx + 1) as f64),
+                ),
+            ];
+            if opts.column {
+                pairs.push((
+                    "عمود".to_string(),
+                    Value::Number(h.span.map(|(s, _)| s + 1).unwrap_or(1) as f64),
+                ));
+            }
+            pairs.push(("نص_مطابق".to_string(), Value::Str(h.matched.clone())));
+            if search_has_context(&opts) {
+                pairs.push((
+                    "قبل".to_string(),
+                    Value::List(
+                        h.before.iter().map(|s| Value::Str(s.clone())).collect(),
+                    ),
+                ));
+                pairs.push((
+                    "بعد".to_string(),
+                    Value::List(
+                        h.after.iter().map(|s| Value::Str(s.clone())).collect(),
+                    ),
+                ));
+            }
+            records.push(Value::Dict(pairs));
+        }
+        if let Some(left) = remaining {
+            if left <= 0 {
+                break;
+            }
+        }
+    }
+    if opts.quiet {
+        return search_maybe_json(
+            Value::Bool(!records.is_empty()),
+            &opts,
+            DISPLAY,
+            line,
+            col,
+        );
+    }
+    search_maybe_json(Value::List(records), &opts, DISPLAY, line, col)
+}
+
+/// بحث.ابحث_في_المدخل(نمط، خيارات؟) — البند 86:
+/// ابحث_بنمط على نص المدخل القياسي كله. وانحراف
+/// UTF-8 الموثق من H1 قائم: المضخة تقص البايت غير
+/// الصالح، والمرآة C ترفضه بخطأ عربي صريح.
+fn search_in_stdin(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "بحث.ابحث_في_المدخل";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let mut opts = SearchOpts::default();
+    opts.recursive = true;
+    opts.respect_ignore = true;
+    if args.len() == 2 {
+        let pairs = need_dict(DISPLAY, &args[1], line, col)?;
+        search_parse_opts_dict(DISPLAY, pairs, &mut opts, line, col)?;
+    }
+    let pattern = need_string(DISPLAY, &args[0], line, col)?;
+    let text = search_read_stdin_text(line, col)?;
+    search_run(DISPLAY, &text, true, &pattern, &opts, line, col)
+}
+
+/// بحث.ابحث_بأنماط(نص، قائمة_أنماط، خيارات؟) —
+/// البند 114: اتحاد الأسطر المطابقة لأي نمط، بلا
+/// تكرار، مرتبة برقم السطر؛ والسطر الواحد يُحسب
+/// مرة واحدة ولو طابق أنماطا عدة (ويأخذ مطابقة
+/// أول نمط طابقه). وأقصى_مطابقات حد إجمالي على
+/// الأسطر المرجعة.
+fn search_in_patterns(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "بحث.ابحث_بأنماط";
+    let opts = search_parse_opts(DISPLAY, args, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let patterns = match &args[1] {
+        Value::List(l) => l.clone(),
+        other => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع قائمة أنماط لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let mut by_idx: std::collections::BTreeMap<usize, SearchHit> =
+        std::collections::BTreeMap::new();
+    for p in &patterns {
+        let pat = need_string(DISPLAY, p, line, col)?;
+        let hits = search_scan(DISPLAY, &text, true, &pat, &opts, line, col)?;
+        for h in hits {
+            by_idx.entry(h.idx).or_insert(h);
+        }
+    }
+    let mut hits: Vec<SearchHit> = by_idx.into_values().collect();
+    if let Some(max) = opts.max_count {
+        hits.truncate(max as usize);
+    }
+    search_render(DISPLAY, &hits, &opts, line, col)
 }
 
 fn search_entries() -> Vec<(&'static str, Value)> {
@@ -3285,8 +3699,415 @@ fn search_entries() -> Vec<(&'static str, Value)> {
         ("ملفات_فيها", native("ملفات_فيها", search_files_with)),
         ("ملفات_بلا_مطابقة", native("ملفات_بلا_مطابقة", search_files_without)),
         ("رتب_النتائج", native("رتب_النتائج", search_sort_results)),
+        ("نمط_ملفات", native("نمط_ملفات", search_glob_match_fn)),
+        ("اقرأ_المدخل", native("اقرأ_المدخل", search_read_stdin_fn)),
+        ("ابحث_في_مجلدات", native("ابحث_في_مجلدات", search_in_dirs)),
+        ("ابحث_في_المدخل", native("ابحث_في_المدخل", search_in_stdin)),
+        ("ابحث_بأنماط", native("ابحث_بأنماط", search_in_patterns)),
         ("مساعدة", native("مساعدة", search_help)),
     ]
+}
+
+// ---------- وحدة بحث: دفعة لينكس 2، مساعدات يدوية (H1) ----------
+// البنود 69 و70 و77 و80 و81 و85 و86 و89 و90 من §3.
+// محركات صغيرة جديدة بلا مولّد:
+// (1) مترجم كروي (glob ← نمط): يترجم النمط الكروي
+// إلى نص نمط (regex) ثم يجمّعه بمحرك نمط القائم
+// (rx_compile عبر rx_full_match) فتكون دلالة
+// المطابقة دلالة المحرك نفسه لا محركا ثانيا.
+// الأشكال: `**` أي عمق بما فيه `/`؛ و`*` داخل
+// مقطع واحد بلا `/`؛ و`?` محرف واحد بلا `/`؛
+// و`[...]` فئة محارف كفئات نمط (النفي بـ`!` أو
+// `^` في أولها، والمدى `أ-ي`، وأول `]` حرفي)؛
+// و`{a,b}` بدائل مفصولة بفاصلة بلا تداخل؛ و`\`
+// يهرب المحرف التالي حرفيا. و`/` قبل `**` أخيرة
+// (`a/**`) تطابق `a` نفسه وكل ما تحته؛ و`**/`
+// تطابق صفر مجلدات أو أكثر (`**/*.txt` يطابق
+// `أ.txt` في الجذر أيضا). والنمط الكروي غير
+// الصالح (فئة بلا إغلاق، وقوس بدائل بلا إغلاق أو
+// متداخل، وهروب أخير، ومدى معكوس، ونمط أطول من
+// حد محرك النمط) ← خطأ عربي «نمط ملفات غير
+// صالح». والنمط الفارغ صالح ويطابق الاسم الفارغ
+// وحده. والفاصلة داخل فئة في بدائل تُحترم (لا
+// تقسم البديل).
+// (2) قارئ تجاهل: يقرأ ملفي `.ignore` و`.gitignore`
+// في مجلد (الجذر ومجلداته الفرعية أثناء البحث؛
+// ولا مجلدات الأب فوق الجذر — ذلك البند 73
+// الأصفر لاحقا) ويعيد أنماطهما سطورا (فارغ
+// وتعليق `#` يُتخطى، ومسافة أخيرة تُقلم)؛
+// والملف الغائب أو غير المقروء أو غير UTF-8
+// يُتجاهل بصمت. والمطابقة كروية بسيطة بالاسم
+// النسبي (بشرطات مائلة) عبر المترجم الكروي؛
+// ونمط تالف في الملف يُتخطى بصمت. والنفي `!`
+// والمجلدات `/` هما البند 88 الأصفر — لا يُبنيان
+// هنا، فلا يفسرا (يعاملان كمحارف عادية).
+// (3) قارئ stdin: يقرأ كل المدخل القياسي نصا
+// عبر مضخة stdin (stdin_line — كما `ادخل`، فلا
+// قراءة مباشرة تنازع المضخة) حتى EOF؛ والمدخل
+// الفارغ ← نص فارغ؛ والحد مليون محرف كحد نص
+// محرك النمط. وحد: أسطر المضخة نصوص UTF-8
+// بالبناء، فبايت غير صالح يوقف المضخة عندها
+// (يقص الإدخال) ولا يصل هنا كخطأ — أما المرآة
+// C فتقرأ بايتات وتفحص UTF-8 فترفض غير الصالح
+// بخطأ عربي صريح (انحراف موثق، ولا يظهر في
+// التكافؤ لأن بوابته تغذي stdin فارغا).
+// (4) جدول أنواع الملفات: اسم ← امتدادات،
+// بالجدول نفسه حرفيا في المرآة C؛ ونوع مجهول
+// ← خطأ عربي يسرد الأنواع المعروفة.
+
+fn search_glob_err() -> String {
+    "نمط ملفات غير صالح".to_string()
+}
+
+/// أهرب محرفا حرفيا خارج فئة (للهروب `\` في
+/// الكروي وللمحارف الخاصة في النمط).
+fn search_glob_escape_literal(out: &mut String, c: char) {
+    match c {
+        '.' | '+' | '(' | ')' | '|' | '^' | '$' | '*' | '?' | '[' | ']' | '{' | '}' | '\\' => {
+            out.push('\\');
+            out.push(c);
+        }
+        _ => out.push(c),
+    }
+}
+
+/// محرف واحد داخل فئة (مع هروب محتمل): يعيد
+/// (المحرف، الموضع التالي، مهروب؟).
+fn search_glob_class_char(
+    chars: &[char],
+    i: usize,
+) -> Result<(char, usize, bool), String> {
+    if i >= chars.len() {
+        return Err(search_glob_err());
+    }
+    if chars[i] == '\\' {
+        if i + 1 >= chars.len() {
+            return Err(search_glob_err());
+        }
+        Ok((chars[i + 1], i + 2, true))
+    } else {
+        Ok((chars[i], i + 1, false))
+    }
+}
+
+/// أصدر محرفا داخل فئة نمط: المهروب الأبجدي
+/// حرفي بلا شرطة (فـ`\d` في الكروي `d` حرفية
+/// لا فئة أرقام)؛ و`]` و`^` حرفيان بشرطة.
+fn search_glob_class_emit(out: &mut String, c: char, escaped: bool) {
+    if escaped {
+        if c.is_ascii_alphanumeric() {
+            out.push(c);
+        } else {
+            out.push('\\');
+            out.push(c);
+        }
+    } else {
+        match c {
+            ']' | '^' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+}
+
+/// فئة `[...]` بدءا من `[`: يعيد الموضع بعد
+/// `]` المغلقة؛ وبلا إغلاق أو مدى معكوس ← خطأ.
+fn search_glob_class(chars: &[char], start: usize, out: &mut String) -> Result<usize, String> {
+    let mut i = start + 1;
+    out.push('[');
+    if i < chars.len() && (chars[i] == '!' || chars[i] == '^') {
+        out.push('^');
+        i += 1;
+    }
+    let mut first = true;
+    loop {
+        if i >= chars.len() {
+            return Err(search_glob_err());
+        }
+        let c = chars[i];
+        if c == ']' && !first {
+            out.push(']');
+            return Ok(i + 1);
+        }
+        first = false;
+        let (lo, ni, lo_esc) = search_glob_class_char(chars, i)?;
+        // مدى `س-ص` (لا `-` أخيرة ولا `-` قبل `]`).
+        if chars.get(ni) == Some(&'-')
+            && chars.get(ni + 1).is_some()
+            && chars.get(ni + 1) != Some(&']')
+        {
+            let (hi, hi_next, hi_esc) = search_glob_class_char(chars, ni + 1)?;
+            if hi < lo {
+                return Err(search_glob_err());
+            }
+            search_glob_class_emit(out, lo, lo_esc);
+            out.push('-');
+            search_glob_class_emit(out, hi, hi_esc);
+            i = hi_next;
+        } else {
+            search_glob_class_emit(out, lo, lo_esc);
+            i = ni;
+        }
+    }
+}
+
+/// بدائل `{a,b}` بدءا من `{`: بلا تداخل؛ وبلا
+/// إغلاق ← خطأ؛ والفاصلة داخل فئة لا تقسم.
+fn search_glob_braces(chars: &[char], start: usize, out: &mut String) -> Result<usize, String> {
+    let mut j = start + 1;
+    loop {
+        if j >= chars.len() {
+            return Err(search_glob_err());
+        }
+        match chars[j] {
+            '{' => return Err(search_glob_err()),
+            '}' => break,
+            _ => j += 1,
+        }
+    }
+    let inner = &chars[start + 1..j];
+    // قسّم على الفاصلة خارج الفئات وحدها.
+    let mut alts: Vec<&[char]> = Vec::new();
+    let mut astart = 0usize;
+    let mut k = 0usize;
+    let mut in_class = false;
+    let mut class_first = false;
+    while k < inner.len() {
+        let c = inner[k];
+        if in_class {
+            if c == '\\' {
+                k += 2;
+                continue;
+            }
+            if (c == '!' || c == '^') && class_first {
+                k += 1;
+                continue;
+            }
+            if c == ']' && !class_first {
+                in_class = false;
+            }
+            class_first = false;
+            k += 1;
+            continue;
+        }
+        match c {
+            '[' => {
+                in_class = true;
+                class_first = true;
+                k += 1;
+            }
+            ',' => {
+                alts.push(&inner[astart..k]);
+                astart = k + 1;
+                k += 1;
+            }
+            _ => k += 1,
+        }
+    }
+    alts.push(&inner[astart..]);
+    out.push_str("(?:");
+    let mut first_alt = true;
+    for alt in alts {
+        if !first_alt {
+            out.push('|');
+        }
+        first_alt = false;
+        let t = search_glob_translate(alt, true)?;
+        out.push_str(&t);
+    }
+    out.push(')');
+    Ok(j + 1)
+}
+
+/// ترجمة مقطع كروي إلى نص نمط؛ و`in_brace`
+/// صحيحا داخل بديل (فـ`{` ثانية خطأ).
+fn search_glob_translate(chars: &[char], in_brace: bool) -> Result<String, String> {
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        match chars[i] {
+            '*' => {
+                if chars.get(i + 1) == Some(&'*') {
+                    if chars.get(i + 2) == Some(&'/') {
+                        out.push_str("(.*/)?");
+                        i += 3;
+                    } else {
+                        out.push_str(".*");
+                        i += 2;
+                    }
+                } else {
+                    out.push_str("[^/]*");
+                    i += 1;
+                }
+            }
+            '?' => {
+                out.push_str("[^/]");
+                i += 1;
+            }
+            '[' => {
+                i = search_glob_class(chars, i, &mut out)?;
+            }
+            '{' => {
+                if in_brace {
+                    return Err(search_glob_err());
+                }
+                i = search_glob_braces(chars, i, &mut out)?;
+            }
+            '}' => {
+                out.push_str("\\}");
+                i += 1;
+            }
+            '\\' => {
+                if i + 1 >= chars.len() {
+                    return Err(search_glob_err());
+                }
+                search_glob_escape_literal(&mut out, chars[i + 1]);
+                i += 2;
+            }
+            '/' => {
+                if chars.get(i + 1) == Some(&'*')
+                    && chars.get(i + 2) == Some(&'*')
+                    && i + 3 == chars.len()
+                {
+                    out.push_str("(/.*)?");
+                    i += 3;
+                } else {
+                    out.push('/');
+                    i += 1;
+                }
+            }
+            '.' | '+' | '(' | ')' | '|' | '^' | '$' => {
+                out.push('\\');
+                out.push(chars[i]);
+                i += 1;
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// ترجم نمطا كرويا كاملا إلى نص نمط.
+fn search_glob_to_regex(glob: &str) -> Result<String, String> {
+    let chars: Vec<char> = glob.chars().collect();
+    if chars.len() > RX_MAX_PATTERN {
+        return Err(search_glob_err());
+    }
+    let out = search_glob_translate(&chars, false)?;
+    if out.chars().count() > RX_MAX_PATTERN {
+        return Err(search_glob_err());
+    }
+    Ok(out)
+}
+
+/// هل يطابق الاسم النمط الكروي؟ (مطابقة كاملة
+/// بمحرك النمط نفسه.)
+fn search_glob_match(glob: &str, name: &str, line: usize, col: usize) -> RioResult<bool> {
+    let regex = search_glob_to_regex(glob).map_err(|e| RioError::runtime(e, line, col))?;
+    rx_full_match(&regex, name).map_err(|e| rx_err(e, line, col))
+}
+
+fn search_glob_match_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("بحث.نمط_ملفات", args, 2, line, col)?;
+    let glob = need_string("بحث.نمط_ملفات", &args[0], line, col)?;
+    let name = need_string("بحث.نمط_ملفات", &args[1], line, col)?;
+    Ok(Value::Bool(search_glob_match(&glob, &name, line, col)?))
+}
+
+/// أنماط التجاهل في مجلد: سطور `.ignore` ثم
+/// `.gitignore` (فارغ وتعليق `#` يُتخطى، ومسافة
+/// أخيرة تُقلم)؛ والغائب أو غير المقروء أو غير
+/// UTF-8 يُتجاهل بصمت.
+// يسمح بالرمز الميت: يستدعيها مولّد الدفعة (G) في
+// البحث في المجلدات — لا دالة مستخدم لها بعد.
+#[allow(dead_code)]
+fn search_ignore_patterns(dir_fs: &std::path::Path) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in [".ignore", ".gitignore"] {
+        let text = match std::fs::read_to_string(dir_fs.join(name)) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        for raw in text.lines() {
+            let pat = raw.trim_end_matches(|c: char| c.is_ascii_whitespace());
+            if pat.is_empty() || pat.starts_with('#') {
+                continue;
+            }
+            out.push(pat.to_string());
+        }
+    }
+    out
+}
+
+/// هل يطابق الاسم النسبي (بشرطات مائلة) أي نمط
+/// تجاهل؟ والنمط التالف في الملف يُتخطى بصمت.
+#[allow(dead_code)]
+fn search_ignore_match(patterns: &[String], rel: &str) -> bool {
+    for pat in patterns {
+        if let Ok(regex) = search_glob_to_regex(pat) {
+            if let Ok(true) = rx_full_match(&regex, rel) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// اقرأ كل المدخل القياسي نصا حتى EOF عبر مضخة
+/// stdin (كما `ادخل`)؛ والفارغ ← نص فارغ؛ والحد
+/// مليون محرف.
+fn search_read_stdin_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("بحث.اقرأ_المدخل", args, 0, line, col)?;
+    Ok(Value::Str(search_read_stdin_text(line, col)?))
+}
+
+/// جدول أنواع الملفات (الاسم ← الامتدادات) —
+/// بالجدول نفسه حرفيا في المرآة C.
+#[allow(dead_code)]
+const SEARCH_FILE_TYPES: &[(&str, &[&str])] = &[
+    ("نيفا", &["niva"]),
+    ("نص", &["txt", "md", "text", "log"]),
+    ("سي", &["c", "h"]),
+    ("بايثون", &["py"]),
+    ("جافا", &["java"]),
+    ("جافاسكربت", &["js"]),
+    ("رست", &["rs"]),
+];
+
+const SEARCH_FILE_TYPES_KNOWN: &str = "نيفا، نص، سي، بايثون، جافا، جافاسكربت، رست";
+
+/// امتدادات نوع ملف بالاسم؛ والمجهول ← خطأ
+/// عربي يسرد الأنواع المعروفة.
+#[allow(dead_code)]
+fn search_file_type_exts(name: &str, line: usize, col: usize) -> RioResult<&'static [&'static str]> {
+    for (t, exts) in SEARCH_FILE_TYPES {
+        if *t == name {
+            return Ok(exts);
+        }
+    }
+    Err(RioError::runtime(
+        format!(
+            "نوع ملف غير معروف: {} (الأنواع المعروفة: {})",
+            name, SEARCH_FILE_TYPES_KNOWN
+        ),
+        line,
+        col,
+    ))
 }
 
 // ---------- 221: JSON ----------
@@ -10427,3 +11248,1420 @@ fn exec_text(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usiz
 // معنى محدد ستكون واجهة مخترعة لا تكافؤ لها. فالبند
 // مؤجل حتى يُحدَّد سلوك واحد قابل للبناء والاختبار —
 // لا بناء هنا، ويسجَّل التأجيل في سطر البند في الكتالوج.
+
+// ---------- وحدة تدفق: دفعة لينكس 2، البنّاء اليدوي H2 ----------
+// البنود 129–133 (آلية عنوان) و145 (عدل_في_مكانه) و146 (نسخة_احتياطية).
+// آلية العنوان داخلية (بلا دالة مستخدم بعد): تحلّ قيمة
+// عنوان إلى أرقام أسطر (1-based) مرتبة في نص معطى؛
+// ويستدعيها مولّد الدفعة (G) في أوامر تدفق. والمرآة C
+// (flow_address_lines_c في niva_std.c) بالدلالة نفسها
+// حرفيا — فأي اختلاف بينهما عيب تكافؤ. أشكال العنوان:
+// - عدد: سطر واحد؛ و-1 آخر سطر؛ و0 أو سالب آخر ← خطأ عربي.
+// - قائمة عددين [بداية، نهاية]: مدى شامل؛ وبداية > نهاية ← فارغة.
+// - نص: نمط — الأسطر المطابقة له عبر محرك نمط؛ والنمط غير
+//   الصالح ← خطأ المحرك نفسه.
+// - قائمة نصين [نمط1، نمط2]: من أول سطر يطابق نمط1 حتى أول
+//   سطر يطابق نمط2 بعده شاملا؛ وإن لم يطابق نمط2 أبدا فإلى النهاية.
+// - لاشيء: كل الأسطر.
+// والحد -1 يعني آخر سطر في حدّي المدى أيضا؛ والعدد الموجب
+// خارج النص لا يخطئ — مجموعة فارغة أو مدى مقصوص؛ ونمط2
+// يُبحث بعد سطر نمط1 حتما (فإن طابق السطر نفسه لم ينه المدى).
+// و`display` اسم الدالة المتصلة في رسائل الخطأ (فالآلية
+// داخلية بلا اسم مستخدم ثابت).
+
+/// أسطر نص بمعنى lines() — بلا سطر أخير فارغ.
+fn flow_lines(text: &str) -> Vec<&str> {
+    text.lines().collect()
+}
+
+/// هل يطابق السطر النمط المجمّع (بحث لا مطابقة كاملة)؟
+fn flow_line_matches(
+    prog: &RxProg,
+    line_text: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<bool> {
+    let chars = rx_check_text(line_text).map_err(|e| rx_err(e, line, col))?;
+    Ok(rx_find_from(prog, &chars, 0)
+        .map_err(|e| rx_err(e, line, col))?
+        .is_some())
+}
+
+/// حدّ مدى (بداية أو نهاية): عدد صحيح؛ و-1 آخر سطر؛
+/// و0 أو سالب آخر ← خطأ عربي.
+fn flow_address_bound(
+    display: &str,
+    v: &Value,
+    total: i64,
+    line: usize,
+    col: usize,
+) -> RioResult<i64> {
+    let n = need_integer(display, v, line, col)?;
+    if n == -1 {
+        Ok(total)
+    } else if n <= 0 {
+        Err(RioError::runtime(
+            format!(
+                "الدالة {} عنوان السطر {} غير صالح (الصالح 1 أو أكثر، و-1 لآخر سطر)",
+                display, n
+            ),
+            line,
+            col,
+        ))
+    } else {
+        Ok(n)
+    }
+}
+
+/// حلّ عنوان تدفق إلى أرقام أسطر (1-based) مرتبة.
+/// والطيّ (تجاهل_الحالة) يطوي أنماط العنوان النصية
+/// عند صحيح؛ وبلا طيّ تبقى حساسة للحالة.
+fn flow_address_lines(
+    display: &str,
+    address: &Value,
+    lines: &[&str],
+    fold: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<usize>> {
+    let total = lines.len() as i64;
+    match address {
+        Value::Nil => Ok((1..=total).map(|n| n as usize).collect()),
+        Value::Number(_) => {
+            let n = flow_address_bound(display, address, total, line, col)?;
+            if total == 0 || n == 0 || n > total {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![n as usize])
+            }
+        }
+        Value::Str(pattern) => {
+            let prog = rx_compile_fold(pattern, false, fold).map_err(|e| rx_err(e, line, col))?;
+            let mut out: Vec<usize> = Vec::new();
+            for (idx, raw) in lines.iter().enumerate() {
+                if flow_line_matches(&prog, raw, line, col)? {
+                    out.push(idx + 1);
+                }
+            }
+            Ok(out)
+        }
+        Value::List(items) => {
+            if items.len() != 2 {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع قائمة عنوان من عنصرين لكن أعطيت {}",
+                        display,
+                        items.len()
+                    ),
+                    line,
+                    col,
+                ));
+            }
+            match (&items[0], &items[1]) {
+                (Value::Number(_), Value::Number(_)) => {
+                    let start = flow_address_bound(display, &items[0], total, line, col)?;
+                    let end = flow_address_bound(display, &items[1], total, line, col)?;
+                    if total == 0 || start == 0 || start > total || start > end {
+                        Ok(Vec::new())
+                    } else {
+                        let end = end.min(total);
+                        Ok((start..=end).map(|n| n as usize).collect())
+                    }
+                }
+                (Value::Str(p1), Value::Str(p2)) => {
+                    let prog1 =
+                        rx_compile_fold(p1, false, fold).map_err(|e| rx_err(e, line, col))?;
+                    let prog2 =
+                        rx_compile_fold(p2, false, fold).map_err(|e| rx_err(e, line, col))?;
+                    let mut start: Option<usize> = None;
+                    for (idx, raw) in lines.iter().enumerate() {
+                        if flow_line_matches(&prog1, raw, line, col)? {
+                            start = Some(idx);
+                            break;
+                        }
+                    }
+                    let Some(s) = start else {
+                        return Ok(Vec::new());
+                    };
+                    // نمط2 بعد سطر نمط1 حتما؛ وإن لم يطابق
+                    // أبدا فالمدى إلى النهاية (دلالة sed).
+                    let mut end = lines.len();
+                    for (idx, raw) in lines.iter().enumerate().skip(s + 1) {
+                        if flow_line_matches(&prog2, raw, line, col)? {
+                            end = idx + 1;
+                            break;
+                        }
+                    }
+                    Ok((s + 1..=end).collect())
+                }
+                _ => Err(RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع قائمة عنوان من عددين أو نصين",
+                        display
+                    ),
+                    line,
+                    col,
+                )),
+            }
+        }
+        other => Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع عنوانا: عددا أو قائمة عددين أو نصا أو قائمة نصين أو لاشيء لكن أعطيت {}",
+                display,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// حلّ عنوان في نص مباشرة (يقسمه أسطر أولا).
+#[allow(dead_code)]
+fn flow_address_lines_in_text(
+    display: &str,
+    address: &Value,
+    text: &str,
+    fold: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<usize>> {
+    let lines = flow_lines(text);
+    flow_address_lines(display, address, &lines, fold, line, col)
+}
+
+/// تدفق.استبدل_الكل(نص، نمط، بديل، خيارات؟) — البند
+/// 117: استبدل كل مطابقات النمط؛ وخياراتها عنوان
+/// وتجاهل_الحالة (يسري على نمط الاستبدال وعلى نمط
+/// العنوان معا)؛ وبلا عنوان ≡ نمط.استبدل حرفيا.
+fn flow_replace_all(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.استبدل_الكل";
+    if args.len() < 3 || args.len() > 4 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع ثلاثة معاملات أو أربعة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    let repl = need_string(DISPLAY, &args[2], line, col)?;
+    let mut address: Option<Value> = None;
+    let mut fold = false;
+    if args.len() == 4 {
+        let pairs = need_dict(DISPLAY, &args[3], line, col)?;
+        let opts = flow_parse_opts(DISPLAY, pairs, true, false, line, col)?;
+        address = opts.address;
+        fold = opts.ignore_case;
+    }
+    Ok(Value::Str(flow_replace_all_core(
+        DISPLAY,
+        &text,
+        &pattern,
+        &repl,
+        address.as_ref(),
+        fold,
+        line,
+        col,
+    )?))
+}
+
+/// تدفق.احذف_أسطر(نص، عنوان؟) — البند 124: احذف
+/// الأسطر المعنونة؛ والافتراضي لاشيء = كل الأسطر.
+fn flow_delete_lines(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.احذف_أسطر";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let address = if args.len() == 2 { Some(&args[1]) } else { None };
+    Ok(Value::Str(flow_delete_lines_core(
+        DISPLAY, &text, address, false, line, col,
+    )?))
+}
+
+/// تدفق.اطبع_المطابق(نص، عنوان؟) — البند 125:
+/// ترجع قائمة الأسطر المعنونة، لا تطبع.
+fn flow_print_matching(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.اطبع_المطابق";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let address = if args.len() == 2 { Some(&args[1]) } else { None };
+    let found = flow_matching_lines_core(DISPLAY, &text, address, false, line, col)?;
+    Ok(Value::List(
+        found.into_iter().map(Value::Str).collect(),
+    ))
+}
+
+/// تدفق.توقف_عند(نص، عدد) — البند 127: الأسطر
+/// 1..N شاملة؛ وN أكبر من المجموع ← النص كله؛
+/// و0 أو سالب ← خطأ عربي؛ و-1 ← آخر سطر.
+fn flow_take_lines(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.توقف_عند";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let n = need_integer(DISPLAY, &args[1], line, col)?;
+    Ok(Value::Str(flow_take_lines_core(
+        DISPLAY, &text, n, line, col,
+    )?))
+}
+
+/// تدفق.ألحق_بعد(نص، عنوان، نص_ملحق) — البند 135:
+/// أدخل أسطر النص الملحق بعد كل سطر معنون.
+fn flow_append_after(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.ألحق_بعد";
+    need_args(DISPLAY, args, 3, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let appended = need_string(DISPLAY, &args[2], line, col)?;
+    Ok(Value::Str(flow_append_after_core(
+        DISPLAY,
+        &text,
+        Some(&args[1]),
+        &appended,
+        false,
+        line,
+        col,
+    )?))
+}
+
+/// تدفق.أدرج_قبل(نص، عنوان، نص_مدرج) — البند 136:
+/// أدخل أسطر النص المدرج قبل كل سطر معنون.
+fn flow_insert_before(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.أدرج_قبل";
+    need_args(DISPLAY, args, 3, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let inserted = need_string(DISPLAY, &args[2], line, col)?;
+    Ok(Value::Str(flow_insert_before_core(
+        DISPLAY,
+        &text,
+        Some(&args[1]),
+        &inserted,
+        false,
+        line,
+        col,
+    )?))
+}
+
+/// تدفق.غير_أسطر(نص، عنوان، نص_جديد) — البند 137:
+/// استبدال كل امتداد متصل من الأسطر المعنونة
+/// بالنص الجديد مرة واحدة (sed المخلصة).
+fn flow_change_lines(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.غير_أسطر";
+    need_args(DISPLAY, args, 3, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let new_text = need_string(DISPLAY, &args[2], line, col)?;
+    Ok(Value::Str(flow_change_lines_core(
+        DISPLAY,
+        &text,
+        Some(&args[1]),
+        &new_text,
+        false,
+        line,
+        col,
+    )?))
+}
+
+fn flow_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("عدل_في_مكانه", native("عدل_في_مكانه", flow_edit_in_place)),
+        ("استبدل_الكل", native("استبدل_الكل", flow_replace_all)),
+        ("احذف_أسطر", native("احذف_أسطر", flow_delete_lines)),
+        ("اطبع_المطابق", native("اطبع_المطابق", flow_print_matching)),
+        ("توقف_عند", native("توقف_عند", flow_take_lines)),
+        ("ألحق_بعد", native("ألحق_بعد", flow_append_after)),
+        ("أدرج_قبل", native("أدرج_قبل", flow_insert_before)),
+        ("غير_أسطر", native("غير_أسطر", flow_change_lines)),
+        ("نفذ_أوامر", native("نفذ_أوامر", flow_run_commands)),
+        ("نفذ_من_ملف", native("نفذ_من_ملف", flow_run_from_file)),
+    ]
+}
+
+/// تدفق.عدل_في_مكانه(مسار، محول، خيارات؟) — البند 145:
+/// اقرأ الملف نصا، وطبّق عليه دالة التحويل `محول`
+/// (دالة نص→نص)، واكتب الناتج في الملف نفسه؛ ويرجع
+/// لاشيء (كاكتب_ملف). والمسار الغائب أو غير المقروء
+/// أو غير UTF-8 ← خطأ عربي؛ والكتابة الفاشلة ← خطأ
+/// عربي. والتحويل قبل أي كتابة — فشل المحول (خطأ
+/// أو إرجاع غير نصي) يبقي الملف الأصلي كما هو، بلا
+/// كتابة جزئية. والكتابة ذرية (كما اكتب_ملف).
+/// والخيار نسخة_احتياطية (البند 146): نص بامتداد
+/// (مثل «.bak» — نسخة بالمسار + الامتداد قبل
+/// الكتابة)، أو كاذب بلا نسخة (الافتراضي)، أو صحيح
+/// بامتداد افتراضي «.bak»؛ وغير النص/المنطقي ← خطأ
+/// عربي؛ والامتداد الفارغ أو الحامل فاصلا ← خطأ عربي.
+fn flow_edit_in_place(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.عدل_في_مكانه";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let func = match &args[1] {
+        Value::Function { .. } | Value::BoundMethod { .. } | Value::NativeFunction { .. } => {
+            &args[1]
+        }
+        other => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع دالة محولة لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let mut backup: Option<String> = None;
+    if args.len() == 3 {
+        let pairs = need_dict(DISPLAY, &args[2], line, col)?;
+        for (k, v) in pairs {
+            match k.as_str() {
+                "نسخة_احتياطية" => match v {
+                    Value::Bool(false) => backup = None,
+                    Value::Bool(true) => backup = Some(".bak".to_string()),
+                    Value::Str(s) => {
+                        if s.is_empty() || s.contains('/') || s.contains('\\') {
+                            return Err(RioError::runtime(
+                                "الدالة تدفق.عدل_في_مكانه الخيار نسخة_احتياطية يتوقع امتدادا غير فارغ بلا فاصل مسار".to_string(),
+                                line,
+                                col,
+                            ));
+                        }
+                        backup = Some(s.clone());
+                    }
+                    other => {
+                        return Err(RioError::typ(
+                            format!(
+                                "الدالة {} الخيار نسخة_احتياطية يتوقع نصا أو قيمة منطقية لكن أعطيت {}",
+                                DISPLAY,
+                                other.type_name()
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                },
+                other => {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} خيار غير معروف: {}", DISPLAY, other),
+                        line,
+                        col,
+                    ))
+                }
+            }
+        }
+    }
+    // المسار النسبي يُحل مقابل مجلد الجلسة (كما في
+    // بحث.أنماط_من_ملف) لا مقابل مجلد العملية.
+    let full = search_resolve_path(ctx, &path);
+    let content = match std::fs::read(&full) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(s) => s,
+            Err(_) => {
+                return Err(RioError::runtime(
+                    format!("الملف {} ليس نصا صالحا (UTF-8)", path),
+                    line,
+                    col,
+                ))
+            }
+        },
+        Err(_) => {
+            return Err(RioError::runtime(
+                format!("تعذر قراءة الملف {}", path),
+                line,
+                col,
+            ))
+        }
+    };
+    // التحويل قبل أي كتابة.
+    let (res, produced) = ctx.call_handler(func, Value::Str(content), line, col);
+    if !produced.is_empty() {
+        print!("{}", produced);
+    }
+    let new_text = match res? {
+        Value::Str(s) => s,
+        other => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع أن يرجع المحول نصا لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    // النسخة الاحتياطية قبل الكتابة (المسار + الامتداد).
+    if let Some(ext) = &backup {
+        let mut backup_path = full.clone().into_os_string();
+        backup_path.push(ext);
+        let backup_path = std::path::PathBuf::from(backup_path);
+        if std::fs::copy(&full, &backup_path).is_err() {
+            return Err(RioError::runtime(
+                format!("تعذر كتابة النسخة الاحتياطية {}{}", path, ext),
+                line,
+                col,
+            ));
+        }
+    }
+    // كتابة ذرية — فلا ملف نصف مكتوب.
+    crate::install::write_atomic(&full, new_text.as_bytes()).map_err(|_| {
+        RioError::runtime(format!("تعذر كتابة الملف {}", path), line, col)
+    })?;
+    Ok(Value::Nil)
+}
+
+// ---------- وحدة تدفق: نوى أوامر يدوية (دفعة لينكس 2، المرحلة 2) ----------
+// قسم يدوي معلَّم: نوى مشتركة بين دوال تدفق العامة
+// (استبدل_الكل واحذف_أسطر واطبع_المطابق وتوقف_عند
+// وألحق_بعد وأدرج_قبل وغير_أسطر — يولّدها مولّد
+// الدفعة فوقها) وبين مشغّل الأوامر (نفذ_أوامر
+// ونفذ_من_ملف — البندان 149 و150)؛ فالمشغّل يطبّق
+// الأوامر نفسها بالنوى نفسها، بلا منطق مكرر.
+// قاعدة إعادة الربط العامة: النص المنتهي بـ`\n`
+// يعيد نصا منتهيا بـ`\n`، والنص الفارغ يعيد فارغا.
+
+/// خيارات تدفق: عنوان (لاستبدل_الكل) وطيّ حالة
+/// وصامت (للمشغّل). والمحلل يقبل مفاتيح محددة
+/// فقط — فالمفتاح الزائد ← خطأ عربي يسمّيه.
+struct FlowOpts {
+    address: Option<Value>,
+    ignore_case: bool,
+    quiet: bool,
+}
+
+fn flow_parse_opts(
+    display: &str,
+    pairs: &[(String, Value)],
+    allow_address: bool,
+    allow_quiet: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<FlowOpts> {
+    let mut out = FlowOpts {
+        address: None,
+        ignore_case: false,
+        quiet: false,
+    };
+    for (k, v) in pairs {
+        match k.as_str() {
+            "عنوان" => {
+                if !allow_address {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} لا تقبل الخيار {}", display, k),
+                        line,
+                        col,
+                    ));
+                }
+                out.address = Some(v.clone());
+            }
+            "تجاهل_الحالة" => {
+                if !allow_address {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} لا تقبل الخيار {}", display, k),
+                        line,
+                        col,
+                    ));
+                }
+                out.ignore_case = search_need_bool(display, k, v, line, col)?;
+            }
+            "صامت" => {
+                if !allow_quiet {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} لا تقبل الخيار {}", display, k),
+                        line,
+                        col,
+                    ));
+                }
+                out.quiet = search_need_bool(display, k, v, line, col)?;
+            }
+            other => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} خيار غير معروف: {}", display, other),
+                    line,
+                    col,
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// قسّم نصا أسطر مملوكة + هل انتهى بـ`\n`؟
+fn flow_split_owned(text: &str) -> (Vec<String>, bool) {
+    let trailing = text.ends_with('\n');
+    let lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+    (lines, trailing)
+}
+
+/// أعد ربط الأسطر بالقاعدة العامة.
+fn flow_rejoin(lines: &[String], trailing: bool) -> String {
+    let mut out = lines.join("\n");
+    if trailing && !lines.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
+/// استبدال نمط في نص واحد يرجع نصا (لا قيمة).
+fn flow_regex_replace_str(
+    pattern: &str,
+    text: &str,
+    repl: &str,
+    fold: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    match regex_replace_fold(pattern, text, repl, fold, line, col)? {
+        Value::Str(s) => Ok(s),
+        // لا يحدث: الاستبدال يرجع نصا دائما.
+        _ => Ok(String::new()),
+    }
+}
+
+/// حلّ عنوان إلى مجموعة أسطر (1-based)؛ ولاشيء
+/// (أو غائب) = كل الأسطر.
+fn flow_resolve_set(
+    display: &str,
+    address: Option<&Value>,
+    lines: &[String],
+    fold: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<std::collections::HashSet<usize>> {
+    let refs: Vec<&str> = lines.iter().map(|s| s.as_str()).collect();
+    let addr = match address {
+        Some(a) => a,
+        None => &Value::Nil,
+    };
+    let nums = flow_address_lines(display, addr, &refs, fold, line, col)?;
+    Ok(nums.into_iter().collect())
+}
+
+/// نواة استبدل_الكل: بلا عنوان ≡ نمط.استبدل حرفيا
+/// على النص كله؛ ومع عنوان يستبدل داخل الأسطر
+/// المعنونة وحدها سطرا سطرا.
+fn flow_replace_all_core(
+    display: &str,
+    text: &str,
+    pattern: &str,
+    repl: &str,
+    address: Option<&Value>,
+    fold: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    match address {
+        None => flow_regex_replace_str(pattern, text, repl, fold, line, col),
+        Some(addr) => {
+            let (lines, trailing) = flow_split_owned(text);
+            let set = flow_resolve_set(display, Some(addr), &lines, fold, line, col)?;
+            let mut out: Vec<String> = Vec::with_capacity(lines.len());
+            for (idx, raw) in lines.iter().enumerate() {
+                if set.contains(&(idx + 1)) {
+                    out.push(flow_regex_replace_str(pattern, raw, repl, fold, line, col)?);
+                } else {
+                    out.push(raw.clone());
+                }
+            }
+            Ok(flow_rejoin(&out, trailing))
+        }
+    }
+}
+
+/// نواة احذف_أسطر: احذف الأسطر المعنونة؛ والغائب
+/// (لاشيء) = كل الأسطر.
+fn flow_delete_lines_core(
+    display: &str,
+    text: &str,
+    address: Option<&Value>,
+    fold: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    let (lines, trailing) = flow_split_owned(text);
+    let set = flow_resolve_set(display, address, &lines, fold, line, col)?;
+    let kept: Vec<String> = lines
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !set.contains(&(i + 1)))
+        .map(|(_, l)| l)
+        .collect();
+    Ok(flow_rejoin(&kept, trailing))
+}
+
+/// نواة اطبع_المطابق: الأسطر المعنونة نصوصا.
+fn flow_matching_lines_core(
+    display: &str,
+    text: &str,
+    address: Option<&Value>,
+    fold: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<String>> {
+    let (lines, _trailing) = flow_split_owned(text);
+    let set = flow_resolve_set(display, address, &lines, fold, line, col)?;
+    Ok(lines
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| set.contains(&(i + 1)))
+        .map(|(_, l)| l)
+        .collect())
+}
+
+/// نواة توقف_عند: الأسطر 1..N شاملة؛ وN أكبر من
+/// المجموع ← النص كله؛ و0 أو سالب (عدا -1) ← خطأ
+/// عربي؛ و-1 ← آخر سطر (أي النص كله).
+fn flow_take_lines_core(
+    display: &str,
+    text: &str,
+    n: i64,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    if n == -1 {
+        return Ok(text.to_string());
+    }
+    if n <= 0 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} عدد الأسطر {} غير صالح (الصالح 1 أو أكثر، و-1 لآخر سطر)",
+                display, n
+            ),
+            line,
+            col,
+        ));
+    }
+    let (lines, _trailing) = flow_split_owned(text);
+    let total = lines.len() as i64;
+    if n >= total {
+        return Ok(text.to_string());
+    }
+    let mut out = lines[..n as usize].join("\n");
+    out.push('\n');
+    Ok(out)
+}
+
+/// نواة ألحق_بعد: أدخل أسطر النص الملحق بعد كل
+/// سطر معنون؛ والملحق الفارغ بلا أثر.
+fn flow_append_after_core(
+    display: &str,
+    text: &str,
+    address: Option<&Value>,
+    appended: &str,
+    fold: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    let (lines, trailing) = flow_split_owned(text);
+    let set = flow_resolve_set(display, address, &lines, fold, line, col)?;
+    let extra: Vec<String> = appended.lines().map(|l| l.to_string()).collect();
+    let mut out: Vec<String> = Vec::new();
+    for (idx, raw) in lines.iter().enumerate() {
+        out.push(raw.clone());
+        if set.contains(&(idx + 1)) {
+            out.extend(extra.iter().cloned());
+        }
+    }
+    Ok(flow_rejoin(&out, trailing))
+}
+
+/// نواة أدرج_قبل: أدخل أسطر النص المدرج قبل كل
+/// سطر معنون؛ والمدرج الفارغ بلا أثر.
+fn flow_insert_before_core(
+    display: &str,
+    text: &str,
+    address: Option<&Value>,
+    inserted: &str,
+    fold: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    let (lines, trailing) = flow_split_owned(text);
+    let set = flow_resolve_set(display, address, &lines, fold, line, col)?;
+    let extra: Vec<String> = inserted.lines().map(|l| l.to_string()).collect();
+    let mut out: Vec<String> = Vec::new();
+    for (idx, raw) in lines.iter().enumerate() {
+        if set.contains(&(idx + 1)) {
+            out.extend(extra.iter().cloned());
+        }
+        out.push(raw.clone());
+    }
+    Ok(flow_rejoin(&out, trailing))
+}
+
+/// نواة غير_أسطر: استبدال كل امتداد متصل من الأسطر
+/// المعنونة بالنص الجديد مرة واحدة (sed المخلصة)،
+/// لا تكرار النص الجديد على كل سطر.
+fn flow_change_lines_core(
+    display: &str,
+    text: &str,
+    address: Option<&Value>,
+    new_text: &str,
+    fold: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    let (lines, trailing) = flow_split_owned(text);
+    let set = flow_resolve_set(display, address, &lines, fold, line, col)?;
+    let replacement: Vec<String> = new_text.lines().map(|l| l.to_string()).collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < lines.len() {
+        if set.contains(&(i + 1)) {
+            out.extend(replacement.iter().cloned());
+            while i < lines.len() && set.contains(&(i + 1)) {
+                i += 1;
+            }
+        } else {
+            out.push(lines[i].clone());
+            i += 1;
+        }
+    }
+    Ok(flow_rejoin(&out, trailing))
+}
+
+/// أمر واحد من قائمة أوامر: يتحقق من مفاتيحه
+/// وينفذه على النص الحالي؛ ويرجع (نص جديد، أوقف
+/// كل ما بعده؟). و`اطبع_المطابق` يُلحق أسطره
+/// بقائمة مطبوع (إلا مع صامت).
+fn flow_run_one_command(
+    display: &str,
+    text: &str,
+    cmd: &Value,
+    printed: &mut Vec<Value>,
+    quiet: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<(String, bool)> {
+    let pairs = match cmd {
+        Value::Dict(p) => p,
+        other => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع قاموسا لكل أمر لكن أعطيت {}",
+                    display,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let name = match dict_get(pairs, "أمر") {
+        Some(Value::Str(s)) => s.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع مفتاح «أمر» نصا لكن أعطيت {}",
+                    display,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+        None => {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع مفتاح «أمر» في كل أمر", display),
+                line,
+                col,
+            ))
+        }
+    };
+    let allowed: &[&str] = match name.as_str() {
+        "استبدل_الكل" => &["أمر", "نمط", "بديل", "عنوان"],
+        "احذف_أسطر" => &["أمر", "عنوان"],
+        "اطبع_المطابق" => &["أمر", "عنوان"],
+        "توقف_عند" => &["أمر", "عدد"],
+        "ألحق_بعد" => &["أمر", "نص", "عنوان"],
+        "أدرج_قبل" => &["أمر", "نص", "عنوان"],
+        "غير_أسطر" => &["أمر", "نص", "عنوان"],
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} أمر غير معروف: {}", display, name),
+                line,
+                col,
+            ))
+        }
+    };
+    for (k, _) in pairs {
+        if !allowed.iter().any(|a| *a == k.as_str()) {
+            return Err(RioError::runtime(
+                format!("الدالة {} الأمر {} لا يقبل المفتاح {}", display, name, k),
+                line,
+                col,
+            ));
+        }
+    }
+    let need = |key: &str| -> RioResult<&Value> {
+        dict_get(pairs, key).ok_or_else(|| {
+            RioError::runtime(
+                format!("الدالة {} الأمر {} ينقصه المفتاح {}", display, name, key),
+                line,
+                col,
+            )
+        })
+    };
+    let address = dict_get(pairs, "عنوان");
+    match name.as_str() {
+        "استبدل_الكل" => {
+            let pattern = need_string(display, need("نمط")?, line, col)?;
+            let repl = need_string(display, need("بديل")?, line, col)?;
+            Ok((
+                flow_replace_all_core(display, text, &pattern, &repl, address, false, line, col)?,
+                false,
+            ))
+        }
+        "احذف_أسطر" => Ok((
+            flow_delete_lines_core(display, text, address, false, line, col)?,
+            false,
+        )),
+        "اطبع_المطابق" => {
+            let found = flow_matching_lines_core(display, text, address, false, line, col)?;
+            if !quiet {
+                for l in found {
+                    printed.push(Value::Str(l));
+                }
+            }
+            Ok((text.to_string(), false))
+        }
+        "توقف_عند" => {
+            let n = need_integer(display, need("عدد")?, line, col)?;
+            Ok((
+                flow_take_lines_core(display, text, n, line, col)?,
+                true,
+            ))
+        }
+        "ألحق_بعد" => {
+            let appended = need_string(display, need("نص")?, line, col)?;
+            Ok((
+                flow_append_after_core(display, text, address, &appended, false, line, col)?,
+                false,
+            ))
+        }
+        "أدرج_قبل" => {
+            let inserted = need_string(display, need("نص")?, line, col)?;
+            Ok((
+                flow_insert_before_core(display, text, address, &inserted, false, line, col)?,
+                false,
+            ))
+        }
+        "غير_أسطر" => {
+            let new_text = need_string(display, need("نص")?, line, col)?;
+            Ok((
+                flow_change_lines_core(display, text, address, &new_text, false, line, col)?,
+                false,
+            ))
+        }
+        // لا يحدث: الاسم المجهول رُفض أعلاه.
+        _ => unreachable!(),
+    }
+}
+
+/// نواة المشغّل: طبّق قائمة أوامر تسلسليا على نص؛
+/// و`اطبع_المطابق` يُلحق أسطره بقائمة مطبوع؛
+/// و`توقف_عند` يقطع النص ويوقف كل ما بعده (دلالة
+/// sed `q`)؛ والإرجاع سجل واحد {نص، مطبوع} — بلا
+/// طباعة جانبية؛ ومع صامت تبقى مطبوع فارغة دائما.
+fn flow_run_commands_core(
+    display: &str,
+    text: &str,
+    commands: &[Value],
+    quiet: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let mut cur = text.to_string();
+    let mut printed: Vec<Value> = Vec::new();
+    for cmd in commands {
+        let (next, stop) =
+            flow_run_one_command(display, &cur, cmd, &mut printed, quiet, line, col)?;
+        cur = next;
+        if stop {
+            break;
+        }
+    }
+    Ok(Value::Dict(vec![
+        ("نص".to_string(), Value::Str(cur)),
+        ("مطبوع".to_string(), Value::List(printed)),
+    ]))
+}
+
+/// عدد صحيح من نص: لاتيني أو عربي مشرقي، مع
+/// إشارة سالبة اختيارية؛ والفائض أو التالف ← لا شيء.
+fn flow_parse_int_text(s: &str) -> Option<i64> {
+    let mut out: i64 = 0;
+    let mut neg = false;
+    let mut any = false;
+    for c in s.chars() {
+        match c {
+            '-' if !any && !neg => neg = true,
+            '0'..='9' => {
+                any = true;
+                out = out.checked_mul(10)?.checked_add(c as i64 - '0' as i64)?;
+            }
+            '٠'..='٩' => {
+                any = true;
+                out = out.checked_mul(10)?.checked_add(c as i64 - '٠' as i64)?;
+            }
+            _ => return None,
+        }
+    }
+    if !any {
+        return None;
+    }
+    Some(if neg { -out } else { out })
+}
+
+/// قسّم سطر أوامر على `|` مع هروب `\|` و`\\`.
+fn flow_split_command_fields(line: &str) -> Vec<String> {
+    let mut fields: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.peek() {
+                Some('|') => {
+                    cur.push('|');
+                    chars.next();
+                }
+                Some('\\') => {
+                    cur.push('\\');
+                    chars.next();
+                }
+                _ => cur.push('\\'),
+            },
+            '|' => {
+                fields.push(std::mem::take(&mut cur));
+            }
+            _ => cur.push(c),
+        }
+    }
+    fields.push(cur);
+    fields
+}
+
+/// حدّ عنوان صالح في صيغة الملف: -1 أو موجب.
+fn flow_address_bound_ok(n: i64) -> bool {
+    n == -1 || n > 0
+}
+
+/// حلّ حقل عنوان نصي (صيغة ملف الأوامر) إلى قيمة
+/// عنوان؛ والفارغ = كل الأسطر (لاشيء). الأشكال:
+/// عدد، أو `آخر` لـ-1، أو `أ-ب` مدى، أو `/نمط/`،
+/// أو `/نمط1/:/نمط2/`. والتالف ← خطأ عربي يسمّي
+/// رقم السطر في الملف.
+fn flow_parse_address_text(
+    field: &str,
+    file_line: usize,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let bad = || {
+        RioError::runtime(
+            format!(
+                "السطر {} في الملف: عنوان غير صالح «{}»",
+                file_line, field
+            ),
+            line,
+            col,
+        )
+    };
+    if field.is_empty() {
+        return Ok(Value::Nil);
+    }
+    if field == "آخر" {
+        return Ok(Value::Number(-1.0));
+    }
+    if let Some(n) = flow_parse_int_text(field) {
+        if flow_address_bound_ok(n) {
+            return Ok(Value::Number(n as f64));
+        }
+        return Err(bad());
+    }
+    // `/نمط1/:/نمط2/` قبل `/نمط/` المنفرد، وقبلهما
+    // قبل المدى — فالنمط قد يحوي `-`.
+    if field.starts_with('/') && field.ends_with('/') && field.len() >= 2 {
+        let inner = &field[1..field.len() - 1];
+        if let Some((p1, p2)) = inner.split_once("/:/") {
+            return Ok(Value::List(vec![
+                Value::Str(p1.to_string()),
+                Value::Str(p2.to_string()),
+            ]));
+        }
+        return Ok(Value::Str(inner.to_string()));
+    }
+    // مدى `أ-ب` (عدد-عدد).
+    if let Some((a, b)) = field.split_once('-') {
+        if let (Some(x), Some(y)) = (flow_parse_int_text(a), flow_parse_int_text(b)) {
+            if flow_address_bound_ok(x) && flow_address_bound_ok(y) {
+                return Ok(Value::List(vec![
+                    Value::Number(x as f64),
+                    Value::Number(y as f64),
+                ]));
+            }
+        }
+        return Err(bad());
+    }
+    Err(bad())
+}
+
+/// حلّل محتوى ملف أوامر (صيغة الإصدار 1) إلى
+/// قائمة قواميس الأوامر نفسها التي يقبلها
+/// نفذ_أوامر — فـنفذ_من_ملف غلاف قراءة فوق نواة
+/// نفذ_أوامر. والفارغ وسطور `#` تُتخطى؛ والسطر
+/// السيئ ← خطأ عربي يسمّي رقم السطر في الملف.
+fn flow_parse_command_file(
+    content: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<Value>> {
+    let mut commands: Vec<Value> = Vec::new();
+    for (idx, raw) in content.lines().enumerate() {
+        let no = idx + 1;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let fields = flow_split_command_fields(raw);
+        let name = fields[0].as_str();
+        let bad_fields = |want: &str| {
+            RioError::runtime(
+                format!(
+                    "السطر {} في الملف: الأمر {} يتوقع {} لكن أعطيت {} حقول",
+                    no,
+                    name,
+                    want,
+                    fields.len()
+                ),
+                line,
+                col,
+            )
+        };
+        let mut dict: Vec<(String, Value)> =
+            vec![("أمر".to_string(), Value::Str(name.to_string()))];
+        match name {
+            "استبدل_الكل" => {
+                if fields.len() != 3 && fields.len() != 4 {
+                    return Err(bad_fields("٣ أو ٤ حقول"));
+                }
+                dict.push(("نمط".to_string(), Value::Str(fields[1].clone())));
+                dict.push(("بديل".to_string(), Value::Str(fields[2].clone())));
+                if fields.len() == 4 {
+                    let addr = flow_parse_address_text(&fields[3], no, line, col)?;
+                    if !matches!(addr, Value::Nil) {
+                        dict.push(("عنوان".to_string(), addr));
+                    }
+                }
+            }
+            "احذف_أسطر" | "اطبع_المطابق" => {
+                if fields.len() != 1 && fields.len() != 2 {
+                    return Err(bad_fields("حقلا أو حقلين"));
+                }
+                if fields.len() == 2 {
+                    let addr = flow_parse_address_text(&fields[1], no, line, col)?;
+                    if !matches!(addr, Value::Nil) {
+                        dict.push(("عنوان".to_string(), addr));
+                    }
+                }
+            }
+            "توقف_عند" => {
+                if fields.len() != 2 {
+                    return Err(bad_fields("حقلين"));
+                }
+                let n = flow_parse_int_text(&fields[1]).ok_or_else(|| {
+                    RioError::runtime(
+                        format!("السطر {} في الملف: عدد غير صالح «{}»", no, fields[1]),
+                        line,
+                        col,
+                    )
+                })?;
+                dict.push(("عدد".to_string(), Value::Number(n as f64)));
+            }
+            "ألحق_بعد" | "أدرج_قبل" | "غير_أسطر" => {
+                if fields.len() != 2 && fields.len() != 3 {
+                    return Err(bad_fields("حقلين أو ثلاثة حقول"));
+                }
+                dict.push(("نص".to_string(), Value::Str(fields[1].clone())));
+                if fields.len() == 3 {
+                    let addr = flow_parse_address_text(&fields[2], no, line, col)?;
+                    if !matches!(addr, Value::Nil) {
+                        dict.push(("عنوان".to_string(), addr));
+                    }
+                }
+            }
+            _ => {
+                return Err(RioError::runtime(
+                    format!("السطر {} في الملف: أمر غير معروف «{}»", no, name),
+                    line,
+                    col,
+                ));
+            }
+        }
+        commands.push(Value::Dict(dict));
+    }
+    Ok(commands)
+}
+
+/// تدفق.نفذ_أوامر(نص، أوامر، خيارات؟) — البند 150:
+/// طبّق قائمة قواميس أوامر تسلسليا على نص وارجع
+/// سجلا واحدا {نص، مطبوع}. والأوامر السبعة أولا:
+/// استبدل_الكل واحذف_أسطر واطبع_المطابق وتوقف_عند
+/// وألحق_بعد وأدرج_قبل وغير_أسطر. والخيار صامت
+/// (البند 126): صحيحا تبقى مطبوع فارغة دائما.
+fn flow_run_commands(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.نفذ_أوامر";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let commands = match &args[1] {
+        Value::List(l) => l.clone(),
+        other => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع قائمة أوامر لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let mut quiet = false;
+    if args.len() == 3 {
+        let pairs = need_dict(DISPLAY, &args[2], line, col)?;
+        let opts = flow_parse_opts(DISPLAY, pairs, false, true, line, col)?;
+        quiet = opts.quiet;
+    }
+    flow_run_commands_core(DISPLAY, &text, &commands, quiet, line, col)
+}
+
+/// تدفق.نفذ_من_ملف(نص، مسار، خيارات؟) — البند 149:
+/// غلاف قراءة فوق نواة نفذ_أوامر: اقرأ ملف الأوامر
+/// (المسار النسبي يُحل مقابل مجلد الجلسة)، وحوّل
+/// أسطره إلى قواميس الأوامر نفسها، وطبّقها بالنواة
+/// نفسها. والغائب/غير المقروء/غير UTF-8 ← «تعذر
+/// قراءة الملف X» كـأنماط_من_ملف.
+fn flow_run_from_file(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.نفذ_من_ملف";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let path = need_string(DISPLAY, &args[1], line, col)?;
+    let mut quiet = false;
+    if args.len() == 3 {
+        let pairs = need_dict(DISPLAY, &args[2], line, col)?;
+        let opts = flow_parse_opts(DISPLAY, pairs, false, true, line, col)?;
+        quiet = opts.quiet;
+    }
+    let full = search_resolve_path(ctx, &path);
+    let content = std::fs::read_to_string(&full).map_err(|_| {
+        RioError::runtime(format!("تعذر قراءة الملف {}", path), line, col)
+    })?;
+    let commands = flow_parse_command_file(&content, line, col)?;
+    flow_run_commands_core(DISPLAY, &text, &commands, quiet, line, col)
+}
+
+#[cfg(test)]
+mod flow_address_tests {
+    use super::*;
+
+    const DISPLAY: &str = "تدفق.عنوان";
+
+    fn num(n: i64) -> Value {
+        Value::Number(n as f64)
+    }
+
+    fn lines_of(text: &str) -> Vec<&str> {
+        flow_lines(text)
+    }
+
+    fn resolve(address: &Value, text: &str) -> RioResult<Vec<usize>> {
+        let lines = lines_of(text);
+        flow_address_lines(DISPLAY, address, &lines, false, 0, 0)
+    }
+
+    fn err_msg(address: &Value, text: &str) -> String {
+        resolve(address, text).unwrap_err().message
+    }
+
+    #[test]
+    fn flow_address_number_forms() {
+        let text = "ألف\nباء\nجيم\n";
+        assert_eq!(resolve(&num(1), text).unwrap(), vec![1]);
+        assert_eq!(resolve(&num(3), text).unwrap(), vec![3]);
+        assert_eq!(resolve(&num(-1), text).unwrap(), vec![3]);
+        assert_eq!(resolve(&num(9), text).unwrap(), Vec::<usize>::new());
+        assert!(err_msg(&num(0), text).contains("غير صالح"));
+        assert!(err_msg(&num(-2), text).contains("غير صالح"));
+        assert!(resolve(&Value::Number(1.5), text).is_err());
+        assert!(resolve(&Value::Bool(true), text).is_err());
+    }
+
+    #[test]
+    fn flow_address_range_forms() {
+        let text = "ألف\nباء\nجيم\n";
+        let range = |a: i64, b: i64| Value::List(vec![num(a), num(b)]);
+        assert_eq!(resolve(&range(1, 3), text).unwrap(), vec![1, 2, 3]);
+        assert_eq!(resolve(&range(2, 2), text).unwrap(), vec![2]);
+        assert_eq!(resolve(&range(3, 1), text).unwrap(), Vec::<usize>::new());
+        assert_eq!(resolve(&range(2, 99), text).unwrap(), vec![2, 3]);
+        assert_eq!(resolve(&range(1, -1), text).unwrap(), vec![1, 2, 3]);
+        assert_eq!(resolve(&range(-1, -1), text).unwrap(), vec![3]);
+        assert_eq!(resolve(&range(9, 10), text).unwrap(), Vec::<usize>::new());
+        assert!(err_msg(&range(0, 2), text).contains("غير صالح"));
+        assert!(err_msg(&range(-2, 2), text).contains("غير صالح"));
+        assert!(resolve(&Value::List(vec![num(1)]), text).is_err());
+        assert!(resolve(&Value::List(vec![num(1), num(2), num(3)]), text).is_err());
+        assert!(resolve(
+            &Value::List(vec![num(1), Value::Str("جيم".to_string())]),
+            text
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn flow_address_pattern_forms() {
+        let text = "ألف\nباء\nجيم\n";
+        let pat = |p: &str| Value::Str(p.to_string());
+        assert_eq!(resolve(&pat("باء"), text).unwrap(), vec![2]);
+        assert_eq!(resolve(&pat("ألف|جيم"), text).unwrap(), vec![1, 3]);
+        assert_eq!(resolve(&pat("غائب"), text).unwrap(), Vec::<usize>::new());
+        assert_eq!(resolve(&pat(""), text).unwrap(), vec![1, 2, 3]);
+        assert!(err_msg(&pat("["), text).contains("نمط غير صالح"));
+    }
+
+    #[test]
+    fn flow_address_pattern_range_forms() {
+        let text = "ألف\nباء\nباء\nجيم\n";
+        let prange = |a: &str, b: &str| {
+            Value::List(vec![Value::Str(a.to_string()), Value::Str(b.to_string())])
+        };
+        assert_eq!(
+            resolve(&prange("ألف", "جيم"), text).unwrap(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(resolve(&prange("باء", "غائب"), text).unwrap(), vec![2, 3, 4]);
+        assert_eq!(
+            resolve(&prange("غائب", "جيم"), text).unwrap(),
+            Vec::<usize>::new()
+        );
+        // نمط2 بعد سطر نمط1 حتما: «باء» الثانية تنهي المدى لا الأولى.
+        assert_eq!(resolve(&prange("باء", "باء"), text).unwrap(), vec![2, 3]);
+        assert!(err_msg(&prange("ألف", "["), text).contains("نمط غير صالح"));
+    }
+
+    #[test]
+    fn flow_address_nil_and_empty_text() {
+        let text = "ألف\nباء\nجيم\n";
+        assert_eq!(resolve(&Value::Nil, text).unwrap(), vec![1, 2, 3]);
+        assert_eq!(resolve(&Value::Nil, "").unwrap(), Vec::<usize>::new());
+        assert_eq!(resolve(&num(1), "").unwrap(), Vec::<usize>::new());
+        assert_eq!(resolve(&num(-1), "").unwrap(), Vec::<usize>::new());
+        assert_eq!(
+            flow_address_lines_in_text(DISPLAY, &num(2), "ألف\nباء\n", false, 0, 0).unwrap(),
+            vec![2]
+        );
+    }
+}

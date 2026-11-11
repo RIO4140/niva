@@ -15,6 +15,7 @@
 //!   نيفا برنامج.نيفا --شجرة   print the AST, then run
 //!   نيفا --مساعدة             usage
 //!   نيفا --نسخة               version
+//!   نيفا -- --مساعدة         run the file named --مساعدة (not the help flag)
 //!
 //! The engine itself lives in lib.rs; this file is only the CLI
 //! (flags, file reading, the 256 MB stack thread, exit codes).
@@ -54,7 +55,8 @@ fn usage() -> String {
      --بلا-بدء            تخطي ملفات البدء (بدء.نيفا والمقتطفات) في التفاعلي\n\
      --ملف-بدء مسار       ملف بدء إضافي يُنفَّذ بعد ملفات البدء في التفاعلي\n\
      --مستقل               مع ابن: ملف تنفيذي مستقل بدلا من المصنوع\n\
-     --أصلي                مع ابن: ثنائي أصلي (C) بدلا من المصنوع\n"
+     --أصلي                مع ابن: ثنائي أصلي (C) بدلا من المصنوع\n\
+     --                      فاصل الخيارات: ما بعده ملفات لا أعلاما\n"
         .to_string()
 }
 
@@ -67,7 +69,8 @@ fn standalone_usage() -> String {
      --اسمح-بالكل   السماح بملفات خارج مجلد البرنامج (للموثوقة فقط)\n\
      --اسمح-بالشبكة السماح بالشبكة — مغلقة افتراضيا\n\
      --اسمح-بالخادم السماح بالخادم — مغلق افتراضيا، وعلم الشبكة وحده لا يكفي\n\
-     --مضيف-محلي مضيف السماح بمضيف محلي صراحة (مثل 127.0.0.1) — وحده لا يفتح الشبكة\n"
+     --مضيف-محلي مضيف السماح بمضيف محلي صراحة (مثل 127.0.0.1) — وحده لا يفتح الشبكة\n\
+     --                      فاصل الخيارات: ما بعده ملفات لا أعلاما\n"
         .to_string()
 }
 
@@ -124,6 +127,28 @@ fn build_error_exit_code(e: &RioError) -> ExitCode {
     }
 }
 
+/// البند 115 (دفعة لينكس 2): فاصل الخيارات `--` —
+/// موضع أول `--` في الوسائط (بلا 0)، مع تخطي قيمة
+/// علم يأخذ قيمة (--مضيف-محلي و--تنزيلات و--ملف-بدء)
+/// فلا تُحسب `--` كقيمة فاصلا؛ وبلا `--` يعيد عدد
+/// الوسائط. وكل فحص علم في main() (وما يليها) لا
+/// يرى إلا ما قبل هذا الموضع.
+fn options_end(args: &[String]) -> usize {
+    let mut i = 1;
+    while i < args.len() {
+        let n = normalize_cli_word(&args[i]);
+        if n == "--مضيف-محلي" || n == "--تنزيلات" || n == "--ملف-بدء" {
+            i += 2;
+            continue;
+        }
+        if n == "--" {
+            return i;
+        }
+        i += 1;
+    }
+    args.len()
+}
+
 fn main() -> ExitCode {
     // مهمة 8 (ك-2.2): الملف التنفيذي المستقل يكتشف نفسه
     // أولا — إن كان الملف التنفيذي الحالي يحمل مصنوعا
@@ -142,11 +167,16 @@ fn main() -> ExitCode {
     // أما نصوص العرض (usage والرسائل) فتبقى بالصيغة
     // القانونية (مساعدة، نسخة، شجرة، شبكة).
     let nargs: Vec<String> = args.iter().map(|a| normalize_cli_word(a)).collect();
-    if nargs.iter().any(|a| a == "--مساعده") {
+    // البند 115: أول `--` ينهي تحليل الخيارات —
+    // فحوص الأعلام أدناه لا ترى إلا ما قبله، و`--`
+    // نفسه ليس «خيارا مجهولا».
+    let opt_end = options_end(&args);
+    let opt_nargs = &nargs[..opt_end];
+    if opt_nargs.iter().any(|a| a == "--مساعده") {
         print!("{}", usage());
         return ExitCode::SUCCESS;
     }
-    if nargs.iter().any(|a| a == "--نسخه") {
+    if opt_nargs.iter().any(|a| a == "--نسخه") {
         println!("محرك نيفا ١٫٠٫٠");
         return ExitCode::SUCCESS;
     }
@@ -175,7 +205,7 @@ fn main() -> ExitCode {
     // ك-2 (مهمة 7): --افتراضي أُزيل — الآلة الافتراضية هي
     // المحرك الافتراضي الآن، فلا معنى للعلم. خطأ عربي واضح
     // يقول ذلك، بدلا من «خيار غير معروف» المضللة.
-    if nargs.iter().any(|a| a == "--افتراضي") {
+    if opt_nargs.iter().any(|a| a == "--افتراضي") {
         eprintln!("الآلة الافتراضية هي المحرك الافتراضي الآن — لا حاجة إلى --افتراضي");
         eprint!("{}", usage());
         return usage_exit_code();
@@ -184,6 +214,7 @@ fn main() -> ExitCode {
         .iter()
         .skip(1)
         .zip(nargs.iter().skip(1))
+        .take(opt_end.saturating_sub(1))
         .find(|(_, n)| n.starts_with('-') && !KNOWN_FLAGS.contains(&n.as_str()))
         .map(|(raw, _)| raw)
     {
@@ -196,10 +227,10 @@ fn main() -> ExitCode {
     // authorizes a local host (the only way a loopback/private
     // address can be fetched — see network.rs). The local-host
     // flag alone does NOT open the network.
-    let allow_network = nargs.iter().any(|a| a == "--اسمح-بالشبكه");
+    let allow_network = opt_nargs.iter().any(|a| a == "--اسمح-بالشبكه");
     // Meeting 27: the server is a separate permission — the
     // network flag alone is NOT enough to serve.
-    let allow_server = nargs.iter().any(|a| a == "--اسمح-بالخادم");
+    let allow_server = opt_nargs.iter().any(|a| a == "--اسمح-بالخادم");
     let mut local_hosts: Vec<String> = Vec::new();
     let mut downloads: Option<String> = None;
     // المرحلة (د) — الإكمال (اجتماع 68 §83): علما بدء
@@ -207,8 +238,15 @@ fn main() -> ExitCode {
     let mut startup_file: Option<String> = None;
     let mut arg_iter = args.iter().skip(1).peekable();
     let mut file_args: Vec<String> = Vec::new();
+    // البند 115: ما بعد أول `--` معاملات موضعية
+    // (ملفات) لا أعلاما؛ و`--` ثانية بعد الأولى ملف عادي.
+    let mut seen_dd = false;
     while let Some(a) = arg_iter.next() {
-        if normalize_cli_word(a) == "--مضيف-محلي" {
+        if seen_dd {
+            file_args.push(a.clone());
+        } else if normalize_cli_word(a) == "--" {
+            seen_dd = true;
+        } else if normalize_cli_word(a) == "--مضيف-محلي" {
             match arg_iter.next() {
                 Some(host) => local_hosts.push(host.clone()),
                 None => {
@@ -260,29 +298,31 @@ fn main() -> ExitCode {
     // No file path given (no args, or only flags) -> interactive REPL.
     // --تفاعلي is explicit; the REPL runs on the compiler (VM) by
     // default, or on the interpreter with --مفسر (diagnostic only).
-    let allow_all = nargs.iter().any(|a| a == "--اسمح-بالكل");
+    let allow_all = opt_nargs.iter().any(|a| a == "--اسمح-بالكل");
     // ك-2 (مهمة 7): --مفسر علم تشخيص خفي — مفسر الشجرة
     // للمقارنة والتشخيص فقط، ولا يظهر في --مساعدة.
-    let use_interpreter = nargs.iter().any(|a| a == "--مفسر");
+    let use_interpreter = opt_nargs.iter().any(|a| a == "--مفسر");
     // مهمة 8 (ك-2.2): أوامر البناء والتشغيل — أول موضعي
     // هو الأمر نفسه (ابن/شغل)، والثاني مساره.
     // الصيغ القانونية بلا تشكيل؛ والمشكولة (ابنِ، شغّل)
     // مقبولة توافقا عبر التطبيع.
     let first_cmd = file_args.first().map(|s| normalize_cli_word(s));
+    // البند 115: أمرا ابن/شغل لا يريان أعلاما بعد `--`.
+    let cli_opts: Vec<String> = args[..opt_end].to_vec();
     if first_cmd.as_deref() == Some("ابن") {
-        return do_build(&args, &file_args);
+        return do_build(&cli_opts, &file_args);
     }
     if first_cmd.as_deref() == Some("شغل") {
-        return do_run_artifact(&args, &file_args, allow_all, allow_network, allow_server, &local_hosts);
+        return do_run_artifact(&cli_opts, &file_args, allow_all, allow_network, allow_server, &local_hosts);
     }
     // --مستقل بلا ابن لا معنى له.
-    if nargs.iter().any(|a| a == "--مستقل") {
+    if opt_nargs.iter().any(|a| a == "--مستقل") {
         eprintln!("خطأ: العلم --مستقل يناسب أمر ابن فقط — مثال: نيفا ابن --مستقل برنامج.نيفا");
         eprint!("{}", usage());
         return usage_exit_code();
     }
     // --أصلي بلا ابن لا معنى له.
-    if nargs.iter().any(|a| a == "--اصلي") {
+    if opt_nargs.iter().any(|a| a == "--اصلي") {
         eprintln!("خطأ: العلم --أصلي يناسب أمر ابن فقط — مثال: نيفا ابن --أصلي برنامج.نيفا");
         eprint!("{}", usage());
         return usage_exit_code();
@@ -292,7 +332,7 @@ fn main() -> ExitCode {
         // recursion limit is a Niva error, not a Rust stack overflow.
         // المرحلة (د) — الإكمال (اجتماع 68 §83): علما بدء
         // التشغيل التفاعلي.
-        let skip_startup = nargs.iter().any(|a| a == "--بلا-بدء");
+        let skip_startup = opt_nargs.iter().any(|a| a == "--بلا-بدء");
         let startup_path = startup_file.map(std::path::PathBuf::from);
         let handle = std::thread::Builder::new()
             .stack_size(STACK_SIZE_BYTES)
@@ -303,7 +343,7 @@ fn main() -> ExitCode {
         };
     }
     let path = file_arg.unwrap();
-    let show_ast = nargs.iter().any(|a| a == "--شجره");
+    let show_ast = opt_nargs.iter().any(|a| a == "--شجره");
     // Meeting 4: trusted file mode, explicit flag only.
     // Default is restricted to the program directory.
     // (allow_all was already read above, before the REPL branch.)
@@ -514,11 +554,14 @@ fn run_standalone(payload: Vec<u8>) -> ExitCode {
     // المطابقة على الصيغة المطبّعة (أمر المالك 2026-11-06
     // ~05:08)؛ والرسائل تعرض ما كتبه المستخدم خاما.
     let nargs: Vec<String> = args.iter().map(|a| normalize_cli_word(a)).collect();
-    if nargs.iter().any(|a| a == "--مساعده") {
+    // البند 115: أول `--` ينهي تحليل الخيارات هنا أيضا.
+    let opt_end = options_end(&args);
+    let opt_nargs = &nargs[..opt_end];
+    if opt_nargs.iter().any(|a| a == "--مساعده") {
         print!("{}", standalone_usage());
         return ExitCode::SUCCESS;
     }
-    if nargs.iter().any(|a| a == "--نسخه") {
+    if opt_nargs.iter().any(|a| a == "--نسخه") {
         println!("محرك نيفا ١٫٠٫٠");
         return ExitCode::SUCCESS;
     }
@@ -534,6 +577,7 @@ fn run_standalone(payload: Vec<u8>) -> ExitCode {
         .iter()
         .skip(1)
         .zip(nargs.iter().skip(1))
+        .take(opt_end.saturating_sub(1))
         .find(|(_, n)| n.starts_with('-') && !ALLOWED.contains(&n.as_str()))
         .map(|(raw, _)| raw)
     {
@@ -541,13 +585,22 @@ fn run_standalone(payload: Vec<u8>) -> ExitCode {
         eprint!("{}", standalone_usage());
         return usage_exit_code();
     }
-    let allow_network = nargs.iter().any(|a| a == "--اسمح-بالشبكه");
-    let allow_all = nargs.iter().any(|a| a == "--اسمح-بالكل");
-    let allow_server = nargs.iter().any(|a| a == "--اسمح-بالخادم");
+    let allow_network = opt_nargs.iter().any(|a| a == "--اسمح-بالشبكه");
+    let allow_all = opt_nargs.iter().any(|a| a == "--اسمح-بالكل");
+    let allow_server = opt_nargs.iter().any(|a| a == "--اسمح-بالخادم");
     let mut local_hosts: Vec<String> = Vec::new();
     let mut arg_iter = args.iter().skip(1).peekable();
+    // البند 115: ما بعد أول `--` موضعي لا علم — والمستقل
+    // لا يأخذ موضعيا أصلا، فيُرفض كأي موضعي آخر.
+    let mut seen_dd = false;
     while let Some(a) = arg_iter.next() {
-        if normalize_cli_word(a) == "--مضيف-محلي" {
+        if seen_dd {
+            eprintln!("خطأ: البرنامج المستقل لا يأخذ ملف مصدر — شغّله مباشرة");
+            eprint!("{}", standalone_usage());
+            return usage_exit_code();
+        } else if normalize_cli_word(a) == "--" {
+            seen_dd = true;
+        } else if normalize_cli_word(a) == "--مضيف-محلي" {
             match arg_iter.next() {
                 Some(host) => local_hosts.push(host.clone()),
                 None => {
