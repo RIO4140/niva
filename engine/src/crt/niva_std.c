@@ -1019,6 +1019,13 @@ static NvValue nv_std_crypto_secure_random(NvValue *args, int nargs, int line, i
         nv_error(NV_ERR_RUNTIME, "تشفير.عشوائي_آمن: العدد تجاوز الحد (١ ميبيبايت)",
                  line, col);
     }
+    // ويندوز: لا /dev/urandom في std ولا عشوائية آمنة
+    // بلا BCrypt — فيُرفض صراحة بالرسالة القانونية
+    // نفسها التي يرفض بها المفسر (اجتماع 82 §97).
+    // بلا BCrypt هنا وبلا أي رجوع إلى عشوائية ضعيفة.
+#ifdef _WIN32
+    nv_error(NV_ERR_RUNTIME, "تشفير.عشوائي_آمن غير مدعوم على هذه المنصة", line, col);
+#endif
     int fd = open("/dev/urandom", O_RDONLY);
     if (fd < 0) {
         nv_error(NV_ERR_RUNTIME, "تعذّر قراءة العشوائية من النظام", line, col);
