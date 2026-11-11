@@ -11717,6 +11717,14 @@ static NvValue nv_std_password_generate(NvValue *args, int nargs, int line, int 
         nv_error(NV_ERR_TYPE, "الدالة كلمة_مرور.ولّد تتوقع مجموعة غير فارغة", line, col);
     }
     size_t limit = 256 - (256 % nchars);
+    // ويندوز: مولّد كلمة المرور يقرأ العشوائية مباشرة هنا ولا
+    // يستدعي تشفير.عشوائي_آمن المحروسة — فيُرفض صراحة هنا أيضا
+    // بالرسالة القانونية نفسها (اجتماع 82 §97).
+    // بلا BCrypt هنا وبلا أي رجوع إلى عشوائية ضعيفة.
+#ifdef _WIN32
+    free(cps); free(offs);
+    nv_error(NV_ERR_RUNTIME, "تشفير.عشوائي_آمن غير مدعوم على هذه المنصة", line, col);
+#endif
     int fd = open("/dev/urandom", O_RDONLY);
     if (fd < 0) {
         free(cps); free(offs);
