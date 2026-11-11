@@ -97,8 +97,102 @@ fn assert_native_same(name: &str, source: &str, files: &[(&str, &str)]) {
     );
 }
 
+/// حد السماحية المسمى: وحدتان عائمتان أخيرتان (2 ULP).
+/// السبب (اجتماع 82 §97): تباين libm في الدوال
+/// المتسامية عبر المنصات — `exp` غير ملزم التقريب
+/// الصحيح في IEEE 754 — والصيغة مطابقة حرفيا في
+/// الطرفين؛ فالفرق حتى 2 ULP في الخانة الأخيرة ليس
+/// خطأ منطق في نيفا. تسري فقط على الحالات المعلَّمة
+/// في `parity_cases.rs` (FLOAT_TOLERANT_CASES)، وفي
+/// `c_parity` وحدها — لا على `parity_gate` ولا على
+/// أي حالة غير معلَّمة.
+const MAX_ULP_DIFF: u64 = 2;
+
+/// وحدة عائمة أخيرة (ULP) عند مقدار `x` (الموجب).
+/// للصفر ودون الطبيعي: أصغر موجب دون طبيعي.
+fn ulp_of(x: f64) -> f64 {
+    let ax = x.abs();
+    if !ax.is_finite() || ax == 0.0 {
+        return f64::MIN_POSITIVE;
+    }
+    let e = (ax.to_bits() >> 52) & 0x7ff;
+    if e <= 52 {
+        return f64::MIN_POSITIVE;
+    }
+    f64::from_bits((e - 52) << 52)
+}
+
+/// حوّل سطر مخرجات إلى عدد عائم إن كان السطر كله
+/// عددا، وإلا لا شيء. المخرجات بأرقام عربية مشرقية
+/// (٠-٩) والفاصل ٫ (U+066B)؛ وتُعاد إلى اللاتينية
+/// قبل القراءة (والسالب ASCII `-` والأس `e` كما هما).
+fn parse_output_number(line: &str) -> Option<f64> {
+    let mut latin = String::with_capacity(line.len());
+    for c in line.chars() {
+        match c {
+            '٠'..='٩' => latin.push(char::from(b'0' + (c as u32 - '٠' as u32) as u8)),
+            '٫' => latin.push('.'),
+            other => latin.push(other),
+        }
+    }
+    latin.parse::<f64>().ok()
+}
+
+/// قارن مخرجين سطرا بسطر بسماحية 2 ULP للأسطر
+/// العددية وحدها. السطر المتساوي حرفيا يمر؛ والسطر
+/// العددي في الطرفين يمر إن كان الفرق ≤ 2 ULP عند
+/// مقدار الأكبر؛ والسطر العددي في طرف دون الآخر
+/// فشل صريح؛ وعدد الأسطر المختلف فشل صريح.
+fn outputs_close_ulp(a: &str, b: &str) -> bool {
+    let la: Vec<&str> = a.lines().collect();
+    let lb: Vec<&str> = b.lines().collect();
+    if la.len() != lb.len() {
+        return false;
+    }
+    la.iter().zip(lb.iter()).all(|(x, y)| {
+        if x == y {
+            return true;
+        }
+        match (parse_output_number(x), parse_output_number(y)) {
+            (Some(fx), Some(fy)) => {
+                if !fx.is_finite() || !fy.is_finite() {
+                    return false;
+                }
+                let diff = (fx - fy).abs();
+                let ulp = ulp_of(fx.abs().max(fy.abs()));
+                diff <= (MAX_ULP_DIFF as f64) * ulp
+            }
+            _ => false,
+        }
+    })
+}
+
+/// قارن المفسر بالثنائي الأصلي بسماحية 2 ULP في
+/// المخرج فقط (للحالات المعلَّمة وحدها)؛ والخطأ
+/// (stderr) ورمز الخروج يُقارنان حرفيا دائما بلا
+/// أي سماحية.
+fn assert_native_same_tol(name: &str, source: &str, files: &[(&str, &str)]) {
+    let (out_i, err_i, code_i) = pc::run_one(source, files, true);
+    let (out_c, err_c, code_c) = run_native(source, files);
+    assert_eq!(
+        (err_i.clone(), code_i),
+        (err_c.clone(), code_c),
+        "اختلاف تكافؤ أصلي (خطأ/خروج) في «{}»:\n--- المفسر (خروج {}):\nخطأ:\n{}\n--- الأصلي (خروج {}):\nخطأ:\n{}",
+        name, code_i, err_i, code_c, err_c
+    );
+    assert!(
+        outputs_close_ulp(&out_i, &out_c),
+        "اختلاف تكافؤ أصلي (مخرج، فوق 2 ULP) في «{}»:\n--- المفسر:\n{}\n--- الأصلي:\n{}",
+        name, out_i, out_c
+    );
+}
+
 fn assert_native_src(name: &str, lines: &[&str]) {
     assert_native_same(name, &pc::src(lines), &[]);
+}
+
+fn assert_native_src_tol(name: &str, lines: &[&str]) {
+    assert_native_same_tol(name, &pc::src(lines), &[]);
 }
 
 /// شغّل ملف مثال بالثنائي الأصلي مقابل المفسر.
@@ -247,7 +341,11 @@ fn c_parity_integration_scenarios() {
             println!("تُخطى (حد AOT موثق): {}", name);
             continue;
         }
-        assert_native_src(name, lines);
+        if pc::FLOAT_TOLERANT_CASES.contains(&name) {
+            assert_native_src_tol(name, lines);
+        } else {
+            assert_native_src(name, lines);
+        }
     }
     println!("حالات متكاملة: {} مرت، {} تُخطى (حد AOT)", pc::INTEGRATION_CASES.len() - skipped, skipped);
 }
