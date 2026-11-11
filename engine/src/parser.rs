@@ -62,6 +62,47 @@ fn bare_call_follows(tok: &Token, line: usize) -> bool {
     }
 }
 
+/// نمط واحد داخل `حال` (البنود 99–100 و153–162،
+/// الدفعة 3 من الـ579). الأنماط وحدها تُحلَّل هنا؛
+/// والتفكيك إلى اختبار + ربط بعقد قائمة في
+/// `desugar_match`/`pattern_test` — فلا عقد AST
+/// جديدة، ويعمل المفسر والآلة والأصلي كما هي.
+/// `|` بدائل تُوسَّع إلى أنماط عدة (جداء ديكارتي في
+/// الأنماط المركبة)، فيصير كل بديل حالة في السلسلة،
+/// ويبقى ترتيب الحالات كما كتبه المستخدم.
+#[derive(Debug, Clone, PartialEq)]
+enum Pat {
+    /// حرفي: عدد أو نص أو صحيح أو خطا أو لاشيء
+    /// (بما فيه العدد السالب).
+    Lit(Expr),
+    /// التقاط: اسم متغير جديد يُربط بالقيمة.
+    Capture(String),
+    /// شامل `_`: يطابق أي شيء بلا ربط.
+    Wildcard,
+    /// قيمة مؤهلة بنقطة: `وحدة.ثابت` أو `كائن.حقل`.
+    Value(Expr),
+    /// متسلسل: عناصر بلا نجمة بالترتيب، والنجمة
+    /// اختيارية (عدد العناصر قبلها، واسم التقاط
+    /// الباقي أو لا شيء لـ`*_`)، وموضعها في المصدر
+    /// لاسم مؤقت فريد.
+    Seq {
+        elems: Vec<Pat>,
+        star: Option<(usize, Option<String>, usize, usize)>,
+    },
+    /// فهرس: (مفتاح، نمط) + باقي `**اسم` اختياري.
+    Map {
+        entries: Vec<(Expr, Pat)>,
+        rest: Option<String>,
+    },
+    /// صنف: اسم الصنف + (حقل، نمط) مفتاحية فقط —
+    /// الموضعي مرفوض نحوا (لا ترتيب حقول معلن في
+    /// فئات نيفا).
+    Class {
+        name: String,
+        fields: Vec<(String, Pat)>,
+    },
+}
+
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
         Self { tokens, pos: 0, file: None }
@@ -256,6 +297,7 @@ impl Parser {
             TokenKind::Keyword(Keyword::Repeat) => Ok(vec![self.parse_repeat()?]),
             TokenKind::Keyword(Keyword::Func) => Ok(vec![self.parse_funcdef()?]),
             TokenKind::Keyword(Keyword::Assert) => Ok(vec![self.parse_assert()?]),
+            TokenKind::Keyword(Keyword::Match) => Ok(self.parse_match()?),
             TokenKind::Keyword(Keyword::Return) => {
                 self.advance();
                 let value = if self.is_separator()
@@ -969,6 +1011,1099 @@ impl Parser {
             line,
             col,
         ))
+    }
+
+    /// البندان 99 و100 — `طابق موضوع:` ثم حالات
+    /// `حال نمط [اذا حراسة]:` بمسافة بادئة. أول حالة
+    /// مطابقة تفوز؛ وبلا مطابقة لا ينفَّذ شيء (كما في
+    /// ألف v5)؛ والموضوع يُقيَّم مرة واحدة في مؤقت.
+    fn parse_match(&mut self) -> RioResult<Vec<Stmt>> {
+        let tok = self.advance(); // طابق
+        let (line, col) = (tok.line, tok.col);
+        let subject = self.parse_expr()?;
+        self.expect_colon()?;
+        if !matches!(self.peek().kind, TokenKind::Newline) {
+            let t = self.peek().clone();
+            return Err(RioError::parse(
+                "طابق يتطلب حالات بمسافة بادئة بعد النقطتين",
+                t.line,
+                t.col,
+            ));
+        }
+        self.advance(); // Newline
+        if !matches!(self.peek().kind, TokenKind::Indent) {
+            let t = self.peek().clone();
+            return Err(RioError::parse(
+                "طابق يتطلب حالات بمسافة بادئة بعد النقطتين",
+                t.line,
+                t.col,
+            ));
+        }
+        self.advance(); // Indent
+        let mut cases: Vec<(Pat, Option<Expr>, Vec<Stmt>)> = Vec::new();
+        loop {
+            self.skip_separators();
+            match self.peek().kind {
+                TokenKind::Dedent => {
+                    self.advance();
+                    break;
+                }
+                TokenKind::Eof => {
+                    let t = self.peek().clone();
+                    return Err(RioError::parse(
+                        "نهاية غير متوقعة داخل طابق",
+                        t.line,
+                        t.col,
+                    ));
+                }
+                TokenKind::Keyword(Keyword::Case) => {
+                    self.advance(); // حال
+                    let alts = self.parse_pattern()?;
+                    let guard = if matches!(self.peek().kind, TokenKind::Keyword(Keyword::If)) {
+                        self.advance(); // اذا (حراسة، البند 161)
+                        Some(self.parse_expr()?)
+                    } else {
+                        None
+                    };
+                    self.expect_colon()?;
+                    let body = self.parse_block()?;
+                    for alt in alts {
+                        cases.push((alt, guard.clone(), body.clone()));
+                    }
+                }
+                _ => {
+                    let t = self.peek().clone();
+                    return Err(RioError::parse(
+                        "توقع حال داخل طابق",
+                        t.line,
+                        t.col,
+                    ));
+                }
+            }
+        }
+        if cases.is_empty() {
+            return Err(RioError::parse(
+                "طابق يتطلب حالة واحدة على الأقل",
+                line,
+                col,
+            ));
+        }
+        Ok(Self::desugar_match(subject, cases, line, col))
+    }
+
+    /// نمط (بدائل `|`): نمط مغلق واحد أو أكثر.
+    fn parse_pattern(&mut self) -> RioResult<Vec<Pat>> {
+        let mut alts = self.parse_closed_pattern()?;
+        while matches!(self.peek().kind, TokenKind::Pipe) {
+            self.advance(); // | (البند 162)
+            alts.extend(self.parse_closed_pattern()?);
+        }
+        Ok(alts)
+    }
+
+    /// نمط مغلق واحد — وقد يتوسع إلى بدائل عدة
+    /// (المجموعة شفافة؛ والمركب جداء ديكارتي).
+    fn parse_closed_pattern(&mut self) -> RioResult<Vec<Pat>> {
+        let tok = self.peek().clone();
+        match &tok.kind {
+            TokenKind::Number(n) => {
+                let n = *n;
+                self.advance();
+                Ok(vec![Pat::Lit(Expr::new(
+                    ExprKind::Number(n),
+                    tok.line,
+                    tok.col,
+                ))])
+            }
+            TokenKind::Str(s) => {
+                let s = s.clone();
+                self.advance();
+                Ok(vec![Pat::Lit(Expr::new(
+                    ExprKind::Str(s),
+                    tok.line,
+                    tok.col,
+                ))])
+            }
+            TokenKind::Keyword(Keyword::True) => {
+                self.advance();
+                Ok(vec![Pat::Lit(Expr::new(
+                    ExprKind::Bool(true),
+                    tok.line,
+                    tok.col,
+                ))])
+            }
+            TokenKind::Keyword(Keyword::False) => {
+                self.advance();
+                Ok(vec![Pat::Lit(Expr::new(
+                    ExprKind::Bool(false),
+                    tok.line,
+                    tok.col,
+                ))])
+            }
+            TokenKind::Keyword(Keyword::Nil) => {
+                self.advance();
+                Ok(vec![Pat::Lit(Expr::new(
+                    ExprKind::Nil,
+                    tok.line,
+                    tok.col,
+                ))])
+            }
+            TokenKind::Minus => {
+                self.advance(); // - (حرفي سالب، البند 153)
+                let n = self.peek().clone();
+                match &n.kind {
+                    TokenKind::Number(v) => {
+                        let v = *v;
+                        self.advance();
+                        Ok(vec![Pat::Lit(Expr::new(
+                            ExprKind::Number(-v),
+                            tok.line,
+                            tok.col,
+                        ))])
+                    }
+                    _ => Err(RioError::parse(
+                        "النمط الحرفي السالب يتطلب عددا بعد -",
+                        n.line,
+                        n.col,
+                    )),
+                }
+            }
+            TokenKind::Ident(_) => {
+                let (first, line, col) = self.expect_ident("اسم نمط")?;
+                if first == "_" {
+                    // البند 155: شامل.
+                    return Ok(vec![Pat::Wildcard]);
+                }
+                let mut expr = Expr::new(ExprKind::Ident(first.clone()), line, col);
+                let mut last = first;
+                while matches!(self.peek().kind, TokenKind::Dot) {
+                    self.advance(); // .
+                    let (mname, _, _) = self.expect_member_name()?;
+                    expr = Expr::new(
+                        ExprKind::Dot {
+                            target: Box::new(expr),
+                            name: mname.clone(),
+                        },
+                        line,
+                        col,
+                    );
+                    last = mname;
+                }
+                if matches!(self.peek().kind, TokenKind::LParen) {
+                    // البند 160: نمط صنف.
+                    return self.parse_class_pattern(last, line, col);
+                }
+                if matches!(expr.kind, ExprKind::Ident(_)) {
+                    // البند 154: التقاط.
+                    return Ok(vec![Pat::Capture(last)]);
+                }
+                // البند 156: قيمة مؤهلة بنقطة.
+                Ok(vec![Pat::Value(expr)])
+            }
+            TokenKind::LBracket => {
+                // البند 158: متسلسل [...] (نجمة اختيارية).
+                self.advance();
+                if matches!(self.peek().kind, TokenKind::RBracket) {
+                    self.advance();
+                    return Ok(vec![Pat::Seq {
+                        elems: Vec::new(),
+                        star: None,
+                    }]);
+                }
+                let (elem_alts, star) = self.parse_seq_first()?;
+                self.parse_seq_rest(
+                    elem_alts,
+                    star,
+                    &TokenKind::RBracket,
+                    "قوس إغلاق ] في النمط المتسلسل",
+                )
+            }
+            TokenKind::LParen => {
+                self.advance();
+                if matches!(self.peek().kind, TokenKind::RParen) {
+                    let t = self.peek().clone();
+                    return Err(RioError::parse(
+                        "نمط فارغ () غير صالح",
+                        t.line,
+                        t.col,
+                    ));
+                }
+                let (elem_alts, star) = self.parse_seq_first()?;
+                if matches!(self.peek().kind, TokenKind::Comma) {
+                    // البند 158: متسلسل مفتوح (نمط، نمط).
+                    self.parse_seq_rest(
+                        elem_alts,
+                        star,
+                        &TokenKind::RParen,
+                        "قوس إغلاق ) في النمط المتسلسل",
+                    )
+                } else {
+                    if star.is_some() {
+                        let t = self.peek().clone();
+                        return Err(RioError::parse(
+                            "النجمة * وحدها ليست نمطا؛ ضعها في متسلسلة",
+                            t.line,
+                            t.col,
+                        ));
+                    }
+                    // البند 157: مجموعة (نمط) — شفافة.
+                    self.expect(
+                        &TokenKind::RParen,
+                        "قوس إغلاق ) في نمط المجموعة",
+                    )?;
+                    Ok(elem_alts.into_iter().next().unwrap())
+                }
+            }
+            TokenKind::LBrace => self.parse_map_pattern(),
+            _ => Err(RioError::parse(
+                "نمط غير صالح بعد حال",
+                tok.line,
+                tok.col,
+            )),
+        }
+    }
+
+    /// أول عنصر متسلسلة: نجمة `*اسم`/`*_` أو نمط.
+    /// يعيد (بدائل العنصر — فارغة للنجمة — والنجمة).
+    fn parse_seq_first(
+        &mut self,
+    ) -> RioResult<(Vec<Vec<Pat>>, Option<(usize, Option<String>, usize, usize)>)> {
+        if matches!(self.peek().kind, TokenKind::Star) {
+            let (capture, nline, ncol) = self.parse_star_capture()?;
+            return Ok((Vec::new(), Some((0, capture, nline, ncol))));
+        }
+        Ok((vec![self.parse_pattern()?], None))
+    }
+
+    /// `*اسم` أو `*_` بعد تقدّم `*`: يعيد (التقاط أو
+    /// لا شيء، سطر، عمود).
+    fn parse_star_capture(&mut self) -> RioResult<(Option<String>, usize, usize)> {
+        self.advance(); // *
+        let (name, nline, ncol) = match &self.peek().kind {
+            TokenKind::Ident(n) => {
+                let n = n.clone();
+                let t = self.advance();
+                (n, t.line, t.col)
+            }
+            _ => {
+                let t = self.peek().clone();
+                return Err(RioError::parse(
+                    "بعد * في النمط المتسلسل يأتي اسم التقاط أو _",
+                    t.line,
+                    t.col,
+                ));
+            }
+        };
+        Ok((if name == "_" { None } else { Some(name) }, nline, ncol))
+    }
+
+    /// باقي عناصر متسلسلة بعد أول عنصر (محلل): فواصل
+    /// وعناصر ونجمة واحدة اختيارية حتى رمز الإغلاق،
+    /// ثم الجداء الديكارتي لبدائل العناصر.
+    fn parse_seq_rest(
+        &mut self,
+        mut elem_alts: Vec<Vec<Pat>>,
+        mut star: Option<(usize, Option<String>, usize, usize)>,
+        close: &TokenKind,
+        close_what: &str,
+    ) -> RioResult<Vec<Pat>> {
+        loop {
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                self.advance(); // ،
+                if self.peek_kind_eq(close) {
+                    self.advance();
+                    break;
+                }
+            } else if self.peek_kind_eq(close) {
+                self.advance();
+                break;
+            } else {
+                let t = self.peek().clone();
+                return Err(RioError::parse(
+                    format!("توقع ، أو {} في النمط المتسلسل", close_what),
+                    t.line,
+                    t.col,
+                ));
+            }
+            if matches!(self.peek().kind, TokenKind::Star) {
+                if star.is_some() {
+                    let t = self.peek().clone();
+                    return Err(RioError::parse(
+                        "نجمة واحدة فقط في النمط المتسلسل",
+                        t.line,
+                        t.col,
+                    ));
+                }
+                let (capture, nline, ncol) = self.parse_star_capture()?;
+                star = Some((elem_alts.len(), capture, nline, ncol));
+                continue;
+            }
+            elem_alts.push(self.parse_pattern()?);
+        }
+        Ok(Self::product_seq(elem_alts, star))
+    }
+
+    /// البند 159: نمط فهرس `{مفتاح: نمط، ...}` مع
+    /// باقي `**اسم` اختياري أخيرا.
+    fn parse_map_pattern(&mut self) -> RioResult<Vec<Pat>> {
+        self.advance(); // {
+        if matches!(self.peek().kind, TokenKind::RBrace) {
+            self.advance();
+            return Ok(vec![Pat::Map {
+                entries: Vec::new(),
+                rest: None,
+            }]);
+        }
+        let mut entry_alts: Vec<(Expr, Vec<Pat>)> = Vec::new();
+        let mut rest: Option<String> = None;
+        loop {
+            if matches!(self.peek().kind, TokenKind::Star)
+                && matches!(self.peek_at(1).kind, TokenKind::Star)
+            {
+                if rest.is_some() {
+                    let t = self.peek().clone();
+                    return Err(RioError::parse(
+                        "باقي ** واحد فقط في نمط الفهرس",
+                        t.line,
+                        t.col,
+                    ));
+                }
+                self.advance(); // *
+                self.advance(); // *
+                let (name, _, _) = self.expect_ident("اسم التقاط بعد ** في نمط الفهرس")?;
+                rest = Some(name);
+                if matches!(self.peek().kind, TokenKind::Comma) {
+                    self.advance();
+                    if matches!(self.peek().kind, TokenKind::RBrace) {
+                        self.advance();
+                        break;
+                    }
+                    let t = self.peek().clone();
+                    return Err(RioError::parse(
+                        "باقي ** يجب أن يكون آخر نمط الفهرس",
+                        t.line,
+                        t.col,
+                    ));
+                }
+                self.expect(&TokenKind::RBrace, "قوس إغلاق } في نمط الفهرس")?;
+                break;
+            }
+            let key = self.parse_map_key()?;
+            self.expect(&TokenKind::Colon, "نقطتين : بعد مفتاح نمط الفهرس")?;
+            let sub = self.parse_pattern()?;
+            entry_alts.push((key, sub));
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                self.advance();
+                if matches!(self.peek().kind, TokenKind::RBrace) {
+                    self.advance();
+                    break;
+                }
+                continue;
+            }
+            self.expect(&TokenKind::RBrace, "قوس إغلاق } في نمط الفهرس")?;
+            break;
+        }
+        Ok(Self::product_map(entry_alts, rest))
+    }
+
+    /// مفتاح نمط فهرس: نص حرفي، أو قيمة مسماة بنقطة
+    /// (تُقيَّم وقت المطابقة ويجب أن تكون نصا — مفاتيح
+    /// قواميس نيفا نصوص).
+    fn parse_map_key(&mut self) -> RioResult<Expr> {
+        let tok = self.peek().clone();
+        match &tok.kind {
+            TokenKind::Str(s) => {
+                let s = s.clone();
+                self.advance();
+                Ok(Expr::new(ExprKind::Str(s), tok.line, tok.col))
+            }
+            TokenKind::Ident(_) => {
+                let (first, line, col) = self.expect_ident("مفتاح نمط الفهرس")?;
+                if !matches!(self.peek().kind, TokenKind::Dot) {
+                    return Err(RioError::parse(
+                        "مفتاح الفهرس يجب أن يكون نصا أو قيمة مسماة بنقطة",
+                        tok.line,
+                        tok.col,
+                    ));
+                }
+                let mut expr = Expr::new(ExprKind::Ident(first), line, col);
+                while matches!(self.peek().kind, TokenKind::Dot) {
+                    self.advance(); // .
+                    let (mname, _, _) = self.expect_member_name()?;
+                    expr = Expr::new(
+                        ExprKind::Dot {
+                            target: Box::new(expr),
+                            name: mname,
+                        },
+                        line,
+                        col,
+                    );
+                }
+                Ok(expr)
+            }
+            _ => Err(RioError::parse(
+                "مفتاح الفهرس يجب أن يكون نصا أو قيمة مسماة بنقطة",
+                tok.line,
+                tok.col,
+            )),
+        }
+    }
+
+    /// البند 160: نمط صنف `اسم(حقل=نمط، ...)` —
+    /// المفتاحية فقط؛ والموضعي مرفوض نحوا.
+    fn parse_class_pattern(
+        &mut self,
+        name: String,
+        line: usize,
+        col: usize,
+    ) -> RioResult<Vec<Pat>> {
+        self.advance(); // (
+        if matches!(self.peek().kind, TokenKind::RParen) {
+            self.advance();
+            return Ok(vec![Pat::Class {
+                name,
+                fields: Vec::new(),
+            }]);
+        }
+        let mut field_alts: Vec<(String, Vec<Pat>)> = Vec::new();
+        loop {
+            let t = self.peek().clone();
+            let fname = match &t.kind {
+                TokenKind::Ident(n) => n.clone(),
+                _ => {
+                    return Err(RioError::parse(
+                        "توقع حقل=نمط داخل نمط الصنف",
+                        t.line,
+                        t.col,
+                    ))
+                }
+            };
+            if !matches!(self.peek_at(1).kind, TokenKind::Eq) {
+                return Err(RioError::parse(
+                    "نمط الصنف الموضعي غير مدعوم؛ استخدم حقل=نمط",
+                    t.line,
+                    t.col,
+                ));
+            }
+            self.advance(); // اسم الحقل
+            self.advance(); // =
+            let sub = self.parse_pattern()?;
+            field_alts.push((fname, sub));
+            if matches!(self.peek().kind, TokenKind::Comma) {
+                self.advance();
+                if matches!(self.peek().kind, TokenKind::RParen) {
+                    self.advance();
+                    break;
+                }
+                continue;
+            }
+            self.expect(&TokenKind::RParen, "قوس إغلاق ) في نمط الصنف")?;
+            break;
+        }
+        Ok(Self::product_class(name, field_alts))
+    }
+
+    /// الجداء الديكارتي لبدائل عناصر متسلسلة.
+    fn product_seq(
+        elem_alts: Vec<Vec<Pat>>,
+        star: Option<(usize, Option<String>, usize, usize)>,
+    ) -> Vec<Pat> {
+        let mut out = vec![Pat::Seq {
+            elems: Vec::new(),
+            star: star.clone(),
+        }];
+        for alts in &elem_alts {
+            let mut next = Vec::new();
+            for base in &out {
+                for alt in alts {
+                    if let Pat::Seq { elems, star: s } = base {
+                        let mut elems = elems.clone();
+                        elems.push(alt.clone());
+                        next.push(Pat::Seq {
+                            elems,
+                            star: s.clone(),
+                        });
+                    }
+                }
+            }
+            out = next;
+        }
+        out
+    }
+
+    /// الجداء الديكارتي لبدائل قيم نمط فهرس.
+    fn product_map(entry_alts: Vec<(Expr, Vec<Pat>)>, rest: Option<String>) -> Vec<Pat> {
+        let mut out = vec![Pat::Map {
+            entries: Vec::new(),
+            rest: rest.clone(),
+        }];
+        for (key, alts) in &entry_alts {
+            let mut next = Vec::new();
+            for base in &out {
+                for alt in alts {
+                    if let Pat::Map { entries, rest: r } = base {
+                        let mut entries = entries.clone();
+                        entries.push((key.clone(), alt.clone()));
+                        next.push(Pat::Map {
+                            entries,
+                            rest: r.clone(),
+                        });
+                    }
+                }
+            }
+            out = next;
+        }
+        out
+    }
+
+    /// الجداء الديكارتي لبدائل حقول نمط صنف.
+    fn product_class(name: String, field_alts: Vec<(String, Vec<Pat>)>) -> Vec<Pat> {
+        let mut out = vec![Pat::Class {
+            name: name.clone(),
+            fields: Vec::new(),
+        }];
+        for (field, alts) in &field_alts {
+            let mut next = Vec::new();
+            for base in &out {
+                for alt in alts {
+                    if let Pat::Class { fields, .. } = base {
+                        let mut fields = fields.clone();
+                        fields.push((field.clone(), alt.clone()));
+                        next.push(Pat::Class {
+                            name: name.clone(),
+                            fields,
+                        });
+                    }
+                }
+            }
+            out = next;
+        }
+        out
+    }
+
+    /// تفكيك `طابق` إلى جمل قائمة: مؤقت الموضوع مرة
+    /// واحدة، وعلم `تم`، ثم لكل حالة `اذا (ليس تم) و
+    /// اختبار:` فربط الالتقاطات، فـ`اذا حراسة:` فجسم
+    /// الحالة فـ`تم = صحيح`. أول مطابقة تفوز لأن كل
+    /// حالة لاحقة ترى العلم؛ ورفض الحراسة يترك العلم
+    /// خطأ فتُجرَّب الحالة التالية. بلا أي عقد جديدة.
+    fn desugar_match(
+        subject: Expr,
+        cases: Vec<(Pat, Option<Expr>, Vec<Stmt>)>,
+        line: usize,
+        col: usize,
+    ) -> Vec<Stmt> {
+        let subj_name = format!("__طابق_قيمة_{}_{}", line, col);
+        let done_name = format!("__طابق_تم_{}_{}", line, col);
+        let subj = Expr::new(ExprKind::Ident(subj_name.clone()), line, col);
+        let mut out = vec![
+            Stmt::new(
+                StmtKind::Assign {
+                    target: AssignTarget::Var(subj_name),
+                    value: subject,
+                    annotation: None,
+                    append: false,
+                },
+                line,
+                col,
+            ),
+            Stmt::new(
+                StmtKind::Assign {
+                    target: AssignTarget::Var(done_name.clone()),
+                    value: Expr::new(ExprKind::Bool(false), line, col),
+                    annotation: None,
+                    append: false,
+                },
+                line,
+                col,
+            ),
+        ];
+        for (pat, guard, body) in cases {
+            let (test, binds) = Self::pattern_test(&subj, &pat, line, col);
+            let not_done = Expr::new(
+                ExprKind::Unary {
+                    op: UnOp::Not,
+                    expr: Box::new(Expr::new(
+                        ExprKind::Ident(done_name.clone()),
+                        line,
+                        col,
+                    )),
+                },
+                line,
+                col,
+            );
+            let cond = Expr::new(
+                ExprKind::Binary {
+                    left: Box::new(not_done),
+                    op: BinOp::And,
+                    right: Box::new(test),
+                },
+                line,
+                col,
+            );
+            let mut then_body: Vec<Stmt> = binds;
+            let inner_cond =
+                guard.unwrap_or_else(|| Expr::new(ExprKind::Bool(true), line, col));
+            let mut inner_body = body;
+            inner_body.push(Stmt::new(
+                StmtKind::Assign {
+                    target: AssignTarget::Var(done_name.clone()),
+                    value: Expr::new(ExprKind::Bool(true), line, col),
+                    annotation: None,
+                    append: false,
+                },
+                line,
+                col,
+            ));
+            then_body.push(Stmt::new(
+                StmtKind::If {
+                    cond: inner_cond,
+                    then_body: inner_body,
+                    elifs: Vec::new(),
+                    else_body: None,
+                },
+                line,
+                col,
+            ));
+            out.push(Stmt::new(
+                StmtKind::If {
+                    cond,
+                    then_body,
+                    elifs: Vec::new(),
+                    else_body: None,
+                },
+                line,
+                col,
+            ));
+        }
+        out
+    }
+
+    /// اختبار نمط على موضوع + جمل ربط التقاطاته:
+    /// يعيد (تعبير منطقي، جمل إسناد). الاختبار كلي
+    /// لا يخطئ أبدا على قيمة لا تطابق: كل فهرسة أو
+    /// وصول لحقل يسبقه حارس نوع أو طول أو مفتاح أو
+    /// صنف، و`و` دائرة قصر في المحركات الثلاثة،
+    /// فيُحرس التقييم بالترتيب نفسه.
+    fn pattern_test(subj: &Expr, pat: &Pat, line: usize, col: usize) -> (Expr, Vec<Stmt>) {
+        match pat {
+            Pat::Lit(lit) => (
+                Self::mk_bin(subj.clone(), BinOp::Eq, lit.clone(), line, col),
+                Vec::new(),
+            ),
+            Pat::Capture(name) => (
+                Expr::new(ExprKind::Bool(true), line, col),
+                vec![Self::mk_assign_var(name, subj.clone(), line, col)],
+            ),
+            Pat::Wildcard => (Expr::new(ExprKind::Bool(true), line, col), Vec::new()),
+            Pat::Value(value) => (
+                Self::mk_bin(subj.clone(), BinOp::Eq, value.clone(), line, col),
+                Vec::new(),
+            ),
+            Pat::Seq { elems, star } => {
+                let n = elems.len();
+                let mut test = Self::mk_bin(
+                    Self::mk_global_call("نوع", vec![subj.clone()], line, col),
+                    BinOp::Eq,
+                    Self::mk_str("قائمة", line, col),
+                    line,
+                    col,
+                );
+                let len_call = Self::mk_global_call("طول", vec![subj.clone()], line, col);
+                let len_test = match star {
+                    None => Self::mk_bin(
+                        len_call,
+                        BinOp::Eq,
+                        Self::mk_num(n as f64, line, col),
+                        line,
+                        col,
+                    ),
+                    Some(_) => Self::mk_bin(
+                        len_call,
+                        BinOp::GtEq,
+                        Self::mk_num(n as f64, line, col),
+                        line,
+                        col,
+                    ),
+                };
+                test = Self::mk_and(test, len_test, line, col);
+                let mut binds = Vec::new();
+                let before = star.as_ref().map(|s| s.0).unwrap_or(n);
+                for (i, elem) in elems.iter().enumerate() {
+                    let index = if i < before {
+                        Self::mk_num(i as f64, line, col)
+                    } else {
+                        // عنصر بعد النجمة: فهرسه من النهاية.
+                        Self::mk_bin(
+                            Self::mk_global_call("طول", vec![subj.clone()], line, col),
+                            BinOp::Sub,
+                            Self::mk_num((n - i) as f64, line, col),
+                            line,
+                            col,
+                        )
+                    };
+                    let elem_subj = Self::mk_index(subj.clone(), index, line, col);
+                    let (t, b) = Self::pattern_test(&elem_subj, elem, line, col);
+                    test = Self::mk_and(test, t, line, col);
+                    binds.extend(b);
+                }
+                if let Some((_, Some(capture), sline, scol)) = star {
+                    // باقي النجمة يُبنى بحلقة `لكل` على
+                    // `مدى` — بلا استيراد وبلا مساعد جديد:
+                    // باقي = [] ثم أضف عناصر [قبل، طول-بعد).
+                    let idx_name = format!("__طابق_فهرس_{}_{}", sline, scol);
+                    let after = n - before;
+                    binds.push(Self::mk_assign_var(
+                        capture,
+                        Expr::new(ExprKind::List(Vec::new()), line, col),
+                        line,
+                        col,
+                    ));
+                    let start = Self::mk_num(before as f64, line, col);
+                    let end = Self::mk_bin(
+                        Self::mk_global_call("طول", vec![subj.clone()], line, col),
+                        BinOp::Sub,
+                        Self::mk_num(after as f64, line, col),
+                        line,
+                        col,
+                    );
+                    let iterable =
+                        Self::mk_global_call("مدى", vec![start, end], line, col);
+                    let append = Stmt::new(
+                        StmtKind::ExprStmt {
+                            expr: Expr::new(
+                                ExprKind::Call {
+                                    callee: Box::new(Self::mk_dot(
+                                        Expr::new(
+                                            ExprKind::Ident(capture.clone()),
+                                            line,
+                                            col,
+                                        ),
+                                        "أضف",
+                                        line,
+                                        col,
+                                    )),
+                                    args: vec![Self::mk_index(
+                                        subj.clone(),
+                                        Self::mk_ident(&idx_name, line, col),
+                                        line,
+                                        col,
+                                    )],
+                                },
+                                line,
+                                col,
+                            ),
+                        },
+                        line,
+                        col,
+                    );
+                    binds.push(Stmt::new(
+                        StmtKind::For {
+                            var: idx_name,
+                            iterable,
+                            body: vec![append],
+                        },
+                        line,
+                        col,
+                    ));
+                }
+                (test, binds)
+            }
+            Pat::Map { entries, rest } => {
+                let mut test = Self::mk_bin(
+                    Self::mk_global_call("نوع", vec![subj.clone()], line, col),
+                    BinOp::Eq,
+                    Self::mk_str("قاموس", line, col),
+                    line,
+                    col,
+                );
+                let mut binds = Vec::new();
+                let mut keys: Vec<Expr> = Vec::new();
+                for (key, sub) in entries {
+                    keys.push(key.clone());
+                    // المفتاح المنقّط قد يقيَّم إلى غير نص —
+                    // ومفاتيح القواميس نصوص — فيُحرس `في`
+                    // بفحص نوعه أولا، وإلا رفع الاختبار
+                    // خطأ بدل فشل المطابقة. الحرفي نص دائما.
+                    if !matches!(key.kind, ExprKind::Str(_)) {
+                        test = Self::mk_and(
+                            test,
+                            Self::mk_bin(
+                                Self::mk_global_call("نوع", vec![key.clone()], line, col),
+                                BinOp::Eq,
+                                Self::mk_str("نص", line, col),
+                                line,
+                                col,
+                            ),
+                            line,
+                            col,
+                        );
+                    }
+                    test = Self::mk_and(
+                        test,
+                        Self::mk_bin(key.clone(), BinOp::In, subj.clone(), line, col),
+                        line,
+                        col,
+                    );
+                    let (t, b) = Self::pattern_test(
+                        &Self::mk_index(subj.clone(), key.clone(), line, col),
+                        sub,
+                        line,
+                        col,
+                    );
+                    test = Self::mk_and(test, t, line, col);
+                    binds.extend(b);
+                }
+                if let Some(name) = rest {
+                    if name != "_" {
+                        binds.push(Self::mk_assign_var(
+                            name,
+                            Self::lib_call(
+                                "مطابقة",
+                                "بدون_مفاتيح",
+                                vec![
+                                    subj.clone(),
+                                    Expr::new(ExprKind::List(keys), line, col),
+                                ],
+                                line,
+                                col,
+                            ),
+                            line,
+                            col,
+                        ));
+                    }
+                }
+                (test, binds)
+            }
+            Pat::Class { name, fields } => {
+                let mut test = Self::mk_bin(
+                    Self::lib_call(
+                        "مطابقة",
+                        "اسم_الصنف",
+                        vec![subj.clone()],
+                        line,
+                        col,
+                    ),
+                    BinOp::Eq,
+                    Self::mk_str(name, line, col),
+                    line,
+                    col,
+                );
+                let mut binds = Vec::new();
+                for (field, sub) in fields {
+                    let (t, b) = Self::pattern_test(
+                        &Self::mk_dot(subj.clone(), field, line, col),
+                        sub,
+                        line,
+                        col,
+                    );
+                    test = Self::mk_and(test, t, line, col);
+                    binds.extend(b);
+                }
+                (test, binds)
+            }
+        }
+    }
+
+    /// بنّاؤو عقد التفكيك (سطر/عمود `طابق` كلها، كما
+    /// في تفكيك الدفعة 2).
+    fn mk_ident(name: &str, line: usize, col: usize) -> Expr {
+        Expr::new(ExprKind::Ident(name.to_string()), line, col)
+    }
+
+    fn mk_str(s: &str, line: usize, col: usize) -> Expr {
+        Expr::new(ExprKind::Str(s.to_string()), line, col)
+    }
+
+    fn mk_num(n: f64, line: usize, col: usize) -> Expr {
+        Expr::new(ExprKind::Number(n), line, col)
+    }
+
+    fn mk_bin(left: Expr, op: BinOp, right: Expr, line: usize, col: usize) -> Expr {
+        Expr::new(
+            ExprKind::Binary {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            },
+            line,
+            col,
+        )
+    }
+
+    fn mk_and(left: Expr, right: Expr, line: usize, col: usize) -> Expr {
+        Self::mk_bin(left, BinOp::And, right, line, col)
+    }
+
+    fn mk_index(target: Expr, index: Expr, line: usize, col: usize) -> Expr {
+        Expr::new(
+            ExprKind::Index {
+                target: Box::new(target),
+                index: Box::new(index),
+            },
+            line,
+            col,
+        )
+    }
+
+    fn mk_dot(target: Expr, name: &str, line: usize, col: usize) -> Expr {
+        Expr::new(
+            ExprKind::Dot {
+                target: Box::new(target),
+                name: name.to_string(),
+            },
+            line,
+            col,
+        )
+    }
+
+    fn mk_global_call(name: &str, args: Vec<Expr>, line: usize, col: usize) -> Expr {
+        Expr::new(
+            ExprKind::Call {
+                callee: Box::new(Self::mk_ident(name, line, col)),
+                args,
+            },
+            line,
+            col,
+        )
+    }
+
+    /// `لاجل` بعد عنصر حاوية؟ الكلمة ليست محجوزة
+    /// في المحلل اللغوي — معرّف عادٍ — فتُقارَن بعد
+    /// التطبيع (تجريد التشكيل وتوحيد الهمزات)، كما
+    /// تُحلّ مفاتيح المكتبة؛ ولا موضع صالح آخر يتبع
+    /// فيه معرّفٌ عنصرا داخل `[...]` أو `{...}`،
+    /// فلا غموض ولا كلمة مفتاحية جديدة.
+    fn peek_is_lajl(&self) -> bool {
+        match &self.peek().kind {
+            TokenKind::Ident(name) => crate::lexer::normalize_cli_word(name) == "لاجل",
+            _ => false,
+        }
+    }
+
+    /// ذيل الفهم بعد `لاجل`: متغير واحد، ثم `في`،
+    /// ثم القابل، ثم شرط اختياري بعد `اذا` — يعيد
+    /// (المتغير، القابل، الشرط أو لا شيء).
+    fn parse_comprehension_tail(
+        &mut self,
+    ) -> RioResult<(String, Expr, Option<Expr>)> {
+        self.advance(); // لاجل
+        let (var, _, _) = self.expect_ident("اسم متغير بعد لاجل")?;
+        self.expect_keyword(Keyword::In, "في")?;
+        let iterable = self.parse_expr()?;
+        let cond = if matches!(self.peek().kind, TokenKind::Keyword(Keyword::If)) {
+            self.advance(); // اذا
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+        Ok((var, iterable, cond))
+    }
+
+    /// دالة مجهولة بمعامل واحد لجسم فهم.
+    fn mk_lambda_one(var: &str, body: Expr, line: usize, col: usize) -> Expr {
+        Expr::new(
+            ExprKind::Lambda {
+                params: vec![var.to_string()],
+                param_types: vec![None],
+                body: Box::new(body),
+            },
+            line,
+            col,
+        )
+    }
+
+    /// شرط الفهم دالة مجهولة، أو `لاشيء` بلا شرط.
+    fn mk_cond_lambda(cond: Option<Expr>, var: &str, line: usize, col: usize) -> Expr {
+        match cond {
+            Some(c) => Self::mk_lambda_one(var, c, line, col),
+            None => Expr::new(ExprKind::Nil, line, col),
+        }
+    }
+
+    /// البند 141: `[تعبير لاجل س في قابل اذا شرط]`
+    /// → `افهم_قائمة(دالة_مجهولة(س): تعبير،
+    /// دالة_مجهولة(س): شرط أو لاشيء، قابل)` — بلا
+    /// عقد جديدة؛ والمدمجة تنفذ (حاوية فارغة +
+    /// حلقة + إلحاق) في المحركات الثلاثة.
+    fn parse_list_comprehension(
+        &mut self,
+        elem: Expr,
+        line: usize,
+        col: usize,
+    ) -> RioResult<Expr> {
+        let (var, iterable, cond) = self.parse_comprehension_tail()?;
+        self.expect(&TokenKind::RBracket, "قوس إغلاق ]")?;
+        Ok(Self::mk_global_call(
+            "افهم_قائمة",
+            vec![
+                Self::mk_lambda_one(&var, elem, line, col),
+                Self::mk_cond_lambda(cond, &var, line, col),
+                iterable,
+            ],
+            line,
+            col,
+        ))
+    }
+
+    /// البند 142: `{تعبير لاجل س في قابل اذا شرط}`
+    /// → `افهم_تشكيلة(...)` بالشكل نفسه.
+    fn parse_set_comprehension(
+        &mut self,
+        elem: Expr,
+        line: usize,
+        col: usize,
+    ) -> RioResult<Expr> {
+        let (var, iterable, cond) = self.parse_comprehension_tail()?;
+        self.expect(&TokenKind::RBrace, "قوس إغلاق }")?;
+        Ok(Self::mk_global_call(
+            "افهم_تشكيلة",
+            vec![
+                Self::mk_lambda_one(&var, elem, line, col),
+                Self::mk_cond_lambda(cond, &var, line, col),
+                iterable,
+            ],
+            line,
+            col,
+        ))
+    }
+
+    /// البند 143: `{مفتاح: قيمة لاجل س في قابل اذا
+    /// شرط}` → `افهم_فهرس(دالة_مجهولة(س): [مفتاح،
+    /// قيمة]، دالة_مجهولة(س): شرط أو لاشيء، قابل)`.
+    fn parse_dict_comprehension(
+        &mut self,
+        key: Expr,
+        value: Expr,
+        line: usize,
+        col: usize,
+    ) -> RioResult<Expr> {
+        let (var, iterable, cond) = self.parse_comprehension_tail()?;
+        self.expect(&TokenKind::RBrace, "قوس إغلاق }")?;
+        let pair = Expr::new(ExprKind::List(vec![key, value]), line, col);
+        Ok(Self::mk_global_call(
+            "افهم_فهرس",
+            vec![
+                Self::mk_lambda_one(&var, pair, line, col),
+                Self::mk_cond_lambda(cond, &var, line, col),
+                iterable,
+            ],
+            line,
+            col,
+        ))
+    }
+
+    fn mk_assign_var(name: &str, value: Expr, line: usize, col: usize) -> Stmt {
+        Stmt::new(
+            StmtKind::Assign {
+                target: AssignTarget::Var(name.to_string()),
+                value,
+                annotation: None,
+                append: false,
+            },
+            line,
+            col,
+        )
     }
 
     /// هل السطر الحالي تفكيك `س، ص = حاوية`؟ مسح
@@ -1933,65 +3068,152 @@ impl Parser {
                 Ok(Expr::new(ExprKind::Ident(name), tok.line, tok.col))
             }
             TokenKind::LParen => {
+                // البند 138 (الدفعة 3 من الـ579): مترابطة
+                // `(أ، ب)` — تُفكَّك إلى استدعاء
+                // `مترابطة(أ، ب)` بلا عقدة جديدة؛ و`()`
+                // مترابطة فارغة، و`(س،)` مترابطة وحيدة،
+                // و`(س)` تجميع كما كانت — والأنماط داخل
+                // `طابق` لها محللها الخاص فلا تمسها.
                 self.advance();
-                let inner = self.parse_expr()?;
+                if matches!(self.peek().kind, TokenKind::RParen) {
+                    self.advance();
+                    return Ok(Self::mk_global_call(
+                        "مترابطة",
+                        Vec::new(),
+                        tok.line,
+                        tok.col,
+                    ));
+                }
+                let first = self.parse_expr()?;
+                if matches!(self.peek().kind, TokenKind::Comma) {
+                    let mut elems = vec![first];
+                    loop {
+                        self.advance(); // ،
+                        if matches!(self.peek().kind, TokenKind::RParen) {
+                            break;
+                        }
+                        elems.push(self.parse_expr()?);
+                        if !matches!(self.peek().kind, TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&TokenKind::RParen, "قوس إغلاق )")?;
+                    return Ok(Self::mk_global_call(
+                        "مترابطة", elems, tok.line, tok.col,
+                    ));
+                }
                 self.expect(&TokenKind::RParen, "قوس إغلاق )")?;
-                Ok(inner)
+                Ok(first)
             }
             TokenKind::LBracket => {
                 self.advance();
-                let mut elems = Vec::new();
-                if !matches!(self.peek().kind, TokenKind::RBracket) {
-                    loop {
-                        elems.push(self.parse_expr()?);
-                        if matches!(self.peek().kind, TokenKind::Comma) {
-                            self.advance();
-                            if matches!(self.peek().kind, TokenKind::RBracket) {
-                                break;
-                            }
-                            continue;
+                if matches!(self.peek().kind, TokenKind::RBracket) {
+                    let t = self.expect(&TokenKind::RBracket, "قوس إغلاق ]")?;
+                    return Ok(Expr::new(ExprKind::List(Vec::new()), tok.line, t.col));
+                }
+                let first = self.parse_expr()?;
+                // البند 141: فهم المصفوفة `[تعبير لاجل
+                // س في قابل اذا شرط]` — يُفكَّك في
+                // parse_list_comprehension إلى استدعاء
+                // `افهم_قائمة` بدالتين مجهولتين.
+                if self.peek_is_lajl() {
+                    return self.parse_list_comprehension(first, tok.line, tok.col);
+                }
+                let mut elems = vec![first];
+                loop {
+                    if matches!(self.peek().kind, TokenKind::Comma) {
+                        self.advance();
+                        if matches!(self.peek().kind, TokenKind::RBracket) {
+                            break;
                         }
-                        break;
+                        elems.push(self.parse_expr()?);
+                        continue;
                     }
+                    break;
                 }
                 let t = self.expect(&TokenKind::RBracket, "قوس إغلاق ]")?;
                 Ok(Expr::new(ExprKind::List(elems), tok.line, t.col))
             }
             TokenKind::LBrace => {
                 self.advance();
-                let mut entries = Vec::new();
-                if !matches!(self.peek().kind, TokenKind::RBrace) {
+                if matches!(self.peek().kind, TokenKind::RBrace) {
+                    let t = self.expect(&TokenKind::RBrace, "قوس إغلاق }")?;
+                    return Ok(Expr::new(ExprKind::Dict(Vec::new()), tok.line, t.col));
+                }
+                // البندان 139 و142 و143: التشكيلة `{أ،
+                // ب}` مقابل الفهرس `{م:ق}` — النقطتان
+                // تميزان الفهرس؛ والفهم بـ`لاجل` بعد
+                // العنصر (تشكيلة) أو بعد القيمة (فهرس).
+                let first = self.parse_expr()?;
+                if matches!(self.peek().kind, TokenKind::Colon) {
+                    self.advance(); // :
+                    let value = self.parse_expr()?;
+                    if self.peek_is_lajl() {
+                        return self.parse_dict_comprehension(
+                            first, value, tok.line, tok.col,
+                        );
+                    }
+                    // فهرس حرفي: المفتاح نص حرفي كما كان.
+                    let key = match &first.kind {
+                        ExprKind::Str(s) => s.clone(),
+                        _ => {
+                            let t = self.peek().clone();
+                            return Err(RioError::parse(
+                                "مفتاح القاموس يجب أن يكون نصا",
+                                t.line,
+                                t.col,
+                            ));
+                        }
+                    };
+                    let mut entries = vec![(key, value)];
                     loop {
-                        let key = match &self.peek().kind {
-                            TokenKind::Str(s) => {
-                                let s = s.clone();
-                                self.advance();
-                                s
-                            }
-                            _ => {
-                                let t = self.peek().clone();
-                                return Err(RioError::parse(
-                                    "مفتاح القاموس يجب أن يكون نصا",
-                                    t.line,
-                                    t.col,
-                                ));
-                            }
-                        };
-                        self.expect(&TokenKind::Colon, "نقطتين : بعد مفتاح القاموس")?;
-                        let value = self.parse_expr()?;
-                        entries.push((key, value));
                         if matches!(self.peek().kind, TokenKind::Comma) {
                             self.advance();
                             if matches!(self.peek().kind, TokenKind::RBrace) {
                                 break;
                             }
+                            let k = match &self.peek().kind {
+                                TokenKind::Str(s) => {
+                                    let s = s.clone();
+                                    self.advance();
+                                    s
+                                }
+                                _ => {
+                                    let t = self.peek().clone();
+                                    return Err(RioError::parse(
+                                        "مفتاح القاموس يجب أن يكون نصا",
+                                        t.line,
+                                        t.col,
+                                    ));
+                                }
+                            };
+                            self.expect(&TokenKind::Colon, "نقطتين : بعد مفتاح القاموس")?;
+                            let v = self.parse_expr()?;
+                            entries.push((k, v));
                             continue;
                         }
                         break;
                     }
+                    let t = self.expect(&TokenKind::RBrace, "قوس إغلاق }")?;
+                    return Ok(Expr::new(ExprKind::Dict(entries), tok.line, t.col));
                 }
-                let t = self.expect(&TokenKind::RBrace, "قوس إغلاق }")?;
-                Ok(Expr::new(ExprKind::Dict(entries), tok.line, t.col))
+                if self.peek_is_lajl() {
+                    return self.parse_set_comprehension(first, tok.line, tok.col);
+                }
+                let mut elems = vec![first];
+                loop {
+                    if matches!(self.peek().kind, TokenKind::Comma) {
+                        self.advance();
+                        if matches!(self.peek().kind, TokenKind::RBrace) {
+                            break;
+                        }
+                        elems.push(self.parse_expr()?);
+                        continue;
+                    }
+                    break;
+                }
+                let _t = self.expect(&TokenKind::RBrace, "قوس إغلاق }")?;
+                Ok(Self::mk_global_call("تشكيلة", elems, tok.line, tok.col))
             }
             _ => Err(RioError::parse("تعبير غير متوقع", tok.line, tok.col)),
         }
@@ -2428,6 +3650,100 @@ mod tests {
             },
             other => panic!("expected ExprStmt, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn match_desugars_to_if_chain() {
+        // البنود 99–100 و153–155 (الدفعة 3 من الـ579):
+        // طابق يُفكَّك إلى إسناد الموضوع مرة واحدة
+        // وعلم `تم` وسلسلة `اذا` — بلا عقد جديدة.
+        let prog = parse(
+            "طابق س:\n    حال ١:\n        اطبع \"واحد\"\n    حال ن:\n        اطبع ن\n    حال _:\n        اطبع \"أي شيء\"\n",
+        );
+        assert_eq!(prog.len(), 5);
+        match &prog[0].kind {
+            StmtKind::Assign { target, .. } => match target {
+                AssignTarget::Var(name) => {
+                    assert_eq!(name, "__طابق_قيمة_1_1");
+                }
+                _ => panic!("expected Var target"),
+            },
+            other => panic!("expected Assign, got {:?}", other),
+        }
+        // أول حالة: شرطها `و` بين نفي العلم والمساواة.
+        match &prog[2].kind {
+            StmtKind::If { cond, .. } => match &cond.kind {
+                ExprKind::Binary { op, .. } => assert_eq!(*op, BinOp::And),
+                other => panic!("expected And cond, got {:?}", other),
+            },
+            other => panic!("expected If, got {:?}", other),
+        }
+        // حالة الالتقاط تربط المتغير قبل جسمها.
+        match &prog[3].kind {
+            StmtKind::If { then_body, .. } => match &then_body[0].kind {
+                StmtKind::Assign { target, .. } => match target {
+                    AssignTarget::Var(name) => assert_eq!(name, "ن"),
+                    _ => panic!("expected Var target"),
+                },
+                other => panic!("expected capture Assign, got {:?}", other),
+            },
+            other => panic!("expected If, got {:?}", other),
+        }
+        // حالة الشامل بلا ربط: جسمها الخارجي `اذا`
+        // الحراسة وحدها.
+        match &prog[4].kind {
+            StmtKind::If { then_body, .. } => {
+                assert_eq!(then_body.len(), 1);
+                assert!(matches!(then_body[0].kind, StmtKind::If { .. }));
+            }
+            other => panic!("expected If, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn match_star_and_class_desugar() {
+        // البنود 158 (نجمة) و160 (صنف): النجمة حلقة
+        // `لكل` على `مدى`، والصنف استدعاء
+        // `مطابقة.اسم_الصنف`.
+        let prog = parse(
+            "طابق ق:\n    حال [أ، *باقي]:\n        اطبع باقي\n    حال نقطة(س=س):\n        اطبع س\n",
+        );
+        assert_eq!(prog.len(), 4);
+        match &prog[2].kind {
+            StmtKind::If { then_body, .. } => {
+                assert!(then_body
+                    .iter()
+                    .any(|s| matches!(&s.kind, StmtKind::For { .. })));
+                assert!(then_body.iter().any(|s| matches!(
+                    &s.kind,
+                    StmtKind::Assign { target, .. } if matches!(target, AssignTarget::Var(n) if n == "باقي")
+                )));
+            }
+            other => panic!("expected If, got {:?}", other),
+        }
+        match &prog[3].kind {
+            StmtKind::If { cond, .. } => {
+                // اختبار الصنف `و` بين مساواة اسم الصنف
+                // واختبار الحقل — فيكفي أن يحمل الشرط
+                // استدعاء `مطابقة.اسم_الصنف`.
+                assert!(format!("{:?}", cond).contains("اسم_الصنف"));
+                assert!(format!("{:?}", cond).contains("مطابقة"));
+            }
+            other => panic!("expected If, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn match_errors() {
+        // طابق بلا حالات، ونمط صنف موضعي، وحال بلا
+        // طابق: كلها أخطاء نحو عربية.
+        let toks = tokenize("طابق س:\n").unwrap();
+        assert!(Parser::new(toks).parse_program().is_err());
+        let toks = tokenize("طابق ن:\n    حال نقطة(س):\n        اطبع ١\n").unwrap();
+        let e = Parser::new(toks).parse_program().unwrap_err();
+        assert!(e.to_string().contains("موضعي"));
+        let toks = tokenize("حال ١:\n    اطبع ١\n").unwrap();
+        assert!(Parser::new(toks).parse_program().is_err());
     }
 
     #[test]

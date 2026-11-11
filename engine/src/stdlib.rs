@@ -191,6 +191,13 @@ pub fn native_module(name: &str) -> Option<Value> {
         "يامال" => yaml_entries(),
         "قوالب" => template_entries(),
         "تحقق" => validate_entries(),
+        // الدفعة 3 من الـ579 (البنود 99–100 و153–162):
+        // مطابقة الأنماط — مساعدا التفكيك اللذان لا
+        // يبنيهما إلا التفكيك نفسه: اسم صنف كائن،
+        // وقاموس بلا مفاتيح لباقي `**` في نمط الفهرس.
+        // باقي الأنماط بمدمجات قائمة (نوع وطول ومدى
+        // وأضف) فلا تحتاج مساعدا.
+        "مطابقة" => match_entries(),
         // باقي J14 (الدفعة الثالثة من برنامج الـ579):
         // البنود 205–211 و214–217 — وحدات أصلية نقية.
         "نص" => text_entries(),
@@ -6107,6 +6114,69 @@ fn validate_unpack(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, co
         ));
     }
     Ok(Value::Nil)
+}
+
+/// وحدة مطابقة الأنماط (الدفعة 3 من الـ579، البنود
+/// 99–100 و153–162): مساعدا تفكيك `طابق` فحسب.
+fn match_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        // البند 160: اسم صنف كائن، أو لاشيء لغير
+        // الكائن — فاختبار `اسم_الصنف(ق) == "نقطة"`
+        // كلي لا يخطئ على غير الكائن.
+        ("اسم_الصنف", native("اسم_الصنف", match_class_name)),
+        // البند 159: قاموس جديد بلا المفاتيح المذكورة
+        // — باقي `**` في نمط الفهرس.
+        (
+            "بدون_مفاتيح",
+            native("بدون_مفاتيح", match_dict_without),
+        ),
+    ]
+}
+
+fn match_class_name(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("مطابقة.اسم_الصنف", args, 1, line, col)?;
+    match &args[0] {
+        Value::Instance(data) => Ok(Value::Str(data.class.name.clone())),
+        _ => Ok(Value::Nil),
+    }
+}
+
+fn match_dict_without(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("مطابقة.بدون_مفاتيح", args, 2, line, col)?;
+    let dict = need_dict("مطابقة.بدون_مفاتيح", &args[0], line, col)?;
+    let keys = need_list("مطابقة.بدون_مفاتيح", &args[1], line, col)?;
+    let mut skip: Vec<&str> = Vec::new();
+    for k in keys {
+        match k {
+            Value::Str(s) => skip.push(s),
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة مطابقة.بدون_مفاتيح تتوقع قائمة مفاتيح نصية لكن أعطيت {}",
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        }
+    }
+    Ok(Value::Dict(
+        dict.iter()
+            .filter(|(k, _)| !skip.contains(&k.as_str()))
+            .cloned()
+            .collect(),
+    ))
 }
 
 // --- عشوائي ---

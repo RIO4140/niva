@@ -358,8 +358,14 @@ pub struct VmClassDef {
 /// into the VM (see Vm::file_policy / Vm::cwd), and run
 /// through call_file_builtin, mirroring the
 /// interpreter's call_builtin arms exactly.
-const PURE_BUILTINS: [&str; 9] =
-    ["طول", "مدى", "مجموع", "أدنى", "أقصى", "مطلق", "عدد", "نص", "نوع"];
+/// الدفعة 3 من الـ579 (البنود 138 و139 و141–143):
+/// +5 نقية (مترابطة، تشكيلة، افهم_قائمة،
+/// افهم_تشكيلة، افهم_فهرس) — بلا أسمائها هنا يصدر
+/// المترجم Op::Call فيخطئ التشغيل «دالة غير معرفة
+/// في VM»، كما في تنبيه الدرس الدائم فوق.
+const PURE_BUILTINS: [&str; 14] =
+    ["طول", "مدى", "مجموع", "أدنى", "أقصى", "مطلق", "عدد", "نص", "نوع",
+     "مترابطة", "تشكيلة", "افهم_قائمة", "افهم_تشكيلة", "افهم_فهرس"];
 
 fn is_pure_builtin(name: &str) -> bool {
     PURE_BUILTINS.contains(&name)
@@ -3149,6 +3155,42 @@ impl Vm {
                     )),
                 }
             }
+            // البندان 138 و139 — مرآة المفسر: خالصتان
+            // بلا تعديل (`طول` و`يحتوي` فقط).
+            Value::Tuple(items) => {
+                let items = items.clone();
+                match name {
+                    "طول" => {
+                        arity(0)?;
+                        Ok(Value::Number(items.len() as f64))
+                    }
+                    "يحتوي" => {
+                        arity(1)?;
+                        Ok(Value::Bool(items.iter().any(|x| *x == args[0])))
+                    }
+                    _ => Err(RioError::typ(
+                        format!("طريقة غير معروفة لنوع مترابطة: {}", name),
+                        line, col,
+                    )),
+                }
+            }
+            Value::Set(items) => {
+                let items = items.clone();
+                match name {
+                    "طول" => {
+                        arity(0)?;
+                        Ok(Value::Number(items.len() as f64))
+                    }
+                    "يحتوي" => {
+                        arity(1)?;
+                        Ok(Value::Bool(items.iter().any(|x| *x == args[0])))
+                    }
+                    _ => Err(RioError::typ(
+                        format!("طريقة غير معروفة لنوع تشكيلة: {}", name),
+                        line, col,
+                    )),
+                }
+            }
             _ => unreachable!(),
         }
     }
@@ -3170,7 +3212,7 @@ impl Vm {
         }
     }
 
-    /// Slice 4: the 9 pure builtins, mirroring the interpreter's
+    /// Slice 4: the pure builtins, mirroring the interpreter's
     /// call_builtin exactly (same messages, same arity errors).
     fn call_pure_builtin(
         &mut self,
@@ -3202,6 +3244,8 @@ impl Vm {
                     Value::List(items) => Value::Number(items.len() as f64),
                     Value::Str(s) => Value::Number(s.chars().count() as f64),
                     Value::Dict(pairs) => Value::Number(pairs.len() as f64),
+                    Value::Tuple(items) => Value::Number(items.len() as f64),
+                    Value::Set(items) => Value::Number(items.len() as f64),
                     other => {
                         return Err(RioError::typ(
                             format!("طول يتطلب قائمة أو نصا أو قاموسا، وليس {}", other.type_name()),
@@ -3209,6 +3253,100 @@ impl Vm {
                             col,
                         ));
                     }
+                })
+            }
+            // الدفعة 3 من الـ579 (البنود 138 و139
+            // و141–143) — مرآة call_builtin في المفسر
+            // حرفيا (الرسائل والدلالة نفسيهما).
+            "مترابطة" => Ok(Value::Tuple(args)),
+            "تشكيلة" => Ok(Value::make_set(args)),
+            "افهم_قائمة" | "افهم_تشكيلة" | "افهم_فهرس" => {
+                arity(3)?;
+                let items = match args[2].iterable_items() {
+                    Some(items) => items,
+                    None => {
+                        return Err(RioError::typ(
+                            format!("لا يمكن التكرار على نوع {}", args[2].type_name()),
+                            line,
+                            col,
+                        ));
+                    }
+                };
+                let mut out_list: Vec<Value> = Vec::new();
+                let mut out_dict: Vec<(String, Value)> = Vec::new();
+                for item in items {
+                    if !matches!(&args[1], Value::Nil) {
+                        let (c, produced) =
+                            crate::stdlib::HandlerCaller::call_handler(
+                                self, &args[1], item.clone(), line, col,
+                            );
+                        if !produced.is_empty() {
+                            print!("{}", produced);
+                        }
+                        match c? {
+                            Value::Bool(true) => {}
+                            Value::Bool(false) => continue,
+                            other => {
+                                return Err(RioError::typ(
+                                    format!(
+                                        "شرط الفهم يجب أن يكون منطقيا، وليس {}",
+                                        other.type_name()
+                                    ),
+                                    line,
+                                    col,
+                                ));
+                            }
+                        }
+                    }
+                    let (v, produced) =
+                        crate::stdlib::HandlerCaller::call_handler(
+                            self, &args[0], item, line, col,
+                        );
+                    if !produced.is_empty() {
+                        print!("{}", produced);
+                    }
+                    let v = v?;
+                    if name == "افهم_فهرس" {
+                        let (key, val) = match &v {
+                            Value::List(pair) if pair.len() == 2 => {
+                                (&pair[0], &pair[1])
+                            }
+                            _ => {
+                                return Err(RioError::runtime(
+                                    "دالة الزوج في فهم الفهرس يجب أن ترجع قائمة من عنصرين",
+                                    line,
+                                    col,
+                                ));
+                            }
+                        };
+                        let key = match key {
+                            Value::Str(s) => s.clone(),
+                            other => {
+                                return Err(RioError::typ(
+                                    format!(
+                                        "مفتاح القاموس يجب أن يكون نصا، وليس {}",
+                                        other.type_name()
+                                    ),
+                                    line,
+                                    col,
+                                ));
+                            }
+                        };
+                        if let Some(pair) =
+                            out_dict.iter_mut().find(|(k, _)| *k == key)
+                        {
+                            pair.1 = val.clone();
+                        } else {
+                            out_dict.push((key, val.clone()));
+                        }
+                    } else {
+                        out_list.push(v);
+                    }
+                }
+                Ok(match name {
+                    "افهم_قائمة" => Value::List(out_list),
+                    "افهم_تشكيلة" => Value::make_set(out_list),
+                    _ => Value::Dict(out_dict),
                 })
             }
             "مدى" => {
@@ -6767,6 +6905,28 @@ impl Vm {
                                     idx_col,
                                 )
                             })?,
+                        // البند 138 — مرآة المفسر: فهرسة المترابطة.
+                        (Value::Tuple(items), Value::Number(x)) => {
+                            if x.fract() != 0.0 || *x < 0.0 {
+                                return Err(RioError::typ(
+                                    "فهرس المترابطة يجب أن يكون عددا صحيحا",
+                                    idx_line,
+                                    idx_col,
+                                ));
+                            }
+                            let i = *x as usize;
+                            items.get(i).cloned().ok_or_else(|| {
+                                RioError::runtime(
+                                    format!(
+                                        "فهرس خارج النطاق: {} والمترابطة طولها {}",
+                                        i,
+                                        items.len()
+                                    ),
+                                    idx_line,
+                                    idx_col,
+                                )
+                            })?
+                        }
                         (Value::Str(s), Value::Number(x)) => {
                             if x.fract() != 0.0 || *x < 0.0 {
                                 return Err(RioError::typ(
@@ -7344,7 +7504,7 @@ impl Vm {
                     let start = self.stack.len() - nargs;
                     let args: Vec<Value> = self.stack.drain(start..).collect();
                     match target {
-                        Value::Str(_) | Value::List(_) => {
+                        Value::Str(_) | Value::List(_) | Value::Tuple(_) | Value::Set(_) => {
                             let result = self.call_builtin_method_vm(
                                 target,
                                 &name,
@@ -7515,14 +7675,11 @@ impl Vm {
                 }
                 Op::ForSetup { var, end_pc } => {
                     let iterable = self.pop(line, col)?;
-                    let items: Vec<Value> = match iterable {
-                        Value::List(items) => items,
-                        Value::Str(s) => {
-                            s.chars().map(|c| Value::Str(c.to_string())).collect()
-                        }
-                        other => {
+                    let items: Vec<Value> = match iterable.iterable_items() {
+                        Some(items) => items,
+                        None => {
                             return Err(RioError::typ(
-                                format!("لا يمكن التكرار على نوع {}", other.type_name()),
+                                format!("لا يمكن التكرار على نوع {}", iterable.type_name()),
                                 line,
                                 col,
                             ));
@@ -7717,6 +7874,9 @@ impl Vm {
                     let l = self.pop(line, col)?;
                     let found = match (&l, &r) {
                         (item, Value::List(items)) => items.iter().any(|x| x == item),
+                        // البندان 138 و139 — مرآة المفسر.
+                        (item, Value::Tuple(items)) => items.iter().any(|x| x == item),
+                        (item, Value::Set(items)) => items.iter().any(|x| x == item),
                         (Value::Str(needle), Value::Str(hay)) => {
                             hay.contains(needle.as_str())
                         }

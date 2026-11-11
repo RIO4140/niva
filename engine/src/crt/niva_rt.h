@@ -151,7 +151,14 @@ typedef enum {
     NV_INST,
     NV_BOUND,
     NV_HANDLE,
-    NV_BYTES
+    NV_BYTES,
+    // البندان 138 و139 (الدفعة 3 من الـ579):
+    // مترابطة وتشكيلة — في آخر التعداد عمدا، فلا
+    // تتغير أرقام الوسوم القائمة. التخزين NvList
+    // نفسه (طول/سعة/عناصر)، والوسم وحده يميز
+    // الدلالة (ترتيب وثبات، أو فرادة بلا ترتيب).
+    NV_TUPLE,
+    NV_SET
 } NvTag;
 
 typedef struct {
@@ -162,6 +169,11 @@ typedef struct {
         int boolean;
         NvList *list;
         NvDict *dict;
+        // البندان 138 و139: المترابطة والتشكيلة
+        // تخزينهما NvList (الأعضاء أسماء مستعارة
+        // للوضوح في مواضع المترابطة/التشكيلة).
+        NvList *tuple;
+        NvList *set;
         NvFunc *func;
         NvNative *native;
         NvModule *module;
@@ -391,6 +403,10 @@ NvValue nv_str_take(char *s, size_t len);       // يملك البايتات
 NvValue nv_str_cstr(const char *s);
 NvValue nv_list_new(void);
 NvValue nv_dict_new(void);
+// البندان 138 و139 (الدفعة 3 من الـ579): مترابطة
+// فارغة، وتشكيلة فارغة (التخزين NvList).
+NvValue nv_tuple_new(void);
+NvValue nv_set_new(void);
 NvValue nv_func_new(const char *name, NvCFunc cfunc, NvScope *captured,
                     const char *module, NvScope *module_scope,
                     char **param_names, char **param_types,
