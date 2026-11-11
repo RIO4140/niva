@@ -354,6 +354,16 @@ fn math_entries() -> Vec<(&'static str, Value)> {
         ("جمع_نمطي", native("جمع_نمطي", math_mod_add)),
         ("ضرب_نمطي", native("ضرب_نمطي", math_mod_mul)),
         ("طرح_نمطي", native("طرح_نمطي", math_mod_sub)),
+// == مولّد-دفعة2-مداخل-رياضيات: بداية ==
+        ("قسمة_أرضية", native("قسمة_أرضية", math_floor_div)),
+        ("قسمة_ارضية", native("قسمة_ارضية", math_floor_div)),
+        ("بت_او", native("بت_او", math_bit_or)),
+        ("بت_و", native("بت_و", math_bit_and)),
+        ("بت_عكس_حصري", native("بت_عكس_حصري", math_bit_xor)),
+        ("بت_ازاحة_يسار", native("بت_ازاحة_يسار", math_bit_shl)),
+        ("بت_ازاحة_يمين", native("بت_ازاحة_يمين", math_bit_shr)),
+        ("عكس_بت", native("عكس_بت", math_bit_not)),
+// == مولّد-دفعة2-مداخل-رياضيات: نهاية ==
     ]
 }
 
@@ -442,6 +452,79 @@ fn math_rem(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usiz
     Ok(Value::Number(a % b))
 }
 
+// == مولّد-دفعة2-دوال-البت: بداية ==
+/// اقتطاع عدد نيفا (f64) نحو الصفر إلى i64 لعمليات البت
+/// (الدفعة 2): الكسر يُهمل؛ والقيم خارج المدى تتشبّع
+/// (NaN إلى 0 واللانهاية إلى الحد) كما يفعل التحويل
+/// `as` في Rust.
+fn trunc_i64(x: f64) -> i64 {
+    x as i64
+}
+
+/// القسمة الأرضية (الدفعة 2): floor(أ / ب) على f64؛ وب = 0 خطأ «قسمة على صفر» كـDiv.
+fn math_floor_div(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("رياضيات.قسمة_أرضية", args, 2, line, col)?;
+    let a = need_number("رياضيات.قسمة_أرضية", &args[0], line, col)?;
+    let b = need_number("رياضيات.قسمة_أرضية", &args[1], line, col)?;
+    if b == 0.0 {
+        return Err(RioError::runtime("قسمة على صفر", line, col));
+    }
+    Ok(Value::Number((a / b).floor()))
+}
+
+/// عملية بت ثنائية (الدفعة 2): (أ as i64) | (ب as i64) بعد اقتطاع نحو الصفر.
+fn math_bit_or(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("رياضيات.بت_او", args, 2, line, col)?;
+    let a = trunc_i64(need_number("رياضيات.بت_او", &args[0], line, col)?);
+    let b = trunc_i64(need_number("رياضيات.بت_او", &args[1], line, col)?);
+    Ok(Value::Number((a | b) as f64))
+}
+
+/// عملية بت ثنائية (الدفعة 2): (أ as i64) & (ب as i64) بعد اقتطاع نحو الصفر.
+fn math_bit_and(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("رياضيات.بت_و", args, 2, line, col)?;
+    let a = trunc_i64(need_number("رياضيات.بت_و", &args[0], line, col)?);
+    let b = trunc_i64(need_number("رياضيات.بت_و", &args[1], line, col)?);
+    Ok(Value::Number((a & b) as f64))
+}
+
+/// عملية بت ثنائية (الدفعة 2): (أ as i64) ^ (ب as i64) بعد اقتطاع نحو الصفر.
+fn math_bit_xor(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("رياضيات.بت_عكس_حصري", args, 2, line, col)?;
+    let a = trunc_i64(need_number("رياضيات.بت_عكس_حصري", &args[0], line, col)?);
+    let b = trunc_i64(need_number("رياضيات.بت_عكس_حصري", &args[1], line, col)?);
+    Ok(Value::Number((a ^ b) as f64))
+}
+
+/// إزاحة البتات (الدفعة 2): (أ as i64) << (ب as i64)؛ مقدار الإزاحة 0..63 وإلا خطأ.
+fn math_bit_shl(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("رياضيات.بت_ازاحة_يسار", args, 2, line, col)?;
+    let a = trunc_i64(need_number("رياضيات.بت_ازاحة_يسار", &args[0], line, col)?);
+    let n = trunc_i64(need_number("رياضيات.بت_ازاحة_يسار", &args[1], line, col)?);
+    if !(0..64).contains(&n) {
+        return Err(RioError::runtime("مقدار الإزاحة يجب أن يكون بين 0 و 63", line, col));
+    }
+    Ok(Value::Number((a << n) as f64))
+}
+
+/// إزاحة البتات (الدفعة 2): (أ as i64) >> (ب as i64) إزاحة حسابية؛ مقدار الإزاحة 0..63 وإلا خطأ.
+fn math_bit_shr(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("رياضيات.بت_ازاحة_يمين", args, 2, line, col)?;
+    let a = trunc_i64(need_number("رياضيات.بت_ازاحة_يمين", &args[0], line, col)?);
+    let n = trunc_i64(need_number("رياضيات.بت_ازاحة_يمين", &args[1], line, col)?);
+    if !(0..64).contains(&n) {
+        return Err(RioError::runtime("مقدار الإزاحة يجب أن يكون بين 0 و 63", line, col));
+    }
+    Ok(Value::Number((a >> n) as f64))
+}
+
+/// عكس البت الأحادي `~` (الدفعة 2): ~(أ as i64) بعد اقتطاع نحو الصفر.
+fn math_bit_not(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("رياضيات.عكس_بت", args, 1, line, col)?;
+    let a = trunc_i64(need_number("رياضيات.عكس_بت", &args[0], line, col)?);
+    Ok(Value::Number((!a) as f64))
+}
+// == مولّد-دفعة2-دوال-البت: نهاية ==
 fn math_factorial(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     need_args("رياضيات.عاملي", args, 1, line, col)?;
     let n = need_integer("رياضيات.عاملي", &args[0], line, col)?;
@@ -5034,6 +5117,16 @@ fn validate_entries() -> Vec<(&'static str, Value)> {
         ("هاتف", native("هاتف", validate_phone)),
         ("عدد", native("عدد", validate_number)),
         ("تاريخ", native("تاريخ", validate_date)),
+        // البند 81 (الدفعة 2 من الـ579): متوقع — تأكيد
+        // شرط يرفض بخطأ عربي عند فشله. بيته وحدة تحقق
+        // لأنها وحدة التأكيدات والفحوصات القائمة (لا
+        // وحدة جديدة لدالة واحدة)، ويفككه المحلل إلى
+        // تحقق.متوقع(...) فيتطلب البرنامج استورد تحقق.
+        ("متوقع", native("متوقع", validate_assert)),
+        // البند 69 (الدفعة 2 من الـ579): فكك — تحقق
+        // التفكيك قبل الفهرسة: قائمة بطول مطابق
+        // تماما لعدد الأهداف، وإلا خطأ عربي صريح.
+        ("فكك", native("فكك", validate_unpack)),
     ]
 }
 
@@ -5106,6 +5199,93 @@ fn validate_date(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col:
         }
     };
     Ok(Value::Bool(d <= dim))
+}
+
+/// البند 81 — `متوقع شرط` أو `متوقع شرط، "رسالة"`:
+/// الشرط منطقي إجبارا؛ والنجاح يعيد لاشيء؛ والفشل
+/// خطأ وقت تشغيل عربي — الرسالة المخصصة نصا كما
+/// هي، وإلا «فشل التوقع: الشرط لم يتحقق».
+fn validate_assert(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    if args.len() != 1 && args.len() != 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة تحقق.متوقع تتوقع معاملا واحدا أو معاملين لكن أعطيت {}",
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let cond = match &args[0] {
+        Value::Bool(b) => *b,
+        other => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة تحقق.متوقع تتوقع قيمة منطقية لكن أعطيت {}",
+                    other.type_name()
+                ),
+                line,
+                col,
+            ));
+        }
+    };
+    if cond {
+        return Ok(Value::Nil);
+    }
+    if args.len() == 2 {
+        let msg = need_string("تحقق.متوقع", &args[1], line, col)?;
+        return Err(RioError::runtime(msg, line, col));
+    }
+    Err(RioError::runtime(
+        "فشل التوقع: الشرط لم يتحقق".to_string(),
+        line,
+        col,
+    ))
+}
+
+/// البند 69 — تحقق التفكيك قبل الفهرسة: المصدر
+/// قائمة، وطولها مطابق تماما لعدد الأهداف — نقص
+/// أو زيادة أو مصدر غير قائمة خطأ عربي صريح يسمي
+/// العددين. النجاح يعيد لاشيء.
+fn validate_unpack(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة تحقق.فكك تتوقع معاملين (حاوية وعدد) لكن أعطيت {}",
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let list = need_list("تحقق.فكك", &args[0], line, col)?;
+    let n = need_integer("تحقق.فكك", &args[1], line, col)?;
+    if n < 0 {
+        return Err(RioError::runtime(
+            "الدالة تحقق.فكك تتوقع عدد عناصر غير سالب".to_string(),
+            line,
+            col,
+        ));
+    }
+    let len = list.len() as i64;
+    if len < n {
+        return Err(RioError::runtime(
+            format!(
+                "التفكيك يتطلب {} عناصر لكن الحاوية تحوي {} فقط",
+                n, len
+            ),
+            line,
+            col,
+        ));
+    }
+    if len > n {
+        return Err(RioError::runtime(
+            format!("التفكيك يتطلب {} عناصر لكن الحاوية تحوي {}", n, len),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Nil)
 }
 
 // --- عشوائي ---
@@ -6884,6 +7064,8 @@ fn text_entries() -> Vec<(&'static str, Value)> {
         ("من_الفهرس", native("من_الفهرس", text_from_index)),
         ("قبل_الفهرس", native("قبل_الفهرس", text_before_index)),
         ("اسم_الملف", native("اسم_الملف", text_file_name)),
+        // البند 164 (الدفعة 2 من الـ579): تحويل التمثيل.
+        ("تمثيل", native("تمثيل", text_repr)),
     ]
 }
 
@@ -7012,6 +7194,38 @@ fn text_file_name(
     let path = need_string("نص.اسم_الملف", &args[0], line, col)?;
     let last = path.split('/').next_back().unwrap_or("");
     Ok(Value::Str(last.to_string()))
+}
+
+/// نص.تمثيل(قيمة) — تمثيل القيمة للعرض داخل نص تنفيذي
+/// (البند 164، الدفعة 2 من الـ579): النص بين علامتي
+/// اقتباس مع هروب، وكل قيمة أخرى كما يطبعها المحرك
+/// (والقائمة تقتبس نصوصها أصلا). يقابل `!تمثيل` في الحقل.
+fn text_repr(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("نص.تمثيل", args, 1, line, col)?;
+    match &args[0] {
+        Value::Str(s) => {
+            let mut out = String::with_capacity(s.len() + 2);
+            out.push('"');
+            for c in s.chars() {
+                match c {
+                    '"' => out.push_str("\\\""),
+                    '\\' => out.push_str("\\\\"),
+                    '\n' => out.push_str("\\n"),
+                    '\t' => out.push_str("\\t"),
+                    '\r' => out.push_str("\\r"),
+                    other => out.push(other),
+                }
+            }
+            out.push('"');
+            Ok(Value::Str(out))
+        }
+        other => Ok(Value::Str(other.fmt_value())),
+    }
 }
 
 fn text_format_number(n: f64, spec: &str) -> Result<String, String> {
@@ -8614,6 +8828,8 @@ fn lists_entries() -> Vec<(&'static str, Value)> {
         ("رتب_تنازليا", native("رتب_تنازليا", lists_sort_desc)),
         ("قطع", native("قطع", lists_chunk)),
         ("قطع_بفاصل", native("قطع_بفاصل", lists_split_sep)),
+        // البند 133 (الدفعة 2 من الـ579): القواطع.
+        ("شريحة", native("شريحة", lists_slice)),
     ]
 }
 
@@ -8653,6 +8869,101 @@ fn lists_fold(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usi
             }
             Ok(acc)
         }
+    }
+}
+
+/// حد شريحة: لاشيء غائب، وإلا عدد صحيح (البند 133).
+fn slice_bound(display: &str, v: &Value, line: usize, col: usize) -> RioResult<Option<i64>> {
+    match v {
+        Value::Nil => Ok(None),
+        _ => Ok(Some(need_integer(display, v, line, col)?)),
+    }
+}
+
+/// فهارس الشريحة بمنطق بايثون (PySlice_AdjustIndices):
+/// خطوة موجبة: البداية ٠ والنهاية الطول افتراضا، والقص
+/// إلى [٠، الطول]؛ وخطوة سالبة: البداية الطول-١ والنهاية
+/// «قبل الصفر» افتراضا، والقص إلى [-١، الطول-١]؛ والسالب
+/// الصريح يزاح بالطول قبل القص (فالنهاية -١ الصريحة تعني
+/// آخر عنصر، لا «قبل الصفر»).
+fn slice_indices(len: i64, start: Option<i64>, end: Option<i64>, step: i64) -> Vec<usize> {
+    let mut out = Vec::new();
+    if step > 0 {
+        let mut s = match start {
+            Some(x) => if x < 0 { x + len } else { x },
+            None => 0,
+        };
+        let mut e = match end {
+            Some(x) => if x < 0 { x + len } else { x },
+            None => len,
+        };
+        s = s.clamp(0, len);
+        e = e.clamp(0, len);
+        let mut i = s;
+        while i < e {
+            out.push(i as usize);
+            i += step;
+        }
+    } else {
+        let mut s = match start {
+            Some(x) => if x < 0 { x + len } else { x },
+            None => len - 1,
+        };
+        let mut e = match end {
+            Some(x) => if x < 0 { x + len } else { x },
+            None => -1,
+        };
+        s = s.clamp(-1, len - 1);
+        e = e.clamp(-1, len - 1);
+        let mut i = s;
+        while i > e {
+            out.push(i as usize);
+            i += step;
+        }
+    }
+    out
+}
+
+/// قوائم.شريحة(قيمة، بداية، نهاية، خطوة) — أخذ جزء من
+/// قائمة أو نص (البند 133، الدفعة 2 من الـ579): الحدود
+/// لاشيء للغائب، والخطوة لاشيء للواحد؛ وخطوة صفر خطأ؛
+/// والنص يُقطع بالمحارف لا بالبايتات؛ وغير القائمة
+/// والنص خطأ نوع.
+fn lists_slice(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "قوائم.شريحة";
+    need_args(D, args, 4, line, col)?;
+    let start = slice_bound(D, &args[1], line, col)?;
+    let end = slice_bound(D, &args[2], line, col)?;
+    let step = match &args[3] {
+        Value::Nil => 1,
+        v => need_integer(D, v, line, col)?,
+    };
+    if step == 0 {
+        return Err(RioError::runtime("خطوة الشريحة صفر في قوائم.شريحة", line, col));
+    }
+    match &args[0] {
+        Value::List(items) => {
+            let idx = slice_indices(items.len() as i64, start, end, step);
+            Ok(Value::List(idx.iter().map(|&i| items[i].clone()).collect()))
+        }
+        Value::Str(text) => {
+            let chars: Vec<char> = text.chars().collect();
+            let idx = slice_indices(chars.len() as i64, start, end, step);
+            Ok(Value::Str(idx.iter().map(|&i| chars[i]).collect()))
+        }
+        other => Err(RioError::typ(
+            format!(
+                "الدالة قوائم.شريحة تتوقع قائمة أو نصا لكن أعطيت {}",
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
     }
 }
 
@@ -9677,7 +9988,62 @@ fn funcs_entries() -> Vec<(&'static str, Value)> {
         ("كرر_ن_مرة", native("كرر_ن_مرة", funcs_repeat_n)),
         ("اعكس_الدالة", native("اعكس_الدالة", funcs_inverse)),
         ("آلة_حالات", native("آلة_حالات", funcs_state_machine)),
+        // البندان 117 و118 (الدفعة 2 من الـ579): فحص الهوية.
+        ("هوية", native("هوية", funcs_identity)),
     ]
+}
+
+/// فحص الهوية (البندان 117 و118، الدفعة 2 من الـ579):
+/// `دوال.هوية(أ، ب)` — هل القيمتان نفس الكائن؟
+///
+/// الدلالة (موثقة هنا وفي المرآة C):
+/// - أنواع القيم (عدد، نص، منطقي، لاشيء): الهوية =
+///   المساواة — فلا «كائن» مميزا لها.
+/// - القوائم والقواميس: الهوية خطأ دائما — فهي أنواع
+///   قيمية في نيفا: الإسناد والقراءة ينسخانها عميقا في
+///   المحركات الثلاثة (المفسر ينسخ في `lookup`، والأصلي
+///   في `nv_clone_value`)، فلا يوجد «نفس الكائن» قابل
+///   للملاحظة لها أصلا؛ وقائمتان بنفس المحتوى ليستا
+///   متطابقتين أبدا، و`ب = أ` نسخة لا نفس القائمة.
+/// - الكائنات والفئات والواجهات: نفس المؤشر (Rc) — نفس
+///   الكائن حرفيا؛ وكائنان بحقول متساوية ليسا متطابقين.
+/// - الدوال: المساواة البنيوية مع هوية النطاقات الملتقَطة
+///   (كما في `PartialEq`) — دالتان من نفس المصنع في نفس
+///   الاستدعاء تشتركان نطاقهما فمتطابقتان، ومن استدعاءين
+///   مختلفين فلا. والوحدات والدوال الأصلية بالمساواة نفسها.
+/// - نوعان مختلفان: خطأ دائما.
+fn values_identical(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x == y,
+        (Value::Str(x), Value::Str(y)) => x == y,
+        (Value::Bool(x), Value::Bool(y)) => x == y,
+        (Value::Nil, Value::Nil) => true,
+        // قوائم وقواميس: بلا هوية ملاحَظة (انظر التعليق أعلاه).
+        (Value::List(_), _) | (_, Value::List(_)) => false,
+        (Value::Dict(_), _) | (_, Value::Dict(_)) => false,
+        (Value::Instance(x), Value::Instance(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Value::Class(x), Value::Class(y)) => std::rc::Rc::ptr_eq(x, y),
+        (Value::Interface(x), Value::Interface(y)) => std::rc::Rc::ptr_eq(x, y),
+        (
+            Value::BoundMethod { func: f1, instance: i1 },
+            Value::BoundMethod { func: f2, instance: i2 },
+        ) => std::rc::Rc::ptr_eq(i1, i2) && values_identical(f1, f2),
+        (Value::Function { .. }, Value::Function { .. }) => a == b,
+        (Value::Module { .. }, Value::Module { .. }) => a == b,
+        (Value::NativeFunction { .. }, Value::NativeFunction { .. }) => a == b,
+        _ => false,
+    }
+}
+
+/// دوال.هوية(أ، ب) — فحص الهوية (البندان 117 و118).
+fn funcs_identity(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("دوال.هوية", args, 2, line, col)?;
+    Ok(Value::Bool(values_identical(&args[0], &args[1])))
 }
 
 // ---------- 61 + 65: دالة تركيب واحدة ----------

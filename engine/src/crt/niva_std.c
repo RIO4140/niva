@@ -340,6 +340,88 @@ static NvValue nv_std_math_rem(NvValue *args, int nargs, int line, int col) {
     return nv_num(fmod(a, b));
 }
 
+/* == مولّد-دفعة2-دوال-البت: بداية == */
+/* اقتطاع نحو الصفر إلى long long مع تشبع (الدفعة 2) —
+   التحويل المباشر في C سلوك غير معرّف خارج المدى،
+   فتُقيَّد القيمة أولا. */
+static long long nv_std_trunc_i64(double x) {
+    if (isnan(x)) return 0;
+    if (x >= 9223372036854775807.0) return LLONG_MAX;
+    if (x <= -9223372036854775808.0) return LLONG_MIN;
+    return (long long)trunc(x);
+}
+
+/* إزاحة يمين حسابية محمولة (الدفعة 2): `>>` على سالب
+   معرّفة تنفيذيا في C، فتُنفَّذ صراحة عبر المكمل. */
+static long long nv_std_shr_i64(long long a, long long n) {
+    if (a >= 0) return a >> n;
+    return ~((~a) >> n);
+}
+
+/* القسمة الأرضية (الدفعة 2): floor(أ / ب) على f64؛ وب = 0 خطأ «قسمة على صفر» كـDiv. */
+static NvValue nv_std_math_floor_div(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("رياضيات.قسمة_أرضية", args, nargs, 2, line, col);
+    double a = nv_std_need_number("رياضيات.قسمة_أرضية", args[0], line, col);
+    double b = nv_std_need_number("رياضيات.قسمة_أرضية", args[1], line, col);
+    if (b == 0.0) {
+        nv_error(NV_ERR_RUNTIME, "قسمة على صفر", line, col);
+    }
+    return nv_num(floor(a / b));
+}
+
+/* عملية بت ثنائية (الدفعة 2): (أ as i64) | (ب as i64) بعد اقتطاع نحو الصفر. */
+static NvValue nv_std_math_bit_or(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("رياضيات.بت_او", args, nargs, 2, line, col);
+    long long a = nv_std_trunc_i64(nv_std_need_number("رياضيات.بت_او", args[0], line, col));
+    long long b = nv_std_trunc_i64(nv_std_need_number("رياضيات.بت_او", args[1], line, col));
+    return nv_num((double)(a | b));
+}
+
+/* عملية بت ثنائية (الدفعة 2): (أ as i64) & (ب as i64) بعد اقتطاع نحو الصفر. */
+static NvValue nv_std_math_bit_and(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("رياضيات.بت_و", args, nargs, 2, line, col);
+    long long a = nv_std_trunc_i64(nv_std_need_number("رياضيات.بت_و", args[0], line, col));
+    long long b = nv_std_trunc_i64(nv_std_need_number("رياضيات.بت_و", args[1], line, col));
+    return nv_num((double)(a & b));
+}
+
+/* عملية بت ثنائية (الدفعة 2): (أ as i64) ^ (ب as i64) بعد اقتطاع نحو الصفر. */
+static NvValue nv_std_math_bit_xor(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("رياضيات.بت_عكس_حصري", args, nargs, 2, line, col);
+    long long a = nv_std_trunc_i64(nv_std_need_number("رياضيات.بت_عكس_حصري", args[0], line, col));
+    long long b = nv_std_trunc_i64(nv_std_need_number("رياضيات.بت_عكس_حصري", args[1], line, col));
+    return nv_num((double)(a ^ b));
+}
+
+/* إزاحة البتات (الدفعة 2): (أ as i64) << (ب as i64)؛ مقدار الإزاحة 0..63 وإلا خطأ. */
+static NvValue nv_std_math_bit_shl(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("رياضيات.بت_ازاحة_يسار", args, nargs, 2, line, col);
+    long long a = nv_std_trunc_i64(nv_std_need_number("رياضيات.بت_ازاحة_يسار", args[0], line, col));
+    long long n = nv_std_trunc_i64(nv_std_need_number("رياضيات.بت_ازاحة_يسار", args[1], line, col));
+    if (n < 0 || n >= 64) {
+        nv_error(NV_ERR_RUNTIME, "مقدار الإزاحة يجب أن يكون بين 0 و 63", line, col);
+    }
+    return nv_num((double)((long long)((unsigned long long)a << (unsigned)n)));
+}
+
+/* إزاحة البتات (الدفعة 2): (أ as i64) >> (ب as i64) إزاحة حسابية؛ مقدار الإزاحة 0..63 وإلا خطأ. */
+static NvValue nv_std_math_bit_shr(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("رياضيات.بت_ازاحة_يمين", args, nargs, 2, line, col);
+    long long a = nv_std_trunc_i64(nv_std_need_number("رياضيات.بت_ازاحة_يمين", args[0], line, col));
+    long long n = nv_std_trunc_i64(nv_std_need_number("رياضيات.بت_ازاحة_يمين", args[1], line, col));
+    if (n < 0 || n >= 64) {
+        nv_error(NV_ERR_RUNTIME, "مقدار الإزاحة يجب أن يكون بين 0 و 63", line, col);
+    }
+    return nv_num((double)(nv_std_shr_i64(a, n)));
+}
+
+/* عكس البت الأحادي `~` (الدفعة 2): ~(أ as i64) بعد اقتطاع نحو الصفر. */
+static NvValue nv_std_math_bit_not(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("رياضيات.عكس_بت", args, nargs, 1, line, col);
+    long long a = nv_std_trunc_i64(nv_std_need_number("رياضيات.عكس_بت", args[0], line, col));
+    return nv_num((double)(~a));
+}
+/* == مولّد-دفعة2-دوال-البت: نهاية == */
 static NvValue nv_std_math_factorial(NvValue *args, int nargs, int line, int col) {
     nv_std_need_args("رياضيات.عاملي", args, nargs, 1, line, col);
     long long n = nv_std_need_integer("رياضيات.عاملي", args[0], line, col);
@@ -748,6 +830,16 @@ void nv_std_math_fill(NvDict *d) {
     nv_std_add_num(d, "ه", 2.71828182845904523536);
     nv_std_add_fn(d, "جذر_نوني", nv_std_math_nth_root);
     nv_std_add_fn(d, "باقي", nv_std_math_rem);
+/* == مولّد-دفعة2-تسجيل-رياضيات: بداية == */
+    nv_std_add_fn(d, "قسمة_أرضية", nv_std_math_floor_div);
+    nv_std_add_fn(d, "قسمة_ارضية", nv_std_math_floor_div);
+    nv_std_add_fn(d, "بت_او", nv_std_math_bit_or);
+    nv_std_add_fn(d, "بت_و", nv_std_math_bit_and);
+    nv_std_add_fn(d, "بت_عكس_حصري", nv_std_math_bit_xor);
+    nv_std_add_fn(d, "بت_ازاحة_يسار", nv_std_math_bit_shl);
+    nv_std_add_fn(d, "بت_ازاحة_يمين", nv_std_math_bit_shr);
+    nv_std_add_fn(d, "عكس_بت", nv_std_math_bit_not);
+/* == مولّد-دفعة2-تسجيل-رياضيات: نهاية == */
     nv_std_add_fn(d, "عاملي", nv_std_math_factorial);
     nv_std_add_fn(d, "توافيق", nv_std_math_choose);
     // أصغر/أكبر كلمتا مقارنة محجوزتان: المفتاح المخزن
@@ -10645,12 +10737,53 @@ static NvValue nv_std_validate_date(NvValue *args, int nargs, int line, int col)
     return nv_bool(d <= dim);
 }
 
+/* البند 81 — مرآة Rust حرفيا: متوقع شرطا منطقيا
+ * (أو شرطا ورسالة)؛ والنجاح لاشيء، والفشل خطأ
+ * وقت تشغيل عربي. */
+static NvValue nv_std_validate_assert(NvValue *args, int nargs, int line, int col) {
+    if (nargs != 1 && nargs != 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة تحقق.متوقع تتوقع معاملا واحدا أو معاملين لكن أعطيت %d", nargs);
+    }
+    if (args[0].tag != NV_BOOL) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة تحقق.متوقع تتوقع قيمة منطقية لكن أعطيت %s", nv_type_name(args[0]));
+    }
+    if (args[0].u.boolean) return nv_nil();
+    if (nargs == 2) {
+        nv_error(NV_ERR_RUNTIME, nv_std_need_string("تحقق.متوقع", args[1], line, col), line, col);
+    }
+    nv_error(NV_ERR_RUNTIME, "فشل التوقع: الشرط لم يتحقق", line, col);
+    return nv_nil();
+}
+
+/* البند 69 — مرآة Rust حرفيا: تحقق التفكيك قبل
+ * الفهرسة: قائمة بطول مطابق تماما لعدد الأهداف. */
+static NvValue nv_std_validate_unpack(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("تحقق.فكك", args, nargs, 2, line, col);
+    if (args[0].tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة تحقق.فكك تتوقع قائمة لكن أعطيت %s", nv_type_name(args[0]));
+    }
+    long long n = nv_std_need_integer("تحقق.فكك", args[1], line, col);
+    if (n < 0) {
+        nv_error(NV_ERR_RUNTIME, "الدالة تحقق.فكك تتوقع عدد عناصر غير سالب", line, col);
+    }
+    long long len = (long long)args[0].u.list->len;
+    if (len < n) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "التفكيك يتطلب %lld عناصر لكن الحاوية تحوي %lld فقط", n, len);
+    }
+    if (len > n) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "التفكيك يتطلب %lld عناصر لكن الحاوية تحوي %lld", n, len);
+    }
+    return nv_nil();
+}
+
 void nv_std_validate_fill(NvDict *d) {
     nv_std_add_fn(d, "بريد", nv_std_validate_email);
     nv_std_add_fn(d, "رابط", nv_std_validate_url);
     nv_std_add_fn(d, "هاتف", nv_std_validate_phone);
     nv_std_add_fn(d, "عدد", nv_std_validate_number);
     nv_std_add_fn(d, "تاريخ", nv_std_validate_date);
+    nv_std_add_fn(d, "متوقع", nv_std_validate_assert);
+    nv_std_add_fn(d, "فكك", nv_std_validate_unpack);
 }
 
 // ============================================================
@@ -11110,6 +11243,38 @@ static NvValue nv_std_text_file_name(NvValue *args, int nargs, int line, int col
     return nv_str_new(name, strlen(name));
 }
 
+// نص.تمثيل(قيمة) — تمثيل القيمة للعرض داخل نص تنفيذي
+// (البند 164، الدفعة 2 من الـ579): النص بين علامتي
+// اقتباس مع هروب، وكل قيمة أخرى كما يطبعها المحرك —
+// كما في stdlib.rs حرفيا.
+static NvValue nv_std_text_repr(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("نص.تمثيل", args, nargs, 1, line, col);
+    if (args[0].tag == NV_STR) {
+        const char *s = args[0].u.str->data;
+        J14Buf buf;
+        j14_buf_init(&buf);
+        j14_buf_addc(&buf, '"');
+        for (const char *p = s; *p; p++) {
+            switch (*p) {
+                case '"': j14_buf_add(&buf, "\\\""); break;
+                case '\\': j14_buf_add(&buf, "\\\\"); break;
+                case '\n': j14_buf_add(&buf, "\\n"); break;
+                case '\t': j14_buf_add(&buf, "\\t"); break;
+                case '\r': j14_buf_add(&buf, "\\r"); break;
+                default: j14_buf_addc(&buf, *p); break;
+            }
+        }
+        j14_buf_addc(&buf, '"');
+        NvValue out = nv_str_new(buf.data, buf.len);
+        j14_buf_free(&buf);
+        return out;
+    }
+    char *s = nv_fmt_value(args[0]);
+    NvValue out = nv_str_new(s, strlen(s));
+    free(s);
+    return out;
+}
+
 void nv_std_text_fill(NvDict *d) {
     nv_std_add_fn(d, "نسق", nv_std_text_format);
     nv_std_add_fn(d, "يبدأ_ب", nv_std_text_starts_with);
@@ -11121,6 +11286,8 @@ void nv_std_text_fill(NvDict *d) {
     nv_std_add_fn(d, "من_الفهرس", nv_std_text_from_index);
     nv_std_add_fn(d, "قبل_الفهرس", nv_std_text_before_index);
     nv_std_add_fn(d, "اسم_الملف", nv_std_text_file_name);
+    // البند 164 (الدفعة 2 من الـ579): تحويل التمثيل.
+    nv_std_add_fn(d, "تمثيل", nv_std_text_repr);
 }
 
 // ---------- 207: تحويل القواعد العددية (وحدة أسس) ----------
@@ -12263,6 +12430,103 @@ static NvValue nv_std_lists_fold(NvValue *args, int nargs, int line, int col) {
     return acc;
 }
 
+// حد شريحة: لاشيء غائب، وإلا عدد صحيح (البند 133).
+// يعيد 1 إن وُجد الحد، و0 إن كان غائبا.
+static int nv_slice_bound(const char *display, NvValue v, long long *out, int line, int col) {
+    if (v.tag == NV_NIL) return 0;
+    *out = nv_std_need_integer(display, v, line, col);
+    return 1;
+}
+
+// حدود الشريحة بمنطق بايثون — كما في stdlib.rs حرفيا:
+// تعيد (الأول، الأخير) حيث التكرار من الأول نحو الأخير
+// (غير شامل) بخطوة موجبة، أو من الأول نزولا نحو الأخير
+// بخطوة سالبة. خطوة موجبة: البداية ٠ والنهاية الطول
+// افتراضا، والقص إلى [٠، الطول]؛ وخطوة سالبة: البداية
+// الطول-١ والنهاية «قبل الصفر» افتراضا، والقص إلى
+// [-١، الطول-١]؛ والسالب الصريح يزاح بالطول قبل القص.
+static void nv_slice_bounds(long long len, int has_start, long long start, int has_end, long long end, long long step, long long *first, long long *last) {
+    if (step > 0) {
+        long long s = has_start ? start : 0;
+        long long e = has_end ? end : len;
+        if (s < 0) s += len;
+        if (e < 0) e += len;
+        if (s < 0) s = 0;
+        if (s > len) s = len;
+        if (e < 0) e = 0;
+        if (e > len) e = len;
+        *first = s;
+        *last = e;
+    } else {
+        long long s = has_start ? start : len - 1;
+        long long e = has_end ? end : -1;
+        if (s < 0) s += len;
+        if (has_end && e < 0) e += len;
+        if (s < -1) s = -1;
+        if (s > len - 1) s = len - 1;
+        if (e < -1) e = -1;
+        if (e > len - 1) e = len - 1;
+        *first = s;
+        *last = e;
+    }
+}
+
+// قوائم.شريحة(قيمة، بداية، نهاية، خطوة) — أخذ جزء من
+// قائمة أو نص (البند 133، الدفعة 2 من الـ579): الحدود
+// لاشيء للغائب، والخطوة لاشيء للواحد؛ وخطوة صفر خطأ؛
+// والنص يُقطع بالمحارف لا بالبايتات؛ وغير القائمة
+// والنص خطأ نوع — كما في stdlib.rs حرفيا.
+static NvValue nv_std_lists_slice(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("قوائم.شريحة", args, nargs, 4, line, col);
+    long long start = 0, end = 0, step = 1;
+    int has_start = nv_slice_bound("قوائم.شريحة", args[1], &start, line, col);
+    int has_end = nv_slice_bound("قوائم.شريحة", args[2], &end, line, col);
+    if (args[3].tag != NV_NIL) step = nv_std_need_integer("قوائم.شريحة", args[3], line, col);
+    if (step == 0) {
+        nv_error(NV_ERR_RUNTIME, "خطوة الشريحة صفر في قوائم.شريحة", line, col);
+    }
+    if (args[0].tag == NV_LIST) {
+        NvList *items = args[0].u.list;
+        long long first, last;
+        nv_slice_bounds((long long)items->len, has_start, start, has_end, end, step, &first, &last);
+        NvValue out = nv_list_new();
+        if (step > 0) {
+            for (long long i = first; i < last; i += step)
+                nv_list_push_raw(out.u.list, items->items[i]);
+        } else {
+            for (long long i = first; i > last; i += step)
+                nv_list_push_raw(out.u.list, items->items[i]);
+        }
+        return out;
+    }
+    if (args[0].tag == NV_STR) {
+        const char *text = args[0].u.str->data;
+        size_t tlen = args[0].u.str->len;
+        size_t nchars = nv_utf8_chars(text, tlen);
+        long long first, last;
+        nv_slice_bounds((long long)nchars, has_start, start, has_end, end, step, &first, &last);
+        J14Buf buf;
+        j14_buf_init(&buf);
+        if (step > 0) {
+            for (long long i = first; i < last; i += step) {
+                size_t clen = 0;
+                const char *p = nv_utf8_char_at(text, tlen, (size_t)i, &clen);
+                j14_buf_addn(&buf, p, clen);
+            }
+        } else {
+            for (long long i = first; i > last; i += step) {
+                size_t clen = 0;
+                const char *p = nv_utf8_char_at(text, tlen, (size_t)i, &clen);
+                j14_buf_addn(&buf, p, clen);
+            }
+        }
+        NvValue out = nv_str_new(buf.data, buf.len);
+        j14_buf_free(&buf);
+        return out;
+    }
+    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة قوائم.شريحة تتوقع قائمة أو نصا لكن أعطيت %s", nv_type_name(args[0]));
+}
+
 void nv_std_lists_fill(NvDict *d) {
     nv_std_add_fn(d, "اطو_ب", nv_std_lists_fold);
     // J3 — إكمال وحدة قوائم: 56 و57 و58 و59 و60 و73.
@@ -12277,6 +12541,8 @@ void nv_std_lists_fill(NvDict *d) {
     nv_std_add_fn(d, "رتب_تنازليا", nv_std_lists_sort_desc);
     nv_std_add_fn(d, "قطع", nv_std_lists_chunk);
     nv_std_add_fn(d, "قطع_بفاصل", nv_std_lists_split_sep);
+    // البند 133 (الدفعة 2 من الـ579): القواطع.
+    nv_std_add_fn(d, "شريحة", nv_std_lists_slice);
 }
 
 // ---------- 160: الآلة الحاسبة العلمية (وحدة علمي جديدة) ----------
@@ -13494,6 +13760,59 @@ static NvValue nv_std_funcs_state_machine(NvValue *args, int nargs, int line, in
     return out;
 }
 
+// فحص الهوية (البندان 117 و118، الدفعة 2 من الـ579) —
+// الدلالة كما في stdlib.rs حرفيا: أنواع القيم بالمساواة؛
+// والقوائم والقواميس خطأ دائما (أنواع قيمية تُنسخ عميقا
+// عند كل قراءة وإسناد، فلا «نفس الكائن» قابل للملاحظة)؛
+// والكائنات والفئات والواجهات بنفس المؤشر؛ والدوال بنفس
+// الدالة المولدة ونفس النطاق الملتقَط والاسم والوحدة؛
+// والوحدات بنفس المؤشر؛ والدوال الأصلية بالاسم ومؤشر
+// الدالة؛ والطريقة المربوطة بنفس الكائن ودالتها.
+static int nv_values_identical(NvValue a, NvValue b) {
+    if (a.tag != b.tag) return 0;
+    switch (a.tag) {
+        case NV_NUM: return a.u.num == b.u.num;
+        case NV_STR:
+            return a.u.str->len == b.u.str->len
+                && (a.u.str->len == 0
+                    || memcmp(a.u.str->data, b.u.str->data, a.u.str->len) == 0);
+        case NV_BOOL: return a.u.boolean == b.u.boolean;
+        case NV_NIL: return 1;
+        case NV_LIST:
+        case NV_DICT: return 0;
+        case NV_INST: return a.u.inst == b.u.inst;
+        case NV_CLASS: return a.u.klass == b.u.klass;
+        case NV_IFACE: return a.u.iface == b.u.iface;
+        case NV_FUNC: {
+            if (a.u.func == b.u.func) return 1;
+            NvFunc *f = a.u.func, *g = b.u.func;
+            if (f->cfunc != g->cfunc) return 0;
+            if (f->captured != g->captured) return 0;
+            if ((f->name == NULL) != (g->name == NULL)) return 0;
+            if (f->name && strcmp(f->name, g->name) != 0) return 0;
+            if ((f->module == NULL) != (g->module == NULL)) return 0;
+            if (f->module && strcmp(f->module, g->module) != 0) return 0;
+            return 1;
+        }
+        case NV_NATIVE:
+            return a.u.native->fn == b.u.native->fn
+                && strcmp(a.u.native->name, b.u.native->name) == 0;
+        case NV_MODULE: return a.u.module == b.u.module;
+        case NV_BOUND:
+            return a.u.bound->inst == b.u.bound->inst
+                && nv_values_identical(a.u.bound->func, b.u.bound->func);
+        case NV_HANDLE: return a.u.handle == b.u.handle;
+        case NV_BYTES: return a.u.bytes == b.u.bytes;
+        default: return 0;
+    }
+}
+
+// دوال.هوية(أ، ب) — فحص الهوية (البندان 117 و118).
+static NvValue nv_std_funcs_identity(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("دوال.هوية", args, nargs, 2, line, col);
+    return nv_bool(nv_values_identical(args[0], args[1]));
+}
+
 void nv_std_funcs_fill(NvDict *d) {
     nv_std_add_fn(d, "ركب", nv_std_funcs_compose);
     nv_std_add_fn(d, "اختر_دالة", nv_std_funcs_choose);
@@ -13505,6 +13824,8 @@ void nv_std_funcs_fill(NvDict *d) {
     nv_std_add_fn(d, "كرر_ن_مرة", nv_std_funcs_repeat_n);
     nv_std_add_fn(d, "اعكس_الدالة", nv_std_funcs_inverse);
     nv_std_add_fn(d, "آلة_حالات", nv_std_funcs_state_machine);
+    // البندان 117 و118 (الدفعة 2 من الـ579): فحص الهوية.
+    nv_std_add_fn(d, "هوية", nv_std_funcs_identity);
 }
 
 // ---------- 69: تنفيذ نص — الثنائي الأصلي ----------
