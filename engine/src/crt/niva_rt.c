@@ -230,8 +230,10 @@ static NvObj *nv_obj_of(NvValue v) {
 
 // وسم كائن حيا (mark) — يتبع مراجعه.
 static void nv_mark_obj(NvObj *o);
+// البنود 145–147: تحرير مصفوفة نصوص (تعريفها لاحقا).
+static void nv_free_str_array(char **arr, int n);
 static void nv_mark_value(NvValue v) {
-    if (v.tag == NV_NUM || v.tag == NV_BOOL || v.tag == NV_NIL) return;
+    if (v.tag == NV_NUM || v.tag == NV_BOOL || v.tag == NV_NIL || v.tag == NV_COMPLEX) return;
     NvObj *o = NULL;
     switch (v.tag) {
         case NV_STR: o = (NvObj *)v.u.str; break;
@@ -248,6 +250,11 @@ static void nv_mark_value(NvValue v) {
         case NV_BOUND: o = (NvObj *)v.u.bound; break;
         case NV_HANDLE: o = (NvObj *)v.u.handle; break;
         case NV_BYTES: o = (NvObj *)v.u.bytes; break;
+        // ج6: الكبير والكسر والبت والمعلب كائنات جامع.
+        case NV_BIGINT: o = (NvObj *)v.u.bigint; break;
+        case NV_RATIONAL: o = (NvObj *)v.u.rational; break;
+        case NV_BITS: o = (NvObj *)v.u.bits; break;
+        case NV_BOXED: o = (NvObj *)v.u.boxed; break;
         default: return;
     }
     nv_mark_obj(o);
@@ -264,7 +271,20 @@ static void nv_mark_obj(NvObj *o) {
     switch (o->kind) {
         case NV_OBJ_STR:
         case NV_OBJ_BYTES:
+        case NV_OBJ_BIGINT:
+        case NV_OBJ_BITS:
             break;
+        case NV_OBJ_RATIONAL: {
+            NvRational *r = (NvRational *)o;
+            nv_mark_obj((NvObj *)r->num);
+            nv_mark_obj((NvObj *)r->den);
+            break;
+        }
+        case NV_OBJ_BOXED: {
+            NvBoxed *b = (NvBoxed *)o;
+            nv_mark_value(b->inner);
+            break;
+        }
         case NV_OBJ_LIST: {
             NvList *l = (NvList *)o;
             for (size_t i = 0; i < l->len; i++) nv_mark_value(l->items[i]);
@@ -279,6 +299,13 @@ static void nv_mark_obj(NvObj *o) {
             NvFunc *f = (NvFunc *)o;
             nv_mark_scope(f->captured);
             nv_mark_scope(f->module_scope);
+            // البنود 109–112: القيم الافتراضية قيم
+            // حية يملكها التعريف — تُعلَّم كغيرها.
+            if (f->defaults) {
+                for (int i = 0; i < f->nparams; i++) {
+                    nv_mark_value(f->defaults[i]);
+                }
+            }
             break;
         }
         case NV_OBJ_MODULE: {
@@ -375,6 +402,11 @@ static void nv_sweep(int minor_only) {
                     free(f->param_types);
                 }
                 free(f->return_type);
+                // البنود 145–147: جداول معاملات النوع والربط.
+                nv_free_str_array(f->tp_names, f->ntype_params);
+                nv_free_str_array(f->tp_bounds, f->ntype_params);
+                nv_free_str_array(f->tp_defaults, f->ntype_params);
+                nv_free_str_array(f->type_binding, f->ntype_params);
             } else if (o->kind == NV_OBJ_MODULE) {
                 free(((NvModule *)o)->name);
             } else if (o->kind == NV_OBJ_CLASS) {
@@ -382,6 +414,15 @@ static void nv_sweep(int minor_only) {
                 free(c->name);
                 for (int i = 0; i < c->ninterfaces; i++) free(c->interfaces[i]);
                 free(c->interfaces);
+                // البنود 145–147: جداول معاملات النوع والربط.
+                nv_free_str_array(c->tp_names, c->ntype_params);
+                nv_free_str_array(c->tp_bounds, c->ntype_params);
+                nv_free_str_array(c->tp_defaults, c->ntype_params);
+                nv_free_str_array(c->type_binding, c->ntype_params);
+            } else if (o->kind == NV_OBJ_INST) {
+                // البنود 145–147: ربط النوع على الكائن.
+                NvInst *in = (NvInst *)o;
+                if (in->klass) nv_free_str_array(in->type_binding, in->klass->ntype_params);
             } else if (o->kind == NV_OBJ_IFACE) {
                 NvIface *in = (NvIface *)o;
                 free(in->name);
@@ -745,10 +786,1083 @@ static void nv_set_push_dedup(NvList *set, NvValue v) {
     nv_list_push_raw(set, v);
 }
 
+// ============ ج6: الأعداد الجديدة ============
+// حساب عشري دقيق على سلاسل موحدة (مرآة value.rs في
+// Rust): السلسلة `[+-]?أرقام` بلا أصفار بادئة، والصفر
+// "0" بلا إشارة. الدوال التي تعيد char* تعيد سلسلة
+// جديدة تُحرَّر بـ free، أو NULL عند إدخال غير صالح.
+static void nv_fmt_f64_plain(double n, char *out, size_t outsz);
+
+// ----- الكبير: سلاسل عشرية موحدة -----
+static int nv_bigint_digits_ok(const char *s, int *neg, const char **dig, size_t *len) {
+    if (!s || !*s) return 0;
+    const char *p = s;
+    int ng = 0;
+    if (*p == '-' || *p == '+') { ng = (*p == '-'); p++; }
+    if (!*p) return 0;
+    size_t n = 0;
+    for (const char *q = p; *q; q++) {
+        if (*q < '0' || *q > '9') return 0;
+        n++;
+    }
+    *neg = ng; *dig = p; *len = n;
+    return 1;
+}
+
+char *nv_bigint_norm(const char *s) {
+    int neg; const char *dig; size_t len;
+    if (!nv_bigint_digits_ok(s, &neg, &dig, &len)) return NULL;
+    while (len > 0 && *dig == '0') { dig++; len--; }
+    if (len == 0) return nv_strdup("0");
+    char *out = (char *)malloc(len + (neg ? 2 : 1));
+    size_t i = 0;
+    if (neg) out[i++] = '-';
+    memcpy(out + i, dig, len);
+    out[i + len] = '\0';
+    return out;
+}
+
+int nv_bigint_is_zero_str(const char *a) {
+    if (!a) return 1;
+    if (*a == '-' || *a == '+') a++;
+    while (*a) { if (*a != '0') return 0; a++; }
+    return 1;
+}
+
+static int nv_bigint_mag_cmp(const char *a, const char *b) {
+    // مقداران موحدان بلا إشارة ولا أصفار بادئة.
+    size_t la = strlen(a), lb = strlen(b);
+    if (la != lb) return la < lb ? -1 : 1;
+    int c = strcmp(a, b);
+    return c < 0 ? -1 : (c > 0 ? 1 : 0);
+}
+
+int nv_bigint_cmp_str(const char *a, const char *b) {
+    int an = 0, bn = 0;
+    const char *ad = a, *bd = b;
+    if (*ad == '-') { an = 1; ad++; } else if (*ad == '+') ad++;
+    if (*bd == '-') { bn = 1; bd++; } else if (*bd == '+') bd++;
+    while (*ad == '0') ad++;
+    while (*bd == '0') bd++;
+    if (!*ad && !*bd) return 0;
+    if (an != bn) return an ? -1 : 1;
+    int m = nv_bigint_mag_cmp(*ad ? ad : "0", *bd ? bd : "0");
+    return an ? -m : m;
+}
+
+char *nv_bigint_neg_str(const char *a) {
+    char *n = nv_bigint_norm(a);
+    if (!n) return NULL;
+    if (strcmp(n, "0") == 0) return n;
+    if (n[0] == '-') {
+        char *m = nv_strdup(n + 1);
+        free(n);
+        return m;
+    }
+    size_t len = strlen(n);
+    char *m = (char *)malloc(len + 2);
+    m[0] = '-';
+    memcpy(m + 1, n, len + 1);
+    free(n);
+    return m;
+}
+
+static char *nv_bigint_add_mag(const char *a, const char *b) {
+    size_t la = strlen(a), lb = strlen(b);
+    size_t n = la > lb ? la : lb;
+    char *out = (char *)malloc(n + 2);
+    int carry = 0;
+    size_t w = 0;
+    for (size_t i = 0; i < n; i++) {
+        int da = i < la ? a[la - 1 - i] - '0' : 0;
+        int db = i < lb ? b[lb - 1 - i] - '0' : 0;
+        int s = da + db + carry;
+        out[w++] = (char)('0' + (s % 10));
+        carry = s / 10;
+    }
+    if (carry) out[w++] = (char)('0' + carry);
+    out[w] = '\0';
+    // عكس.
+    for (size_t i = 0, j = w - 1; i < j; i++, j--) {
+        char t = out[i]; out[i] = out[j]; out[j] = t;
+    }
+    return out;
+}
+
+static char *nv_bigint_sub_mag(const char *a, const char *b) {
+    // a >= b مقداران موحدان.
+    size_t la = strlen(a), lb = strlen(b);
+    char *out = (char *)malloc(la + 1);
+    int borrow = 0;
+    size_t w = 0;
+    for (size_t i = 0; i < la; i++) {
+        int da = a[la - 1 - i] - '0' - borrow;
+        int db = i < lb ? b[lb - 1 - i] - '0' : 0;
+        if (da < db) { da += 10; borrow = 1; } else borrow = 0;
+        out[w++] = (char)('0' + (da - db));
+    }
+    while (w > 1 && out[w - 1] == '0') w--;
+    out[w] = '\0';
+    for (size_t i = 0, j = w - 1; i < j; i++, j--) {
+        char t = out[i]; out[i] = out[j]; out[j] = t;
+    }
+    return out;
+}
+
+char *nv_bigint_add_str(const char *a, const char *b) {
+    char *na = nv_bigint_norm(a), *nb = nv_bigint_norm(b);
+    if (!na || !nb) { free(na); free(nb); return NULL; }
+    int an = na[0] == '-', bn = nb[0] == '-';
+    const char *ad = an ? na + 1 : na, *bd = bn ? nb + 1 : nb;
+    char *mag;
+    int neg = 0;
+    if (an == bn) {
+        mag = nv_bigint_add_mag(ad, bd);
+        neg = an;
+    } else {
+        int c = nv_bigint_mag_cmp(ad, bd);
+        if (c == 0) { free(na); free(nb); return nv_strdup("0"); }
+        if (c > 0) { mag = nv_bigint_sub_mag(ad, bd); neg = an; }
+        else { mag = nv_bigint_sub_mag(bd, ad); neg = bn; }
+    }
+    free(na); free(nb);
+    if (strcmp(mag, "0") == 0) return mag;
+    if (!neg) return mag;
+    size_t len = strlen(mag);
+    char *out = (char *)malloc(len + 2);
+    out[0] = '-';
+    memcpy(out + 1, mag, len + 1);
+    free(mag);
+    return out;
+}
+
+char *nv_bigint_sub_str(const char *a, const char *b) {
+    char *nb = nv_bigint_neg_str(b);
+    if (!nb) return NULL;
+    char *r = nv_bigint_add_str(a, nb);
+    free(nb);
+    return r;
+}
+
+char *nv_bigint_mul_str(const char *a, const char *b) {
+    char *na = nv_bigint_norm(a), *nb = nv_bigint_norm(b);
+    if (!na || !nb) { free(na); free(nb); return NULL; }
+    int neg = (na[0] == '-') != (nb[0] == '-');
+    const char *ad = na[0] == '-' ? na + 1 : na;
+    const char *bd = nb[0] == '-' ? nb + 1 : nb;
+    if (strcmp(ad, "0") == 0 || strcmp(bd, "0") == 0) {
+        free(na); free(nb);
+        return nv_strdup("0");
+    }
+    size_t la = strlen(ad), lb = strlen(bd);
+    int *acc = (int *)calloc(la + lb, sizeof(int));
+    for (size_t i = 0; i < la; i++) {
+        int da = ad[la - 1 - i] - '0';
+        for (size_t j = 0; j < lb; j++) {
+            acc[i + j] += da * (bd[lb - 1 - j] - '0');
+        }
+    }
+    size_t n = la + lb;
+    char *out = (char *)malloc(n + 2);
+    size_t w = 0;
+    int carry = 0;
+    for (size_t i = 0; i < n; i++) {
+        int s = acc[i] + carry;
+        out[w++] = (char)('0' + (s % 10));
+        carry = s / 10;
+    }
+    free(acc);
+    while (w > 1 && out[w - 1] == '0') w--;
+    out[w] = '\0';
+    for (size_t i = 0, j = w - 1; i < j; i++, j--) {
+        char t = out[i]; out[i] = out[j]; out[j] = t;
+    }
+    free(na); free(nb);
+    if (!neg) return out;
+    size_t len = strlen(out);
+    char *r = (char *)malloc(len + 2);
+    r[0] = '-';
+    memcpy(r + 1, out, len + 1);
+    free(out);
+    return r;
+}
+
+int nv_bigint_divmod_str(const char *a, const char *b, char **q, char **r) {
+    *q = NULL; *r = NULL;
+    char *na = nv_bigint_norm(a), *nb = nv_bigint_norm(b);
+    if (!na || !nb) { free(na); free(nb); return 0; }
+    if (nv_bigint_is_zero_str(nb)) { free(na); free(nb); return 0; }
+    int an = na[0] == '-', bn = nb[0] == '-';
+    const char *ad = an ? na + 1 : na, *bd = bn ? nb + 1 : nb;
+    if (nv_bigint_mag_cmp(ad, bd) < 0) {
+        *q = nv_strdup("0");
+        *r = nv_strdup(na);
+        free(na); free(nb);
+        return 1;
+    }
+    // قسمة مطولة على المقادير.
+    size_t la = strlen(ad);
+    char *cur = nv_strdup("");
+    char *quot = (char *)malloc(la + 1);
+    size_t qw = 0;
+    for (size_t i = 0; i < la; i++) {
+        size_t cl = strlen(cur);
+        char *nc = (char *)malloc(cl + 2);
+        memcpy(nc, cur, cl);
+        nc[cl] = ad[i];
+        nc[cl + 1] = '\0';
+        free(cur);
+        cur = nc;
+        while (strlen(cur) > 1 && cur[0] == '0') {
+            memmove(cur, cur + 1, strlen(cur));
+        }
+        int d = 0;
+        while (nv_bigint_mag_cmp(cur, bd) >= 0) {
+            char *ns = nv_bigint_sub_mag(cur, bd);
+            free(cur);
+            cur = ns;
+            d++;
+        }
+        quot[qw++] = (char)('0' + d);
+    }
+    quot[qw] = '\0';
+    while (qw > 1 && quot[0] == '0') { memmove(quot, quot + 1, qw); qw--; }
+    int qneg = an != bn;
+    if (qneg && strcmp(quot, "0") != 0) {
+        size_t len = strlen(quot);
+        char *nq = (char *)malloc(len + 2);
+        nq[0] = '-';
+        memcpy(nq + 1, quot, len + 1);
+        free(quot);
+        quot = nq;
+    }
+    char *rem = nv_strdup(cur);
+    if (an && strcmp(rem, "0") != 0) {
+        size_t len = strlen(rem);
+        char *nr = (char *)malloc(len + 2);
+        nr[0] = '-';
+        memcpy(nr + 1, rem, len + 1);
+        free(rem);
+        rem = nr;
+    }
+    free(cur);
+    free(na); free(nb);
+    *q = quot;
+    *r = rem;
+    return 1;
+}
+
+char *nv_bigint_gcd_str(const char *a, const char *b) {
+    char *x = nv_bigint_norm(a), *y = nv_bigint_norm(b);
+    if (!x || !y) { free(x); free(y); return NULL; }
+    if (x[0] == '-') { char *t = nv_strdup(x + 1); free(x); x = t; }
+    if (y[0] == '-') { char *t = nv_strdup(y + 1); free(y); y = t; }
+    while (!nv_bigint_is_zero_str(y)) {
+        char *q = NULL, *r = NULL;
+        nv_bigint_divmod_str(x, y, &q, &r);
+        free(q);
+        free(x);
+        x = y;
+        y = r;
+    }
+    free(y);
+    return x;
+}
+
+static char *nv_bigint_pow10_str(size_t e) {
+    char *out = (char *)malloc(e + 2);
+    out[0] = '1';
+    for (size_t i = 0; i < e; i++) out[1 + i] = '0';
+    out[e + 1] = '\0';
+    return out;
+}
+
+double nv_bigint_to_double(NvValue v) {
+    if (v.tag != NV_BIGINT) return 0.0;
+    char *s = nv_bigint_norm(v.u.bigint->digits);
+    double d = strtod(s, NULL);
+    free(s);
+    return d;
+}
+
+// ----- الكسور: أزواج موحدة (بسط/مقام، المقام موجب) -----
+int nv_rat_norm_str(const char *num, const char *den, char **n, char **d) {
+    *n = NULL; *d = NULL;
+    char *nn = nv_bigint_norm(num), *dd = nv_bigint_norm(den);
+    if (!nn || !dd) { free(nn); free(dd); return 0; }
+    if (nv_bigint_is_zero_str(dd)) { free(nn); free(dd); return 0; }
+    if (dd[0] == '-') {
+        char *tn = nv_bigint_neg_str(nn), *td = nv_bigint_neg_str(dd);
+        free(nn); free(dd);
+        nn = tn; dd = td;
+    }
+    if (nv_bigint_is_zero_str(nn)) {
+        free(nn); free(dd);
+        *n = nv_strdup("0");
+        *d = nv_strdup("1");
+        return 1;
+    }
+    char *g = nv_bigint_gcd_str(nn, dd);
+    char *q1 = NULL, *r1 = NULL, *q2 = NULL, *r2 = NULL;
+    nv_bigint_divmod_str(nn, g, &q1, &r1);
+    nv_bigint_divmod_str(dd, g, &q2, &r2);
+    free(r1); free(r2); free(g); free(nn); free(dd);
+    *n = q1;
+    *d = q2;
+    return 1;
+}
+
+void nv_rat_add_str(const char *a1, const char *a2, const char *b1, const char *b2, char **n, char **d) {
+    char *t1 = nv_bigint_mul_str(a1, b2);
+    char *t2 = nv_bigint_mul_str(b1, a2);
+    char *num = nv_bigint_add_str(t1, t2);
+    char *den = nv_bigint_mul_str(a2, b2);
+    free(t1); free(t2);
+    nv_rat_norm_str(num, den, n, d);
+    free(num); free(den);
+}
+
+void nv_rat_sub_str(const char *a1, const char *a2, const char *b1, const char *b2, char **n, char **d) {
+    char *t1 = nv_bigint_mul_str(a1, b2);
+    char *t2 = nv_bigint_mul_str(b1, a2);
+    char *num = nv_bigint_sub_str(t1, t2);
+    char *den = nv_bigint_mul_str(a2, b2);
+    free(t1); free(t2);
+    nv_rat_norm_str(num, den, n, d);
+    free(num); free(den);
+}
+
+void nv_rat_mul_str(const char *a1, const char *a2, const char *b1, const char *b2, char **n, char **d) {
+    char *num = nv_bigint_mul_str(a1, b1);
+    char *den = nv_bigint_mul_str(a2, b2);
+    nv_rat_norm_str(num, den, n, d);
+    free(num); free(den);
+}
+
+int nv_rat_div_str(const char *a1, const char *a2, const char *b1, const char *b2, char **n, char **d) {
+    if (nv_bigint_is_zero_str(b1)) return 0;
+    char *num = nv_bigint_mul_str(a1, b2);
+    char *den = nv_bigint_mul_str(a2, b1);
+    int ok = nv_rat_norm_str(num, den, n, d);
+    free(num); free(den);
+    return ok;
+}
+
+int nv_rat_rem_str(const char *a1, const char *a2, const char *b1, const char *b2, char **n, char **d) {
+    if (nv_bigint_is_zero_str(b1)) return 0;
+    // q = قطع((a1/a2)/(b1/b2)) = قطع(a1*b2 / a2*b1).
+    char *num = nv_bigint_mul_str(a1, b2);
+    char *den = nv_bigint_mul_str(a2, b1);
+    char *q = NULL, *r = NULL;
+    nv_bigint_divmod_str(num, den, &q, &r);
+    free(r);
+    // rem = a - q*b = (a1*b2 - q*b1*a2) / (a2*b2).
+    char *t1 = nv_bigint_mul_str(a1, b2);
+    char *t2 = nv_bigint_mul_str(q, b1);
+    char *t3 = nv_bigint_mul_str(t2, a2);
+    char *rn = nv_bigint_sub_str(t1, t3);
+    char *rd = nv_bigint_mul_str(a2, b2);
+    free(num); free(den); free(q); free(t1); free(t2); free(t3);
+    int ok = nv_rat_norm_str(rn, rd, n, d);
+    free(rn); free(rd);
+    return ok;
+}
+
+int nv_rat_cmp_str(const char *a1, const char *a2, const char *b1, const char *b2) {
+    char *l = nv_bigint_mul_str(a1, b2);
+    char *r = nv_bigint_mul_str(b1, a2);
+    int c = nv_bigint_cmp_str(l, r);
+    free(l); free(r);
+    return c;
+}
+
+double nv_rat_to_double_str(const char *num, const char *den) {
+    return strtod(num, NULL) / strtod(den, NULL);
+}
+
+double nv_rational_to_double(NvValue v) {
+    if (v.tag != NV_RATIONAL) return 0.0;
+    return nv_rat_to_double_str(v.u.rational->num->digits, v.u.rational->den->digits);
+}
+
+double nv_bits_to_double(NvValue v) {
+    if (v.tag != NV_BITS) return 0.0;
+    double n = 0.0;
+    for (size_t i = 0; i < v.u.bits->nbits; i++) {
+        size_t byte = i / 8;
+        int bit = (v.u.bits->bytes[byte] >> (7 - (i % 8))) & 1;
+        n = n * 2.0 + (double)bit;
+    }
+    return n;
+}
+
+// ----- منشئات القيم الجديدة -----
+static NvBigInt *nv_bigint_alloc_normed(char *normed) {
+    NvBigInt *b = (NvBigInt *)nv_alloc(sizeof(NvBigInt), NV_OBJ_BIGINT);
+    int neg = normed[0] == '-';
+    b->neg = neg;
+    b->digits = nv_strdup(neg ? normed + 1 : normed);
+    return b;
+}
+
+static char *nv_bigint_signed_str(NvBigInt *b) {
+    if (!b->neg || strcmp(b->digits, "0") == 0) return nv_strdup(b->digits);
+    size_t len = strlen(b->digits);
+    char *out = (char *)malloc(len + 2);
+    out[0] = '-';
+    memcpy(out + 1, b->digits, len + 1);
+    return out;
+}
+
+NvValue nv_bigint_cstr(const char *s, int line, int col) {
+    char *n = nv_bigint_norm(s);
+    if (!n) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "عدد كبير غير صالح: %s", s ? s : "");
+    }
+    NvBigInt *b = nv_bigint_alloc_normed(n);
+    free(n);
+    NvValue v;
+    v.tag = NV_BIGINT;
+    v.u.bigint = b;
+    return v;
+}
+
+NvValue nv_bigint_from_double(double n, int line, int col) {
+    if (!isfinite(n) || n != trunc(n)) {
+        nv_error(NV_ERR_TYPE, "عدد_كبير يتطلب عددا صحيحا، وليس كسرا", line, col);
+    }
+    char buf[512];
+    nv_fmt_f64_plain(n, buf, sizeof(buf));
+    return nv_bigint_cstr(buf, line, col);
+}
+
+static NvBigInt *nv_bigint_from_value(NvValue v, int line, int col) {
+    // عدد/كبير إلى كبير (العدد يجب أن يكون صحيحا).
+    if (v.tag == NV_BIGINT) return v.u.bigint;
+    if (v.tag == NV_NUM) {
+        NvValue b = nv_bigint_from_double(v.u.num, line, col);
+        return b.u.bigint;
+    }
+    return NULL;
+}
+
+NvValue nv_rational_new(NvValue num, NvValue den, int line, int col) {
+    NvBigInt *n = nv_bigint_from_value(num, line, col);
+    NvBigInt *d = nv_bigint_from_value(den, line, col);
+    if (!n || !d) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "كسر يتطلب بسطا ومقاما صحيحين");
+    }
+    size_t rn = nv_root_push_idx();
+    *nv_root_slot(rn) = num;
+    size_t rd = nv_root_push_idx();
+    *nv_root_slot(rd) = den;
+    char *nn = NULL, *dd = NULL;
+    int ok = nv_rat_norm_str(n->digits, d->digits, &nn, &dd);
+    if (!ok) {
+        nv_root_pop_n(2);
+        nv_error(NV_ERR_TYPE, "مقام الكسر لا يمكن أن يكون صفرا", line, col);
+    }
+    NvRational *r = (NvRational *)nv_alloc(sizeof(NvRational), NV_OBJ_RATIONAL);
+    size_t rr = nv_root_push_idx();
+    NvValue rv;
+    rv.tag = NV_RATIONAL;
+    rv.u.rational = r;
+    *nv_root_slot(rr) = rv;
+    r->num = nv_bigint_alloc_normed(nn);
+    r->den = nv_bigint_alloc_normed(dd);
+    free(nn); free(dd);
+    nv_root_pop_n(3);
+    NvValue v;
+    v.tag = NV_RATIONAL;
+    v.u.rational = r;
+    return v;
+}
+
+NvValue nv_complex_new(double re, double im) {
+    NvValue v;
+    v.tag = NV_COMPLEX;
+    v.u.complex.re = re;
+    v.u.complex.im = im;
+    return v;
+}
+
+NvValue nv_bits_new(const unsigned char *bytes, size_t nbits) {
+    size_t nbytes = (nbits + 7) / 8;
+    NvBits *b = (NvBits *)nv_alloc(sizeof(NvBits), NV_OBJ_BITS);
+    b->nbits = nbits;
+    b->bytes = (unsigned char *)malloc(nbytes ? nbytes : 1);
+    if (nbytes) memcpy(b->bytes, bytes, nbytes);
+    if (nbits % 8) {
+        b->bytes[nbytes - 1] &= (unsigned char)(0xFF << (8 - (nbits % 8)));
+    }
+    NvValue v;
+    v.tag = NV_BITS;
+    v.u.bits = b;
+    return v;
+}
+
+NvValue nv_bits_from_u64(unsigned long long n, size_t len) {
+    size_t need = 1;
+    unsigned long long t = n;
+    while (t >= 2) { need++; t >>= 1; }
+    if (len == 0) len = need;
+    size_t nbytes = (len + 7) / 8;
+    unsigned char *bytes = (unsigned char *)calloc(nbytes ? nbytes : 1, 1);
+    for (size_t i = 0; i < len; i++) {
+        size_t bitpos = len - 1 - i;
+        int bit = (int)((n >> bitpos) & 1ULL);
+        if (bit) bytes[i / 8] |= (unsigned char)(1 << (7 - (i % 8)));
+    }
+    NvValue v = nv_bits_new(bytes, len);
+    free(bytes);
+    return v;
+}
+
+NvValue nv_boxed_new(NvValue inner) {
+    size_t ri = nv_root_push_idx();
+    *nv_root_slot(ri) = inner;
+    NvBoxed *b = (NvBoxed *)nv_alloc(sizeof(NvBoxed), NV_OBJ_BOXED);
+    b->inner = inner;
+    nv_root_pop_n(1);
+    NvValue v;
+    v.tag = NV_BOXED;
+    v.u.boxed = b;
+    return v;
+}
+
+// ----- تحويلات القيم العددية (مرآة value.rs) -----
+int nv_value_to_rational(NvValue v, char **num, char **den) {
+    // عدد/كبير/كسر إلى كسره الدقيق.
+    *num = NULL; *den = NULL;
+    if (v.tag == NV_BIGINT) {
+        *num = nv_strdup(v.u.bigint->digits);
+        if (v.u.bigint->neg) {
+            char *t = (char *)malloc(strlen(*num) + 2);
+            t[0] = '-'; strcpy(t + 1, *num);
+            free(*num); *num = t;
+        }
+        *den = nv_strdup("1");
+        return 1;
+    }
+    if (v.tag == NV_RATIONAL) {
+        *num = nv_strdup(v.u.rational->num->digits);
+        if (v.u.rational->num->neg) {
+            char *t = (char *)malloc(strlen(*num) + 2);
+            t[0] = '-'; strcpy(t + 1, *num);
+            free(*num); *num = t;
+        }
+        *den = nv_strdup(v.u.rational->den->digits);
+        return 1;
+    }
+    if (v.tag == NV_NUM) {
+        double n = v.u.num;
+        if (!isfinite(n)) return 0;
+        char plain[512];
+        nv_fmt_f64_plain(n, plain, sizeof(plain));
+        // عشري عادي إلى كسر: أرقام/10^أس.
+        int neg = plain[0] == '-';
+        const char *body = neg ? plain + 1 : plain;
+        const char *dot = strchr(body, '.');
+        char digits[512];
+        size_t nd = 0, frac = 0;
+        for (const char *p = body; *p; p++) {
+            if (*p == '.') continue;
+            digits[nd++] = *p;
+        }
+        digits[nd] = '\0';
+        if (dot) frac = strlen(dot + 1);
+        char *scale = nv_bigint_pow10_str(frac);
+        char *nn = NULL, *dd = NULL;
+        char *dig = nv_bigint_norm(digits);
+        if (neg && strcmp(dig, "0") != 0) {
+            size_t len = strlen(dig);
+            char *t = (char *)malloc(len + 2);
+            t[0] = '-'; memcpy(t + 1, dig, len + 1);
+            free(dig); dig = t;
+        }
+        int ok = nv_rat_norm_str(dig, scale, &nn, &dd);
+        free(dig); free(scale);
+        if (!ok) return 0;
+        *num = nn; *den = dd;
+        return 1;
+    }
+    return 0;
+}
+
+int nv_value_to_complex(NvValue v, double *re, double *im) {
+    if (v.tag == NV_NUM) { *re = v.u.num; *im = 0.0; return 1; }
+    if (v.tag == NV_BIGINT) { *re = nv_bigint_to_double(v); *im = 0.0; return 1; }
+    if (v.tag == NV_RATIONAL) { *re = nv_rational_to_double(v); *im = 0.0; return 1; }
+    if (v.tag == NV_COMPLEX) { *re = v.u.complex.re; *im = v.u.complex.im; return 1; }
+    return 0;
+}
+
+static int nv_is_j6_numeric(NvValue v) {
+    return v.tag == NV_NUM || v.tag == NV_BIGINT || v.tag == NV_RATIONAL || v.tag == NV_COMPLEX;
+}
+
+static int nv_numeric_eq(NvValue l, NvValue r) {
+    // مساواة دقيقة عبر الأنواع (مرآة numeric_eq في Rust).
+    double lr, li, rr, ri;
+    int lc = nv_value_to_complex(l, &lr, &li);
+    int rc = nv_value_to_complex(r, &rr, &ri);
+    if (!lc || !rc) return 0;
+    if (li != 0.0 || ri != 0.0) return lr == rr && li == ri;
+    if (l.tag == NV_NUM && r.tag == NV_NUM) return l.u.num == r.u.num;
+    char *ln = NULL, *ld = NULL, *rn = NULL, *rd = NULL;
+    if (!nv_value_to_rational(l, &ln, &ld) || !nv_value_to_rational(r, &rn, &rd)) {
+        free(ln); free(ld); free(rn); free(rd);
+        return lr == rr;
+    }
+    int c = nv_rat_cmp_str(ln, ld, rn, rd);
+    free(ln); free(ld); free(rn); free(rd);
+    return c == 0;
+}
+
+static int nv_numeric_cmp(NvValue l, NvValue r, int *out, int line, int col) {
+    // 1 = يقارَن (out معبأة)، 0 = بلا ترتيب (مركب —
+    // أي طرف مركب، حتى بصفر تخيلي، كما في Rust).
+    // NaN تخطئ مباشرة «مقارنة غير صالحة».
+    if (l.tag == NV_COMPLEX || r.tag == NV_COMPLEX) return 0;
+    double lr, li, rr, ri;
+    if (!nv_value_to_complex(l, &lr, &li) || !nv_value_to_complex(r, &rr, &ri)) return 0;
+    if ((l.tag == NV_NUM && isnan(l.u.num)) || (r.tag == NV_NUM && isnan(r.u.num))) {
+        nv_error(NV_ERR_RUNTIME, "مقارنة غير صالحة", line, col);
+    }
+    if (l.tag == NV_NUM && r.tag == NV_NUM) {
+        *out = l.u.num < r.u.num ? -1 : (l.u.num > r.u.num ? 1 : 0);
+        return 1;
+    }
+    char *ln = NULL, *ld = NULL, *rn = NULL, *rd = NULL;
+    if (!nv_value_to_rational(l, &ln, &ld) || !nv_value_to_rational(r, &rn, &rd)) {
+        free(ln); free(ld); free(rn); free(rd);
+        *out = lr < rr ? -1 : (lr > rr ? 1 : 0);
+        return 1;
+    }
+    *out = nv_rat_cmp_str(ln, ld, rn, rd);
+    free(ln); free(ld); free(rn); free(rd);
+    return 1;
+}
+
+static NvValue nv_exact_arith(NvValue l, NvValue r, char op, int line, int col) {
+    // الحساب الدقيق (مرآة add_values/arith_values في
+    // Rust): المركب أولا (بـf64)، ثم كبير/كبير خالصا،
+    // ثم المختلط إلى كسر دقيق (دائما كسر، بلا طيّ إلى
+    // كبير)، ثم عدد/عدد كما كان حرفيا. رسالة الخطأ
+    // النوعي لـ`+` هي «لا يمكن جمع»، ولغيرها
+    // «العملية الحسابية تتطلب عددين».
+    if (!nv_is_j6_numeric(l) || !nv_is_j6_numeric(r)) {
+        if (op == '+') {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "لا يمكن جمع %s و %s",
+                         nv_type_name(l), nv_type_name(r));
+        }
+        nv_error_fmt(NV_ERR_TYPE, line, col, "العملية الحسابية تتطلب عددين، وليس %s و %s",
+                     nv_type_name(l), nv_type_name(r));
+    }
+    // المركب أولا — أي طرف مركب، حتى بصفر تخيلي،
+    // والناتج مركب دائما (بـf64).
+    if (l.tag == NV_COMPLEX || r.tag == NV_COMPLEX) {
+        double lr, li, rr, ri;
+        nv_value_to_complex(l, &lr, &li);
+        nv_value_to_complex(r, &rr, &ri);
+        if (op == '%') {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "العملية الحسابية تتطلب عددين، وليس %s و %s",
+                         nv_type_name(l), nv_type_name(r));
+        }
+        double re = 0.0, im = 0.0;
+        switch (op) {
+            case '+': re = lr + rr; im = li + ri; break;
+            case '-': re = lr - rr; im = li - ri; break;
+            case '*': re = lr * rr - li * ri; im = lr * ri + li * rr; break;
+            case '/': {
+                double den = rr * rr + ri * ri;
+                if (den == 0.0) nv_error(NV_ERR_RUNTIME, "قسمة على صفر", line, col);
+                re = (lr * rr + li * ri) / den;
+                im = (li * rr - lr * ri) / den;
+                break;
+            }
+        }
+        return nv_complex_new(re, im);
+    }
+    // كبير/كبير خالصا (دقيق، بلا كسر وسيط).
+    if (l.tag == NV_BIGINT && r.tag == NV_BIGINT) {
+        char *a = nv_bigint_signed_str(l.u.bigint);
+        char *b = nv_bigint_signed_str(r.u.bigint);
+        NvValue out;
+        switch (op) {
+            case '+': {
+                char *t = nv_bigint_add_str(a, b);
+                out = nv_bigint_cstr(t, line, col);
+                free(t);
+                break;
+            }
+            case '-': {
+                char *t = nv_bigint_sub_str(a, b);
+                out = nv_bigint_cstr(t, line, col);
+                free(t);
+                break;
+            }
+            case '*': {
+                char *t = nv_bigint_mul_str(a, b);
+                out = nv_bigint_cstr(t, line, col);
+                free(t);
+                break;
+            }
+            case '/': {
+                char *q = NULL, *rem = NULL;
+                if (!nv_bigint_divmod_str(a, b, &q, &rem)) {
+                    free(a); free(b);
+                    nv_error(NV_ERR_RUNTIME, "قسمة على صفر", line, col);
+                }
+                if (nv_bigint_is_zero_str(rem)) {
+                    out = nv_bigint_cstr(q, line, col);
+                    free(q); free(rem);
+                } else {
+                    free(q); free(rem);
+                    char *n = NULL, *d = NULL;
+                    nv_rat_norm_str(a, b, &n, &d);
+                    NvRational *rat = (NvRational *)nv_alloc(sizeof(NvRational), NV_OBJ_RATIONAL);
+                    size_t ri = nv_root_push_idx();
+                    NvValue rv;
+                    rv.tag = NV_RATIONAL;
+                    rv.u.rational = rat;
+                    *nv_root_slot(ri) = rv;
+                    rat->num = nv_bigint_alloc_normed(n);
+                    rat->den = nv_bigint_alloc_normed(d);
+                    free(n); free(d);
+                    out = rv;
+                    nv_root_pop_n(1);
+                }
+                break;
+            }
+            case '%': {
+                char *q = NULL, *rem = NULL;
+                if (!nv_bigint_divmod_str(a, b, &q, &rem)) {
+                    free(a); free(b);
+                    nv_error(NV_ERR_RUNTIME, "باقي القسمة على صفر", line, col);
+                }
+                free(q);
+                out = nv_bigint_cstr(rem, line, col);
+                free(rem);
+                break;
+            }
+            default: out = nv_nil(); break;
+        }
+        free(a); free(b);
+        return out;
+    }
+    // مختلط (كبير/كسر/عدد) — يترقى إلى كسر دقيق،
+    // والناتج كسر دائما (ولو كان مقامه 1).
+    if (l.tag == NV_BIGINT || l.tag == NV_RATIONAL || r.tag == NV_BIGINT || r.tag == NV_RATIONAL) {
+        char *ln = NULL, *ld = NULL, *rn = NULL, *rd = NULL;
+        nv_value_to_rational(l, &ln, &ld);
+        nv_value_to_rational(r, &rn, &rd);
+        if (op == '/' || op == '%') {
+            if (nv_bigint_is_zero_str(rn)) {
+                free(ln); free(ld); free(rn); free(rd);
+                nv_error(NV_ERR_RUNTIME, op == '/' ? "قسمة على صفر" : "باقي القسمة على صفر", line, col);
+            }
+        }
+        char *n = NULL, *d = NULL;
+        switch (op) {
+            case '+': nv_rat_add_str(ln, ld, rn, rd, &n, &d); break;
+            case '-': nv_rat_sub_str(ln, ld, rn, rd, &n, &d); break;
+            case '*': nv_rat_mul_str(ln, ld, rn, rd, &n, &d); break;
+            case '/': nv_rat_div_str(ln, ld, rn, rd, &n, &d); break;
+            case '%': nv_rat_rem_str(ln, ld, rn, rd, &n, &d); break;
+        }
+        free(ln); free(ld); free(rn); free(rd);
+        NvRational *rat = (NvRational *)nv_alloc(sizeof(NvRational), NV_OBJ_RATIONAL);
+        size_t ri = nv_root_push_idx();
+        NvValue rv;
+        rv.tag = NV_RATIONAL;
+        rv.u.rational = rat;
+        *nv_root_slot(ri) = rv;
+        rat->num = nv_bigint_alloc_normed(n);
+        rat->den = nv_bigint_alloc_normed(d);
+        free(n); free(d);
+        NvValue out = rv;
+        nv_root_pop_n(1);
+        return out;
+    }
+    // عدد/عدد كما كان حرفيا.
+    double a = l.u.num, b = r.u.num;
+    switch (op) {
+        case '+': return nv_num(a + b);
+        case '-': return nv_num(a - b);
+        case '*': return nv_num(a * b);
+        case '/':
+            if (b == 0.0) nv_error(NV_ERR_RUNTIME, "قسمة على صفر", line, col);
+            return nv_num(a / b);
+        case '%':
+            if (b == 0.0) nv_error(NV_ERR_RUNTIME, "باقي القسمة على صفر", line, col);
+            return nv_num(fmod(a, b));
+    }
+    return nv_nil();
+}
+
+// ---------- البنود 145–147: العموميات ----------
+// ترميز جدول معاملات النوع: مدخلات مفصولة بـ `؛`
+// (U+061B) — كل مدخل `اسم[:حد][=افتراضي]`.
+static void nv_free_str_array(char **arr, int n) {
+    if (!arr) return;
+    for (int i = 0; i < n; i++) free(arr[i]);
+    free(arr);
+}
+
+static char **nv_dup_str_array(char **arr, int n) {
+    if (!arr || n <= 0) return NULL;
+    char **out = (char **)malloc((size_t)n * sizeof(char *));
+    for (int i = 0; i < n; i++) out[i] = arr[i] ? nv_strdup(arr[i]) : NULL;
+    return out;
+}
+
+// حلّل جدول معاملات نوع مرمّز إلى ثلاث مصفوفات
+// متوازية (أسماء وحدود وافتراضيات)؛ وNULL/فارغ
+// يعني بلا معاملات نوع.
+static void nv_parse_type_params(const char *encoded, char ***names, char ***bounds,
+                                 char ***defaults, int *n_out) {
+    *names = NULL;
+    *bounds = NULL;
+    *defaults = NULL;
+    *n_out = 0;
+    if (!encoded || !*encoded) return;
+    // عدّ المدخلات (فاصل `؛` = بايتا 0xD8 0x9B).
+    int n = 1;
+    for (const char *p = encoded; *p; p++) {
+        if ((unsigned char)p[0] == 0xD8 && (unsigned char)p[1] == 0x9B) n++;
+    }
+    char **nm = (char **)malloc((size_t)n * sizeof(char *));
+    char **bd = (char **)malloc((size_t)n * sizeof(char *));
+    char **df = (char **)malloc((size_t)n * sizeof(char *));
+    int idx = 0;
+    const char *start = encoded;
+    for (;;) {
+        const char *end = start;
+        while (*end && !((unsigned char)end[0] == 0xD8 && (unsigned char)end[1] == 0x9B)) end++;
+        size_t len = (size_t)(end - start);
+        char *entry = (char *)malloc(len + 1);
+        memcpy(entry, start, len);
+        entry[len] = '\0';
+        // مدخل `اسم[:حد][=افتراضي]`: الافتراضي بعد
+        // أول `=`؛ والحد بعد أول `:` قبله.
+        char *eq = strchr(entry, '=');
+        char *head_end = eq ? eq : entry + len;
+        char *colon = NULL;
+        for (char *p = entry; p < head_end; p++) {
+            if (*p == ':') { colon = p; break; }
+        }
+        size_t nlen = (size_t)((colon ? colon : head_end) - entry);
+        nm[idx] = (char *)malloc(nlen + 1);
+        memcpy(nm[idx], entry, nlen);
+        nm[idx][nlen] = '\0';
+        if (colon) {
+            size_t blen = (size_t)(head_end - (colon + 1));
+            bd[idx] = (char *)malloc(blen + 1);
+            memcpy(bd[idx], colon + 1, blen);
+            bd[idx][blen] = '\0';
+        } else {
+            bd[idx] = NULL;
+        }
+        df[idx] = eq ? nv_strdup(eq + 1) : NULL;
+        free(entry);
+        idx++;
+        if (!*end) break;
+        start = end + 2;
+    }
+    *names = nm;
+    *bounds = bd;
+    *defaults = df;
+    *n_out = idx;
+}
+
+// الأساس النصي لنوع (ما قبل أول `[`) — للفحص الاسمي.
+static void nv_type_base(const char *t, char *buf, size_t cap) {
+    size_t i = 0;
+    while (t[i] && t[i] != '[' && i + 1 < cap) {
+        buf[i] = t[i];
+        i++;
+    }
+    buf[i] = '\0';
+}
+
+// هل النوع الفعلي يحقق الحد؟ مساواة حرفية، أو
+// الأساس نفسه لنوع عام، أو الحد `أي` — كما في Rust.
+static int nv_type_satisfies_bound(const char *arg, const char *bound) {
+    if (!bound || strcmp(bound, "أي") == 0) return 1;
+    if (strcmp(arg, bound) == 0) return 1;
+    char base[256];
+    nv_type_base(arg, base, sizeof(base));
+    return strcmp(base, bound) == 0;
+}
+
+// هل الحرف عند الموضع فاصل نوع (نهاية رمز)؟ الفواصل:
+// بداية/نهاية النص، `[` `]` `,` ASCII، مسافة/تاب،
+// والفاصلة العربية `،` (بايتا 0xD8 0x8C).
+static int nv_type_is_delim(const char *s, size_t i) {
+    if (i == 0) return 1;
+    unsigned char c = (unsigned char)s[i - 1];
+    if (c == '[' || c == ']' || c == ',' || c == ' ' || c == '\t') return 1;
+    if (i >= 2 && (unsigned char)s[i - 2] == 0xD8 && c == 0x8C) return 1;
+    return 0;
+}
+
+static int nv_type_delim_at(const char *s, size_t i) {
+    unsigned char c = (unsigned char)s[i];
+    if (c == '\0' || c == '[' || c == ']' || c == ',' || c == ' ' || c == '\t') return 1;
+    if (c == 0xD8 && (unsigned char)s[i + 1] == 0x8C) return 1;
+    return 0;
+}
+
+// استبدال أسماء معاملات النوع في نوع معلن بقيم
+// الربط — على مستوى الرموز (`قائمة[ت]` تصير
+// `قائمة[عدد]`)؛ وتعيد NULL إن لم يتغير شيء
+// (فيستخدم المتصل النوع الأصلي).
+static char *nv_substitute_type(const char *declared, char **names, char **values, int n) {
+    if (!declared || n <= 0 || !names || !values) return NULL;
+    size_t cap = strlen(declared) + 1;
+    for (int i = 0; i < n; i++) {
+        if (values[i]) cap += strlen(values[i]);
+    }
+    char *out = (char *)malloc(cap + 64);
+    size_t o = 0;
+    int changed = 0;
+    size_t len = strlen(declared);
+    size_t i = 0;
+    while (i < len) {
+        int matched = -1;
+        size_t mlen = 0;
+        for (int k = 0; k < n; k++) {
+            if (!names[k] || !values[k]) continue;
+            size_t nl = strlen(names[k]);
+            if (nl > 0 && i + nl <= len && memcmp(declared + i, names[k], nl) == 0 &&
+                nv_type_is_delim(declared, i) && nv_type_delim_at(declared, i + nl)) {
+                matched = k;
+                mlen = nl;
+                break;
+            }
+        }
+        if (matched >= 0) {
+            size_t vl = strlen(values[matched]);
+            memcpy(out + o, values[matched], vl);
+            o += vl;
+            i += mlen;
+            changed = 1;
+        } else {
+            out[o++] = declared[i++];
+        }
+    }
+    out[o] = '\0';
+    if (!changed) {
+        free(out);
+        return NULL;
+    }
+    return out;
+}
+
+// حلّ ربط النوع: معاملات مفصولة بفاصلة ASCII؛
+// والرسائل حرفيا كما في المفسر (نوع).
+static char **nv_resolve_type_binding(char **tp_names, char **tp_bounds, char **tp_defaults,
+                                      int ntp, const char *type_args, const char *kind,
+                                      const char *owner, int line, int col) {
+    // فصّ المعاملات (فاصلة ASCII فقط؛ فالفاصلة
+    // العربية `،` داخل نوع عام جزء منه).
+    char *args_copy = type_args ? nv_strdup(type_args) : nv_strdup("");
+    // عدّها.
+    int nargs = 0;
+    if (*args_copy) {
+        nargs = 1;
+        for (char *p = args_copy; *p; p++) {
+            if (*p == ',') nargs++;
+        }
+    }
+    if (nargs > ntp) {
+        nv_error_fmt(NV_ERR_TYPE, line, col,
+                     "معاملات نوع زائدة: %s %s تتوقع %d لكن أعطيت %d",
+                     kind, owner, ntp, nargs);
+    }
+    char **binding = NULL;
+    if (ntp > 0) {
+        binding = (char **)calloc((size_t)ntp, sizeof(char *));
+    }
+    // قسّم إلى مقاطع مقصوصة المسافات.
+    char **given = NULL;
+    if (nargs > 0) {
+        given = (char **)malloc((size_t)nargs * sizeof(char *));
+        int gi = 0;
+        char *save = NULL;
+        // strtok_r غير مضمونة التوفر هنا — قسّم يدويا.
+        (void)save;
+        char *cur = args_copy;
+        for (;;) {
+            char *comma = strchr(cur, ',');
+            if (comma) *comma = '\0';
+            while (*cur == ' ' || *cur == '\t') cur++;
+            size_t l = strlen(cur);
+            while (l > 0 && (cur[l - 1] == ' ' || cur[l - 1] == '\t')) cur[--l] = '\0';
+            given[gi++] = nv_strdup(cur);
+            if (!comma) break;
+            cur = comma + 1;
+        }
+    }
+    for (int i = 0; i < ntp; i++) {
+        const char *value = NULL;
+        if (i < nargs) {
+            value = given[i];
+        } else if (tp_defaults && tp_defaults[i]) {
+            value = tp_defaults[i];
+        } else {
+            nv_error_fmt(NV_ERR_TYPE, line, col,
+                         "معامل النوع %s بلا قيمة ولا افتراضي في %s %s",
+                         tp_names[i], kind, owner);
+        }
+        if (tp_bounds && tp_bounds[i] && !nv_type_satisfies_bound(value, tp_bounds[i])) {
+            nv_error_fmt(NV_ERR_TYPE, line, col,
+                         "النوع %s لا يحقق حد معامل النوع %s: %s",
+                         value, tp_names[i], tp_bounds[i]);
+        }
+        binding[i] = nv_strdup(value);
+    }
+    if (given) {
+        for (int i = 0; i < nargs; i++) free(given[i]);
+        free(given);
+    }
+    free(args_copy);
+    return binding;
+}
+
+// ربط افتراضيات معاملات النوع (بلا معاملات
+// معطاة): قيم مستعارة من الافتراضيات المعلنة —
+// عناصرها لا تُحرَّر، والمصفوفة نفسها مملوكة
+// للمتصل (يحررها هو). بلا معاملات نوع يعيد NULL.
+static char **nv_default_type_binding(char **tp_names, char **tp_bounds, char **tp_defaults,
+                                      int ntp, const char *kind, const char *owner,
+                                      int line, int col) {
+    if (ntp <= 0) return NULL;
+    char **binding = (char **)calloc((size_t)ntp, sizeof(char *));
+    for (int i = 0; i < ntp; i++) {
+        if (!tp_defaults || !tp_defaults[i]) {
+            nv_error_fmt(NV_ERR_TYPE, line, col,
+                         "معامل النوع %s بلا قيمة ولا افتراضي في %s %s",
+                         tp_names[i], kind, owner);
+        }
+        if (tp_bounds && tp_bounds[i] && !nv_type_satisfies_bound(tp_defaults[i], tp_bounds[i])) {
+            nv_error_fmt(NV_ERR_TYPE, line, col,
+                         "النوع %s لا يحقق حد معامل النوع %s: %s",
+                         tp_defaults[i], tp_names[i], tp_bounds[i]);
+        }
+        binding[i] = tp_defaults[i];
+    }
+    return binding;
+}
+
 NvValue nv_func_new(const char *name, NvCFunc cfunc, NvScope *captured,
                     const char *module, NvScope *module_scope,
                     char **param_names, char **param_types,
-                    const char *return_type, int nparams) {
+                    const char *return_type, int nparams,
+                    NvValue *defaults, int *has_default,
+                    const char *vararg, const char *kwarg,
+                    const char *type_params) {
     NvFunc *f = (NvFunc *)nv_alloc(sizeof(NvFunc), NV_OBJ_FUNC);
     f->name = nv_strdup(name);
     f->cfunc = cfunc;
@@ -770,6 +1884,26 @@ NvValue nv_func_new(const char *name, NvCFunc cfunc, NvScope *captured,
     }
     f->return_type = return_type ? nv_strdup(return_type) : NULL;
     f->nparams = nparams;
+    // البنود 109–112: نسخ جدول الافتراضيات (قيم
+    // مقيَّمة) وأعلامه؛ والجامعان نصان منسوخان.
+    if (nparams > 0) {
+        f->defaults = (NvValue *)malloc((size_t)nparams * sizeof(NvValue));
+        f->has_default = (int *)malloc((size_t)nparams * sizeof(int));
+        for (int i = 0; i < nparams; i++) {
+            f->defaults[i] = defaults ? defaults[i] : nv_nil();
+            f->has_default[i] = has_default ? has_default[i] : 0;
+        }
+    } else {
+        f->defaults = NULL;
+        f->has_default = NULL;
+    }
+    f->vararg = vararg ? nv_strdup(vararg) : NULL;
+    f->kwarg = kwarg ? nv_strdup(kwarg) : NULL;
+    // البنود 145–147: معاملات النوع المعلنة؛
+    // والربط يبقى NULL حتى التخصيص.
+    nv_parse_type_params(type_params, &f->tp_names, &f->tp_bounds, &f->tp_defaults,
+                         &f->ntype_params);
+    f->type_binding = NULL;
     NvValue v;
     v.tag = NV_FUNC;
     v.u.func = f;
@@ -797,9 +1931,14 @@ NvValue nv_module_new(const char *name, NvScope *scope) {
     return v;
 }
 
-NvValue nv_class_new(const char *name, NvClass *base) {
+NvValue nv_class_new(const char *name, NvClass *base, const char *type_params) {
     NvClass *c = (NvClass *)nv_alloc(sizeof(NvClass), NV_OBJ_CLASS);
     c->name = nv_strdup(name);
+    // البنود 145–147: معاملات النوع المعلنة؛
+    // والربط يبقى NULL حتى التخصيص.
+    nv_parse_type_params(type_params, &c->tp_names, &c->tp_bounds, &c->tp_defaults,
+                         &c->ntype_params);
+    c->type_binding = NULL;
     NvValue v;
     v.tag = NV_CLASS;
     v.u.klass = c;
@@ -962,6 +2101,40 @@ NvValue nv_clone_value(NvValue v) {
             nv_root_pop_n(2);
             return out;
         }
+        // ج6: نسخ عميق يحفظ الوسم — الكبير والكسر
+        // والبت بنسخ سلاسلهم/بايتاتهم، والمركب مضمن
+        // فينسخ بالقيمة، والمعلب بنسخ داخله عوديا.
+        case NV_BIGINT: {
+            char *sg = nv_bigint_signed_str(v.u.bigint);
+            NvValue out = nv_bigint_cstr(sg, 0, 0);
+            free(sg);
+            nv_root_pop_n(1);
+            return out;
+        }
+        case NV_RATIONAL: {
+            char *sn = nv_bigint_signed_str(v.u.rational->num);
+            char *sd = nv_bigint_signed_str(v.u.rational->den);
+            NvValue out = nv_rational_new(
+                nv_bigint_cstr(sn, 0, 0),
+                nv_bigint_cstr(sd, 0, 0), 0, 0);
+            free(sn); free(sd);
+            nv_root_pop_n(1);
+            return out;
+        }
+        case NV_COMPLEX:
+            nv_root_pop_n(1);
+            return v;
+        case NV_BITS: {
+            NvValue out = nv_bits_new(v.u.bits->bytes, v.u.bits->nbits);
+            nv_root_pop_n(1);
+            return out;
+        }
+        case NV_BOXED: {
+            NvValue inner = nv_clone_value(v.u.boxed->inner);
+            NvValue out = nv_boxed_new(inner);
+            nv_root_pop_n(1);
+            return out;
+        }
         default:
             nv_root_pop_n(1);
             return v;
@@ -992,6 +2165,12 @@ const char *nv_type_name(NvValue v) {
         case NV_BOUND: return "دالة";
         case NV_HANDLE: return "عدد";
         case NV_BYTES: return "قائمة";
+        // ج6.
+        case NV_BIGINT: return "كبير";
+        case NV_RATIONAL: return "كسر";
+        case NV_COMPLEX: return "مركب";
+        case NV_BITS: return "بت";
+        case NV_BOXED: return "معلب";
     }
     return "لاشيء";
 }
@@ -1368,6 +2547,85 @@ static void nv_fmt_into(NvValue v, int in_collection, char **buf, size_t *blen, 
             nv_buf_append(buf, blen, bcap, "]", 1);
             break;
         }
+        // ج6: عرض الأنواع الجديدة — مرآة fmt_value في Rust.
+        case NV_BIGINT: {
+            char *plain = nv_bigint_norm(v.u.bigint->digits);
+            if (v.u.bigint->neg && strcmp(plain, "0") != 0) {
+                size_t len = strlen(plain);
+                char *t = (char *)malloc(len + 2);
+                t[0] = '-';
+                memcpy(t + 1, plain, len + 1);
+                free(plain);
+                plain = t;
+            }
+            char *s = nv_arabic_digits_dup(plain);
+            nv_buf_append(buf, blen, bcap, s, strlen(s));
+            free(plain);
+            free(s);
+            break;
+        }
+        case NV_RATIONAL: {
+            if (strcmp(v.u.rational->den->digits, "1") == 0) {
+                NvValue n;
+                n.tag = NV_BIGINT;
+                n.u.bigint = v.u.rational->num;
+                nv_fmt_into(n, in_collection, buf, blen, bcap);
+            } else {
+                NvValue n, d;
+                n.tag = NV_BIGINT;
+                n.u.bigint = v.u.rational->num;
+                d.tag = NV_BIGINT;
+                d.u.bigint = v.u.rational->den;
+                nv_fmt_into(n, in_collection, buf, blen, bcap);
+                nv_buf_append(buf, blen, bcap, "/", 1);
+                nv_fmt_into(d, in_collection, buf, blen, bcap);
+            }
+            break;
+        }
+        case NV_COMPLEX: {
+            double re = v.u.complex.re, im = v.u.complex.im;
+            if (im == 0.0) {
+                char *s = nv_fmt_number(re);
+                nv_buf_append(buf, blen, bcap, s, strlen(s));
+                free(s);
+            } else if (re == 0.0) {
+                char *s = nv_fmt_number(im);
+                nv_buf_append(buf, blen, bcap, s, strlen(s));
+                free(s);
+                nv_buf_append(buf, blen, bcap, "ت", strlen("ت"));
+            } else {
+                char *s = nv_fmt_number(re);
+                nv_buf_append(buf, blen, bcap, s, strlen(s));
+                free(s);
+                nv_buf_append(buf, blen, bcap, im > 0.0 ? "+" : "-", 1);
+                char *t = nv_fmt_number(fabs(im));
+                nv_buf_append(buf, blen, bcap, t, strlen(t));
+                free(t);
+                nv_buf_append(buf, blen, bcap, "ت", strlen("ت"));
+            }
+            break;
+        }
+        case NV_BITS: {
+            nv_buf_append(buf, blen, bcap, "بت(", strlen("بت("));
+            char *plain = (char *)malloc(v.u.bits->nbits + 1);
+            for (size_t i = 0; i < v.u.bits->nbits; i++) {
+                int bit = (v.u.bits->bytes[i / 8] >> (7 - (i % 8))) & 1;
+                plain[i] = (char)('0' + bit);
+            }
+            plain[v.u.bits->nbits] = '\0';
+            char *s = nv_arabic_digits_dup(plain);
+            nv_buf_append(buf, blen, bcap, s, strlen(s));
+            free(plain);
+            free(s);
+            nv_buf_append(buf, blen, bcap, ")", 1);
+            break;
+        }
+        case NV_BOXED: {
+            nv_buf_append(buf, blen, bcap, "معلب(", strlen("معلب("));
+            nv_fmt_into(v.u.boxed->inner, in_collection, buf, blen, bcap);
+            nv_buf_append(buf, blen, bcap, ")", 1);
+            break;
+        }
     }
 }
 
@@ -1513,6 +2771,24 @@ NvValue *nv_scope_slot_ptr(NvScope *scope, const char *name, int line, int col) 
     return &cell->val;
 }
 
+// الدفعة الأخيرة DEF (البنود 77 و78): فتحة موجَّهة
+// بالإعلان — لتعيين الفهرس على اسم معلن عاما/محيطا.
+NvValue *nv_scope_slot_ptr_global(NvScope *scope, const char *name, int line, int col) {
+    NvCell *cell = nv_scope_lookup_cell_global(scope, name);
+    if (!cell) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "متغير غير معرف: %s", name);
+    }
+    return &cell->val;
+}
+
+NvValue *nv_scope_slot_ptr_nonlocal(NvScope *scope, const char *name, int line, int col) {
+    NvCell *cell = nv_scope_lookup_cell_nonlocal(scope, name);
+    if (!cell) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "متغير غير معرف: %s", name);
+    }
+    return &cell->val;
+}
+
 NvCell *nv_scope_define(NvScope *scope, const char *name, NvValue v) {
     for (NvBinding *b = scope->bindings; b; b = b->next) {
         if (strcmp(b->name, name) == 0) {
@@ -1547,6 +2823,69 @@ void nv_scope_assign(NvScope *scope, const char *name, NvValue v, int line, int 
         }
     }
     nv_scope_define(scope, name, v);
+}
+
+// الدفعة الأخيرة DEF (البنود 77 و78 — الاجتماع 83
+// §98): مساعد الإسناد العام الواحد — يمشي إلى جذر
+// السلسلة (نطاق البرنامج الجاري) ويكتب هناك،
+// ويعرّف الاسم فيه إن غاب. كـ nv_scope_assign في
+// فحص التجميد وحلّ المرجع.
+void nv_scope_assign_global(NvScope *scope, const char *name, NvValue v, int line, int col) {
+    name = nv_resolve_name(name);
+    nv_check_not_frozen(name, line, col);
+    NvScope *root = scope;
+    while (root && root->parent) root = root->parent;
+    if (!root) root = scope;
+    for (NvBinding *b = root->bindings; b; b = b->next) {
+        if (strcmp(b->name, name) == 0) {
+            b->cell->val = nv_clone_value(v);
+            nv_write_barrier((NvObj *)b->cell, nv_obj_of(v));
+            return;
+        }
+    }
+    nv_scope_define(root, name, v);
+}
+
+// الدفعة الأخيرة DEF (البند 78): مساعد الإسناد
+// المحيط الواحد — يمشي من أب الإطار متخطيا الجذر
+// (لا المحلي ولا العام)؛ وغياب الربط خطأ عربي صريح.
+void nv_scope_assign_nonlocal(NvScope *scope, const char *name, NvValue v, int line, int col) {
+    name = nv_resolve_name(name);
+    nv_check_not_frozen(name, line, col);
+    for (NvScope *s = scope ? scope->parent : NULL; s && s->parent; s = s->parent) {
+        for (NvBinding *b = s->bindings; b; b = b->next) {
+            if (strcmp(b->name, name) == 0) {
+                b->cell->val = nv_clone_value(v);
+                nv_write_barrier((NvObj *)b->cell, nv_obj_of(v));
+                return;
+            }
+        }
+    }
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "لا يوجد ربط محيط للمتغير: %s", name);
+}
+
+// الدفعة الأخيرة DEF (البنود 77 و78): بحث موجَّه
+// بالإعلان — عام من الجذر وحده، ونطاق من المحيط
+// وحده (أب الإطار حتى ما قبل الجذر).
+NvCell *nv_scope_lookup_cell_global(NvScope *scope, const char *name) {
+    name = nv_resolve_name(name);
+    NvScope *root = scope;
+    while (root && root->parent) root = root->parent;
+    if (!root) return NULL;
+    for (NvBinding *b = root->bindings; b; b = b->next) {
+        if (strcmp(b->name, name) == 0) return b->cell;
+    }
+    return NULL;
+}
+
+NvCell *nv_scope_lookup_cell_nonlocal(NvScope *scope, const char *name) {
+    name = nv_resolve_name(name);
+    for (NvScope *s = scope ? scope->parent : NULL; s && s->parent; s = s->parent) {
+        for (NvBinding *b = s->bindings; b; b = b->next) {
+            if (strcmp(b->name, name) == 0) return b->cell;
+        }
+    }
+    return NULL;
 }
 
 NvScope *nv_scope_clone(NvScope *scope) {
@@ -1758,8 +3097,21 @@ static double nv_num_of(NvValue v) {
 }
 
 int nv_eq(NvValue l, NvValue r) {
+    // ج6: المعلبة تساوي داخلها (فك طبقة واحدة هنا،
+    // والعودية تفك الطبقات المتداخلة).
+    while (l.tag == NV_BOXED) l = l.u.boxed->inner;
+    while (r.tag == NV_BOXED) r = r.u.boxed->inner;
     if (nv_is_num_like(l) && nv_is_num_like(r)) {
         return nv_num_of(l) == nv_num_of(r);
+    }
+    // ج6: مساواة دقيقة عبر عدد/كبير/كسر/مركب.
+    if (nv_is_j6_numeric(l) && nv_is_j6_numeric(r)) {
+        return nv_numeric_eq(l, r);
+    }
+    if (l.tag == NV_BITS && r.tag == NV_BITS) {
+        if (l.u.bits->nbits != r.u.bits->nbits) return 0;
+        size_t nbytes = (l.u.bits->nbits + 7) / 8;
+        return nbytes == 0 || memcmp(l.u.bits->bytes, r.u.bits->bytes, nbytes) == 0;
     }
     if (l.tag != r.tag) {
         // عدد/منطقي/نص... الأنواع المختلفة لا تتساوى أبدا.
@@ -1827,6 +3179,8 @@ int nv_eq(NvValue l, NvValue r) {
 
 // ---------- العمليات الثنائية ----------
 NvValue nv_add(NvValue l, NvValue r, int line, int col) {
+    // ج6: أي طرف كبير/كسر/مركب يأخذ المسار الدقيق.
+    if (nv_is_j6_numeric(l) || nv_is_j6_numeric(r)) return nv_exact_arith(l, r, '+', line, col);
     if (nv_is_num_like(l) && nv_is_num_like(r)) return nv_num(nv_num_of(l) + nv_num_of(r));
     if (l.tag == NV_STR && r.tag == NV_STR) {
         size_t n = l.u.str->len + r.u.str->len;
@@ -1856,6 +3210,8 @@ NvValue nv_add(NvValue l, NvValue r, int line, int col) {
 }
 
 static NvValue nv_arith(NvValue l, NvValue r, char op, int line, int col) {
+    // ج6: أي طرف كبير/كسر/مركب يأخذ المسار الدقيق.
+    if (nv_is_j6_numeric(l) || nv_is_j6_numeric(r)) return nv_exact_arith(l, r, op, line, col);
     if (!nv_is_num_like(l) || !nv_is_num_like(r)) {
         nv_error_fmt(NV_ERR_TYPE, line, col, "العملية الحسابية تتطلب عددين، وليس %s و %s",
                      nv_type_name(l), nv_type_name(r));
@@ -1880,6 +3236,13 @@ NvValue nv_div(NvValue l, NvValue r, int line, int col) { return nv_arith(l, r, 
 NvValue nv_mod(NvValue l, NvValue r, int line, int col) { return nv_arith(l, r, '%', line, col); }
 
 static int nv_compare(NvValue l, NvValue r, int line, int col) {
+    // ج6: أي طرف كبير/كسر/مركب — الترتيب الدقيق،
+    // والمركب بلا ترتيب فيسقط إلى خطأ المقارنة.
+    if (l.tag == NV_BIGINT || l.tag == NV_RATIONAL || l.tag == NV_COMPLEX ||
+        r.tag == NV_BIGINT || r.tag == NV_RATIONAL || r.tag == NV_COMPLEX) {
+        int out = 0;
+        if (nv_numeric_cmp(l, r, &out, line, col)) return out;
+    }
     if (nv_is_num_like(l) && nv_is_num_like(r)) {
         double a = nv_num_of(l), b = nv_num_of(r);
         if (isnan(a) || isnan(b)) nv_error(NV_ERR_RUNTIME, "مقارنة غير صالحة", line, col);
@@ -1938,6 +3301,16 @@ int nv_is_in(NvValue item, NvValue coll, int line, int col) {
     if (coll.tag == NV_DICT && item.tag == NV_STR) {
         return nv_dict_find(coll.u.dict, item.u.str->data) >= 0;
     }
+    // ج6: العضوية في البت — 0 أو 1 فقط.
+    if (coll.tag == NV_BITS) {
+        if (item.tag != NV_NUM || (item.u.num != 0.0 && item.u.num != 1.0)) return 0;
+        int want = item.u.num == 1.0;
+        for (size_t i = 0; i < coll.u.bits->nbits; i++) {
+            int bit = (coll.u.bits->bytes[i / 8] >> (7 - (i % 8))) & 1;
+            if (bit == want) return 1;
+        }
+        return 0;
+    }
     nv_error_fmt(NV_ERR_TYPE, line, col, "في تتطلب قائمة أو نصا أو قاموسا على اليمين، وليس %s",
                  nv_type_name(coll));
 }
@@ -1950,6 +3323,24 @@ NvValue nv_not(NvValue v, int line, int col) {
 }
 
 NvValue nv_neg(NvValue v, int line, int col) {
+    // ج6: السالب الدقيق للكبير والكسر والمركب.
+    if (v.tag == NV_BIGINT) {
+        char *n = nv_bigint_neg_str(v.u.bigint->digits);
+        NvValue out = nv_bigint_cstr(n, line, col);
+        free(n);
+        return out;
+    }
+    if (v.tag == NV_RATIONAL) {
+        char *n = nv_bigint_neg_str(v.u.rational->num->digits);
+        NvValue out = nv_rational_new(nv_bigint_cstr(n, line, col),
+                                      nv_bigint_cstr(v.u.rational->den->digits, line, col),
+                                      line, col);
+        free(n);
+        return out;
+    }
+    if (v.tag == NV_COMPLEX) {
+        return nv_complex_new(-v.u.complex.re, -v.u.complex.im);
+    }
     if (v.tag != NV_NUM) {
         nv_error_fmt(NV_ERR_TYPE, line, col, "السالب يتطلب عددا، وليس %s", nv_type_name(v));
     }
@@ -2019,6 +3410,20 @@ NvValue nv_index(NvValue target, NvValue index, int line, int col, int idx_line,
                          idx, target.u.tuple->len);
         }
         return target.u.tuple->items[idx];
+    }
+    // ج6: فهرسة البت — عدد صحيح، والناتج 0 أو 1.
+    if (target.tag == NV_BITS && index.tag == NV_NUM) {
+        double x = index.u.num;
+        if (x != trunc(x) || x < 0.0) {
+            nv_error(NV_ERR_TYPE, "فهرس البت يجب أن يكون عددا صحيحا", idx_line, idx_col);
+        }
+        size_t idx = nv_num_to_index(x);
+        if (idx >= target.u.bits->nbits) {
+            nv_error_fmt(NV_ERR_RUNTIME, idx_line, idx_col, "فهرس خارج النطاق: %zu والبت طوله %zu",
+                         idx, target.u.bits->nbits);
+        }
+        int bit = (target.u.bits->bytes[idx / 8] >> (7 - (idx % 8))) & 1;
+        return nv_num((double)bit);
     }
     if (target.tag == NV_DICT && index.tag == NV_STR) {
         int i = nv_dict_find(target.u.dict, index.u.str->data);
@@ -2248,22 +3653,208 @@ static void nv_check_param_type(NvValue v, const char *param_name, const char *p
 }
 
 // ---------- الاستدعاء ----------
-static NvValue nv_call_func_impl(NvFunc *f, NvValue self, int has_self,
-                                 NvValue *args, int nargs, int line, int col,
-                                 int is_method) {
-    // عدد المعاملات أولا (رسالة الدالة أو الطريقة).
-    if (nargs != f->nparams) {
+// البنود 109–112 (الاجتماع 83 §98): مطابقة
+// الاستدعاء المشتركة — نفس الترتيب والرسائل في
+// المفسر والآلة: (1) فيض موضعي بلا vararg، (2)
+// مفتاحي مكرر، (3) ازدواج موضعي/مفتاحي، (4)
+// مفتاحي مجهول، (5) مطلوب مفقود — ثم فحص الأنواع
+// على القيم النهائية (بما فيها الافتراضيات،
+// وتُنسَخ الافتراضية عميقا كل استدعاء كما في
+// المفسر). تملأ `bound` (معاملات بالترتيب ثم
+// جامع موضعي ثم جامع مفتاحي) و`bound_names`،
+// وتعيد عددها. الحالة العادية (بلا افتراضيات/
+// vararg/kwarg/مفتاحيات) تعطي رسالة العدد القديمة حرفيا.
+static int nv_resolve_call_args(NvFunc *f, NvValue *args, int nargs,
+                                const char **kw_names, NvValue *kw_vals, int nkwargs,
+                                int is_method, int line, int col,
+                                NvValue *bound, const char **bound_names,
+                                const char **param_types) {
+    // البنود 145–147: أنواع معاملات فعالة بعد
+    // استبدال الربط (أو NULL فيعني المعلنة نفسها).
+    if (!param_types) param_types = (const char **)f->param_types;
+    const char *kind = is_method ? "الطريقة" : "الدالة";
+    int nparams = f->nparams;
+    int has_any_default = 0;
+    for (int i = 0; i < nparams; i++) {
+        if (f->has_default && f->has_default[i]) { has_any_default = 1; break; }
+    }
+    int plain = !has_any_default && !f->vararg && !f->kwarg && nkwargs == 0;
+    if (plain) {
+        if (nargs != nparams) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col,
+                         "عدد المعاملات غير صحيح: %s %s تتوقع %d لكن أعطيت %d",
+                         kind, f->name, nparams, nargs);
+        }
+        for (int i = 0; i < nparams; i++) {
+            bound[i] = args[i];
+            bound_names[i] = f->param_names[i];
+        }
+        for (int i = 0; i < nparams; i++) {
+            if (param_types && param_types[i]) {
+                nv_check_param_type(bound[i], bound_names[i], param_types[i], f->name, is_method, line, col);
+            }
+        }
+        return nparams;
+    }
+    // (1) فيض موضعي بلا جامع.
+    if (!f->vararg && nargs > nparams) {
         nv_error_fmt(NV_ERR_RUNTIME, line, col,
                      "عدد المعاملات غير صحيح: %s %s تتوقع %d لكن أعطيت %d",
-                     is_method ? "الطريقة" : "الدالة", f->name, f->nparams, nargs);
+                     kind, f->name, nparams, nargs + nkwargs);
     }
-    // أنواع المعاملات (بأسمائها).
-    for (int i = 0; i < nargs; i++) {
-        if (f->param_types && f->param_types[i]) {
-            const char *pname = (f->param_names && f->param_names[i]) ? f->param_names[i] : "?";
-            nv_check_param_type(args[i], pname, f->param_types[i], f->name, is_method, line, col);
+    // (2) مفتاحي مكرر.
+    for (int i = 0; i < nkwargs; i++) {
+        for (int j = 0; j < i; j++) {
+            if (strcmp(kw_names[i], kw_names[j]) == 0) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "معامل مفتاحي مكرر: %s", kw_names[i]);
+            }
         }
     }
+    NvValue *filled = (NvValue *)malloc(sizeof(NvValue) * (size_t)(nparams > 0 ? nparams : 1));
+    char *is_filled = (char *)calloc((size_t)(nparams > 0 ? nparams : 1), 1);
+    for (int i = 0; i < nargs && i < nparams; i++) {
+        filled[i] = args[i];
+        is_filled[i] = 1;
+    }
+    const char **extra_kw_names = (const char **)malloc(sizeof(char *) * (size_t)(nkwargs > 0 ? nkwargs : 1));
+    NvValue *extra_kw_vals = (NvValue *)malloc(sizeof(NvValue) * (size_t)(nkwargs > 0 ? nkwargs : 1));
+    int n_extra_kw = 0;
+    for (int k = 0; k < nkwargs; k++) {
+        int idx = -1;
+        for (int i = 0; i < nparams; i++) {
+            if (f->param_names[i] && strcmp(kw_names[k], f->param_names[i]) == 0) { idx = i; break; }
+        }
+        if (idx >= 0) {
+            // (3) ازدواج موضعي/مفتاحي.
+            if (is_filled[idx]) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "المعامل %s أعطي موضعيا ومفتاحيا", kw_names[k]);
+            }
+            filled[idx] = kw_vals[k];
+            is_filled[idx] = 1;
+        } else {
+            // (4) مفتاحي مجهول — واسم الجامع نفسه
+            // ليس معاملا مسمى (كمثل بايثون).
+            if ((f->vararg && strcmp(kw_names[k], f->vararg) == 0) ||
+                (f->kwarg && strcmp(kw_names[k], f->kwarg) == 0)) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "معامل مفتاحي غير معروف: %s", kw_names[k]);
+            }
+            if (f->kwarg) {
+                extra_kw_names[n_extra_kw] = kw_names[k];
+                extra_kw_vals[n_extra_kw] = kw_vals[k];
+                n_extra_kw++;
+            } else {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "معامل مفتاحي غير معروف: %s", kw_names[k]);
+            }
+        }
+    }
+    // (5) مطلوب مفقود — ثم الافتراضيات.
+    int nbound = 0;
+    for (int i = 0; i < nparams; i++) {
+        if (is_filled[i]) {
+            bound[nbound] = filled[i];
+        } else if (f->has_default && f->has_default[i]) {
+            bound[nbound] = nv_clone_value(f->defaults[i]);
+        } else {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "المعامل %s مطلوب في %s %s",
+                         f->param_names[i], kind, f->name);
+        }
+        bound_names[nbound] = f->param_names[i];
+        nbound++;
+    }
+    // فحص الأنواع على القيم النهائية.
+    for (int i = 0; i < nparams; i++) {
+        if (param_types && param_types[i]) {
+            nv_check_param_type(bound[i], bound_names[i], param_types[i], f->name, is_method, line, col);
+        }
+    }
+    if (f->vararg) {
+        NvValue list = nv_list_new();
+        for (int i = nparams; i < nargs; i++) {
+            nv_list_push_raw(list.u.list, args[i]);
+        }
+        bound[nbound] = list;
+        bound_names[nbound] = f->vararg;
+        nbound++;
+    }
+    if (f->kwarg) {
+        NvValue dict = nv_dict_new();
+        for (int k = 0; k < n_extra_kw; k++) {
+            nv_dict_set_raw(dict.u.dict, extra_kw_names[k], extra_kw_vals[k]);
+        }
+        bound[nbound] = dict;
+        bound_names[nbound] = f->kwarg;
+        nbound++;
+    }
+    free(filled);
+    free(is_filled);
+    free(extra_kw_names);
+    free(extra_kw_vals);
+    return nbound;
+}
+
+// استبدال مملوك دائما (نسخة جديدة حتى بلا تغيير).
+static char *nv_substitute_type_owned(const char *declared, char **names, char **values, int n) {
+    if (!declared) return NULL;
+    char *s = nv_substitute_type(declared, names, values, n);
+    return s ? s : nv_strdup(declared);
+}
+
+static NvValue nv_call_func_impl(NvFunc *f, NvValue self, int has_self,
+                                 NvValue *args, int nargs,
+                                 const char **kw_names, NvValue *kw_vals, int nkwargs,
+                                 int line, int col,
+                                 int is_method) {
+    // البنود 145–147: الربط الفعال — المخصَّص أولا،
+    // وإلا الافتراضيات المعلنة (كل استدعاء يحل ربطه
+    // كما في المفسر)؛ وربط الكائن للطرائق.
+    char **eff_binding = f->type_binding;
+    char **eff_binding_owned = NULL;
+    if (!eff_binding && f->ntype_params > 0) {
+        eff_binding_owned = nv_default_type_binding(f->tp_names, f->tp_bounds, f->tp_defaults,
+                                                    f->ntype_params,
+                                                    is_method ? "الطريقة" : "الدالة", f->name,
+                                                    line, col);
+        eff_binding = eff_binding_owned;
+    }
+    // ربط الفئة (لطرائق الكائن) — يُستبدل بعد ربط
+    // الدالة، فيغلب ظل الطريقة.
+    char **cls_names = NULL;
+    char **cls_binding = NULL;
+    int cls_n = 0;
+    if (has_self && self.tag == NV_INST && self.u.inst && self.u.inst->type_binding &&
+        self.u.inst->klass) {
+        cls_names = self.u.inst->klass->tp_names;
+        cls_binding = self.u.inst->type_binding;
+        cls_n = self.u.inst->klass->ntype_params;
+    }
+    // أنواع معاملات فعالة + نوع إرجاع فعال.
+    char **eff_types = NULL;
+    if (f->nparams > 0) {
+        eff_types = (char **)malloc((size_t)f->nparams * sizeof(char *));
+        for (int i = 0; i < f->nparams; i++) {
+            const char *decl = (f->param_types && f->param_types[i]) ? f->param_types[i] : NULL;
+            if (!decl) {
+                eff_types[i] = NULL;
+            } else {
+                char *s1 = nv_substitute_type_owned(decl, f->tp_names, eff_binding, f->ntype_params);
+                char *s2 = nv_substitute_type_owned(s1, cls_names, cls_binding, cls_n);
+                free(s1);
+                eff_types[i] = s2;
+            }
+        }
+    }
+    char *eff_ret = NULL;
+    if (f->return_type) {
+        char *r1 = nv_substitute_type_owned(f->return_type, f->tp_names, eff_binding, f->ntype_params);
+        eff_ret = nv_substitute_type_owned(r1, cls_names, cls_binding, cls_n);
+        free(r1);
+    }
+    // البنود 109–112: المطابقة المشتركة أولا.
+    NvValue *bound = (NvValue *)malloc(sizeof(NvValue) * (size_t)(f->nparams + 2));
+    const char **bound_names = (const char **)malloc(sizeof(char *) * (size_t)(f->nparams + 2));
+    int nbound = nv_resolve_call_args(f, args, nargs, kw_names, kw_vals, nkwargs,
+                                      is_method, line, col, bound, bound_names,
+                                      (const char **)eff_types);
     // حد العمق قبل دفع النطاق.
     if (nv_call_depth >= NV_MAX_CALL_DEPTH) {
         nv_error_fmt(NV_ERR_RUNTIME, line, col,
@@ -2280,14 +3871,15 @@ static NvValue nv_call_func_impl(NvFunc *f, NvValue self, int has_self,
     }
     NvScope *frame = nv_scope_new(parent);
     nv_frames_push(frame);
-    // نفس (للميتدات) ثم المعاملات.
+    // نفس (للميتدات) ثم المعاملات المحلولة.
     if (has_self) {
         nv_scope_define(frame, "نفس", self);
     }
-    for (int i = 0; i < nargs; i++) {
-        const char *pname = (f->param_names && f->param_names[i]) ? f->param_names[i] : "?";
-        nv_scope_define(frame, pname, args[i]);
+    for (int i = 0; i < nbound; i++) {
+        nv_scope_define(frame, bound_names[i], bound[i]);
     }
+    free(bound);
+    free(bound_names);
     nv_call_depth++;
     NvFlow saved_flow = nv_flow;
     nv_flow = NV_FLOW_NORMAL;
@@ -2306,26 +3898,99 @@ static NvValue nv_call_func_impl(NvFunc *f, NvValue self, int has_self,
     // إغلاقات أُنشئت داخله) — لا تحرير يدوي.
     if (exit_flow == NV_FLOW_RETURN) {
         NvValue v = result;
-        if (f->return_type && strcmp(f->return_type, "أي") != 0 &&
-            !nv_value_matches_decl(f->return_type, v)) {
+        if (eff_ret && strcmp(eff_ret, "أي") != 0 &&
+            !nv_value_matches_decl(eff_ret, v)) {
             nv_error_fmt(NV_ERR_TYPE, line, col,
                          "نوع غير متطابق: %s %s معلنة أن ترجع %s، لكن رجعت %s",
-                         is_method ? "الطريقة" : "الدالة", f->name, f->return_type, nv_type_name(v));
+                         is_method ? "الطريقة" : "الدالة", f->name, eff_ret, nv_type_name(v));
         }
+        // البنود 145–147: تحرير الأنواع الفعالة.
+        if (eff_types) {
+            for (int i = 0; i < f->nparams; i++) free(eff_types[i]);
+            free(eff_types);
+        }
+        free(eff_ret);
+        free(eff_binding_owned);
         return v;
     }
     // بلا إرجاع صريح: لاشيء — إلا إن كان نوع الإرجاع
     // المعلن غير لاشيء/أي.
-    if (f->return_type && strcmp(f->return_type, "أي") != 0 &&
-        strcmp(f->return_type, "لاشيء") != 0) {
+    if (eff_ret && strcmp(eff_ret, "أي") != 0 &&
+        strcmp(eff_ret, "لاشيء") != 0) {
         nv_error_fmt(NV_ERR_TYPE, line, col,
                      "نوع غير متطابق: %s %s معلنة أن ترجع %s، لكن لم ترجع شيئا",
-                     is_method ? "الطريقة" : "الدالة", f->name, f->return_type);
+                     is_method ? "الطريقة" : "الدالة", f->name, eff_ret);
     }
+    if (eff_types) {
+        for (int i = 0; i < f->nparams; i++) free(eff_types[i]);
+        free(eff_types);
+    }
+    free(eff_ret);
+    free(eff_binding_owned);
     return nv_nil();
 }
 
-NvValue nv_call_at(NvValue callee, NvValue *args, int nargs, int line, int col,
+// البنود 145–147: خصّص دالة/فئة بمعاملات نوع —
+// تنسخ القيمة مع ربط محلول مفحوص. المدمجة بلا
+// معاملات نوع فأي تخصيص زائد؛ وغير الدالة/الفئة
+// خطأ نوع برسالة المفسر.
+NvValue nv_specialize(NvValue v, const char *type_args, int line, int col) {
+    if (v.tag == NV_FUNC) {
+        NvFunc *src = v.u.func;
+        char **binding = nv_resolve_type_binding(src->tp_names, src->tp_bounds, src->tp_defaults,
+                                                 src->ntype_params, type_args, "الدالة", src->name,
+                                                 line, col);
+        NvFunc *f = (NvFunc *)nv_alloc(sizeof(NvFunc), NV_OBJ_FUNC);
+        NvObj saved_hdr = f->hdr;
+        *f = *src;
+        f->hdr = saved_hdr;
+        f->name = nv_strdup(src->name);
+        f->module = src->module ? nv_strdup(src->module) : NULL;
+        f->return_type = src->return_type ? nv_strdup(src->return_type) : NULL;
+        // نسخ عميق لما يحرره الجامع لكل نسخة على حدة؛
+        // ومشاركة ما لا يحرره (الأسماء والافتراضيات
+        // والجامعان والنطاق الملتقَط).
+        f->param_types = nv_dup_str_array(src->param_types, src->nparams);
+        f->tp_names = nv_dup_str_array(src->tp_names, src->ntype_params);
+        f->tp_bounds = nv_dup_str_array(src->tp_bounds, src->ntype_params);
+        f->tp_defaults = nv_dup_str_array(src->tp_defaults, src->ntype_params);
+        f->type_binding = binding;
+        NvValue out;
+        out.tag = NV_FUNC;
+        out.u.func = f;
+        return out;
+    }
+    if (v.tag == NV_CLASS) {
+        NvClass *src = v.u.klass;
+        char **binding = nv_resolve_type_binding(src->tp_names, src->tp_bounds, src->tp_defaults,
+                                                 src->ntype_params, type_args, "الفئة", src->name,
+                                                 line, col);
+        NvClass *c = (NvClass *)nv_alloc(sizeof(NvClass), NV_OBJ_CLASS);
+        NvObj saved_hdr = c->hdr;
+        *c = *src;
+        c->hdr = saved_hdr;
+        c->name = nv_strdup(src->name);
+        c->interfaces = nv_dup_str_array(src->interfaces, src->ninterfaces);
+        c->tp_names = nv_dup_str_array(src->tp_names, src->ntype_params);
+        c->tp_bounds = nv_dup_str_array(src->tp_bounds, src->ntype_params);
+        c->tp_defaults = nv_dup_str_array(src->tp_defaults, src->ntype_params);
+        c->type_binding = binding;
+        NvValue out;
+        out.tag = NV_CLASS;
+        out.u.klass = c;
+        return out;
+    }
+    if (v.tag == NV_NATIVE) {
+        // المدمجة بلا معاملات نوع — فأي تخصيص زائد.
+        nv_resolve_type_binding(NULL, NULL, NULL, 0, type_args, "الدالة",
+                                v.u.native->name, line, col);
+        return v;
+    }
+    nv_error_fmt(NV_ERR_TYPE, line, col, "القيمة %s ليست دالة", nv_type_name(v));
+    return nv_nil();
+}
+
+NvValue nv_call_at_kw(NvValue callee, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col,
                    int callee_line, int callee_col) {
     // دفاعي (الجولة 3، اجتماع 38 §53): لا يصل مؤشر
     // فارغ أبدا إلى دالة أصلية. المولّد يمرّر NULL
@@ -2338,18 +4003,30 @@ NvValue nv_call_at(NvValue callee, NvValue *args, int nargs, int line, int col,
     // (انظر CATALOG-34)؛ وهذا تحصين لا ادعاء إصلاح.
     static NvValue nv_empty_args[1];
     if (!args) args = nv_empty_args;
-    // جذّر الوسائط أثناء الاستدعاء (الإطار ينسخها بعدها).
+    // البنود 145–147: جذّر المستدعى أيضا أثناء
+    // الاستدعاء (قد تكون نسخة مخصَّصة حديثة بلا
+    // جذر آخر)؛ ثم الوسائط (الإطار ينسخها بعدها).
     int base = (int)nv_root_len;
+    size_t cbase = nv_root_push_idx();
+    *nv_root_slot(cbase) = callee;
     for (int i = 0; i < nargs; i++) {
         size_t idx = nv_root_push_idx();
         *nv_root_slot(idx) = args[i];
     }
+    for (int i = 0; i < nkwargs; i++) {
+        size_t idx = nv_root_push_idx();
+        *nv_root_slot(idx) = kw_vals[i];
+    }
     NvValue result;
     switch (callee.tag) {
         case NV_FUNC:
-            result = nv_call_func_impl(callee.u.func, nv_nil(), 0, args, nargs, line, col, 0);
+            result = nv_call_func_impl(callee.u.func, nv_nil(), 0, args, nargs, kw_names, kw_vals, nkwargs, line, col, 0);
             break;
         case NV_NATIVE:
+            // البنود 109–112: المدمجات ترفض المفتاحيات.
+            if (nkwargs > 0) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "معامل مفتاحي غير معروف: %s", kw_names[0]);
+            }
             result = callee.u.native->fn(args, nargs, line, col);
             break;
         case NV_BOUND: {
@@ -2358,8 +4035,11 @@ NvValue nv_call_at(NvValue callee, NvValue *args, int nargs, int line, int col,
             self.tag = NV_INST;
             self.u.inst = b->inst;
             if (b->func.tag == NV_FUNC) {
-                result = nv_call_func_impl(b->func.u.func, self, 1, args, nargs, line, col, 1);
+                result = nv_call_func_impl(b->func.u.func, self, 1, args, nargs, kw_names, kw_vals, nkwargs, line, col, 1);
             } else if (b->func.tag == NV_NATIVE) {
+                if (nkwargs > 0) {
+                    nv_error_fmt(NV_ERR_RUNTIME, line, col, "معامل مفتاحي غير معروف: %s", kw_names[0]);
+                }
                 result = b->func.u.native->fn(args, nargs, line, col);
             } else {
                 nv_error_fmt(NV_ERR_TYPE, callee_line, callee_col, "القيمة %s ليست دالة", nv_type_name(b->func));
@@ -2373,14 +4053,27 @@ NvValue nv_call_at(NvValue callee, NvValue *args, int nargs, int line, int col,
     return result;
 }
 
+NvValue nv_call_at(NvValue callee, NvValue *args, int nargs, int line, int col,
+                   int callee_line, int callee_col) {
+    return nv_call_at_kw(callee, args, nargs, NULL, NULL, 0, line, col, callee_line, callee_col);
+}
+
+NvValue nv_call_kw(NvValue callee, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col) {
+    return nv_call_at_kw(callee, args, nargs, kw_names, kw_vals, nkwargs, line, col, line, col);
+}
+
 NvValue nv_call(NvValue callee, NvValue *args, int nargs, int line, int col) {
     return nv_call_at(callee, args, nargs, line, col, line, col);
 }
 
 // استدعاء باسم معرّف: النطاق أولا، ثم المدمجة.
-NvValue nv_call_ident_at(NvScope *scope, const char *name, NvValue *args, int nargs, int line, int col,
-                         int callee_line, int callee_col) {
-    NvCell *cell = nv_scope_lookup_cell(scope, name);
+// الدفعة الأخيرة DEF (البنود 77 و78): الاستدعاء
+// بالاسم مع بحث موجَّه بالإعلان — الدالة نفسها
+// تستقبل دالة البحث (الأقرب/الجذر/المحيط).
+// البنود 109–112: النسخة المفتاحية تمرّر المفتاحيات.
+static NvValue nv_call_ident_at_with_kw(NvScope *scope, const char *name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col,
+                         int callee_line, int callee_col, NvCell *(*lookup_fn)(NvScope *, const char *)) {
+    NvCell *cell = lookup_fn(scope, name);
     if (cell) {
         NvValue v = cell->val;
         if (v.tag == NV_CLASS) {
@@ -2388,9 +4081,13 @@ NvValue nv_call_ident_at(NvScope *scope, const char *name, NvValue *args, int na
                          "استخدم أنشئ لإنشاء كائن من فئة %s، مثل أنشئ %s()",
                          v.u.klass->name, v.u.klass->name);
         }
-        return nv_call_at(v, args, nargs, line, col, callee_line, callee_col);
+        return nv_call_at_kw(v, args, nargs, kw_names, kw_vals, nkwargs, line, col, callee_line, callee_col);
     }
     if (nv_is_builtin(name)) {
+        // البنود 109–112: المدمجات ترفض المفتاحيات.
+        if (nkwargs > 0) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "معامل مفتاحي غير معروف: %s", kw_names[0]);
+        }
         // اجتماع 56 §71 (الميزة 16): نطاق الاستدعاء
         // الحالي للمدمجة (لقراءة قيمة متغير في
         // `انتقل`)، ويُستعاد بعده.
@@ -2403,13 +4100,51 @@ NvValue nv_call_ident_at(NvScope *scope, const char *name, NvValue *args, int na
     nv_error_fmt(NV_ERR_RUNTIME, line, col, "دالة غير معرفة: %s", name);
 }
 
+static NvValue nv_call_ident_at_with(NvScope *scope, const char *name, NvValue *args, int nargs, int line, int col,
+                         int callee_line, int callee_col, NvCell *(*lookup_fn)(NvScope *, const char *)) {
+    return nv_call_ident_at_with_kw(scope, name, args, nargs, NULL, NULL, 0, line, col, callee_line, callee_col, lookup_fn);
+}
+
+NvValue nv_call_ident_at(NvScope *scope, const char *name, NvValue *args, int nargs, int line, int col,
+                         int callee_line, int callee_col) {
+    return nv_call_ident_at_with(scope, name, args, nargs, line, col, callee_line, callee_col, nv_scope_lookup_cell);
+}
+
+NvValue nv_call_ident_at_kw(NvScope *scope, const char *name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col,
+                         int callee_line, int callee_col) {
+    return nv_call_ident_at_with_kw(scope, name, args, nargs, kw_names, kw_vals, nkwargs, line, col, callee_line, callee_col, nv_scope_lookup_cell);
+}
+
+NvValue nv_call_ident_at_global(NvScope *scope, const char *name, NvValue *args, int nargs, int line, int col,
+                         int callee_line, int callee_col) {
+    return nv_call_ident_at_with(scope, name, args, nargs, line, col, callee_line, callee_col, nv_scope_lookup_cell_global);
+}
+
+NvValue nv_call_ident_at_global_kw(NvScope *scope, const char *name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col,
+                         int callee_line, int callee_col) {
+    return nv_call_ident_at_with_kw(scope, name, args, nargs, kw_names, kw_vals, nkwargs, line, col, callee_line, callee_col, nv_scope_lookup_cell_global);
+}
+
+NvValue nv_call_ident_at_nonlocal(NvScope *scope, const char *name, NvValue *args, int nargs, int line, int col,
+                         int callee_line, int callee_col) {
+    return nv_call_ident_at_with(scope, name, args, nargs, line, col, callee_line, callee_col, nv_scope_lookup_cell_nonlocal);
+}
+
+NvValue nv_call_ident_at_nonlocal_kw(NvScope *scope, const char *name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col,
+                         int callee_line, int callee_col) {
+    return nv_call_ident_at_with_kw(scope, name, args, nargs, kw_names, kw_vals, nkwargs, line, col, callee_line, callee_col, nv_scope_lookup_cell_nonlocal);
+}
+
 NvValue nv_call_ident(NvScope *scope, const char *name, NvValue *args, int nargs, int line, int col) {
     return nv_call_ident_at(scope, name, args, nargs, line, col, line, col);
 }
 
 // إنشاء كائن بالاسم (بحث النطاق أولا برسائل المفسر).
-NvValue nv_create_by_name(NvScope *scope, const char *class_name, NvValue *args, int nargs, int line, int col) {
-    NvCell *cell = nv_scope_lookup_cell(scope, class_name);
+// الدفعة الأخيرة DEF (البنود 77 و78): إنشاء كائن
+// بالاسم مع بحث موجَّه بالإعلان.
+static NvValue nv_create_by_name_with_kw(NvScope *scope, const char *class_name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col,
+                         NvCell *(*lookup_fn)(NvScope *, const char *)) {
+    NvCell *cell = lookup_fn(scope, class_name);
     if (!cell) {
         nv_error_fmt(NV_ERR_RUNTIME, line, col, "فئة غير معرفة: %s", class_name);
     }
@@ -2417,36 +4152,90 @@ NvValue nv_create_by_name(NvScope *scope, const char *class_name, NvValue *args,
     if (class_val.tag != NV_CLASS) {
         nv_error_fmt(NV_ERR_TYPE, line, col, "%s ليست فئة، بل %s", class_name, nv_type_name(class_val));
     }
-    return nv_create(class_val, args, nargs, line, col);
+    return nv_create_kw(class_val, args, nargs, kw_names, kw_vals, nkwargs, line, col);
+}
+
+static NvValue nv_create_by_name_with(NvScope *scope, const char *class_name, NvValue *args, int nargs, int line, int col,
+                         NvCell *(*lookup_fn)(NvScope *, const char *)) {
+    return nv_create_by_name_with_kw(scope, class_name, args, nargs, NULL, NULL, 0, line, col, lookup_fn);
+}
+
+NvValue nv_create_by_name(NvScope *scope, const char *class_name, NvValue *args, int nargs, int line, int col) {
+    return nv_create_by_name_with(scope, class_name, args, nargs, line, col, nv_scope_lookup_cell);
+}
+
+NvValue nv_create_by_name_kw(NvScope *scope, const char *class_name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col) {
+    return nv_create_by_name_with_kw(scope, class_name, args, nargs, kw_names, kw_vals, nkwargs, line, col, nv_scope_lookup_cell);
+}
+
+NvValue nv_create_by_name_global(NvScope *scope, const char *class_name, NvValue *args, int nargs, int line, int col) {
+    return nv_create_by_name_with(scope, class_name, args, nargs, line, col, nv_scope_lookup_cell_global);
+}
+
+NvValue nv_create_by_name_global_kw(NvScope *scope, const char *class_name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col) {
+    return nv_create_by_name_with_kw(scope, class_name, args, nargs, kw_names, kw_vals, nkwargs, line, col, nv_scope_lookup_cell_global);
+}
+
+NvValue nv_create_by_name_nonlocal(NvScope *scope, const char *class_name, NvValue *args, int nargs, int line, int col) {
+    return nv_create_by_name_with(scope, class_name, args, nargs, line, col, nv_scope_lookup_cell_nonlocal);
+}
+
+NvValue nv_create_by_name_nonlocal_kw(NvScope *scope, const char *class_name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col) {
+    return nv_create_by_name_with_kw(scope, class_name, args, nargs, kw_names, kw_vals, nkwargs, line, col, nv_scope_lookup_cell_nonlocal);
 }
 
 // إنشاء كائن من قيمة فئة.
-NvValue nv_create(NvValue class_val, NvValue *args, int nargs, int line, int col) {
+NvValue nv_create_kw(NvValue class_val, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col) {
     if (class_val.tag != NV_CLASS) {
         nv_error_fmt(NV_ERR_TYPE, line, col, "ليست فئة، بل %s", nv_type_name(class_val));
     }
     NvClass *klass = class_val.u.klass;
     NvValue inst = nv_inst_new(klass);
+    // البنود 145–147: ربط الفئة ينتقل إلى الكائن
+    // قبل المنشئ — المخصَّص كما هو، وبلا تخصيص
+    // تُحلّ الافتراضيات المعلنة (كما في المفسر).
+    if (klass->type_binding) {
+        inst.u.inst->type_binding = nv_dup_str_array(klass->type_binding, klass->ntype_params);
+    } else if (klass->ntype_params > 0) {
+        char **def = nv_default_type_binding(klass->tp_names, klass->tp_bounds, klass->tp_defaults,
+                                             klass->ntype_params, "الفئة", klass->name, line, col);
+        inst.u.inst->type_binding = nv_dup_str_array(def, klass->ntype_params);
+        free(def);
+    }
+    // جذّر الفئة والكائن أثناء المنشئ (قد يجمع
+    // القمامة؛ والفئة المخصَّصة نسخة جديدة).
+    size_t cbase = nv_root_push_idx();
+    *nv_root_slot(cbase) = class_val;
+    size_t ibase = nv_root_push_idx();
+    *nv_root_slot(ibase) = inst;
     NvDict *methods = klass->methods;
     int ctor = methods ? nv_dict_find(methods, "أنشئ") : -1;
     if (ctor >= 0) {
         NvValue ctor_fn = methods->entries[ctor].val;
         if (ctor_fn.tag == NV_FUNC) {
-            nv_call_func_impl(ctor_fn.u.func, inst, 1, args, nargs, line, col, 1);
+            nv_call_func_impl(ctor_fn.u.func, inst, 1, args, nargs, kw_names, kw_vals, nkwargs, line, col, 1);
         } else if (ctor_fn.tag == NV_NATIVE) {
+            if (nkwargs > 0) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "معامل مفتاحي غير معروف: %s", kw_names[0]);
+            }
             ctor_fn.u.native->fn(args, nargs, line, col);
         }
-    } else if (nargs > 0) {
+    } else if (nargs + nkwargs > 0) {
         nv_error_fmt(NV_ERR_RUNTIME, line, col,
                      "الفئة %s ليس لها منشئ أنشئ، لكن أعطيت %d معاملات",
-                     klass->name, nargs);
+                     klass->name, nargs + nkwargs);
     }
+    nv_root_pop_n((int)nv_root_len - (int)cbase);
     return inst;
+}
+
+NvValue nv_create(NvValue class_val, NvValue *args, int nargs, int line, int col) {
+    return nv_create_kw(class_val, args, nargs, NULL, NULL, 0, line, col);
 }
 
 // ---------- الفئات والواجهات (مساعدات المولد) ----------
 // أنشئ فئة (مع نسخ طرق الأب مسطحة).
-NvValue nv_class_begin(const char *name, NvValue base_val, int line, int col) {
+NvValue nv_class_begin(const char *name, NvValue base_val, int line, int col, const char *type_params) {
     NvClass *base = NULL;
     if (base_val.tag == NV_NIL) {
         base = NULL;
@@ -2455,7 +4244,7 @@ NvValue nv_class_begin(const char *name, NvValue base_val, int line, int col) {
     } else {
         nv_error_fmt(NV_ERR_TYPE, line, col, "ليست فئة، بل %s", nv_type_name(base_val));
     }
-    return nv_class_new(name, base);
+    return nv_class_new(name, base, type_params);
 }
 
 // أضف طريقة (تغلب على الموروثة).
@@ -3553,6 +5342,16 @@ static NvValue nv_call_tuple_set_method(NvValue target, const char *name, NvValu
 // المولد القيمة عائدا إلى المتغير بعد الاستدعاء.
 NvValue nv_call_dot_at(NvValue target, const char *name, NvValue *args, int nargs, int line, int col,
                      int callee_line, int callee_col) {
+    return nv_call_dot_at_kw(target, name, args, nargs, NULL, NULL, 0, line, col, callee_line, callee_col);
+}
+
+NvValue nv_call_dot_at_kw(NvValue target, const char *name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col,
+                     int callee_line, int callee_col) {
+    // البنود 109–112: طرق النصوص والقوائم مدمجة
+    // ترفض المفتاحيات.
+    if (nkwargs > 0 && (target.tag == NV_STR || target.tag == NV_LIST || target.tag == NV_TUPLE || target.tag == NV_SET)) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "معامل مفتاحي غير معروف: %s", kw_names[0]);
+    }
     if (target.tag == NV_STR) return nv_call_str_method(target, name, args, nargs, line, col);
     if (target.tag == NV_LIST) {
         NvValue slot = target;
@@ -3562,11 +5361,15 @@ NvValue nv_call_dot_at(NvValue target, const char *name, NvValue *args, int narg
         return nv_call_tuple_set_method(target, name, args, nargs, line, col);
     }
     NvValue member = nv_dot(target, name, line, col);
-    return nv_call_at(member, args, nargs, line, col, callee_line, callee_col);
+    return nv_call_at_kw(member, args, nargs, kw_names, kw_vals, nkwargs, line, col, callee_line, callee_col);
 }
 
 NvValue nv_call_dot(NvValue target, const char *name, NvValue *args, int nargs, int line, int col) {
     return nv_call_dot_at(target, name, args, nargs, line, col, line, col);
+}
+
+NvValue nv_call_dot_kw(NvValue target, const char *name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col) {
+    return nv_call_dot_at_kw(target, name, args, nargs, kw_names, kw_vals, nkwargs, line, col, line, col);
 }
 
 // ---------- عدّاد معاملات (للبداية/النهاية) ----------
@@ -4288,7 +6091,17 @@ int nv_is_builtin(const char *name) {
         "أنشئ_رابط_صلب", "أنشئ_رابط_نسبي",
         // الدفعة 3 من الـ579 — الحاويات والفهم
         // (البنود 138 و139 و141–143).
-        "مترابطة", "تشكيلة", "افهم_قائمة", "افهم_تشكيلة", "افهم_فهرس", NULL
+        "مترابطة", "تشكيلة", "افهم_قائمة", "افهم_تشكيلة", "افهم_فهرس",
+        // ج6 — مدمجات الصيغ الحرفية المفككة في المحلل.
+        "عدد_كبير", "كسر", "مركب", "كسر_حرفي", "مركب_حرفي",
+        // ب6 — الاستدعاءات الداخلية المفككة في المحلل
+        // (`ولد`/`ولد من`/التعبير التوليدي): الثنائي
+        // الأصلي يرفضها بالرسالة القانونية (انظر
+        // nv_call_builtin) — بلا تغيير في cgen.rs.
+        "__ولد", "__ولد_من", "__مولد_تعبير",
+        // البند 88 — مدير السياق (الاجتماع 88 §103):
+        // الاستدعاءات الداخلية المفككة في المحلل من `عند`.
+        "__عند_افحص", "__عند_خطأ", "__عند_أعد_رفع", NULL
     };
     for (int i = 0; names[i]; i++) {
         if (strcmp(name, names[i]) == 0) return 1;
@@ -5183,6 +6996,59 @@ static const char *nv_describe_command(const char *name) {
     return result;
 }
 
+// البند 88 — مدير السياق: عضو بلا رفع — حقل أولا
+// ثم طريقة مربوطة في الكائن، وتصدير في الوحدة؛
+// و0 للغائب أو لغيرهما (مرآة `عند_عضو` في Rust).
+static int nv_ctx_member(NvValue v, const char *name, NvValue *out) {
+    if (v.tag == NV_INST) {
+        NvInst *in = v.u.inst;
+        int i = nv_dict_find(in->fields, name);
+        if (i >= 0) {
+            *out = in->fields->entries[i].val;
+            return 1;
+        }
+        NvDict *methods = in->klass->methods;
+        int m = methods ? nv_dict_find(methods, name) : -1;
+        if (m >= 0) {
+            *out = nv_bound_new(methods->entries[m].val, in);
+            return 1;
+        }
+        return 0;
+    }
+    if (v.tag == NV_MODULE) {
+        NvDict *ex = v.u.module->exports;
+        int i = ex ? nv_dict_find(ex, name) : -1;
+        if (i < 0) return 0;
+        *out = ex->entries[i].val;
+        return 1;
+    }
+    return 0;
+}
+
+// البند 88: هل القيمة قابلة للاستدعاء كدالة مدير —
+// دالة أو مدمجة أو مربوطة؛ والفئة ليست قابلة.
+static int nv_ctx_callable(NvValue v) {
+    return v.tag == NV_FUNC || v.tag == NV_NATIVE || v.tag == NV_BOUND;
+}
+
+// البند 88: حقل نصي/عددي من قاموس الخطأ المحفوظ؛
+// وNULL/الافتراضي عند الغياب أو النوع الخاطئ.
+static const char *nv_ctx_dict_str(NvDict *d, const char *key) {
+    int i = d ? nv_dict_find(d, key) : -1;
+    if (i < 0) return NULL;
+    NvValue v = d->entries[i].val;
+    if (v.tag != NV_STR) return NULL;
+    return v.u.str->data;
+}
+
+static double nv_ctx_dict_num(NvDict *d, const char *key, double def) {
+    int i = d ? nv_dict_find(d, key) : -1;
+    if (i < 0) return def;
+    NvValue v = d->entries[i].val;
+    if (v.tag != NV_NUM) return def;
+    return v.u.num;
+}
+
 NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, int col) {
     // التسع النقية.
     if (strcmp(name, "طول") == 0) {
@@ -5193,6 +7059,8 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
         if (a.tag == NV_DICT) return nv_num((double)a.u.dict->len);
         if (a.tag == NV_TUPLE) return nv_num((double)a.u.tuple->len);
         if (a.tag == NV_SET) return nv_num((double)a.u.set->len);
+        // ج6: طول البت عدد بتاته.
+        if (a.tag == NV_BITS) return nv_num((double)a.u.bits->nbits);
         nv_error_fmt(NV_ERR_TYPE, line, col, "طول يتطلب قائمة أو نصا أو قاموسا، وليس %s", nv_type_name(a));
     }
     // الدفعة 3 من الـ579 — البند 138: `مترابطة(...)`.
@@ -5213,6 +7081,138 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
         for (int i = 0; i < nargs; i++) nv_set_push_dedup(out.u.set, args[i]);
         nv_root_pop_n(1);
         return out;
+    }
+    // ب6 — المولدات (الاجتماع 85 §100): الرفض الأصلي.
+    // `ولد`/`ولد من`/التعبير التوليدي تُفكَّك في المحلل
+    // إلى هذه الاستدعاءات الداخلية؛ والثنائي الأصلي
+    // بلا آلة حالات ولا إطار معلق، فيرفضها بالرسالة
+    // القانونية حرفيا (خروج 1 بلا معالج؛ و`ماعدا`
+    // يلتقطها كأي خطأ وقت تشغيل، كما في باقي المدمجات).
+    // لا تخفيض آلة-حالة هنا — عمل مستقبلي مسمى.
+    if (strcmp(name, "__ولد") == 0 || strcmp(name, "__ولد_من") == 0
+        || strcmp(name, "__مولد_تعبير") == 0) {
+        nv_error(NV_ERR_RUNTIME, "المولدات غير مدعومة في الثنائي الأصلي — شغّل في المفسر أو آلة البايت كود", line, col);
+    }
+    // البند 88 — مدير السياق (الاجتماع 88 §103):
+    // الاستدعاءات الداخلية المفككة في المحلل من `عند`
+    // — مرآة call_builtin في Rust حرفيا.
+    if (strcmp(name, "__عند_افحص") == 0) {
+        nv_arity(args, nargs, 1, name, line, col);
+        NvValue m;
+        if (!nv_ctx_member(args[0], "دخول", &m) || !nv_ctx_callable(m)) {
+            nv_error(NV_ERR_RUNTIME, "القيمة ليست مدير سياق — لا تحمل دالة دخول", line, col);
+        }
+        if (!nv_ctx_member(args[0], "خروج", &m) || !nv_ctx_callable(m)) {
+            nv_error(NV_ERR_RUNTIME, "القيمة ليست مدير سياق — لا تحمل دالة خروج", line, col);
+        }
+        return nv_nil();
+    }
+    if (strcmp(name, "__عند_خطأ") == 0) {
+        nv_arity(args, nargs, 0, name, line, col);
+        NvError *e = nv_current_error();
+        if (!e) return nv_nil();
+        NvValue out = nv_dict_new();
+        nv_dict_set_raw(out.u.dict, "نوع", nv_str_cstr(nv_err_kind_ar(e->kind)));
+        nv_dict_set_raw(out.u.dict, "رسالة", nv_str_cstr(e->message ? e->message : ""));
+        nv_dict_set_raw(out.u.dict, "سطر", nv_num((double)e->line));
+        nv_dict_set_raw(out.u.dict, "عمود", nv_num((double)e->col));
+        if (e->file_idx >= 0 && e->file_idx < nv_n_source_files && nv_source_files[e->file_idx]) {
+            nv_dict_set_raw(out.u.dict, "ملف", nv_str_cstr(nv_source_files[e->file_idx]));
+        } else {
+            nv_dict_set_raw(out.u.dict, "ملف", nv_nil());
+        }
+        // الثنائي الأصلي بلا خطأ وحدة غائبة (لا 127).
+        nv_dict_set_raw(out.u.dict, "وحدة_غائبة", nv_bool(0));
+        return out;
+    }
+    if (strcmp(name, "__عند_أعد_رفع") == 0) {
+        nv_arity(args, nargs, 1, name, line, col);
+        if (args[0].tag != NV_DICT) return nv_nil();
+        NvDict *d = args[0].u.dict;
+        const char *kind_s = nv_ctx_dict_str(d, "نوع");
+        const char *msg = nv_ctx_dict_str(d, "رسالة");
+        double ln = nv_ctx_dict_num(d, "سطر", (double)line);
+        double cl = nv_ctx_dict_num(d, "عمود", (double)col);
+        const char *file = nv_ctx_dict_str(d, "ملف");
+        NvErrKind kind = NV_ERR_RUNTIME;
+        if (kind_s) {
+            if (strcmp(kind_s, "لغوي") == 0) kind = NV_ERR_LEX;
+            else if (strcmp(kind_s, "نحوي") == 0) kind = NV_ERR_PARSE;
+            else if (strcmp(kind_s, "نوع") == 0) kind = NV_ERR_TYPE;
+            else if (strcmp(kind_s, "إدخال/إخراج") == 0) kind = NV_ERR_IO;
+            else if (strcmp(kind_s, "دلالي") == 0) kind = NV_ERR_SEMANTIC;
+        }
+        // استعد الخطأ نفسه (لا خطأ جديد بموضع الرفع):
+        // النوع والرسالة والسطر والعمود والملف كما حُفظت.
+        nv_clear_error();
+        nv_last_error.kind = kind;
+        nv_last_error.message = nv_strdup(msg ? msg : "");
+        nv_last_error.line = (int)ln;
+        nv_last_error.col = (int)cl;
+        nv_last_error.file_idx = -1;
+        if (file) {
+            for (int i = 0; i < nv_n_source_files; i++) {
+                if (nv_source_files[i] && strcmp(nv_source_files[i], file) == 0) {
+                    nv_last_error.file_idx = i;
+                    break;
+                }
+            }
+        }
+        nv_has_error = 1;
+        nv_reraise_current();
+        return nv_nil();
+    }
+    // ج6 — مدمجات الصيغ الحرفية المفككة في المحلل
+    // (مرآة call_builtin في Rust حرفيا).
+    if (strcmp(name, "عدد_كبير") == 0) {
+        nv_arity(args, nargs, 1, name, line, col);
+        NvValue a = args[0];
+        if (a.tag == NV_STR) return nv_bigint_cstr(a.u.str->data, line, col);
+        if (a.tag == NV_NUM) return nv_bigint_from_double(a.u.num, line, col);
+        if (a.tag == NV_BIGINT) return a;
+        nv_error_fmt(NV_ERR_TYPE, line, col, "عدد_كبير يتطلب نصا أو عددا، وليس %s", nv_type_name(a));
+    }
+    if (strcmp(name, "كسر") == 0 || strcmp(name, "كسر_حرفي") == 0) {
+        if (nargs < 1 || nargs > 2) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة المدمجة %s تتوقع 1 أو 2 معاملات لكن أعطيت %d",
+                         name, nargs);
+        }
+        NvValue parts[2];
+        for (int i = 0; i < nargs; i++) {
+            NvValue v = args[i];
+            if (v.tag == NV_NUM) {
+                if (!isfinite(v.u.num) || v.u.num != trunc(v.u.num)) {
+                    nv_error(NV_ERR_TYPE, "كسر يتطلب بسطا ومقاما صحيحين", line, col);
+                }
+                parts[i] = nv_bigint_from_double(v.u.num, line, col);
+            } else if (v.tag == NV_BIGINT) {
+                parts[i] = v;
+            } else if (v.tag == NV_STR) {
+                parts[i] = nv_bigint_cstr(v.u.str->data, line, col);
+            } else {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "كسر يتطلب أعدادا صحيحة، وليس %s", nv_type_name(v));
+            }
+        }
+        if (nargs == 1) parts[1] = nv_bigint_cstr("1", line, col);
+        return nv_rational_new(parts[0], parts[1], line, col);
+    }
+    if (strcmp(name, "مركب") == 0 || strcmp(name, "مركب_حرفي") == 0) {
+        if (nargs < 1 || nargs > 2) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة المدمجة %s تتوقع 1 أو 2 معاملات لكن أعطيت %d",
+                         name, nargs);
+        }
+        double vals[2];
+        for (int i = 0; i < nargs; i++) {
+            double re = 0.0, im = 0.0;
+            if (!nv_value_to_complex(args[i], &re, &im)) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "مركب يتطلب أعدادا، وليس %s", nv_type_name(args[i]));
+            }
+            if (im != 0.0) {
+                nv_error(NV_ERR_TYPE, "مركب يتطلب جزأين حقيقيين", line, col);
+            }
+            vals[i] = re;
+        }
+        return nv_complex_new(vals[0], nargs == 2 ? vals[1] : 0.0);
     }
     // الدفعة 3 من الـ579 — البنود 141–143: الفهم
     // الضمني `افهم_قائمة/افهم_تشكيلة/افهم_فهرس
@@ -5337,6 +7337,29 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
     }
     if (strcmp(name, "مطلق") == 0) {
         nv_arity(args, nargs, 1, name, line, col);
+        // ج6: مطلق الكبير/الكسر دقيق، والمركب مقداره.
+        if (args[0].tag == NV_BIGINT) {
+            char *sg = nv_bigint_signed_str(args[0].u.bigint);
+            char *mag = sg[0] == '-' ? nv_strdup(sg + 1) : nv_strdup(sg);
+            free(sg);
+            NvValue out = nv_bigint_cstr(mag, line, col);
+            free(mag);
+            return out;
+        }
+        if (args[0].tag == NV_RATIONAL) {
+            char *sn = nv_bigint_signed_str(args[0].u.rational->num);
+            char *mag = sn[0] == '-' ? nv_strdup(sn + 1) : nv_strdup(sn);
+            free(sn);
+            NvValue out = nv_rational_new(nv_bigint_cstr(mag, line, col),
+                                          nv_bigint_cstr(args[0].u.rational->den->digits, line, col),
+                                          line, col);
+            free(mag);
+            return out;
+        }
+        if (args[0].tag == NV_COMPLEX) {
+            double re = args[0].u.complex.re, im = args[0].u.complex.im;
+            return nv_num(sqrt(re * re + im * im));
+        }
         if (!nv_is_num_like(args[0])) {
             nv_error_fmt(NV_ERR_TYPE, line, col, "مطلق يتطلب عددا، وليس %s", nv_type_name(args[0]));
         }
@@ -5346,6 +7369,15 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
         nv_arity(args, nargs, 1, name, line, col);
         NvValue a = args[0];
         if (a.tag == NV_NUM) return a;
+        // ج6: الكبير/الكسر إلى f64، والمركب الحقيقي
+        // الخالص إلى جزئه الحقيقي، والبت إلى قيمته.
+        if (a.tag == NV_BIGINT) return nv_num(nv_bigint_to_double(a));
+        if (a.tag == NV_RATIONAL) return nv_num(nv_rational_to_double(a));
+        if (a.tag == NV_COMPLEX) {
+            if (a.u.complex.im == 0.0) return nv_num(a.u.complex.re);
+            nv_error(NV_ERR_TYPE, "لا يمكن تحويل عدد مركب بتخيلي غير صفري إلى عدد", line, col);
+        }
+        if (a.tag == NV_BITS) return nv_num(nv_bits_to_double(a));
         if (a.tag == NV_HANDLE) return nv_num((double)a.u.handle->id);
         if (a.tag == NV_STR) {
             double d = 0;
@@ -6891,7 +8923,7 @@ NvValue nv_module_export(NvValue module, const char *name, int line, int col) {
     return ex->entries[i].val;
 }
 
-NvValue nv_class_begin_named(NvScope *scope, const char *name, const char *base_name, int line, int col) {
+NvValue nv_class_begin_named(NvScope *scope, const char *name, const char *base_name, int line, int col, const char *type_params) {
     NvValue base_val = nv_nil();
     if (base_name) {
         NvCell *cell = nv_scope_lookup_cell(scope, base_name);
@@ -6903,7 +8935,7 @@ NvValue nv_class_begin_named(NvScope *scope, const char *name, const char *base_
             nv_error_fmt(NV_ERR_TYPE, line, col, "%s ليست فئة، بل %s", base_name, nv_type_name(base_val));
         }
     }
-    return nv_class_begin(name, base_val, line, col);
+    return nv_class_begin(name, base_val, line, col, type_params);
 }
 
 // ================= الجزء 4: نقطة دخول الثنائي المولد =================
@@ -7099,6 +9131,16 @@ NvValue nv_for_snapshot(NvValue v, int line, int col) {
         }
         return snap;
     }
+    // ج6: البت — لقطة أعداد 0/1 (الأهم أولا، كما في المفسر).
+    if (v.tag == NV_BITS) {
+        NvValue snap = nv_list_new();
+        NvBits *b = v.u.bits;
+        for (size_t i = 0; i < b->nbits; i++) {
+            int bit = (b->bytes[i / 8] >> (7 - (i % 8))) & 1;
+            nv_list_push_raw(snap.u.list, nv_num((double)bit));
+        }
+        return snap;
+    }
     nv_error_fmt(NV_ERR_TYPE, line, col, "لا يمكن التكرار على نوع %s", nv_type_name(v));
 }
 
@@ -7120,6 +9162,25 @@ long nv_repeat_count(NvValue v, int line, int col) {
 // وتعيين مركّب — كما في المفسر).
 NvValue nv_lookup_or_error(NvScope *scope, const char *name, int line, int col) {
     NvCell *cell = nv_scope_lookup_cell(scope, name);
+    if (!cell) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "متغير غير معرف: %s", name);
+    }
+    return nv_clone_value(cell->val);
+}
+
+// الدفعة الأخيرة DEF (البنود 77 و78): قراءة موجَّهة
+// بالإعلان — كـ nv_lookup_or_error لكن من الجذر
+// وحده (عام) أو من المحيط وحده (نطاق).
+NvValue nv_lookup_or_error_global(NvScope *scope, const char *name, int line, int col) {
+    NvCell *cell = nv_scope_lookup_cell_global(scope, name);
+    if (!cell) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "متغير غير معرف: %s", name);
+    }
+    return nv_clone_value(cell->val);
+}
+
+NvValue nv_lookup_or_error_nonlocal(NvScope *scope, const char *name, int line, int col) {
+    NvCell *cell = nv_scope_lookup_cell_nonlocal(scope, name);
     if (!cell) {
         nv_error_fmt(NV_ERR_RUNTIME, line, col, "متغير غير معرف: %s", name);
     }

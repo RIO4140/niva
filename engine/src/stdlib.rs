@@ -63,6 +63,14 @@ pub trait HandlerCaller {
     /// هل فُتح الخادم لهذا المحرك (علم --اسمح-بالخادم
     /// أو :اسمح-بالخادم)؟
     fn server_allowed(&self) -> bool;
+    /// ب6 — المولدات: ألحق نصا بمخرجات المتصل (طباعة
+    /// جسم مولد أثناء تقدمه تصل إلى مخرجات المتصل
+    /// بالترتيب). الافتراضي صامت (لمنفذ اختبار StubCaller
+    /// وغيره ممن بلا مخرجات).
+    fn append_output(&mut self, _text: &str) {}
+    /// ب6: ثبّت رمز خروج طلبه مولد (`خروج()` داخل
+    /// جسمه) في المتصل. الافتراضي صامت.
+    fn set_exit_code(&mut self, _code: u8) {}
     /// سياسة الملفات لتحميل الشهادة والمفتاح (مجلد
     /// البرنامج + موثوق) — تُقرأ من المحرك نفسه،
     /// لا من متغير عام.
@@ -198,6 +206,38 @@ pub fn native_module(name: &str) -> Option<Value> {
         // باقي الأنماط بمدمجات قائمة (نوع وطول ومدى
         // وأضف) فلا تحتاج مساعدا.
         "مطابقة" => match_entries(),
+        // J11 البيانات والجداول (الدفعة الأخيرة من الـ579):
+        // البنود 168 و170 و171 و173 و174 — وحدة جداول جديدة؛
+        // 172 مؤجلة بقرار (تحتاج اعتمادا أصليا جديدا).
+        "جداول" => tables_entries(),
+// BEGIN J12-GEN rust-modules
+
+        // J12 الرسوميات والوسائط (الدفعة الأخيرة من الـ579):
+        // مخططات SVG، وصور BMP/PNG/GIF، ووسائط WAV، ومحاكاة حياة —
+        // مخرجات ملفات فقط، بلا نافذة تفاعلية أبدا (§88).
+        "مخططات" => charts_entries(),
+        "صور" => images_entries(),
+        "وسائط" => media_entries(),
+        "محاكاة" => sim_entries(),
+        // END J12-GEN rust-modules
+        // BEGIN J13-GEN rust-modules
+
+        // J13 التوسعات الشبكية (الدفعة الأخيرة من الـ579):
+        // صفحات HTML، وبريد SMTP/POP3، ومحادثة، وFTP، وNTP —
+        // طبقة بروتوكول نقية حتمية فوق المقابس القائمة (§88).
+        "صفحات" => pages_entries(),
+        "بريد" => mail_entries(),
+        "محادثة" => chat_entries(),
+        "نقل_ملفات" => ftp_entries(),
+        "وقت_شبكة" => ntp_entries(),
+        // END J13-GEN rust-modules
+// BEGIN J15-GEN rust-modules
+
+        // J15 أنماط الاستخدام (الدفعة الأخيرة من الـ579):
+        // وحدة لغات جديدة للغات المصغرة (240).
+        "لغات" => langs_entries(),
+        // END J15-GEN rust-modules
+
         // باقي J14 (الدفعة الثالثة من برنامج الـ579):
         // البنود 205–211 و214–217 — وحدات أصلية نقية.
         "نص" => text_entries(),
@@ -226,6 +266,15 @@ pub fn native_module(name: &str) -> Option<Value> {
         // لهما هنا؛ و71 مؤجلة بقرار موثق (انظر آخر الملف).
         "دوال" => funcs_entries(),
         "تنفيذ" => exec_entries(),
+// BEGIN J6-GEN rust-modules
+        // ج6 (الدفعة الأخيرة — الأنواع والأعداد والدقة):
+        // البنود 99 و101 و102 و103 و105 و106.
+        "دقة" => precision_entries(),
+        "كسر" => rational_entries(),
+        "مركب" => complex_entries(),
+        "بت" => bits_entries(),
+        "معلب" => boxed_entries(),
+// END J6-GEN rust-modules
         _ => return None,
     };
     let mut exports: HashMap<String, Value> = HashMap::new();
@@ -7957,6 +8006,23 @@ fn text_entries() -> Vec<(&'static str, Value)> {
         ("اسم_الملف", native("اسم_الملف", text_file_name)),
         // البند 164 (الدفعة 2 من الـ579): تحويل التمثيل.
         ("تمثيل", native("تمثيل", text_repr)),
+// BEGIN J2-GEN entries-text
+// J2 (الدفعة الأخيرة من الـ579): البندان 50 و51.
+        ("رمز_يونيكود", native("رمز_يونيكود", text_unicode)),
+        ("أبجدية", native("أبجدية", text_alphabet)),
+// END J2-GEN entries-text
+// BEGIN J15-GEN rust-entries-text
+
+// J15 (230): معالجة نصوص بالجمل.
+        ("قسم_جمل", native("قسم_جمل", text_split_sentences)),
+        ("عدد_الجمل", native("عدد_الجمل", text_sentence_count)),
+        ("جملة", native("جملة", text_sentence_at)),
+        ("طبق_على_جمل", native("طبق_على_جمل", text_apply_sentences)),
+        ("رشح_جمل", native("رشح_جمل", text_filter_sentences)),
+        ("أطول_جملة", native("أطول_جملة", text_longest_sentence)),
+        ("أقصر_جملة", native("أقصر_جملة", text_shortest_sentence)),
+// END J15-GEN rust-entries-text
+
     ]
 }
 
@@ -9721,6 +9787,48 @@ fn lists_entries() -> Vec<(&'static str, Value)> {
         ("قطع_بفاصل", native("قطع_بفاصل", lists_split_sep)),
         // البند 133 (الدفعة 2 من الـ579): القواطع.
         ("شريحة", native("شريحة", lists_slice)),
+// BEGIN J2-GEN entries-lists
+// J2 (الدفعة الأخيرة من الـ579): البنود 25 و26 و28 و29 و32 و33 و35 و37 و38 و39 و40 و41 و42 و45 و46 و52.
+        ("شكل", native("شكل", lists_shape)),
+        ("أعد_تشكيل", native("أعد_تشكيل", lists_reshape)),
+        ("سطح", native("سطح", lists_flatten)),
+        ("خيط", native("خيط", lists_stitch)),
+        ("صفح", native("صفح", lists_stack)),
+        ("فكك_مستوى", native("فكك_مستوى", lists_unpack_one)),
+        ("اربط", native("اربط", lists_concat2)),
+        ("آخر", native("آخر", lists_last)),
+        ("قص_الأخير", native("قص_الأخير", lists_drop_last)),
+        ("عدل_عند", native("عدل_عند", lists_update_at)),
+        ("كرر_كل", native("كرر_كل", lists_replicate)),
+        ("فهرس_أول", native("فهرس_أول", lists_index_first)),
+        ("فهرس_آخر", native("فهرس_آخر", lists_index_last)),
+        ("فهرس_فترات", native("فهرس_فترات", lists_interval_index)),
+        ("فهرس_تبديل", native("فهرس_تبديل", lists_perm_rank)),
+        ("طبق_تبديل", native("طبق_تبديل", lists_apply_perm)),
+        ("اعكس", native("اعكس", lists_reverse)),
+        ("دور", native("دور", lists_rotate)),
+        ("بدل_المحاور", native("بدل_المحاور", lists_transpose)),
+        ("علب", native("علب", lists_box)),
+        ("افتح", native("افتح", lists_unbox)),
+        ("فريد", native("فريد", lists_unique)),
+        ("قناع_فريد", native("قناع_فريد", lists_unique_mask)),
+        ("قارن_الكل_بالكل", native("قارن_الكل_بالكل", lists_self_compare)),
+        ("فهرس_مسار", native("فهرس_مسار", lists_path_index)),
+// END J2-GEN entries-lists
+// BEGIN J5-GEN entries-lists
+// J5 (الدفعة الأخيرة من الـ579): البنود 93 و95 و96.
+        ("طبق_على_كل_عنصر", native("طبق_على_كل_عنصر", lists_apply_each)),
+        ("طبق_على_الصفوف", native("طبق_على_الصفوف", lists_apply_rows)),
+        ("بث", native("بث", lists_broadcast)),
+        ("بث_بمالئ", native("بث_بمالئ", lists_broadcast_fill)),
+// END J5-GEN entries-lists
+// BEGIN J15-GEN rust-entries-lists
+
+// J15 (225): استعلام على القوائم.
+        ("رشح_بقيمة", native("رشح_بقيمة", lists_filter_value)),
+        ("رشح_بدالة", native("رشح_بدالة", lists_filter_fn)),
+// END J15-GEN rust-entries-lists
+
     ]
 }
 
@@ -9858,6 +9966,997 @@ fn lists_slice(
     }
 }
 
+// BEGIN J2-GEN fns-lists
+// ---------- J2 — المصفوفات (الدفعة الأخيرة من الـ579، الخطوة 4 §88) ----------
+
+/// فهرس سالب يُزاح بالطول، والخارج عن النطاق خطأ عربي (J2).
+fn j2_resolve_index(display: &str, len: i64, idx: i64, line: usize, col: usize) -> RioResult<usize> {
+    let r = if idx < 0 { idx + len } else { idx };
+    if r < 0 || r >= len {
+        return Err(RioError::runtime(
+            format!(
+                "الفهرس {} خارج النطاق في {} (الطول {})",
+                idx, display, len
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(r as usize)
+}
+
+/// صف مصفوفة: قائمة، وإلا خطأ نوع عربي (J2).
+fn j2_need_row<'a>(
+    display: &str,
+    v: &'a Value,
+    line: usize,
+    col: usize,
+) -> RioResult<&'a Vec<Value>> {
+    match v {
+        Value::List(items) => Ok(items),
+        other => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع صفا (قائمة) لكن أعطيت {}",
+                display,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// تحقق أن قائمة أعداد تبديل لأعداد ٠ إلى ن-١ بلا تكرار (J2).
+fn j2_need_perm(display: &str, p: &[Value], line: usize, col: usize) -> RioResult<Vec<usize>> {
+    let n = p.len();
+    let mut seen = vec![false; n];
+    let mut out = Vec::new();
+    for v in p {
+        let x = need_integer(display, v, line, col)?;
+        if x < 0 || x as usize >= n || seen[x as usize] {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} تتطلب تبديلا لأعداد ٠ إلى {} بلا تكرار",
+                    display,
+                    n.saturating_sub(1)
+                ),
+                line,
+                col,
+            ));
+        }
+        seen[x as usize] = true;
+        out.push(x as usize);
+    }
+    Ok(out)
+}
+
+/// قوائم.شكل(قيمة) — أبعاد مصفوفة (البند 25): قائمة مسطحة
+/// [ن]؛ وقائمة صفوف [صفوف، أعمدة]؛ ومتداخلة أعمق تتتبع
+/// الصف الأول؛ والصفوف غير المتساوية خطأ عربي؛ والنص
+/// [عدد محارفه]؛ وغيرهما خطأ نوع.
+fn lists_shape(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.شكل";
+    need_args(D, args, 1, line, col)?;
+    match &args[0] {
+        Value::List(items) => {
+            let mut dims: Vec<Value> = vec![Value::Number(items.len() as f64)];
+            let mut cur: &[Value] = items;
+            while let Some(Value::List(first)) = cur.first() {
+                let w = first.len();
+                for row in cur.iter() {
+                    match row {
+                        Value::List(r) if r.len() == w => {}
+                        _ => {
+                            return Err(RioError::runtime(
+                                "صفوف مصفوفة غير متساوية في قوائم.شكل".to_string(),
+                                line,
+                                col,
+                            ))
+                        }
+                    }
+                }
+                dims.push(Value::Number(w as f64));
+                cur = first;
+            }
+            Ok(Value::List(dims))
+        }
+        Value::Str(s) => Ok(Value::List(vec![Value::Number(s.chars().count() as f64)])),
+        other => Err(RioError::typ(
+            format!("الدالة {} تتوقع قائمة أو نصا لكن أعطيت {}", D, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+
+/// قوائم.أعد_تشكيل(قيمة، أبعاد) — إعادة تشكيل قائمة مسطحة
+/// (أو محارف نص) بأبعاد جديدة (البند 25): حاصل ضرب
+/// الأبعاد يجب أن يساوي عدد العناصر تماما؛ والأبعاد
+/// السالبة خطأ؛ والأبعاد الفارغة تعيد العنصر وحده.
+fn lists_reshape(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.أعد_تشكيل";
+    need_args(D, args, 2, line, col)?;
+    let dims_v = need_list(D, &args[1], line, col)?;
+    let mut dims: Vec<i64> = Vec::new();
+    for d in dims_v {
+        let n = need_integer(D, d, line, col)?;
+        if n < 0 {
+            return Err(RioError::runtime(
+                "أبعاد قوائم.أعد_تشكيل لا تكون سالبة".to_string(),
+                line,
+                col,
+            ));
+        }
+        dims.push(n);
+    }
+    let mut total: i64 = 1;
+    for d in &dims {
+        total = total.checked_mul(*d).ok_or_else(|| {
+            RioError::runtime(
+                "أبعاد كبيرة جدا في قوائم.أعد_تشكيل".to_string(),
+                line,
+                col,
+            )
+        })?;
+    }
+    let flat: Vec<Value> = match &args[0] {
+        Value::List(items) => items.clone(),
+        Value::Str(s) => s.chars().map(|c| Value::Str(c.to_string())).collect(),
+        other => {
+            return Err(RioError::typ(
+                format!("الدالة {} تتوقع قائمة أو نصا لكن أعطيت {}", D, other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if total != flat.len() as i64 {
+        return Err(RioError::runtime(
+            format!(
+                "إعادة التشكيل في قوائم.أعد_تشكيل تتطلب {} عناصر لكن أعطيت {}",
+                total,
+                flat.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    fn build(dims: &[i64], flat: &[Value], pos: &mut usize) -> Value {
+        if dims.is_empty() {
+            let v = flat[*pos].clone();
+            *pos += 1;
+            return v;
+        }
+        let mut out = Vec::new();
+        for _ in 0..dims[0] {
+            out.push(build(&dims[1..], flat, pos));
+        }
+        Value::List(out)
+    }
+    let mut pos = 0usize;
+    Ok(build(&dims, &flat, &mut pos))
+}
+
+
+/// قوائم.سطّح(قائمة) — تسطيح تكراري كامل (البند 26): كل
+/// قائمة متداخلة بأي عمق تنحل إلى عناصرها؛ وغير القوائم
+/// يبقى كما هو؛ والقائمة الفارغة تعيد فارغة.
+fn lists_flatten(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.سطح";
+    need_args(D, args, 1, line, col)?;
+    let items = need_list(D, &args[0], line, col)?.clone();
+    fn flat(items: &[Value], out: &mut Vec<Value>) {
+        for it in items {
+            match it {
+                Value::List(inner) => flat(inner, out),
+                other => out.push(other.clone()),
+            }
+        }
+    }
+    let mut out = Vec::new();
+    flat(&items, &mut out);
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.خيّط(مصفوفة، مصفوفة) — دمج جنبا إلى جنب (البند 28):
+/// المصفوفتان قوائم صفوف بعدد الصفوف نفسه؛ وكل صف في
+/// النتيجة صفاه ملتصقان؛ وصف ليس قائمة أو عدد صفوف
+/// مختلف خطأ عربي.
+fn lists_stitch(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.خيط";
+    need_args(D, args, 2, line, col)?;
+    let a = need_list(D, &args[0], line, col)?.clone();
+    let b = need_list(D, &args[1], line, col)?.clone();
+    if a.len() != b.len() {
+        return Err(RioError::runtime(
+            format!(
+                "الخياطة في قوائم.خيط تتطلب صفوفا متساوية العدد ({} مقابل {})",
+                a.len(),
+                b.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let mut out = Vec::new();
+    for (ra, rb) in a.iter().zip(b.iter()) {
+        let la = j2_need_row(D, ra, line, col)?;
+        let lb = j2_need_row(D, rb, line, col)?;
+        let mut row = la.clone();
+        row.extend(lb.iter().cloned());
+        out.push(Value::List(row));
+    }
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.صفّح(مصفوفة، مصفوفة) — طبقة فوق طبقة (البند 28):
+/// صفوف الثانية بعد صفوف الأولى؛ وصف ليس قائمة خطأ عربي.
+fn lists_stack(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.صفح";
+    need_args(D, args, 2, line, col)?;
+    let a = need_list(D, &args[0], line, col)?.clone();
+    let b = need_list(D, &args[1], line, col)?.clone();
+    let mut out = Vec::new();
+    for r in a.iter().chain(b.iter()) {
+        let row = j2_need_row(D, r, line, col)?;
+        out.push(Value::List(row.clone()));
+    }
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.فكك_مستوى(قائمة) — تفكيك مستوى واحد (البند 29):
+/// عناصر القائمة التي هي قوائم تنحل في مكانها، وغيرها
+/// يبقى كما هو؛ ويختلف عن سطّح بأنه لا يتكرر للداخل.
+fn lists_unpack_one(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.فكك_مستوى";
+    need_args(D, args, 1, line, col)?;
+    let items = need_list(D, &args[0], line, col)?.clone();
+    let mut out = Vec::new();
+    for it in items {
+        match it {
+            Value::List(inner) => out.extend(inner.iter().cloned()),
+            other => out.push(other),
+        }
+    }
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.اربط(قائمة، قائمة) — ربط قائمتين في واحدة (البند 29):
+/// العناصر كلها بالترتيب؛ ولا تغيّر في المعاملين.
+fn lists_concat2(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.اربط";
+    need_args(D, args, 2, line, col)?;
+    let a = need_list(D, &args[0], line, col)?;
+    let b = need_list(D, &args[1], line, col)?;
+    let mut out = a.clone();
+    out.extend(b.iter().cloned());
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.آخر(قيمة) — آخر عنصر (البند 32): قائمة أو نص؛
+/// والفارغ خطأ عربي.
+fn lists_last(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.آخر";
+    need_args(D, args, 1, line, col)?;
+    match &args[0] {
+        Value::List(items) => items.last().cloned().ok_or_else(|| {
+            RioError::runtime("قائمة فارغة في قوائم.آخر".to_string(), line, col)
+        }),
+        Value::Str(s) => s
+            .chars()
+            .last()
+            .map(|c| Value::Str(c.to_string()))
+            .ok_or_else(|| RioError::runtime("نص فارغ في قوائم.آخر".to_string(), line, col)),
+        other => Err(RioError::typ(
+            format!("الدالة {} تتوقع قائمة أو نصا لكن أعطيت {}", D, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+
+/// قوائم.قصّ_الأخير(قيمة) — القيمة بلا آخر عنصر (البند 32):
+/// قائمة أو نص؛ والفارغ يعيد فارغا.
+fn lists_drop_last(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.قص_الأخير";
+    need_args(D, args, 1, line, col)?;
+    match &args[0] {
+        Value::List(items) => {
+            if items.is_empty() {
+                Ok(Value::List(vec![]))
+            } else {
+                Ok(Value::List(items[..items.len() - 1].to_vec()))
+            }
+        }
+        Value::Str(s) => {
+            let chars: Vec<char> = s.chars().collect();
+            if chars.is_empty() {
+                Ok(Value::Str(String::new()))
+            } else {
+                Ok(Value::Str(chars[..chars.len() - 1].iter().collect()))
+            }
+        }
+        other => Err(RioError::typ(
+            format!("الدالة {} تتوقع قائمة أو نصا لكن أعطيت {}", D, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+
+/// قوائم.عدّل_عند(قائمة، فهارس، قيم) — استبدال عناصر في
+/// مواضع معطاة بقيم جديدة (البند 33): الفهارس والقيم
+/// قائمتان بالعدد نفسه؛ والفهرس السالب يُزاح من النهاية؛
+/// والخارج عن النطاق أو العدد المختلف خطأ عربي؛ ولا
+/// تغيّر في القائمة الأصلية.
+fn lists_update_at(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.عدل_عند";
+    need_args(D, args, 3, line, col)?;
+    let items = need_list(D, &args[0], line, col)?.clone();
+    let idxs = need_list(D, &args[1], line, col)?.clone();
+    let vals = need_list(D, &args[2], line, col)?.clone();
+    if idxs.len() != vals.len() {
+        return Err(RioError::runtime(
+            format!(
+                "قوائم.عدل_عند تتطلب فهارس وقيما بنفس العدد ({} مقابل {})",
+                idxs.len(),
+                vals.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let mut out = items;
+    for (iv, v) in idxs.iter().zip(vals.iter()) {
+        let i = need_integer(D, iv, line, col)?;
+        let pos = j2_resolve_index(D, out.len() as i64, i, line, col)?;
+        out[pos] = v.clone();
+    }
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.كرّر_كل(قائمة، أعداد) — تكرار كل عنصر بعدد مرات
+/// معطى (البند 35): الأعداد قائمة بالطول نفسه أو عدد واحد
+/// لكل العناصر؛ والسالب خطأ؛ والمجموع فوق مليون عنصر خطأ.
+fn lists_replicate(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.كرر_كل";
+    need_args(D, args, 2, line, col)?;
+    let items = need_list(D, &args[0], line, col)?.clone();
+    let counts: Vec<i64> = match &args[1] {
+        Value::Number(_) => {
+            let n = need_integer(D, &args[1], line, col)?;
+            vec![n; items.len()]
+        }
+        Value::List(cs) => {
+            let mut v = Vec::new();
+            for c in cs {
+                v.push(need_integer(D, c, line, col)?);
+            }
+            v
+        }
+        other => {
+            return Err(RioError::typ(
+                format!("الدالة {} تتوقع عددا أو قائمة أعداد لكن أعطيت {}", D, other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    if counts.len() != items.len() {
+        return Err(RioError::runtime(
+            format!(
+                "قوائم.كرر_كل تتطلب أعدادا بطول القائمة ({} مقابل {})",
+                counts.len(),
+                items.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    for n in &counts {
+        if *n < 0 {
+            return Err(RioError::runtime(
+                "عدد تكرار سالب في قوائم.كرر_كل".to_string(),
+                line,
+                col,
+            ));
+        }
+    }
+    let total: i128 = counts.iter().map(|n| *n as i128).sum();
+    if total > 1_000_000 {
+        return Err(RioError::runtime(
+            "تكرار كبير جدا في قوائم.كرر_كل".to_string(),
+            line,
+            col,
+        ));
+    }
+    let mut out = Vec::new();
+    for (it, n) in items.iter().zip(counts.iter()) {
+        for _ in 0..*n {
+            out.push(it.clone());
+        }
+    }
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.فهرس_أول(قائمة، عنصر) — فهرس أول ظهور (البند 37):
+/// -١ إن غاب العنصر؛ والمساواة عميقة كما في تطابق.
+fn lists_index_first(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.فهرس_أول";
+    need_args(D, args, 2, line, col)?;
+    let items = need_list(D, &args[0], line, col)?;
+    for (i, it) in items.iter().enumerate() {
+        if *it == args[1] {
+            return Ok(Value::Number(i as f64));
+        }
+    }
+    Ok(Value::Number(-1.0))
+}
+
+
+/// قوائم.فهرس_آخر(قائمة، عنصر) — فهرس آخر ظهور (البند 37):
+/// -١ إن غاب العنصر.
+fn lists_index_last(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.فهرس_آخر";
+    need_args(D, args, 2, line, col)?;
+    let items = need_list(D, &args[0], line, col)?;
+    for (i, it) in items.iter().enumerate().rev() {
+        if *it == args[1] {
+            return Ok(Value::Number(i as f64));
+        }
+    }
+    Ok(Value::Number(-1.0))
+}
+
+
+/// قوائم.فهرس_فترات(حدود، قيم) — في أي فترة يقع كل عدد
+/// (البند 38): النتيجة عدد الحدود التي هي ≤ العدد؛
+/// والحدود مرتبة تصاعديا وإلا خطأ عربي.
+fn lists_interval_index(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.فهرس_فترات";
+    need_args(D, args, 2, line, col)?;
+    let bounds_v = need_list(D, &args[0], line, col)?.clone();
+    let mut bounds = Vec::new();
+    for b in &bounds_v {
+        bounds.push(need_number(D, b, line, col)?);
+    }
+    for w in bounds.windows(2) {
+        if w[1] < w[0] {
+            return Err(RioError::runtime(
+                "حدود قوائم.فهرس_فترات غير مرتبة تصاعديا".to_string(),
+                line,
+                col,
+            ));
+        }
+    }
+    let vals = need_list(D, &args[1], line, col)?.clone();
+    let mut out = Vec::new();
+    for v in &vals {
+        let x = need_number(D, v, line, col)?;
+        out.push(Value::Number(bounds.iter().filter(|b| **b <= x).count() as f64));
+    }
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.فهرس_تبديل(تبديل) — رتبة تبديل في الترتيب المعجمي
+/// (البند 39): التبديل أعداد ٠ إلى ن-١ بلا تكرار؛ والرتبة
+/// صفرية؛ ون > ٢٠ خطأ (٢٠! آخر عاملي في صحيح ٦٤ بت).
+fn lists_perm_rank(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.فهرس_تبديل";
+    need_args(D, args, 1, line, col)?;
+    let p_v = need_list(D, &args[0], line, col)?.clone();
+    let n = p_v.len();
+    if n > 20 {
+        return Err(RioError::runtime(
+            "تبديل طويل جدا في قوائم.فهرس_تبديل (الأقصى ٢٠)".to_string(),
+            line,
+            col,
+        ));
+    }
+    let p = j2_need_perm(D, &p_v, line, col)?;
+    let mut fact: Vec<i64> = vec![1; n + 1];
+    for i in 1..=n {
+        fact[i] = fact[i - 1] * i as i64;
+    }
+    let mut rank: i64 = 0;
+    let mut used = vec![false; n];
+    for i in 0..n {
+        let smaller = (0..p[i]).filter(|j| !used[*j]).count() as i64;
+        rank += smaller * fact[n - 1 - i];
+        used[p[i]] = true;
+    }
+    Ok(Value::Number(rank as f64))
+}
+
+
+/// قوائم.طبّق_تبديل(قائمة، تبديل) — إعادة ترتيب قائمة
+/// بتبديل (البند 39): النتيجة[ن] = القائمة[تبديل[ن]]؛
+/// والتبديل يجب أن يطابق طول القائمة تماما بلا تكرار.
+fn lists_apply_perm(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.طبق_تبديل";
+    need_args(D, args, 2, line, col)?;
+    let items = need_list(D, &args[0], line, col)?.clone();
+    let p_v = need_list(D, &args[1], line, col)?.clone();
+    if p_v.len() != items.len() {
+        return Err(RioError::runtime(
+            format!(
+                "قوائم.طبق_تبديل تتطلب تبديلا بطول القائمة ({} مقابل {})",
+                p_v.len(),
+                items.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let p = j2_need_perm(D, &p_v, line, col)?;
+    let mut out = Vec::new();
+    for i in p {
+        out.push(items[i].clone());
+    }
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.اعكس(قيمة) — عكس ترتيب قائمة أو محارف نص (البند 40).
+fn lists_reverse(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.اعكس";
+    need_args(D, args, 1, line, col)?;
+    match &args[0] {
+        Value::List(items) => Ok(Value::List(items.iter().rev().cloned().collect())),
+        Value::Str(s) => Ok(Value::Str(s.chars().rev().collect())),
+        other => Err(RioError::typ(
+            format!("الدالة {} تتوقع قائمة أو نصا لكن أعطيت {}", D, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+
+/// قوائم.دوّر(قيمة، عدد) — تدوير قائمة أو نص (البند 40):
+/// الموجب يسار (الأوائل إلى النهاية)، والسالب يمين؛
+/// والعدد يُؤخذ باقي الطول؛ والفارغ يعيد فارغا.
+fn lists_rotate(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.دور";
+    need_args(D, args, 2, line, col)?;
+    let n = need_integer(D, &args[1], line, col)?;
+    match &args[0] {
+        Value::List(items) => {
+            let len = items.len();
+            if len == 0 {
+                return Ok(Value::List(vec![]));
+            }
+            let k = (((n % len as i64) + len as i64) % len as i64) as usize;
+            let mut out = items[k..].to_vec();
+            out.extend_from_slice(&items[..k]);
+            Ok(Value::List(out))
+        }
+        Value::Str(s) => {
+            let chars: Vec<char> = s.chars().collect();
+            let len = chars.len();
+            if len == 0 {
+                return Ok(Value::Str(String::new()));
+            }
+            let k = (((n % len as i64) + len as i64) % len as i64) as usize;
+            let mut out: Vec<char> = chars[k..].to_vec();
+            out.extend_from_slice(&chars[..k]);
+            Ok(Value::Str(out.iter().collect()))
+        }
+        other => Err(RioError::typ(
+            format!("الدالة {} تتوقع قائمة أو نصا لكن أعطيت {}", D, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+
+/// قوائم.بدّل_المحاور(مصفوفة) — تبديل صفوف مصفوفة بأعمدتها
+/// (البند 41): الصفوف قوائم متساوية الطول وإلا خطأ عربي؛
+/// والمصفوفة الفارغة تعيد فارغة.
+fn lists_transpose(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.بدل_المحاور";
+    need_args(D, args, 1, line, col)?;
+    let rows_v = need_list(D, &args[0], line, col)?.clone();
+    if rows_v.is_empty() {
+        return Ok(Value::List(vec![]));
+    }
+    let mut rows: Vec<Vec<Value>> = Vec::new();
+    for r in &rows_v {
+        rows.push(j2_need_row(D, r, line, col)?.clone());
+    }
+    let w = rows[0].len();
+    for r in &rows {
+        if r.len() != w {
+            return Err(RioError::runtime(
+                "صفوف غير متساوية في قوائم.بدل_المحاور".to_string(),
+                line,
+                col,
+            ));
+        }
+    }
+    let mut out = Vec::new();
+    for j in 0..w {
+        let mut col = Vec::new();
+        for r in &rows {
+            col.push(r[j].clone());
+        }
+        out.push(Value::List(col));
+    }
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.علّب(قيمة) — وضع أي قيمة في علبة (البند 42):
+/// قاموس بمفتاح واحد «علبة»؛ فتبقى القائمة المغلّفة
+/// عنصرا واحدا في التسطيح والتفكيك.
+fn lists_box(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.علب";
+    need_args(D, args, 1, line, col)?;
+    Ok(Value::Dict(vec![("علبة".to_string(), args[0].clone())]))
+}
+
+
+/// قوائم.افتح(علبة) — فتح العلبة وإرجاع قيمتها (البند 42):
+/// ما ليس قاموسا بمفتاح واحد «علبة» خطأ نوع عربي.
+fn lists_unbox(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.افتح";
+    need_args(D, args, 1, line, col)?;
+    match &args[0] {
+        Value::Dict(pairs) if pairs.len() == 1 && pairs[0].0 == "علبة" => Ok(pairs[0].1.clone()),
+        _ => Err(RioError::typ(
+            "الدالة قوائم.افتح تتوقع علبة من قوائم.علب".to_string(),
+            line,
+            col,
+        )),
+    }
+}
+
+
+/// قوائم.فريد(قائمة) — العناصر الفريدة بلا تكرار (البند 45):
+/// بترتيب أول ظهور؛ والمساواة عميقة كما في تطابق.
+fn lists_unique(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.فريد";
+    need_args(D, args, 1, line, col)?;
+    let items = need_list(D, &args[0], line, col)?.clone();
+    let mut out: Vec<Value> = Vec::new();
+    for it in items {
+        if !out.iter().any(|x| x == &it) {
+            out.push(it);
+        }
+    }
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.قناع_فريد(قائمة) — قناع يميز أول ظهور (البند 45):
+/// صحيح عند أول ظهور للعنصر وخطأ عند تكراره.
+fn lists_unique_mask(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.قناع_فريد";
+    need_args(D, args, 1, line, col)?;
+    let items = need_list(D, &args[0], line, col)?.clone();
+    let mut seen: Vec<Value> = Vec::new();
+    let mut out = Vec::new();
+    for it in items {
+        let first = !seen.iter().any(|x| x == &it);
+        if first {
+            seen.push(it);
+        }
+        out.push(Value::Bool(first));
+    }
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.قارن_الكل_بالكل(قائمة) — مصفوفة منطقية تبين
+/// تساوي كل عنصر مع كل عنصر (البند 46): النتيجة[س][ص]
+/// صحيح إن تساوى العنصران؛ والفارغة تعيد فارغة.
+fn lists_self_compare(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.قارن_الكل_بالكل";
+    need_args(D, args, 1, line, col)?;
+    let items = need_list(D, &args[0], line, col)?.clone();
+    let mut out = Vec::new();
+    for a in &items {
+        let mut row = Vec::new();
+        for b in &items {
+            row.push(Value::Bool(a == b));
+        }
+        out.push(Value::List(row));
+    }
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.فهرس_مسار(قيمة، مسار) — جلب عنصر من بنية متداخلة
+/// بمسار فهارس (البند 52): عدد للقائمة (والسالب من
+/// النهاية)، ونص لمفتاح القاموس؛ والمسار الفارغ يعيد
+/// القيمة نفسها؛ والخطوة الخاطئة خطأ عربي.
+fn lists_path_index(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.فهرس_مسار";
+    need_args(D, args, 2, line, col)?;
+    let mut cur = args[0].clone();
+    let path = need_list(D, &args[1], line, col)?.clone();
+    for step in &path {
+        match step {
+            Value::Number(_) => {
+                let i = need_integer(D, step, line, col)?;
+                match &cur {
+                    Value::List(items) => {
+                        let pos = j2_resolve_index(D, items.len() as i64, i, line, col)?;
+                        cur = items[pos].clone();
+                    }
+                    other => {
+                        return Err(RioError::typ(
+                            format!(
+                                "الدالة {} تتطلب قائمة للفهرس العددي لكن أعطيت {}",
+                                D,
+                                other.type_name()
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                }
+            }
+            Value::Str(key) => match &cur {
+                Value::Dict(pairs) => match pairs.iter().find(|(k, _)| k == key) {
+                    Some((_, v)) => cur = v.clone(),
+                    None => {
+                        return Err(RioError::runtime(
+                            format!("المفتاح {} غائب في قوائم.فهرس_مسار", key),
+                            line,
+                            col,
+                        ))
+                    }
+                },
+                other => {
+                    return Err(RioError::typ(
+                        format!(
+                            "الدالة {} تتطلب قاموسا للمفتاح النصي لكن أعطيت {}",
+                            D,
+                            other.type_name()
+                        ),
+                        line,
+                        col,
+                    ))
+                }
+            },
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتطلب عددا أو نصا في المسار لكن أعطيت {}",
+                        D,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        }
+    }
+    Ok(cur)
+}
+
+// END J2-GEN fns-lists
+// BEGIN J5-GEN fns-lists
+// ---------- J5 — الرتبة والخلايا (الدفعة الأخيرة من الـ579، الخطوة 4 §88) ----------
+
+/// عملية بث ثنائية على عددين (J5): جمع، طرح، ضرب،
+/// قسمة، باقي، أكبر، أصغر؛ والقسمة أو الباقي على
+/// صفر خطأ عربي؛ وغيرها خطأ عملية غير معروفة.
+fn j5_apply_op(display: &str, op: &str, x: f64, y: f64, line: usize, col: usize) -> RioResult<f64> {
+    match op {
+        "جمع" => Ok(x + y),
+        "طرح" => Ok(x - y),
+        "ضرب" => Ok(x * y),
+        "قسمة" => {
+            if y == 0.0 {
+                return Err(RioError::runtime(
+                    format!("قسمة على صفر في {}", display),
+                    line,
+                    col,
+                ));
+            }
+            Ok(x / y)
+        }
+        "باقي" => {
+            if y == 0.0 {
+                return Err(RioError::runtime(
+                    format!("باقي القسمة على صفر في {}", display),
+                    line,
+                    col,
+                ));
+            }
+            Ok(x % y)
+        }
+        "أكبر" => Ok(x.max(y)),
+        "أصغر" => Ok(x.min(y)),
+        _ => Err(RioError::runtime(
+            format!(
+                "عملية بث غير معروفة: {} — المتاح: جمع، طرح، ضرب، قسمة، باقي، أكبر، أصغر",
+                op
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// هل نص العملية من عمليات البث السبع (J5)؟
+fn j5_known_op(op: &str) -> bool {
+    matches!(
+        op,
+        "جمع" | "طرح" | "ضرب" | "قسمة" | "باقي" | "أكبر" | "أصغر"
+    )
+}
+
+/// تطبيق عملية بث واحدة على زوج (J5): نص عملية على
+/// عددين، أو دالة نيفا تستلم زوجا [أ، ب].
+fn j5_broadcast_one(
+    ctx: &mut dyn HandlerCaller,
+    display: &str,
+    op: &Value,
+    x: Value,
+    y: Value,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    match op {
+        Value::Str(s) => {
+            let a = need_number(display, &x, line, col)?;
+            let b = need_number(display, &y, line, col)?;
+            Ok(Value::Number(j5_apply_op(display, s, a, b, line, col)?))
+        }
+        _ => j3_call_pair(ctx, op, x, y, line, col),
+    }
+}
+
+/// قوائم.طبق_على_كل_عنصر(قائمة، دالة) — تطبيق دالة
+/// على كل عنصر وإرجاع قائمة النتائج بالترتيب (البند 93:
+/// رتبة الفعل بصيغة عربية صريحة)؛ والدالة تستلم
+/// العنصر وحده بمعامل واحد؛ والقائمة الفارغة تعيد
+/// فارغة؛ وغير الدالة أو غير القائمة خطأ عربي.
+/// المفتاح المخزن «طبق_على_كل_عنصر» (تجريد الشدة من طبّق).
+fn lists_apply_each(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.طبق_على_كل_عنصر";
+    need_args(D, args, 2, line, col)?;
+    let items = need_list(D, &args[0], line, col)?.clone();
+    j3_need_func(D, &args[1], line, col)?;
+    let mut out = Vec::with_capacity(items.len());
+    for it in items {
+        out.push(j3_call_single(ctx, &args[1], it, line, col)?);
+    }
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.طبق_على_الصفوف(مصفوفة، دالة) — تطبيق دالة
+/// على كل صف (قائمة) وإرجاع قائمة النتائج بالترتيب
+/// (البند 93)؛ والدالة تستلم الصف كاملا بمعامل واحد؛
+/// وصف ليس قائمة خطأ عربي؛ والمصفوفة الفارغة تعيد فارغة.
+/// المفتاح المخزن «طبق_على_الصفوف» (تجريد الشدة من طبّق).
+fn lists_apply_rows(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.طبق_على_الصفوف";
+    need_args(D, args, 2, line, col)?;
+    let rows = need_list(D, &args[0], line, col)?.clone();
+    j3_need_func(D, &args[1], line, col)?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in rows {
+        let row = j2_need_row(D, &r, line, col)?.clone();
+        out.push(j3_call_single(ctx, &args[1], Value::List(row), line, col)?);
+    }
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.بث(قائمة، قيمة، عملية) — الاتفاق/البث (البند 95)
+/// بصيغة صريحة: قيمة عددية تُبث على كل عنصر، أو قائمة
+/// بنفس الطول تُجمع عنصرا بعنصر؛ والعملية نص من السبع
+/// (جمع، طرح، ضرب، قسمة، باقي، أكبر، أصغر — أعداد فقط)
+/// أو دالة نيفا تستلم زوجا [أ، ب] (أي قيمتين)؛ وأطوال
+/// مختلفة خطأ عربي؛ والقائمة الفارغة تعيد فارغة قبل
+/// أي فحص (للطول أو العملية أو القسمة) — قاعدة البند 97.
+/// لا بث في المعاملات نفسها: `+` على قائمتين دمج لا بث.
+fn lists_broadcast(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.بث";
+    need_args(D, args, 3, line, col)?;
+    let items = need_list(D, &args[0], line, col)?.clone();
+    if items.is_empty() {
+        return Ok(Value::List(vec![]));
+    }
+    if let Value::Str(op) = &args[2] {
+        if !j5_known_op(op) {
+            return Err(RioError::runtime(
+                format!(
+                    "عملية بث غير معروفة: {} — المتاح: جمع، طرح، ضرب، قسمة، باقي، أكبر، أصغر",
+                    op
+                ),
+                line,
+                col,
+            ));
+        }
+    } else {
+        j3_need_func(D, &args[2], line, col)?;
+    }
+    let mut out = Vec::with_capacity(items.len());
+    match &args[1] {
+        Value::List(other) => {
+            if other.len() != items.len() {
+                return Err(RioError::runtime(
+                    format!(
+                        "البث في قوائم.بث يتطلب أطوالا متساوية ({} مقابل {})",
+                        items.len(),
+                        other.len()
+                    ),
+                    line,
+                    col,
+                ));
+            }
+            for (x, y) in items.iter().zip(other.iter()) {
+                out.push(j5_broadcast_one(ctx, D, &args[2], x.clone(), y.clone(), line, col)?);
+            }
+        }
+        scalar => {
+            for x in items {
+                out.push(j5_broadcast_one(ctx, D, &args[2], x, scalar.clone(), line, col)?);
+            }
+        }
+    }
+    Ok(Value::List(out))
+}
+
+
+/// قوائم.بث_بمالئ(قائمة، قائمة، مالئ، عملية) — الحشو
+/// عند الجمع (البند 96) بمعامل قيمة مالئة صريح: الأقصر
+/// من القائمتين يُكمل بالمالئ حتى طول الأطول، ثم تُطبق
+/// العملية عنصرا بعنصر؛ والعملية نص من السبع (أعداد
+/// فقط، والمالئ حينها عدد) أو دالة زوج [أ، ب] (أي قيمتين)؛
+/// والفارغتان تعيدان فارغة؛ وفارغة مع غير فارغة تُكمل
+/// كلها بالمالئ.
+fn lists_broadcast_fill(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "قوائم.بث_بمالئ";
+    need_args(D, args, 4, line, col)?;
+    let a = need_list(D, &args[0], line, col)?.clone();
+    let b = need_list(D, &args[1], line, col)?.clone();
+    if a.is_empty() && b.is_empty() {
+        return Ok(Value::List(vec![]));
+    }
+    if let Value::Str(op) = &args[3] {
+        if !j5_known_op(op) {
+            return Err(RioError::runtime(
+                format!(
+                    "عملية بث غير معروفة: {} — المتاح: جمع، طرح، ضرب، قسمة، باقي، أكبر، أصغر",
+                    op
+                ),
+                line,
+                col,
+            ));
+        }
+    } else {
+        j3_need_func(D, &args[3], line, col)?;
+    }
+    let n = a.len().max(b.len());
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let x = a.get(i).cloned().unwrap_or_else(|| args[2].clone());
+        let y = b.get(i).cloned().unwrap_or_else(|| args[2].clone());
+        out.push(j5_broadcast_one(ctx, D, &args[3], x, y, line, col)?);
+    }
+    Ok(Value::List(out))
+}
+
+// END J5-GEN fns-lists
 // ---------- 160: الآلة الحاسبة العلمية (وحدة علمي جديدة) ----------
 // النطاق الموثق: 11 ثابتا فيزيائيا بقيم SI (CODATA 2018
 // حيث تنطبق؛ وسرعة الضوء قيمة معرّفة بالضبط، وتسارع
@@ -11233,6 +12332,66 @@ fn text_split_words_all(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usiz
     Ok(Value::List(out))
 }
 
+// BEGIN J2-GEN fns-text
+// ---------- J2 — يونيكود والأبجدية (الدفعة الأخيرة من الـ579) ----------
+
+/// نص.رمز_يونيكود(قيمة) — تحويل بين حرف ورمز يونيكود
+/// (البند 50): نص من محرف واحد يعيد رمزه؛ وعدد صحيح
+/// صالح يعيد المحرف نصا؛ وغيرهما خطأ عربي.
+fn text_unicode(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "نص.رمز_يونيكود";
+    need_args(D, args, 1, line, col)?;
+    match &args[0] {
+        Value::Str(s) => {
+            let mut chars = s.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => Ok(Value::Number(c as u32 as f64)),
+                _ => Err(RioError::runtime(
+                    "الدالة نص.رمز_يونيكود تتطلب نصا من محرف واحد".to_string(),
+                    line,
+                    col,
+                )),
+            }
+        }
+        Value::Number(_) => {
+            let n = need_integer(D, &args[0], line, col)?;
+            if !(0..=0x10FFFF).contains(&n) || (0xD800..0xE000).contains(&n) {
+                return Err(RioError::runtime(
+                    "رمز يونيكود غير صالح في نص.رمز_يونيكود".to_string(),
+                    line,
+                    col,
+                ));
+            }
+            match char::from_u32(n as u32) {
+                Some(c) => Ok(Value::Str(c.to_string())),
+                None => Err(RioError::runtime(
+                    "رمز يونيكود غير صالح في نص.رمز_يونيكود".to_string(),
+                    line,
+                    col,
+                )),
+            }
+        }
+        other => Err(RioError::typ(
+            format!("الدالة {} تتوقع نصا أو عددا لكن أعطيت {}", D, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+
+/// نص.أبجدية() — قائمة الحروف العربية الثمانية والعشرين
+/// (البند 51): كل حرف نص من محرف واحد، بالترتيب الأبجدي.
+fn text_alphabet(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const D: &str = "نص.أبجدية";
+    need_args(D, args, 0, line, col)?;
+    let letters = "ابتثجحخدذرزسشصضطظعغفقكلمنهوي";
+    Ok(Value::List(
+        letters.chars().map(|c| Value::Str(c.to_string())).collect(),
+    ))
+}
+
+// END J2-GEN fns-text
 // ---------- 70: التنسيق — ربط فقط، بلا بناء ----------
 // نسّق مبنية في وحدة نص أعلاه (البنّاء ج، J14-220)
 // وهي نسّق نفسها من البند J3-70 — فلا دالة تُعاد هنا.
@@ -12735,3 +13894,6697 @@ mod flow_address_tests {
         );
     }
 }
+
+// ---------- J11: البيانات والجداول (وحدة جداول جديدة) ----------
+// البنود 168 و170 و171 و173 و174. الجدول قائمة صفوف،
+// والصف قاموس (عمود ← قيمة) يحفظ ترتيب إدخال مفاتيحه.
+// 172 (SQLite وODBC) مؤجل: يحتاج اعتمادا أصليا جديدا
+// (مكتبة SQLite) وقرار نموذج، فلا واجهة وهمية هنا.
+// التسجيلات في المنطقة المعلمة أدناه مولدة من
+// ~/workspace/j11gen/spec.json — لا تعدلها يدويا.
+
+
+
+// BEGIN J12-GEN rust-trig
+/// J12: جدول جيب صحيح (مولّد): sin(2πi/1024) * 32767،
+/// i16 في [-32767, 32767] — نفس القيم حرفيا في مرآة C،
+/// فكل هندسة المخططات والموجات صحيحة بلا عائم.
+static J12_SIN_TABLE: [i16; 1024] = [
+    0, 201, 402, 603, 804, 1005, 1206, 1407, 1608, 1809, 2009, 2210, 2410, 2611, 2811, 3012,
+    3212, 3412, 3612, 3811, 4011, 4210, 4410, 4609, 4808, 5007, 5205, 5404, 5602, 5800, 5998, 6195,
+    6393, 6590, 6786, 6983, 7179, 7375, 7571, 7767, 7962, 8157, 8351, 8545, 8739, 8933, 9126, 9319,
+    9512, 9704, 9896, 10087, 10278, 10469, 10659, 10849, 11039, 11228, 11417, 11605, 11793, 11980, 12167, 12353,
+    12539, 12725, 12910, 13094, 13279, 13462, 13645, 13828, 14010, 14191, 14372, 14553, 14732, 14912, 15090, 15269,
+    15446, 15623, 15800, 15976, 16151, 16325, 16499, 16673, 16846, 17018, 17189, 17360, 17530, 17700, 17869, 18037,
+    18204, 18371, 18537, 18703, 18868, 19032, 19195, 19357, 19519, 19680, 19841, 20000, 20159, 20317, 20475, 20631,
+    20787, 20942, 21096, 21250, 21403, 21554, 21705, 21856, 22005, 22154, 22301, 22448, 22594, 22739, 22884, 23027,
+    23170, 23311, 23452, 23592, 23731, 23870, 24007, 24143, 24279, 24413, 24547, 24680, 24811, 24942, 25072, 25201,
+    25329, 25456, 25582, 25708, 25832, 25955, 26077, 26198, 26319, 26438, 26556, 26674, 26790, 26905, 27019, 27133,
+    27245, 27356, 27466, 27575, 27683, 27790, 27896, 28001, 28105, 28208, 28310, 28411, 28510, 28609, 28706, 28803,
+    28898, 28992, 29085, 29177, 29268, 29358, 29447, 29534, 29621, 29706, 29791, 29874, 29956, 30037, 30117, 30195,
+    30273, 30349, 30424, 30498, 30571, 30643, 30714, 30783, 30852, 30919, 30985, 31050, 31113, 31176, 31237, 31297,
+    31356, 31414, 31470, 31526, 31580, 31633, 31685, 31736, 31785, 31833, 31880, 31926, 31971, 32014, 32057, 32098,
+    32137, 32176, 32213, 32250, 32285, 32318, 32351, 32382, 32412, 32441, 32469, 32495, 32521, 32545, 32567, 32589,
+    32609, 32628, 32646, 32663, 32678, 32692, 32705, 32717, 32728, 32737, 32745, 32752, 32757, 32761, 32765, 32766,
+    32767, 32766, 32765, 32761, 32757, 32752, 32745, 32737, 32728, 32717, 32705, 32692, 32678, 32663, 32646, 32628,
+    32609, 32589, 32567, 32545, 32521, 32495, 32469, 32441, 32412, 32382, 32351, 32318, 32285, 32250, 32213, 32176,
+    32137, 32098, 32057, 32014, 31971, 31926, 31880, 31833, 31785, 31736, 31685, 31633, 31580, 31526, 31470, 31414,
+    31356, 31297, 31237, 31176, 31113, 31050, 30985, 30919, 30852, 30783, 30714, 30643, 30571, 30498, 30424, 30349,
+    30273, 30195, 30117, 30037, 29956, 29874, 29791, 29706, 29621, 29534, 29447, 29358, 29268, 29177, 29085, 28992,
+    28898, 28803, 28706, 28609, 28510, 28411, 28310, 28208, 28105, 28001, 27896, 27790, 27683, 27575, 27466, 27356,
+    27245, 27133, 27019, 26905, 26790, 26674, 26556, 26438, 26319, 26198, 26077, 25955, 25832, 25708, 25582, 25456,
+    25329, 25201, 25072, 24942, 24811, 24680, 24547, 24413, 24279, 24143, 24007, 23870, 23731, 23592, 23452, 23311,
+    23170, 23027, 22884, 22739, 22594, 22448, 22301, 22154, 22005, 21856, 21705, 21554, 21403, 21250, 21096, 20942,
+    20787, 20631, 20475, 20317, 20159, 20000, 19841, 19680, 19519, 19357, 19195, 19032, 18868, 18703, 18537, 18371,
+    18204, 18037, 17869, 17700, 17530, 17360, 17189, 17018, 16846, 16673, 16499, 16325, 16151, 15976, 15800, 15623,
+    15446, 15269, 15090, 14912, 14732, 14553, 14372, 14191, 14010, 13828, 13645, 13462, 13279, 13094, 12910, 12725,
+    12539, 12353, 12167, 11980, 11793, 11605, 11417, 11228, 11039, 10849, 10659, 10469, 10278, 10087, 9896, 9704,
+    9512, 9319, 9126, 8933, 8739, 8545, 8351, 8157, 7962, 7767, 7571, 7375, 7179, 6983, 6786, 6590,
+    6393, 6195, 5998, 5800, 5602, 5404, 5205, 5007, 4808, 4609, 4410, 4210, 4011, 3811, 3612, 3412,
+    3212, 3012, 2811, 2611, 2410, 2210, 2009, 1809, 1608, 1407, 1206, 1005, 804, 603, 402, 201,
+    0, -201, -402, -603, -804, -1005, -1206, -1407, -1608, -1809, -2009, -2210, -2410, -2611, -2811, -3012,
+    -3212, -3412, -3612, -3811, -4011, -4210, -4410, -4609, -4808, -5007, -5205, -5404, -5602, -5800, -5998, -6195,
+    -6393, -6590, -6786, -6983, -7179, -7375, -7571, -7767, -7962, -8157, -8351, -8545, -8739, -8933, -9126, -9319,
+    -9512, -9704, -9896, -10087, -10278, -10469, -10659, -10849, -11039, -11228, -11417, -11605, -11793, -11980, -12167, -12353,
+    -12539, -12725, -12910, -13094, -13279, -13462, -13645, -13828, -14010, -14191, -14372, -14553, -14732, -14912, -15090, -15269,
+    -15446, -15623, -15800, -15976, -16151, -16325, -16499, -16673, -16846, -17018, -17189, -17360, -17530, -17700, -17869, -18037,
+    -18204, -18371, -18537, -18703, -18868, -19032, -19195, -19357, -19519, -19680, -19841, -20000, -20159, -20317, -20475, -20631,
+    -20787, -20942, -21096, -21250, -21403, -21554, -21705, -21856, -22005, -22154, -22301, -22448, -22594, -22739, -22884, -23027,
+    -23170, -23311, -23452, -23592, -23731, -23870, -24007, -24143, -24279, -24413, -24547, -24680, -24811, -24942, -25072, -25201,
+    -25329, -25456, -25582, -25708, -25832, -25955, -26077, -26198, -26319, -26438, -26556, -26674, -26790, -26905, -27019, -27133,
+    -27245, -27356, -27466, -27575, -27683, -27790, -27896, -28001, -28105, -28208, -28310, -28411, -28510, -28609, -28706, -28803,
+    -28898, -28992, -29085, -29177, -29268, -29358, -29447, -29534, -29621, -29706, -29791, -29874, -29956, -30037, -30117, -30195,
+    -30273, -30349, -30424, -30498, -30571, -30643, -30714, -30783, -30852, -30919, -30985, -31050, -31113, -31176, -31237, -31297,
+    -31356, -31414, -31470, -31526, -31580, -31633, -31685, -31736, -31785, -31833, -31880, -31926, -31971, -32014, -32057, -32098,
+    -32137, -32176, -32213, -32250, -32285, -32318, -32351, -32382, -32412, -32441, -32469, -32495, -32521, -32545, -32567, -32589,
+    -32609, -32628, -32646, -32663, -32678, -32692, -32705, -32717, -32728, -32737, -32745, -32752, -32757, -32761, -32765, -32766,
+    -32767, -32766, -32765, -32761, -32757, -32752, -32745, -32737, -32728, -32717, -32705, -32692, -32678, -32663, -32646, -32628,
+    -32609, -32589, -32567, -32545, -32521, -32495, -32469, -32441, -32412, -32382, -32351, -32318, -32285, -32250, -32213, -32176,
+    -32137, -32098, -32057, -32014, -31971, -31926, -31880, -31833, -31785, -31736, -31685, -31633, -31580, -31526, -31470, -31414,
+    -31356, -31297, -31237, -31176, -31113, -31050, -30985, -30919, -30852, -30783, -30714, -30643, -30571, -30498, -30424, -30349,
+    -30273, -30195, -30117, -30037, -29956, -29874, -29791, -29706, -29621, -29534, -29447, -29358, -29268, -29177, -29085, -28992,
+    -28898, -28803, -28706, -28609, -28510, -28411, -28310, -28208, -28105, -28001, -27896, -27790, -27683, -27575, -27466, -27356,
+    -27245, -27133, -27019, -26905, -26790, -26674, -26556, -26438, -26319, -26198, -26077, -25955, -25832, -25708, -25582, -25456,
+    -25329, -25201, -25072, -24942, -24811, -24680, -24547, -24413, -24279, -24143, -24007, -23870, -23731, -23592, -23452, -23311,
+    -23170, -23027, -22884, -22739, -22594, -22448, -22301, -22154, -22005, -21856, -21705, -21554, -21403, -21250, -21096, -20942,
+    -20787, -20631, -20475, -20317, -20159, -20000, -19841, -19680, -19519, -19357, -19195, -19032, -18868, -18703, -18537, -18371,
+    -18204, -18037, -17869, -17700, -17530, -17360, -17189, -17018, -16846, -16673, -16499, -16325, -16151, -15976, -15800, -15623,
+    -15446, -15269, -15090, -14912, -14732, -14553, -14372, -14191, -14010, -13828, -13645, -13462, -13279, -13094, -12910, -12725,
+    -12539, -12353, -12167, -11980, -11793, -11605, -11417, -11228, -11039, -10849, -10659, -10469, -10278, -10087, -9896, -9704,
+    -9512, -9319, -9126, -8933, -8739, -8545, -8351, -8157, -7962, -7767, -7571, -7375, -7179, -6983, -6786, -6590,
+    -6393, -6195, -5998, -5800, -5602, -5404, -5205, -5007, -4808, -4609, -4410, -4210, -4011, -3811, -3612, -3412,
+    -3212, -3012, -2811, -2611, -2410, -2210, -2009, -1809, -1608, -1407, -1206, -1005, -804, -603, -402, -201,
+];
+// END J12-GEN rust-trig
+
+// BEGIN J13-GEN rust-impl
+// ---------- J13: التوسعات الشبكية (البنود 191 و195 و202 و203 و204) ----------
+// طبقة بروتوكول نقية حتمية فوق المقابس القائمة — بلا مقبس حي داخل
+// أي دالة؛ والمرآة C في niva_std.c مطابقة حرفيا في الحساب والعرض
+// ورسائل الأخطاء. التطبيقات هنا مصدرها ~/workspace/j13gen/rust_impl.txt
+// ويحقنها المولّد — لا تعدلها في هذا الملف مباشرة.
+
+// ---------- مساعدات J13 المشتركة ----------
+
+fn j13_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn j13_need_str_list(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<String>> {
+    let items = need_list(display, v, line, col)?;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        match item {
+            Value::Str(s) => out.push(s.clone()),
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع نصوصا لكن أعطيت {}",
+                        display,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn j13_no_newline(s: &str) -> bool {
+    !s.contains('\n') && !s.contains('\r')
+}
+
+fn j13_no_space_or_newline(s: &str) -> bool {
+    !s.is_empty()
+        && !s.chars().any(|c| c == ' ' || c == '\t' || c == '\n' || c == '\r')
+}
+
+fn j13_reply_parts(
+    display: &str,
+    reply: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(i64, String)> {
+    let first = reply.split('\n').next().unwrap_or("");
+    let first = first.strip_suffix('\r').unwrap_or(first);
+    let bytes = first.as_bytes();
+    if bytes.len() < 3 || !bytes[..3].iter().all(|b| b.is_ascii_digit()) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع ردا يبدأ بثلاثة أرقام", display),
+            line,
+            col,
+        ));
+    }
+    let code: i64 = first[..3].parse().unwrap_or(0);
+    let text = first[3..].trim_start_matches([' ', '-']).to_string();
+    Ok((code, text))
+}
+
+fn j13_chat_name_valid(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_alphabetic() || first == '_') {
+        return false;
+    }
+    if name.chars().count() > 32 {
+        return false;
+    }
+    name.chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+}
+
+// ---------- صفحات (191) ----------
+
+fn pages_escape(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "صفحات.هرب";
+    need_args(D, args, 1, line, col)?;
+    let s = need_string(D, &args[0], line, col)?;
+    Ok(Value::Str(j13_escape(&s)))
+}
+
+fn pages_element(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "صفحات.عنصر";
+    need_args(D, args, 3, line, col)?;
+    let tag = need_string(D, &args[0], line, col)?;
+    let attrs = need_dict(D, &args[1], line, col)?;
+    let content = need_string(D, &args[2], line, col)?;
+    let tb = tag.as_bytes();
+    let tag_ok = !tb.is_empty()
+        && tb[0].is_ascii_alphabetic()
+        && tb.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'-');
+    if !tag_ok {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع وسما من حروف وأرقام وشرطات", D),
+            line,
+            col,
+        ));
+    }
+    let void_tags = [
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta",
+        "source", "track", "wbr",
+    ];
+    let is_void = void_tags.contains(&tag.as_str());
+    if is_void && !content.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع محتوى فارغا للوسم الفارغ {}", D, tag),
+            line,
+            col,
+        ));
+    }
+    let mut attr_text = String::new();
+    for (k, v) in attrs {
+        match v {
+            Value::Str(val) => {
+                attr_text.push(' ');
+                attr_text.push_str(k);
+                attr_text.push_str("=\"");
+                attr_text.push_str(&j13_escape(val));
+                attr_text.push('"');
+            }
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع سمات نصية لكن أعطيت {}",
+                        D,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        }
+    }
+    if is_void {
+        Ok(Value::Str(format!("<{}{} />", tag, attr_text)))
+    } else {
+        Ok(Value::Str(format!(
+            "<{}{}>{}</{}>",
+            tag, attr_text, content, tag
+        )))
+    }
+}
+
+fn pages_page(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "صفحات.صفحة";
+    need_args(D, args, 2, line, col)?;
+    let title = need_string(D, &args[0], line, col)?;
+    let body = need_string(D, &args[1], line, col)?;
+    Ok(Value::Str(format!(
+        "<!DOCTYPE html>\n<html lang=\"ar\" dir=\"rtl\">\n<head>\n<meta charset=\"utf-8\" />\n<title>{}</title>\n</head>\n<body>\n{}\n</body>\n</html>\n",
+        j13_escape(&title),
+        body
+    )))
+}
+
+fn pages_list_inner(
+    display: &str,
+    tag: &str,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args(display, args, 1, line, col)?;
+    let items = j13_need_str_list(display, &args[0], line, col)?;
+    let mut out = String::new();
+    out.push('<');
+    out.push_str(tag);
+    out.push_str(">\n");
+    for item in items {
+        out.push_str("<li>");
+        out.push_str(&j13_escape(&item));
+        out.push_str("</li>\n");
+    }
+    out.push_str("</");
+    out.push_str(tag);
+    out.push('>');
+    Ok(Value::Str(out))
+}
+
+fn pages_list(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    pages_list_inner("صفحات.قائمة", "ul", args, line, col)
+}
+
+fn pages_ordered_list(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    pages_list_inner("صفحات.قائمة_مرتبة", "ol", args, line, col)
+}
+
+fn pages_table(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "صفحات.جدول";
+    need_args(D, args, 2, line, col)?;
+    let headers = j13_need_str_list(D, &args[0], line, col)?;
+    let rows_raw = need_list(D, &args[1], line, col)?;
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(rows_raw.len());
+    for row in rows_raw {
+        rows.push(j13_need_str_list(D, row, line, col)?);
+    }
+    for row in &rows {
+        if row.len() != headers.len() {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع كل صف بطول الترويسة نفسها", D),
+                line,
+                col,
+            ));
+        }
+    }
+    let mut out = String::new();
+    out.push_str("<table>\n<thead>\n<tr>");
+    for h in &headers {
+        out.push_str("<th>");
+        out.push_str(&j13_escape(h));
+        out.push_str("</th>");
+    }
+    out.push_str("</tr>\n</thead>\n<tbody>\n");
+    for row in &rows {
+        out.push_str("<tr>");
+        for cell in row {
+            out.push_str("<td>");
+            out.push_str(&j13_escape(cell));
+            out.push_str("</td>");
+        }
+        out.push_str("</tr>\n");
+    }
+    out.push_str("</tbody>\n</table>");
+    Ok(Value::Str(out))
+}
+
+fn pages_link(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "صفحات.رابط";
+    need_args(D, args, 2, line, col)?;
+    let text = need_string(D, &args[0], line, col)?;
+    let href = need_string(D, &args[1], line, col)?;
+    Ok(Value::Str(format!(
+        "<a href=\"{}\">{}</a>",
+        j13_escape(&href),
+        j13_escape(&text)
+    )))
+}
+
+fn pages_image(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "صفحات.صورة";
+    need_args(D, args, 2, line, col)?;
+    let src = need_string(D, &args[0], line, col)?;
+    let alt = need_string(D, &args[1], line, col)?;
+    Ok(Value::Str(format!(
+        "<img src=\"{}\" alt=\"{}\" />",
+        j13_escape(&src),
+        j13_escape(&alt)
+    )))
+}
+
+// ---------- بريد (195) ----------
+
+fn mail_build(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "بريد.كون_رسالة";
+    need_args(D, args, 4, line, col)?;
+    let from = need_string(D, &args[0], line, col)?;
+    let to = need_string(D, &args[1], line, col)?;
+    let subject = need_string(D, &args[2], line, col)?;
+    let body = need_string(D, &args[3], line, col)?;
+    for h in [&from, &to, &subject] {
+        if !j13_no_newline(h) {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع رأسا بلا أسطر جديدة", D),
+                line,
+                col,
+            ));
+        }
+    }
+    Ok(Value::Str(format!(
+        "From: {}\r\nTo: {}\r\nSubject: {}\r\n\r\n{}",
+        from, to, subject, body
+    )))
+}
+
+fn mail_parse(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "بريد.حلل_رسالة";
+    need_args(D, args, 1, line, col)?;
+    let text = need_string(D, &args[0], line, col)?;
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut from = String::new();
+    let mut to = String::new();
+    let mut subject = String::new();
+    let mut body_start = lines.len();
+    for (i, raw) in lines.iter().enumerate() {
+        let ln = raw.strip_suffix('\r').unwrap_or(raw);
+        if ln.is_empty() {
+            body_start = i + 1;
+            break;
+        }
+        if let Some(v) = ln.strip_prefix("From:") {
+            from = v.trim().to_string();
+        } else if let Some(v) = ln.strip_prefix("To:") {
+            to = v.trim().to_string();
+        } else if let Some(v) = ln.strip_prefix("Subject:") {
+            subject = v.trim().to_string();
+        }
+    }
+    let body_lines: Vec<String> = lines[body_start..]
+        .iter()
+        .map(|raw| raw.strip_suffix('\r').unwrap_or(raw).to_string())
+        .collect();
+    Ok(Value::Dict(vec![
+        ("من".to_string(), Value::Str(from)),
+        ("إلى".to_string(), Value::Str(to)),
+        ("موضوع".to_string(), Value::Str(subject)),
+        ("جسم".to_string(), Value::Str(body_lines.join("\n"))),
+    ]))
+}
+
+fn mail_cmd_from(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "بريد.أمر_من";
+    need_args(D, args, 1, line, col)?;
+    let addr = need_string(D, &args[0], line, col)?;
+    if !j13_no_space_or_newline(&addr) || addr.contains('<') || addr.contains('>') {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع عنوانا بلا مسافات ولا أقواس", D),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Str(format!("MAIL FROM:<{}>\r\n", addr)))
+}
+
+fn mail_cmd_to(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "بريد.أمر_إلى";
+    need_args(D, args, 1, line, col)?;
+    let addr = need_string(D, &args[0], line, col)?;
+    if !j13_no_space_or_newline(&addr) || addr.contains('<') || addr.contains('>') {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع عنوانا بلا مسافات ولا أقواس", D),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Str(format!("RCPT TO:<{}>\r\n", addr)))
+}
+
+fn mail_cmd_data(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "بريد.أمر_بيانات";
+    need_args(D, args, 0, line, col)?;
+    Ok(Value::Str("DATA\r\n".to_string()))
+}
+
+fn mail_parse_reply(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "بريد.حلل_رد";
+    need_args(D, args, 1, line, col)?;
+    let reply = need_string(D, &args[0], line, col)?;
+    let (code, text) = j13_reply_parts(D, &reply, line, col)?;
+    Ok(Value::Dict(vec![
+        ("رمز".to_string(), Value::Number(code as f64)),
+        ("نص".to_string(), Value::Str(text)),
+    ]))
+}
+
+fn mail_parse_pop3(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "بريد.حلل_رد_pop3";
+    need_args(D, args, 1, line, col)?;
+    let reply = need_string(D, &args[0], line, col)?;
+    let first = reply.split('\n').next().unwrap_or("");
+    let first = first.strip_suffix('\r').unwrap_or(first);
+    let (state, rest) = if let Some(r) = first.strip_prefix("+OK") {
+        ("موافق", r)
+    } else if let Some(r) = first.strip_prefix("-ERR") {
+        ("خطأ", r)
+    } else {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع ردا يبدأ بـ +OK أو -ERR", D),
+            line,
+            col,
+        ));
+    };
+    Ok(Value::Dict(vec![
+        ("حالة".to_string(), Value::Str(state.to_string())),
+        (
+            "نص".to_string(),
+            Value::Str(rest.trim_start_matches(' ').to_string()),
+        ),
+    ]))
+}
+
+// ---------- محادثة (202) ----------
+
+fn chat_build(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "محادثة.كون_رسالة";
+    need_args(D, args, 2, line, col)?;
+    let sender = need_string(D, &args[0], line, col)?;
+    let text = need_string(D, &args[1], line, col)?;
+    if !j13_no_newline(&sender) || !j13_no_newline(&text) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع نصا بلا أسطر جديدة", D),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Str(format!("[{}] {}\n", sender, text)))
+}
+
+fn chat_parse(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "محادثة.حلل_رسالة";
+    need_args(D, args, 1, line, col)?;
+    let line_s = need_string(D, &args[0], line, col)?;
+    let s = line_s
+        .strip_suffix('\n')
+        .unwrap_or(&line_s)
+        .strip_suffix('\r')
+        .unwrap_or(line_s.strip_suffix('\n').unwrap_or(&line_s));
+    let bad = || {
+        RioError::runtime(
+            format!("الدالة {} تتوقع رسالة بصيغة [مرسل] نص", D),
+            line,
+            col,
+        )
+    };
+    if !s.starts_with('[') {
+        return Err(bad());
+    }
+    let close = s.find(']').ok_or_else(bad)?;
+    if close < 2 || s.as_bytes().get(close + 1) != Some(&b' ') {
+        return Err(bad());
+    }
+    let sender = &s[1..close];
+    let text = &s[close + 2..];
+    Ok(Value::Dict(vec![
+        ("مرسل".to_string(), Value::Str(sender.to_string())),
+        ("نص".to_string(), Value::Str(text.to_string())),
+    ]))
+}
+
+fn chat_join_inner(
+    display: &str,
+    verb: &str,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args(display, args, 2, line, col)?;
+    let room = need_string(display, &args[0], line, col)?;
+    let user = need_string(display, &args[1], line, col)?;
+    if !j13_chat_name_valid(&room) || !j13_chat_name_valid(&user) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع اسما صالحا", display),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Str(format!("{} #{} {}\n", verb, room, user)))
+}
+
+fn chat_join(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    chat_join_inner("محادثة.أمر_انضمام", "JOIN", args, line, col)
+}
+
+fn chat_leave(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    chat_join_inner("محادثة.أمر_مغادرة", "LEAVE", args, line, col)
+}
+
+fn chat_name_ok(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "محادثة.اسم_صالح";
+    need_args(D, args, 1, line, col)?;
+    let name = need_string(D, &args[0], line, col)?;
+    Ok(Value::Bool(j13_chat_name_valid(&name)))
+}
+
+// ---------- نقل_ملفات (203) ----------
+
+fn ftp_login(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "نقل_ملفات.أمر_دخول";
+    need_args(D, args, 2, line, col)?;
+    let user = need_string(D, &args[0], line, col)?;
+    let pass = need_string(D, &args[1], line, col)?;
+    if !j13_no_space_or_newline(&user) || !j13_no_space_or_newline(&pass) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع اسما وكلمة بلا مسافات ولا أسطر جديدة", D),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Str(format!("USER {}\r\nPASS {}\r\n", user, pass)))
+}
+
+fn ftp_path_cmd(
+    display: &str,
+    verb: &str,
+    args: &[Value],
+    line: usize,
+    col: usize,
+    allow_empty: bool,
+) -> RioResult<Value> {
+    need_args(display, args, 1, line, col)?;
+    let path = need_string(display, &args[0], line, col)?;
+    if (!allow_empty && path.is_empty()) || !j13_no_newline(&path) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع مسارا غير فارغ بلا أسطر جديدة", display),
+            line,
+            col,
+        ));
+    }
+    if path.is_empty() {
+        Ok(Value::Str(format!("{}\r\n", verb)))
+    } else {
+        Ok(Value::Str(format!("{} {}\r\n", verb, path)))
+    }
+}
+
+fn ftp_retr(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    ftp_path_cmd("نقل_ملفات.أمر_استرجاع", "RETR", args, line, col, false)
+}
+
+fn ftp_stor(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    ftp_path_cmd("نقل_ملفات.أمر_تخزين", "STOR", args, line, col, false)
+}
+
+fn ftp_list_cmd(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    ftp_path_cmd("نقل_ملفات.أمر_قائمة", "LIST", args, line, col, true)
+}
+
+fn ftp_quit(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "نقل_ملفات.أمر_إنهاء";
+    need_args(D, args, 0, line, col)?;
+    Ok(Value::Str("QUIT\r\n".to_string()))
+}
+
+fn ftp_parse_reply(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "نقل_ملفات.حلل_رد";
+    need_args(D, args, 1, line, col)?;
+    let reply = need_string(D, &args[0], line, col)?;
+    let (code, text) = j13_reply_parts(D, &reply, line, col)?;
+    Ok(Value::Dict(vec![
+        ("رمز".to_string(), Value::Number(code as f64)),
+        ("نص".to_string(), Value::Str(text)),
+    ]))
+}
+
+fn ftp_parse_list(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "نقل_ملفات.حلل_قائمة";
+    need_args(D, args, 1, line, col)?;
+    let text = need_string(D, &args[0], line, col)?;
+    let mut out: Vec<Value> = Vec::new();
+    let mut n = 0usize;
+    for raw in text.split('\n') {
+        let ln = raw.strip_suffix('\r').unwrap_or(raw);
+        if ln.is_empty() {
+            continue;
+        }
+        n += 1;
+        let fields: Vec<&str> = ln.split_whitespace().collect();
+        if fields.len() < 9 {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع سطر قائمة من 9 حقول على الأقل في السطر {}", D, n),
+                line,
+                col,
+            ));
+        }
+        let perms = fields[0];
+        let is_dir = perms.starts_with('d');
+        let size_s = fields[4];
+        let size_ok = !size_s.is_empty() && size_s.bytes().all(|b| b.is_ascii_digit());
+        let size: i64 = if size_ok {
+            size_s.parse().map_err(|_| {
+                RioError::runtime(
+                    format!("الدالة {} تتوقع حجما عدديا في السطر {}", D, n),
+                    line,
+                    col,
+                )
+            })?
+        } else {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع حجما عدديا في السطر {}", D, n),
+                line,
+                col,
+            ));
+        };
+        let name = fields[8..].join(" ");
+        out.push(Value::Dict(vec![
+            ("اسم".to_string(), Value::Str(name)),
+            ("حجم".to_string(), Value::Number(size as f64)),
+            ("دليل".to_string(), Value::Bool(is_dir)),
+        ]));
+    }
+    Ok(Value::List(out))
+}
+
+// ---------- وقت_شبكة (204) ----------
+
+fn ntp_packet(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "وقت_شبكة.كون_حزمة";
+    need_args(D, args, 1, line, col)?;
+    let version = need_integer(D, &args[0], line, col)?;
+    if !(1..=4).contains(&version) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع إصدارا بين 1 و 4", D),
+            line,
+            col,
+        ));
+    }
+    let mut pkt: Vec<Value> = Vec::with_capacity(48);
+    pkt.push(Value::Number((((version as i64) << 3) | 3) as f64));
+    for _ in 1..48 {
+        pkt.push(Value::Number(0.0));
+    }
+    Ok(Value::List(pkt))
+}
+
+fn ntp_parse(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "وقت_شبكة.حلل_حزمة";
+    need_args(D, args, 1, line, col)?;
+    let bytes = need_bytes(D, &args[0], line, col)?;
+    if bytes.len() != 48 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع حزمة من 48 بايتا", D),
+            line,
+            col,
+        ));
+    }
+    let version = ((bytes[0] >> 3) & 7) as i64;
+    let stratum = bytes[1] as i64;
+    let secs = u32::from_be_bytes([bytes[40], bytes[41], bytes[42], bytes[43]]) as i64
+        - 2208988800;
+    let frac = u32::from_be_bytes([bytes[44], bytes[45], bytes[46], bytes[47]]) as i64;
+    Ok(Value::Dict(vec![
+        ("إصدار".to_string(), Value::Number(version as f64)),
+        ("طبقة".to_string(), Value::Number(stratum as f64)),
+        ("وقت".to_string(), Value::Number(secs as f64)),
+        ("جزء".to_string(), Value::Number(frac as f64)),
+    ]))
+}
+
+fn ntp_to_unix(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "وقت_شبكة.حول_ثواني";
+    need_args(D, args, 1, line, col)?;
+    let secs = need_integer(D, &args[0], line, col)?;
+    if !(0..=4294967295).contains(&secs) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع ثواني بين 0 و 4294967295", D),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Number((secs - 2208988800) as f64))
+}
+
+fn ntp_valid(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "وقت_شبكة.حزمة_صحيحة";
+    need_args(D, args, 1, line, col)?;
+    let bytes = need_bytes(D, &args[0], line, col)?;
+    let ok = bytes.len() == 48
+        && ((bytes[0] >> 3) & 7) >= 3
+        && ((bytes[0] >> 3) & 7) <= 4
+        && (bytes[0] & 7) >= 3
+        && (bytes[0] & 7) <= 4;
+    Ok(Value::Bool(ok))
+}
+// END J13-GEN rust-impl
+
+// BEGIN J15-GEN rust-impl
+// ---------- J15: أنماط الاستخدام (225 و228 و230 و240) ----------
+// تطبيقات فوق اللغة لا فيها — بلا صياغة جديدة وبلا كلمة
+// مفتاحية جديدة وبلا تغيير في المحلل الدلالي؛ دوال مكتبة
+// في وحدات قائمة (جداول ونص وقوائم) ووحدة جديدة (لغات).
+// مصدر هذا القسم ~/workspace/j15gen/rust_impl.txt ويحقنه
+// المولّد — لا تعدله في هذا الملف مباشرة.
+// المرآة C في ~/workspace/j15gen/c_impl.txt مطابقة حرفيا
+// في الحساب والعرض ورسائل الأخطاء.
+
+// ---------- مساعدات J15 المشتركة ----------
+
+/// خطأ محلل التعبيرات الصغير (مشترك بين 228 و240).
+enum J15ExprErr {
+    Parse,
+    Unknown(String),
+    DivZero,
+}
+
+/// رمز في تعبير: عدد أو اسم أو عامل أو قوس.
+#[derive(Clone, Debug)]
+enum J15Tok {
+    Num(f64, String),
+    Ident(String),
+    Op(char),
+    LParen,
+    RParen,
+}
+
+/// شجرة تعبير: عدد أو متغير أو نفي أو عملية ثنائية.
+enum J15Ast {
+    Num(f64),
+    Var(String),
+    Neg(Box<J15Ast>),
+    Bin(char, Box<J15Ast>, Box<J15Ast>),
+}
+
+/// هل المحرف فاصل تعبير (مسافة بيضاء أو عامل أو قوس)؟
+fn j15_is_expr_delim(c: char) -> bool {
+    c.is_whitespace() || "+-*/%()".contains(c)
+}
+
+/// رمّز تعبيرا إلى رموز؛ `=` محرف مرفوض (يفصل القاعدة عن
+/// تعبيرها فلا يدخل التعبير أبدا).
+fn j15_tokenize(expr: &str) -> Result<Vec<J15Tok>, J15ExprErr> {
+    let chars: Vec<char> = expr.chars().collect();
+    let mut toks: Vec<J15Tok> = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if c.is_whitespace() {
+            i += 1;
+            continue;
+        }
+        if c == '=' {
+            return Err(J15ExprErr::Parse);
+        }
+        if c == '(' {
+            toks.push(J15Tok::LParen);
+            i += 1;
+            continue;
+        }
+        if c == ')' {
+            toks.push(J15Tok::RParen);
+            i += 1;
+            continue;
+        }
+        if "+-*/%".contains(c) {
+            toks.push(J15Tok::Op(c));
+            i += 1;
+            continue;
+        }
+        if c.is_ascii_digit() || (c == '.' && i + 1 < chars.len() && chars[i + 1].is_ascii_digit())
+        {
+            let mut j = i;
+            let mut text = String::new();
+            while j < chars.len() && chars[j].is_ascii_digit() {
+                text.push(chars[j]);
+                j += 1;
+            }
+            if j < chars.len() && chars[j] == '.' {
+                text.push('.');
+                j += 1;
+                while j < chars.len() && chars[j].is_ascii_digit() {
+                    text.push(chars[j]);
+                    j += 1;
+                }
+            }
+            let v: f64 = text.parse().map_err(|_| J15ExprErr::Parse)?;
+            toks.push(J15Tok::Num(v, text));
+            i = j;
+            continue;
+        }
+        let mut j = i;
+        let mut text = String::new();
+        while j < chars.len() && !j15_is_expr_delim(chars[j]) && chars[j] != '=' {
+            text.push(chars[j]);
+            j += 1;
+        }
+        if text.is_empty() {
+            return Err(J15ExprErr::Parse);
+        }
+        toks.push(J15Tok::Ident(text));
+        i = j;
+    }
+    Ok(toks)
+}
+
+/// نص الرمز كما كُتب (للرموز في حلل_تعبير).
+fn j15_tok_text(t: &J15Tok) -> String {
+    match t {
+        J15Tok::Num(_, s) => s.clone(),
+        J15Tok::Ident(s) => s.clone(),
+        J15Tok::Op(c) => c.to_string(),
+        J15Tok::LParen => "(".to_string(),
+        J15Tok::RParen => ")".to_string(),
+    }
+}
+
+/// محلل تنازلي تكراري: جمع/طرح ثم ضرب/قسمة/باقي ثم عامل.
+struct J15Parser {
+    toks: Vec<J15Tok>,
+    pos: usize,
+}
+
+impl J15Parser {
+    fn peek(&self) -> Option<&J15Tok> {
+        self.toks.get(self.pos)
+    }
+
+    fn parse_expr(&mut self) -> Result<J15Ast, J15ExprErr> {
+        let mut left = self.parse_term()?;
+        loop {
+            match self.peek() {
+                Some(J15Tok::Op('+')) | Some(J15Tok::Op('-')) => {
+                    let op = match self.peek().unwrap() {
+                        J15Tok::Op(c) => *c,
+                        _ => unreachable!(),
+                    };
+                    self.pos += 1;
+                    let right = self.parse_term()?;
+                    left = J15Ast::Bin(op, Box::new(left), Box::new(right));
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_term(&mut self) -> Result<J15Ast, J15ExprErr> {
+        let mut left = self.parse_factor()?;
+        loop {
+            match self.peek() {
+                Some(J15Tok::Op('*')) | Some(J15Tok::Op('/')) | Some(J15Tok::Op('%')) => {
+                    let op = match self.peek().unwrap() {
+                        J15Tok::Op(c) => *c,
+                        _ => unreachable!(),
+                    };
+                    self.pos += 1;
+                    let right = self.parse_factor()?;
+                    left = J15Ast::Bin(op, Box::new(left), Box::new(right));
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_factor(&mut self) -> Result<J15Ast, J15ExprErr> {
+        match self.peek().cloned() {
+            Some(J15Tok::Num(v, _)) => {
+                self.pos += 1;
+                Ok(J15Ast::Num(v))
+            }
+            Some(J15Tok::Ident(name)) => {
+                self.pos += 1;
+                Ok(J15Ast::Var(name))
+            }
+            Some(J15Tok::Op('-')) => {
+                self.pos += 1;
+                let inner = self.parse_factor()?;
+                Ok(J15Ast::Neg(Box::new(inner)))
+            }
+            Some(J15Tok::LParen) => {
+                self.pos += 1;
+                let inner = self.parse_expr()?;
+                match self.peek() {
+                    Some(J15Tok::RParen) => {
+                        self.pos += 1;
+                        Ok(inner)
+                    }
+                    _ => Err(J15ExprErr::Parse),
+                }
+            }
+            _ => Err(J15ExprErr::Parse),
+        }
+    }
+}
+
+/// حلّل تعبيرا إلى شجرة؛ ورفض أي رموز زائدة بعده.
+fn j15_parse(expr: &str) -> Result<J15Ast, J15ExprErr> {
+    let toks = j15_tokenize(expr)?;
+    if toks.is_empty() {
+        return Err(J15ExprErr::Parse);
+    }
+    let mut p = J15Parser { toks, pos: 0 };
+    let ast = p.parse_expr()?;
+    if p.pos != p.toks.len() {
+        return Err(J15ExprErr::Parse);
+    }
+    Ok(ast)
+}
+
+/// متغيرات الشجرة بترتيب الظهور الأول، بلا تكرار.
+fn j15_ast_vars(ast: &J15Ast, out: &mut Vec<String>) {
+    match ast {
+        J15Ast::Num(_) => {}
+        J15Ast::Var(name) => {
+            if !out.contains(name) {
+                out.push(name.clone());
+            }
+        }
+        J15Ast::Neg(inner) => j15_ast_vars(inner, out),
+        J15Ast::Bin(_, a, b) => {
+            j15_ast_vars(a, out);
+            j15_ast_vars(b, out);
+        }
+    }
+}
+
+/// قيّم شجرة بمتغيرات (اسم، قيمة)؛ والمتغير الغائب خطأ.
+fn j15_eval(ast: &J15Ast, vars: &[(String, f64)]) -> Result<f64, J15ExprErr> {
+    match ast {
+        J15Ast::Num(v) => Ok(*v),
+        J15Ast::Var(name) => vars
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| *v)
+            .ok_or_else(|| J15ExprErr::Unknown(name.clone())),
+        J15Ast::Neg(inner) => Ok(-j15_eval(inner, vars)?),
+        J15Ast::Bin(op, a, b) => {
+            let x = j15_eval(a, vars)?;
+            let y = j15_eval(b, vars)?;
+            match op {
+                '+' => Ok(x + y),
+                '-' => Ok(x - y),
+                '*' => Ok(x * y),
+                '/' => {
+                    if y == 0.0 {
+                        Err(J15ExprErr::DivZero)
+                    } else {
+                        Ok(x / y)
+                    }
+                }
+                '%' => {
+                    if y == 0.0 {
+                        Err(J15ExprErr::DivZero)
+                    } else {
+                        Ok(x % y)
+                    }
+                }
+                _ => Err(J15ExprErr::Parse),
+            }
+        }
+    }
+}
+
+/// اسم قاعدة صالح: أوله حرف أو _، وباقيه حرف أو رقم أو _.
+fn j15_name_valid(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// حلّل سطر قاعدة «اسم = تعبير» إلى (الاسم، التعبير
+/// مجردا من المسافات، المتغيرات). أي عيب صيغة خطأ تحليل.
+fn j15_parse_rule(text: &str) -> Result<(String, String, Vec<String>), J15ExprErr> {
+    let eq = text.find('=').ok_or(J15ExprErr::Parse)?;
+    let name = text[..eq].trim().to_string();
+    let expr = text[eq + 1..].trim().to_string();
+    if name.is_empty() || !j15_name_valid(&name) || expr.is_empty() {
+        return Err(J15ExprErr::Parse);
+    }
+    let ast = j15_parse(&expr)?;
+    let mut vars = Vec::new();
+    j15_ast_vars(&ast, &mut vars);
+    Ok((name, expr, vars))
+}
+
+/// قاموس قاعدة من (الاسم، التعبير، المتغيرات).
+fn j15_rule_value(name: &str, expr: &str, vars: &[String]) -> Value {
+    Value::Dict(vec![
+        ("الاسم".to_string(), Value::Str(name.to_string())),
+        ("التعبير".to_string(), Value::Str(expr.to_string())),
+        (
+            "المتغيرات".to_string(),
+            Value::List(vars.iter().map(|v| Value::Str(v.clone())).collect()),
+        ),
+    ])
+}
+
+/// قيّم قاعدة (أزواج قاموسها) بقيم (أزواج قاموس)؛ ورسائل
+/// الخطأ بصيغة العارض الممرر (لغات.قيم_قاعدة أو نفذ_قاعدة).
+fn j15_eval_rule_pairs(
+    display: &str,
+    rule: &[(String, Value)],
+    values: &[(String, Value)],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let expr = match tables_row_get(rule, "التعبير") {
+        Some(Value::Str(s)) => s.clone(),
+        _ => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع قاعدة من عرف_قاعدة لكن «التعبير» غائب أو ليس نصا",
+                    display
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let mut vars: Vec<(String, f64)> = Vec::new();
+    for (k, v) in values {
+        vars.push((k.clone(), need_number(display, v, line, col)?));
+    }
+    let ast = j15_parse(&expr).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تتوقع تعبيرا صحيحا لكن «{}» غير صالح", display, expr),
+            line,
+            col,
+        )
+    })?;
+    match j15_eval(&ast, &vars) {
+        Ok(v) => Ok(Value::Number(v)),
+        Err(J15ExprErr::Unknown(name)) => Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع متغيرا معروفا لكن «{}» غير معروف",
+                display, name
+            ),
+            line,
+            col,
+        )),
+        Err(J15ExprErr::DivZero) => Err(RioError::runtime(
+            format!("الدالة {} تتوقع مقسوما عليه غير صفر في «{}»", display, expr),
+            line,
+            col,
+        )),
+        Err(J15ExprErr::Parse) => Err(RioError::runtime(
+            format!("الدالة {} تتوقع تعبيرا صحيحا لكن «{}» غير صالح", display, expr),
+            line,
+            col,
+        )),
+    }
+}
+
+/// مقارنة عامل استعلام: يساوي، لا_يساوي، أكبر، أصغر،
+/// أكبر_أو_يساوي، أصغر_أو_يساوي، يحتوي (نصان فقط).
+fn j15_cmp_op(
+    display: &str,
+    op: &str,
+    a: &Value,
+    b: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<bool> {
+    match op {
+        "يساوي" | "لا_يساوي" | "أكبر" | "أصغر" | "أكبر_أو_يساوي" | "أصغر_أو_يساوي" => {
+            match (a, b) {
+                (Value::Number(x), Value::Number(y)) => Ok(match op {
+                    "يساوي" => x == y,
+                    "لا_يساوي" => x != y,
+                    "أكبر" => x > y,
+                    "أصغر" => x < y,
+                    "أكبر_أو_يساوي" => x >= y,
+                    _ => x <= y,
+                }),
+                (Value::Str(x), Value::Str(y)) => Ok(match op {
+                    "يساوي" => x == y,
+                    "لا_يساوي" => x != y,
+                    "أكبر" => x > y,
+                    "أصغر" => x < y,
+                    "أكبر_أو_يساوي" => x >= y,
+                    _ => x <= y,
+                }),
+                _ => Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع عددين أو نصين للعامل «{}» لكن أعطيت {} و{}",
+                        display,
+                        op,
+                        a.type_name(),
+                        b.type_name()
+                    ),
+                    line,
+                    col,
+                )),
+            }
+        }
+        "يحتوي" => match (a, b) {
+            (Value::Str(x), Value::Str(y)) => Ok(x.contains(y.as_str())),
+            _ => Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع نصين لعامل «يحتوي» لكن أعطيت {} و{}",
+                    display,
+                    a.type_name(),
+                    b.type_name()
+                ),
+                line,
+                col,
+            )),
+        },
+        _ => Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع عاملا معروفا لكن «{}» غير معروف — المتاح: يساوي، لا_يساوي، أكبر، أصغر، أكبر_أو_يساوي، أصغر_أو_يساوي، يحتوي",
+                display, op
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// هل المحرف نهاية جملة؟ نقطة أو تعجب أو استفهام (غربي
+/// أو عربي ؟) أو علامة حذف ….
+fn j15_is_term(c: char) -> bool {
+    matches!(c, '.' | '!' | '?' | '؟' | '…')
+}
+
+/// قسّم نصا إلى جمل: تنتهي الجملة عند سلسلة نهايات
+/// متتالية (فتصير «...» نهاية واحدة)؛ والنقطة بين
+/// رقمين لا تنهي جملة (3.5)؛ وتُسقَط المسافات حول كل
+/// جملة؛ والجملة بلا نهاية تُحفظ كما هي.
+fn j15_split_sentences(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        let decimal_dot = c == '.'
+            && i > 0
+            && i + 1 < chars.len()
+            && chars[i - 1].is_ascii_digit()
+            && chars[i + 1].is_ascii_digit();
+        if j15_is_term(c) && !decimal_dot {
+            while i < chars.len() && j15_is_term(chars[i]) {
+                let t = chars[i];
+                let dd = t == '.'
+                    && i > 0
+                    && i + 1 < chars.len()
+                    && chars[i - 1].is_ascii_digit()
+                    && chars[i + 1].is_ascii_digit();
+                if dd {
+                    break;
+                }
+                cur.push(t);
+                i += 1;
+            }
+            let s = cur.trim().to_string();
+            if !s.is_empty() {
+                out.push(s);
+            }
+            cur = String::new();
+        } else {
+            cur.push(c);
+            i += 1;
+        }
+    }
+    let s = cur.trim().to_string();
+    if !s.is_empty() {
+        out.push(s);
+    }
+    out
+}
+
+/// قيمة خلية: لاشيء أو غائبة تُعامل كغائبة (كـ رتب_جدولا).
+fn j15_cell<'a>(row: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
+    match tables_row_get(row, key) {
+        Some(Value::Nil) => None,
+        other => other,
+    }
+}
+
+// ---------- 225: لغة استعلام (جداول وقوائم) ----------
+
+/// 225: حيث(جدول، عمود، عامل، قيمة) — صفوف تحقق شرط
+/// العمود بالعامل؛ والعمود الغائب أو الفارغ خطأ.
+fn tables_where(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.حيث";
+    need_args(D, args, 4, line, col)?;
+    let column = need_string(D, &args[1], line, col)?;
+    let op = need_string(D, &args[2], line, col)?;
+    let rows = tables_need_table(D, &args[0], line, col)?;
+    let mut out: Vec<Value> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        let cell = match j15_cell(row, &column) {
+            Some(v) => v,
+            None => {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع العمود «{}» في كل صف لكن الصف {} بلا قيمة",
+                        D,
+                        column,
+                        i + 1
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        };
+        if j15_cmp_op(D, &op, cell, &args[3], line, col)? {
+            out.push(Value::Dict(row.clone()));
+        }
+    }
+    Ok(Value::List(out))
+}
+
+/// 225: اختر(جدول، أعمدة) — إسقاط الأعمدة المطلوبة
+/// وحدها، بالترتيب المطلوب؛ والعمود الغائب خطأ.
+fn tables_select(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.اختر";
+    need_args(D, args, 2, line, col)?;
+    let cols = need_list(D, &args[1], line, col)?;
+    let mut names: Vec<String> = Vec::new();
+    for c in cols {
+        names.push(need_string(D, c, line, col)?);
+    }
+    let rows = tables_need_table(D, &args[0], line, col)?;
+    let mut out: Vec<Value> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        let mut new_row: Vec<(String, Value)> = Vec::new();
+        for name in &names {
+            match j15_cell(row, name) {
+                Some(v) => new_row.push((name.clone(), v.clone())),
+                None => {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة {} تتوقع العمود «{}» في كل صف لكن الصف {} بلا قيمة",
+                            D,
+                            name,
+                            i + 1
+                        ),
+                        line,
+                        col,
+                    ))
+                }
+            }
+        }
+        out.push(Value::Dict(new_row));
+    }
+    Ok(Value::List(out))
+}
+
+/// 225: جمع_حسب(جدول، عمود_تجميع، عمود_قيمة، عملية) —
+/// تجميع الصفوف بمفتاح عمود التجميع (بترتيب الظهور
+/// الأول) ثم تجميع عمود القيمة: عدد أو مجموع أو متوسط
+/// أو أدنى أو أقصى. لعملية عدد يجوز أن يكون عمود
+/// القيمة لاشيء. صف النتيجة {عمود_التجميع، العملية}.
+fn tables_group_agg(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.جمع_حسب";
+    need_args(D, args, 4, line, col)?;
+    let group_col = need_string(D, &args[1], line, col)?;
+    let op = need_string(D, &args[3], line, col)?;
+    if !matches!(op.as_str(), "عدد" | "مجموع" | "متوسط" | "أدنى" | "أقصى") {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع عملية تجميع معروفة لكن «{}» غير معروفة — المتاح: عدد، مجموع، متوسط، أدنى، أقصى",
+                D, op
+            ),
+            line,
+            col,
+        ));
+    }
+    let val_col: Option<String> = match &args[2] {
+        Value::Nil => None,
+        Value::Str(s) => Some(s.clone()),
+        other => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع عمود قيمة نصا أو لاشيء لكن أعطيت {}",
+                    D,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    if op != "عدد" && val_col.is_none() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع عمود قيمة لعملية «{}» لكن أعطيت لاشيء",
+                D, op
+            ),
+            line,
+            col,
+        ));
+    }
+    let rows = tables_need_table(D, &args[0], line, col)?;
+    // مجموعات بترتيب الظهور الأول: (المفتاح، فهارس الصفوف).
+    let mut groups: Vec<(Value, Vec<usize>)> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        let key = match j15_cell(row, &group_col) {
+            Some(v @ Value::Number(_)) | Some(v @ Value::Str(_)) => v.clone(),
+            Some(other) => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع قيما عددية أو نصية في عمود التجميع لكن الصف {} هو {}",
+                        D,
+                        i + 1,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+            None => {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع العمود «{}» في كل صف لكن الصف {} بلا قيمة",
+                        D,
+                        group_col,
+                        i + 1
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        };
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, idxs)) => idxs.push(i),
+            None => groups.push((key, vec![i])),
+        }
+    }
+    let mut out: Vec<Value> = Vec::new();
+    for (key, idxs) in &groups {
+        let agg = if op == "عدد" {
+            idxs.len() as f64
+        } else {
+            let vc = val_col.as_ref().unwrap();
+            let mut vals: Vec<f64> = Vec::new();
+            for &i in idxs {
+                match j15_cell(&rows[i], vc) {
+                    Some(Value::Number(x)) => vals.push(*x),
+                    Some(other) => {
+                        return Err(RioError::typ(
+                            format!(
+                                "الدالة {} تتوقع عددا في العمود «{}» في الصف {} لكن أعطيت {}",
+                                D,
+                                vc,
+                                i + 1,
+                                other.type_name()
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                    None => {
+                        return Err(RioError::runtime(
+                            format!(
+                                "الدالة {} تتوقع العمود «{}» في كل صف لكن الصف {} بلا قيمة",
+                                D,
+                                vc,
+                                i + 1
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                }
+            }
+            match op.as_str() {
+                "مجموع" => vals.iter().sum(),
+                "متوسط" => vals.iter().sum::<f64>() / vals.len() as f64,
+                "أدنى" => vals.iter().cloned().fold(f64::INFINITY, f64::min),
+                _ => vals.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            }
+        };
+        out.push(Value::Dict(vec![
+            (group_col.clone(), key.clone()),
+            (op.clone(), Value::Number(agg)),
+        ]));
+    }
+    Ok(Value::List(out))
+}
+
+/// 225: رشح_بدالة(جدول، دالة) — صفوف يعيد شرطها
+/// (دالة تستلم الصف) صحيحا.
+fn tables_filter_fn(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.رشح_بدالة";
+    need_args(D, args, 2, line, col)?;
+    let rows = tables_need_table(D, &args[0], line, col)?;
+    let mut out: Vec<Value> = Vec::new();
+    for row in &rows {
+        if j3_call_bool(ctx, &args[1], Value::Dict(row.clone()), D, line, col)? {
+            out.push(Value::Dict(row.clone()));
+        }
+    }
+    Ok(Value::List(out))
+}
+
+/// 225: أول_صفوف(جدول، عدد) — أول عدد من الصفوف؛
+/// والعدد السالب خطأ.
+fn tables_head(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.أول_صفوف";
+    need_args(D, args, 2, line, col)?;
+    let n = need_integer(D, &args[1], line, col)?;
+    if n < 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع عددا غير سالب لكن أعطيت {}", D, n),
+            line,
+            col,
+        ));
+    }
+    let rows = tables_need_table(D, &args[0], line, col)?;
+    let take = (n as usize).min(rows.len());
+    let mut out: Vec<Value> = Vec::new();
+    for row in rows.iter().take(take) {
+        out.push(Value::Dict(row.clone()));
+    }
+    Ok(Value::List(out))
+}
+
+/// 225: قوائم.رشح_بقيمة(قائمة، عامل، قيمة) — عناصر
+/// تحقق العامل مع القيمة.
+fn lists_filter_value(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "قوائم.رشح_بقيمة";
+    need_args(D, args, 3, line, col)?;
+    let op = need_string(D, &args[1], line, col)?;
+    let items = need_list(D, &args[0], line, col)?.clone();
+    let mut out: Vec<Value> = Vec::new();
+    for item in &items {
+        if j15_cmp_op(D, &op, item, &args[2], line, col)? {
+            out.push(item.clone());
+        }
+    }
+    Ok(Value::List(out))
+}
+
+/// 225: قوائم.رشح_بدالة(قائمة، دالة) — عناصر يعيد
+/// شرطها (دالة تستلم العنصر) صحيحا.
+fn lists_filter_fn(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "قوائم.رشح_بدالة";
+    need_args(D, args, 2, line, col)?;
+    let items = need_list(D, &args[0], line, col)?.clone();
+    let mut out: Vec<Value> = Vec::new();
+    for item in items {
+        if j3_call_bool(ctx, &args[1], item.clone(), D, line, col)? {
+            out.push(item);
+        }
+    }
+    Ok(Value::List(out))
+}
+
+// ---------- 228: برمجة بالجداول (جداول محسوبة) ----------
+
+/// جدول محسوب بعد التحقق: أعمدة وأصفاف وصيغ.
+struct J15Comp {
+    cols: Vec<String>,
+    rows: Vec<Vec<(String, Value)>>,
+    /// (العمود، الصيغة، المتغيرات) بترتيب الصيغ.
+    formulas: Vec<(String, String, Vec<String>)>,
+    /// ترتيب تقييم الصيغ (بلا دورة).
+    order: Vec<usize>,
+}
+
+/// ترتيب تقييم الصيغ: صيغة تُقيَّم بعد كل صيغة تعتمد
+/// عليها؛ والدورة خطأ.
+fn j15_topo_order(formulas: &[(String, String, Vec<String>)]) -> Result<Vec<usize>, ()> {
+    let mut order: Vec<usize> = Vec::new();
+    let mut rest: Vec<usize> = (0..formulas.len()).collect();
+    loop {
+        if rest.is_empty() {
+            return Ok(order);
+        }
+        let mut progressed = false;
+        let mut i = 0;
+        while i < rest.len() {
+            let f = rest[i];
+            let deps_ok = formulas[f].2.iter().all(|v| {
+                !formulas.iter().any(|(n, _, _)| n == v) || order.contains(&formulas.iter().position(|(n, _, _)| n == v).unwrap())
+            });
+            if deps_ok {
+                order.push(f);
+                rest.remove(i);
+                progressed = true;
+            } else {
+                i += 1;
+            }
+        }
+        if !progressed {
+            return Err(());
+        }
+    }
+}
+
+/// اقرأ جدولا محسوبا وتحقق من بنيته؛ والصيغ تُحلَّل
+/// وتُرتَّب هنا مرة واحدة.
+fn j15_read_comp(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<J15Comp> {
+    let pairs = match v {
+        Value::Dict(p) => p,
+        other => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع جدولا محسوبا لكن أعطيت {}",
+                    display,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let get = |k: &str| tables_row_get(pairs, k);
+    let cols_v = match get("أعمدة") {
+        Some(v) => v,
+        None => {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} تتوقع جدولا محسوبا بمفاتيح «أعمدة» و«صفوف» و«صيغ»",
+                    display
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let rows_v = get("صفوف").ok_or_else(|| {
+        RioError::runtime(
+            format!(
+                "الدالة {} تتوقع جدولا محسوبا بمفاتيح «أعمدة» و«صفوف» و«صيغ»",
+                display
+            ),
+            line,
+            col,
+        )
+    })?;
+    let formulas_v = get("صيغ").ok_or_else(|| {
+        RioError::runtime(
+            format!(
+                "الدالة {} تتوقع جدولا محسوبا بمفاتيح «أعمدة» و«صفوف» و«صيغ»",
+                display
+            ),
+            line,
+            col,
+        )
+    })?;
+    let cols_list = need_list(display, cols_v, line, col)?;
+    let mut cols: Vec<String> = Vec::new();
+    for c in cols_list {
+        let s = need_string(display, c, line, col)?;
+        if s.is_empty() {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع أسماء أعمدة غير فارغة", display),
+                line,
+                col,
+            ));
+        }
+        if cols.contains(&s) {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع أسماء أعمدة بلا تكرار لكن «{}» مكرر", display, s),
+                line,
+                col,
+            ));
+        }
+        cols.push(s);
+    }
+    if cols.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع قائمة أعمدة غير فارغة", display),
+            line,
+            col,
+        ));
+    }
+    let rows_list = need_list(display, rows_v, line, col)?;
+    let mut rows: Vec<Vec<(String, Value)>> = Vec::new();
+    for (i, item) in rows_list.iter().enumerate() {
+        let row = match item {
+            Value::Dict(p) => p.clone(),
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع جدولا (قائمة قواميس) لكن الصف {} هو {}",
+                        display,
+                        i + 1,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        };
+        for (k, _) in &row {
+            if !cols.contains(k) {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع أعمدة معروفة في الصفوف لكن الصف {} فيه عمود «{}» غير معروف",
+                        display,
+                        i + 1,
+                        k
+                    ),
+                    line,
+                    col,
+                ));
+            }
+        }
+        rows.push(row);
+    }
+    let formulas_dict = need_dict(display, formulas_v, line, col)?;
+    let mut formulas: Vec<(String, String, Vec<String>)> = Vec::new();
+    for (name, fexpr) in formulas_dict {
+        if !cols.contains(name) {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} تتوقع صيغا لأعمدة موجودة لكن «{}» غير موجود",
+                    display, name
+                ),
+                line,
+                col,
+            ));
+        }
+        let expr = match fexpr {
+            Value::Str(s) => s.clone(),
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع صيغة نصا لكن صيغة «{}» هي {}",
+                        display,
+                        name,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let ast = j15_parse(&expr).map_err(|_| {
+            RioError::runtime(
+                format!(
+                    "الدالة {} تتوقع صيغة صحيحة لكن «{}» غير صالحة",
+                    display, expr
+                ),
+                line,
+                col,
+            )
+        })?;
+        let mut vars = Vec::new();
+        j15_ast_vars(&ast, &mut vars);
+        for var in &vars {
+            if !cols.contains(var) {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع عمودا موجودا لكن «{}» غير موجود في الصيغة",
+                        display, var
+                    ),
+                    line,
+                    col,
+                ));
+            }
+            if var == name {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع صيغة بلا اعتماد على نفسها لكن «{}» تعتمد على نفسها",
+                        display, name
+                    ),
+                    line,
+                    col,
+                ));
+            }
+        }
+        formulas.push((name.clone(), expr, vars));
+    }
+    let order = j15_topo_order(&formulas).map_err(|_| {
+        RioError::runtime(
+            format!(
+                "الدالة {} تتوقع صيغا بلا اعتماد دائري لكن الصيغ تحوي دورة",
+                display
+            ),
+            line,
+            col,
+        )
+    })?;
+    Ok(J15Comp { cols, rows, formulas, order })
+}
+
+/// احسب كل خلايا الصيغ في كل الصفوف (بالترتيب
+/// الطوبولوجي)؛ والخلية المرجعية غير العددية خطأ.
+fn j15_compute_rows(
+    display: &str,
+    comp: &J15Comp,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<Vec<(String, Value)>>> {
+    let formula_names: Vec<&str> = comp.formulas.iter().map(|(n, _, _)| n.as_str()).collect();
+    let mut out: Vec<Vec<(String, Value)>> = Vec::new();
+    for (ri, row) in comp.rows.iter().enumerate() {
+        // الخلايا الأساس (كل ما ليس عمود صيغة).
+        let mut new_row: Vec<(String, Value)> = row
+            .iter()
+            .filter(|(k, _)| !formula_names.contains(&k.as_str()))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        // قيّم الصيغ بالترتيب؛ وكل صيغة تُلحق فور حسابها.
+        for &fi in &comp.order {
+            let (name, expr, vars) = &comp.formulas[fi];
+            let ast = j15_parse(expr).map_err(|_| {
+                RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع صيغة صحيحة لكن «{}» غير صالحة",
+                        display, expr
+                    ),
+                    line,
+                    col,
+                )
+            })?;
+            let mut num_vars: Vec<(String, f64)> = Vec::new();
+            for var in vars {
+                match j15_cell(&new_row, var) {
+                    Some(Value::Number(x)) => num_vars.push((var.clone(), *x)),
+                    _ => {
+                        return Err(RioError::runtime(
+                            format!(
+                                "الدالة {} تتوقع قيمة عددية في العمود «{}» في الصف {}",
+                                display,
+                                var,
+                                ri + 1
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                }
+            }
+            match j15_eval(&ast, &num_vars) {
+                Ok(v) => new_row.push((name.clone(), Value::Number(v))),
+                Err(J15ExprErr::DivZero) => {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة {} تتوقع مقسوما عليه غير صفر في «{}»",
+                            display, expr
+                        ),
+                        line,
+                        col,
+                    ))
+                }
+                Err(_) => {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة {} تتوقع صيغة صحيحة لكن «{}» غير صالحة",
+                            display, expr
+                        ),
+                        line,
+                        col,
+                    ))
+                }
+            }
+        }
+        out.push(new_row);
+    }
+    Ok(out)
+}
+
+/// قيمة جدول محسوب (قاموس) من مكوناته بعد الحساب.
+fn j15_comp_value(comp: &J15Comp, rows: Vec<Vec<(String, Value)>>) -> Value {
+    Value::Dict(vec![
+        (
+            "أعمدة".to_string(),
+            Value::List(comp.cols.iter().map(|c| Value::Str(c.clone())).collect()),
+        ),
+        (
+            "صفوف".to_string(),
+            Value::List(rows.into_iter().map(Value::Dict).collect()),
+        ),
+        (
+            "صيغ".to_string(),
+            Value::Dict(
+                comp.formulas
+                    .iter()
+                    .map(|(n, e, _)| (n.clone(), Value::Str(e.clone())))
+                    .collect(),
+            ),
+        ),
+    ])
+}
+
+/// 228: جدول_محسوب(أعمدة، صفوف، صيغ) — أنشئ جدولا
+/// خلاياه المحسوبة بصيغ تُعاد عند كل تحديث.
+fn tables_computed(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.جدول_محسوب";
+    need_args(D, args, 3, line, col)?;
+    let draft = Value::Dict(vec![
+        ("أعمدة".to_string(), args[0].clone()),
+        ("صفوف".to_string(), args[1].clone()),
+        ("صيغ".to_string(), args[2].clone()),
+    ]);
+    let comp = j15_read_comp(D, &draft, line, col)?;
+    let rows = j15_compute_rows(D, &comp, line, col)?;
+    Ok(j15_comp_value(&comp, rows))
+}
+
+/// 228: حدث_خلية(جدول_محسوب، رقم_صف، عمود، قيمة) —
+/// حدّث خلية أساس وأعد حساب صيغ صفوف الجدول كلها.
+/// رقم الصف من 1؛ وعمود الصيغة لا يُحدث مباشرة.
+fn tables_update_cell(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.حدث_خلية";
+    need_args(D, args, 4, line, col)?;
+    let comp = j15_read_comp(D, &args[0], line, col)?;
+    let row_no = need_integer(D, &args[1], line, col)?;
+    if row_no < 1 || row_no as usize > comp.rows.len() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع رقما بين 1 و {} لكن أعطيت {}",
+                D,
+                comp.rows.len(),
+                row_no
+            ),
+            line,
+            col,
+        ));
+    }
+    let column = need_string(D, &args[2], line, col)?;
+    if !comp.cols.contains(&column) {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع عمودا موجودا لكن «{}» غير موجود",
+                D, column
+            ),
+            line,
+            col,
+        ));
+    }
+    if comp.formulas.iter().any(|(n, _, _)| n == &column) {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع عمودا أساسيا لكن «{}» عمود محسوب",
+                D, column
+            ),
+            line,
+            col,
+        ));
+    }
+    let mut comp = comp;
+    let idx = (row_no - 1) as usize;
+    match comp.rows[idx].iter_mut().find(|(k, _)| k == &column) {
+        Some((_, v)) => *v = args[3].clone(),
+        None => comp.rows[idx].push((column, args[3].clone())),
+    }
+    let rows = j15_compute_rows(D, &comp, line, col)?;
+    Ok(j15_comp_value(&comp, rows))
+}
+
+/// 228: أعد_حساب(جدول_محسوب) — أعد حساب كل خلايا
+/// الصيغ في كل الصفوف.
+fn tables_recompute(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.أعد_حساب";
+    need_args(D, args, 1, line, col)?;
+    let comp = j15_read_comp(D, &args[0], line, col)?;
+    let rows = j15_compute_rows(D, &comp, line, col)?;
+    Ok(j15_comp_value(&comp, rows))
+}
+
+/// 228: صفوف_محسوبة(جدول_محسوب) — صفوف الجدول
+/// العادي (قائمة قواميس) لاستعمال دوال جداول عليها.
+fn tables_computed_rows(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.صفوف_محسوبة";
+    need_args(D, args, 1, line, col)?;
+    let comp = j15_read_comp(D, &args[0], line, col)?;
+    let rows = j15_compute_rows(D, &comp, line, col)?;
+    Ok(Value::List(rows.into_iter().map(Value::Dict).collect()))
+}
+
+/// 228: صيغة_عمود(جدول_محسوب، عمود) — صيغة العمود
+/// أو نص فارغ إن كان أساسيا.
+fn tables_formula_of(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.صيغة_عمود";
+    need_args(D, args, 2, line, col)?;
+    let comp = j15_read_comp(D, &args[0], line, col)?;
+    let column = need_string(D, &args[1], line, col)?;
+    if !comp.cols.contains(&column) {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع عمودا موجودا لكن «{}» غير موجود",
+                D, column
+            ),
+            line,
+            col,
+        ));
+    }
+    match comp.formulas.iter().find(|(n, _, _)| n == &column) {
+        Some((_, expr, _)) => Ok(Value::Str(expr.clone())),
+        None => Ok(Value::Str(String::new())),
+    }
+}
+
+/// 228: اعتماديات(جدول_محسوب، عمود) — أعمدة تعتمد
+/// عليها صيغة العمود بترتيب الظهور؛ والأساسي بلا
+/// اعتماديات.
+fn tables_deps(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.اعتماديات";
+    need_args(D, args, 2, line, col)?;
+    let comp = j15_read_comp(D, &args[0], line, col)?;
+    let column = need_string(D, &args[1], line, col)?;
+    if !comp.cols.contains(&column) {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع عمودا موجودا لكن «{}» غير موجود",
+                D, column
+            ),
+            line,
+            col,
+        ));
+    }
+    match comp.formulas.iter().find(|(n, _, _)| n == &column) {
+        Some((_, _, vars)) => Ok(Value::List(
+            vars.iter().map(|v| Value::Str(v.clone())).collect(),
+        )),
+        None => Ok(Value::List(Vec::new())),
+    }
+}
+
+// ---------- 230: معالجة نصوص بالجمل (نص) ----------
+
+/// 230: قسم_جمل(نص) — قسم إلى جمل.
+fn text_split_sentences(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "نص.قسم_جمل";
+    need_args(D, args, 1, line, col)?;
+    let text = need_string(D, &args[0], line, col)?;
+    Ok(Value::List(
+        j15_split_sentences(&text)
+            .into_iter()
+            .map(Value::Str)
+            .collect(),
+    ))
+}
+
+/// 230: عدد_الجمل(نص) — عدد الجمل.
+fn text_sentence_count(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "نص.عدد_الجمل";
+    need_args(D, args, 1, line, col)?;
+    let text = need_string(D, &args[0], line, col)?;
+    Ok(Value::Number(j15_split_sentences(&text).len() as f64))
+}
+
+/// 230: جملة(نص، رقم) — الجملة رقمها من 1.
+fn text_sentence_at(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "نص.جملة";
+    need_args(D, args, 2, line, col)?;
+    let text = need_string(D, &args[0], line, col)?;
+    let n = need_integer(D, &args[1], line, col)?;
+    let sentences = j15_split_sentences(&text);
+    if n < 1 || n as usize > sentences.len() {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع رقما بين 1 و {} لكن أعطيت {}",
+                D,
+                sentences.len(),
+                n
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Str(sentences[(n - 1) as usize].clone()))
+}
+
+/// 230: طبق_على_جمل(نص، دالة) — طبق الدالة على كل
+/// جملة وأرجع قائمة النتائج.
+fn text_apply_sentences(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "نص.طبق_على_جمل";
+    need_args(D, args, 2, line, col)?;
+    let text = need_string(D, &args[0], line, col)?;
+    let mut out: Vec<Value> = Vec::new();
+    for s in j15_split_sentences(&text) {
+        out.push(j3_call_single(ctx, &args[1], Value::Str(s), line, col)?);
+    }
+    Ok(Value::List(out))
+}
+
+/// 230: رشح_جمل(نص، كلمة) — جمل تحوي الكلمة؛
+/// والكلمة الفارغة خطأ.
+fn text_filter_sentences(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "نص.رشح_جمل";
+    need_args(D, args, 2, line, col)?;
+    let text = need_string(D, &args[0], line, col)?;
+    let word = need_string(D, &args[1], line, col)?;
+    if word.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع كلمة غير فارغة", D),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::List(
+        j15_split_sentences(&text)
+            .into_iter()
+            .filter(|s| s.contains(word.as_str()))
+            .map(Value::Str)
+            .collect(),
+    ))
+}
+
+/// 230: أطول_جملة(نص) — أطول جملة (الأولى عند
+/// التعادل)؛ والنص بلا جمل يعطي نصا فارغا.
+fn text_longest_sentence(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "نص.أطول_جملة";
+    need_args(D, args, 1, line, col)?;
+    let text = need_string(D, &args[0], line, col)?;
+    let mut best: Option<String> = None;
+    for s in j15_split_sentences(&text) {
+        let longer = match &best {
+            None => true,
+            Some(b) => s.chars().count() > b.chars().count(),
+        };
+        if longer {
+            best = Some(s);
+        }
+    }
+    Ok(Value::Str(best.unwrap_or_default()))
+}
+
+/// 230: أقصر_جملة(نص) — أقصر جملة (الأولى عند
+/// التعادل)؛ والنص بلا جمل يعطي نصا فارغا.
+fn text_shortest_sentence(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "نص.أقصر_جملة";
+    need_args(D, args, 1, line, col)?;
+    let text = need_string(D, &args[0], line, col)?;
+    let mut best: Option<String> = None;
+    for s in j15_split_sentences(&text) {
+        let shorter = match &best {
+            None => true,
+            Some(b) => s.chars().count() < b.chars().count(),
+        };
+        if shorter {
+            best = Some(s);
+        }
+    }
+    Ok(Value::Str(best.unwrap_or_default()))
+}
+
+// ---------- 240: برمجة لغوية — لغات مصغرة (وحدة لغات) ----------
+
+/// 240: عرف_قاعدة(نص) — حلّل «اسم = تعبير» إلى قاموس
+/// {الاسم، التعبير، المتغيرات}.
+fn langs_define_rule(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "لغات.عرف_قاعدة";
+    need_args(D, args, 1, line, col)?;
+    let text = need_string(D, &args[0], line, col)?;
+    match j15_parse_rule(&text) {
+        Ok((name, expr, vars)) => Ok(j15_rule_value(&name, &expr, &vars)),
+        Err(_) => Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع قاعدة «اسم = تعبير» صحيحة لكن «{}» غير صالحة",
+                D, text
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// 240: قيم_قاعدة(قاعدة، قيم) — قيّم القاعدة بقاموس
+/// المتغيرات.
+fn langs_eval_rule(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "لغات.قيم_قاعدة";
+    need_args(D, args, 2, line, col)?;
+    let rule = need_dict(D, &args[0], line, col)?;
+    let values = need_dict(D, &args[1], line, col)?;
+    j15_eval_rule_pairs(D, rule, values, line, col)
+}
+
+/// 240: عرف_لغة(نص_قواعد) — قواعد سطرا بسطر (السطر
+/// الفارغ يُتخطى، و# تعليق) إلى قاموس اسم ← قاعدة.
+fn langs_define_lang(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "لغات.عرف_لغة";
+    need_args(D, args, 1, line, col)?;
+    let text = need_string(D, &args[0], line, col)?;
+    let mut out: Vec<(String, Value)> = Vec::new();
+    for raw in text.lines() {
+        let ln = raw.trim();
+        if ln.is_empty() || ln.starts_with('#') {
+            continue;
+        }
+        match j15_parse_rule(ln) {
+            Ok((name, expr, vars)) => {
+                if out.iter().any(|(n, _)| n == &name) {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة {} تتوقع أسماء قواعد بلا تكرار لكن «{}» مكرر",
+                            D, name
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+                out.push((name.clone(), j15_rule_value(&name, &expr, &vars)));
+            }
+            Err(_) => {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع قاعدة «اسم = تعبير» صحيحة لكن السطر «{}» غير صالح",
+                        D, ln
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        }
+    }
+    Ok(Value::Dict(out))
+}
+
+/// 240: نفذ_قاعدة(لغة، اسم، قيم) — قيّم القاعدة
+/// المسماة في اللغة.
+fn langs_run_rule(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "لغات.نفذ_قاعدة";
+    need_args(D, args, 3, line, col)?;
+    let lang = need_dict(D, &args[0], line, col)?;
+    let name = need_string(D, &args[1], line, col)?;
+    let values = need_dict(D, &args[2], line, col)?;
+    let rule = match tables_row_get(lang, &name) {
+        Some(Value::Dict(p)) => p.clone(),
+        _ => {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} تتوقع قاعدة موجودة لكن «{}» غير موجودة",
+                    D, name
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    j15_eval_rule_pairs(D, &rule, values, line, col)
+}
+
+/// 240: أسماء_القواعد(لغة) — أسماء القواعد بترتيب
+/// تعريفها.
+fn langs_rule_names(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "لغات.أسماء_القواعد";
+    need_args(D, args, 1, line, col)?;
+    let lang = need_dict(D, &args[0], line, col)?;
+    Ok(Value::List(
+        lang.iter().map(|(k, _)| Value::Str(k.clone())).collect(),
+    ))
+}
+
+/// 240: حلل_تعبير(نص) — تحقق من التعبير وأرجع قاموس
+/// {الرموز، المتغيرات}.
+fn langs_parse_expr(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "لغات.حلل_تعبير";
+    need_args(D, args, 1, line, col)?;
+    let text = need_string(D, &args[0], line, col)?;
+    let toks = j15_tokenize(&text).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تتوقع تعبيرا صحيحا لكن «{}» غير صالح", D, text),
+            line,
+            col,
+        )
+    })?;
+    if toks.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع تعبيرا صحيحا لكن «{}» غير صالح", D, text),
+            line,
+            col,
+        ));
+    }
+    let mut p = J15Parser { toks: toks.clone(), pos: 0 };
+    let ast = p.parse_expr().map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تتوقع تعبيرا صحيحا لكن «{}» غير صالح", D, text),
+            line,
+            col,
+        )
+    })?;
+    if p.pos != p.toks.len() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع تعبيرا صحيحا لكن «{}» غير صالح", D, text),
+            line,
+            col,
+        ));
+    }
+    let mut vars = Vec::new();
+    j15_ast_vars(&ast, &mut vars);
+    Ok(Value::Dict(vec![
+        (
+            "الرموز".to_string(),
+            Value::List(toks.iter().map(|t| Value::Str(j15_tok_text(t))).collect()),
+        ),
+        (
+            "المتغيرات".to_string(),
+            Value::List(vars.iter().map(|v| Value::Str(v.clone())).collect()),
+        ),
+    ]))
+}
+// END J15-GEN rust-impl
+
+fn tables_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        // BEGIN J11-GEN rust-entries
+        ("رتب_جدولا", native("رتب_جدولا", tables_sort_by_column)),
+        ("رتب_بأعمدة", native("رتب_بأعمدة", tables_sort_by_columns)),
+        ("رتب_الأعمدة", native("رتب_الأعمدة", tables_reorder_columns)),
+        ("اشتق_عمود", native("اشتق_عمود", tables_derive_column)),
+        ("حدث_عمود", native("حدث_عمود", tables_update_column)),
+        ("قارن_قائمتين", native("قارن_قائمتين", tables_compare_lists)),
+        ("قارن_جدولين", native("قارن_جدولين", tables_compare_tables)),
+        ("حلل_csv", native("حلل_csv", tables_parse_csv)),
+        ("كون_csv", native("كون_csv", tables_build_csv)),
+        ("اقرأ_csv", native("اقرأ_csv", tables_read_csv)),
+        ("اكتب_csv", native("اكتب_csv", tables_write_csv)),
+        ("طبق_قواعد", native("طبق_قواعد", tables_apply_rules)),
+        ("جدول_قرارات", native("جدول_قرارات", tables_decision_table)),
+// END J11-GEN rust-entries
+// BEGIN J15-GEN rust-entries-tables
+
+// J15 (225 و228): استعلام وجداول محسوبة.
+        ("حيث", native("حيث", tables_where)),
+        ("اختر", native("اختر", tables_select)),
+        ("جمع_حسب", native("جمع_حسب", tables_group_agg)),
+        ("رشح_بدالة", native("رشح_بدالة", tables_filter_fn)),
+        ("أول_صفوف", native("أول_صفوف", tables_head)),
+        ("جدول_محسوب", native("جدول_محسوب", tables_computed)),
+        ("حدث_خلية", native("حدث_خلية", tables_update_cell)),
+        ("أعد_حساب", native("أعد_حساب", tables_recompute)),
+        ("صفوف_محسوبة", native("صفوف_محسوبة", tables_computed_rows)),
+        ("صيغة_عمود", native("صيغة_عمود", tables_formula_of)),
+        ("اعتماديات", native("اعتماديات", tables_deps)),
+// END J15-GEN rust-entries-tables
+
+    ]
+}
+// BEGIN J12-GEN rust-entries
+
+fn charts_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("ارسم_مخططا", native("ارسم_مخططا", charts_plot)),
+        ("ارسم_مخططا_متراكما", native("ارسم_مخططا_متراكما", charts_stacked)),
+        ("ارسم_مخططا_شمسيا", native("ارسم_مخططا_شمسيا", charts_sunburst)),
+        ("ارسم_شبكة", native("ارسم_شبكة", charts_grid)),
+        ("ارسم_مدرجا", native("ارسم_مدرجا", charts_histogram)),
+        ("ارسم_صندوقا", native("ارسم_صندوقا", charts_boxplot)),
+    ]
+}
+
+fn images_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("اكتب_bmp", native("اكتب_bmp", images_write_bmp)),
+        ("اقرأ_bmp", native("اقرأ_bmp", images_read_bmp)),
+        ("اكتب_png", native("اكتب_png", images_write_png)),
+        ("حول_bmp_إلى_png", native("حول_bmp_إلى_png", images_bmp_to_png)),
+        ("أنشئ_gif", native("أنشئ_gif", images_make_gif)),
+        ("بصمة_ملف", native("بصمة_ملف", images_file_hash)),
+    ]
+}
+
+fn media_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("ولد_صوتا", native("ولد_صوتا", media_make_tone)),
+        ("حول_صوتا", native("حول_صوتا", media_convert_tone)),
+        ("اقرأ_صوتا", native("اقرأ_صوتا", media_read_tone)),
+    ]
+}
+
+fn sim_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("حاك_حياة", native("حاك_حياة", sim_life)),
+    ]
+}
+
+// END J12-GEN rust-entries
+// BEGIN J13-GEN rust-entries
+
+fn pages_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("هرب", native("هرب", pages_escape)),
+        ("عنصر", native("عنصر", pages_element)),
+        ("صفحة", native("صفحة", pages_page)),
+        ("قائمة", native("قائمة", pages_list)),
+        ("قائمة_مرتبة", native("قائمة_مرتبة", pages_ordered_list)),
+        ("جدول", native("جدول", pages_table)),
+        ("رابط", native("رابط", pages_link)),
+        ("صورة", native("صورة", pages_image)),
+    ]
+}
+
+fn mail_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("كون_رسالة", native("كون_رسالة", mail_build)),
+        ("حلل_رسالة", native("حلل_رسالة", mail_parse)),
+        ("أمر_من", native("أمر_من", mail_cmd_from)),
+        ("أمر_إلى", native("أمر_إلى", mail_cmd_to)),
+        ("أمر_بيانات", native("أمر_بيانات", mail_cmd_data)),
+        ("حلل_رد", native("حلل_رد", mail_parse_reply)),
+        ("حلل_رد_pop3", native("حلل_رد_pop3", mail_parse_pop3)),
+    ]
+}
+
+fn chat_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("كون_رسالة", native("كون_رسالة", chat_build)),
+        ("حلل_رسالة", native("حلل_رسالة", chat_parse)),
+        ("أمر_انضمام", native("أمر_انضمام", chat_join)),
+        ("أمر_مغادرة", native("أمر_مغادرة", chat_leave)),
+        ("اسم_صالح", native("اسم_صالح", chat_name_ok)),
+    ]
+}
+
+fn ftp_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("أمر_دخول", native("أمر_دخول", ftp_login)),
+        ("أمر_استرجاع", native("أمر_استرجاع", ftp_retr)),
+        ("أمر_تخزين", native("أمر_تخزين", ftp_stor)),
+        ("أمر_قائمة", native("أمر_قائمة", ftp_list_cmd)),
+        ("أمر_إنهاء", native("أمر_إنهاء", ftp_quit)),
+        ("حلل_رد", native("حلل_رد", ftp_parse_reply)),
+        ("حلل_قائمة", native("حلل_قائمة", ftp_parse_list)),
+    ]
+}
+
+fn ntp_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("كون_حزمة", native("كون_حزمة", ntp_packet)),
+        ("حلل_حزمة", native("حلل_حزمة", ntp_parse)),
+        ("حول_ثواني", native("حول_ثواني", ntp_to_unix)),
+        ("حزمة_صحيحة", native("حزمة_صحيحة", ntp_valid)),
+    ]
+}
+
+// END J13-GEN rust-entries
+// BEGIN J15-GEN rust-entries-langs
+
+fn langs_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("عرف_قاعدة", native("عرف_قاعدة", langs_define_rule)),
+        ("قيم_قاعدة", native("قيم_قاعدة", langs_eval_rule)),
+        ("عرف_لغة", native("عرف_لغة", langs_define_lang)),
+        ("نفذ_قاعدة", native("نفذ_قاعدة", langs_run_rule)),
+        ("أسماء_القواعد", native("أسماء_القواعد", langs_rule_names)),
+        ("حلل_تعبير", native("حلل_تعبير", langs_parse_expr)),
+    ]
+}
+
+// END J15-GEN rust-entries-langs
+
+/// جدول: قائمة صفوف، كل صف قاموس. القائمة الفارغة جدول فارغ.
+fn tables_need_table(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<Vec<(String, Value)>>> {
+    let items = need_list(display, v, line, col)?;
+    let mut rows = Vec::with_capacity(items.len());
+    for (i, item) in items.iter().enumerate() {
+        match item {
+            Value::Dict(pairs) => rows.push(pairs.clone()),
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع جدولا (قائمة قواميس) لكن الصف {} هو {}",
+                        display,
+                        i + 1,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        }
+    }
+    Ok(rows)
+}
+
+fn tables_row_get<'a>(
+    row: &'a [(String, Value)],
+    key: &str,
+) -> Option<&'a Value> {
+    row.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+}
+
+/// مساواة عميقة تتجاهل ترتيب مفاتيح القواميس وعناصر المجموعات.
+fn tables_value_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Dict(pa), Value::Dict(pb)) => {
+            if pa.len() != pb.len() {
+                return false;
+            }
+            pa.iter().all(|(k, v)| match tables_row_get(pb, k) {
+                Some(w) => tables_value_eq(v, w),
+                None => false,
+            })
+        }
+        (Value::List(xa), Value::List(xb))
+        | (Value::Tuple(xa), Value::Tuple(xb)) => {
+            xa.len() == xb.len()
+                && xa.iter().zip(xb.iter()).all(|(x, y)| tables_value_eq(x, y))
+        }
+        (Value::Set(xa), Value::Set(xb)) => {
+            xa.len() == xb.len()
+                && xa.iter().all(|x| xb.iter().any(|y| tables_value_eq(x, y)))
+        }
+        _ => a == b,
+    }
+}
+
+/// مقارنة قيمتي عمود للترتيب: عددان عدديا، ونصان معجميا؛
+/// وغير ذلك خطأ عربي. القيمة الفارغة (لاشيء) خطأ.
+fn tables_cmp_cell(
+    display: &str,
+    a: &Value,
+    b: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<std::cmp::Ordering> {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => {
+            Ok(x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal))
+        }
+        (Value::Str(x), Value::Str(y)) => Ok(x.cmp(y)),
+        _ => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع قيما من نوع واحد في العمود (أعداد أو نصوص) لكن أعطيت {} و{}",
+                display,
+                a.type_name(),
+                b.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+fn tables_dir(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<bool> {
+    // صحيح = تنازلي.
+    let s = need_string(display, v, line, col)?;
+    match s.as_str() {
+        "تصاعدي" => Ok(false),
+        "تنازلي" => Ok(true),
+        _ => Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع اتجاها «تصاعدي» أو «تنازلي» لكن أعطيت «{}»",
+                display, s
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// 168: رتب_جدولا(جدول، عمود، اتجاه؟) — ترتيب مستقر
+/// لصفوف الجدول بقيمة عمود واحد؛ والاتجاه اختياري
+/// (تصاعدي افتراضا). العمود الغائب أو الفارغ خطأ.
+fn tables_sort_by_column(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.رتب_جدولا";
+    if args.len() != 2 && args.len() != 3 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع 2 أو 3 معاملات لكن أعطيت {}", D, args.len()),
+            line,
+            col,
+        ));
+    }
+    let column = need_string(D, &args[1], line, col)?;
+    let desc = if args.len() == 3 {
+        tables_dir(D, &args[2], line, col)?
+    } else {
+        false
+    };
+    let rows = tables_need_table(D, &args[0], line, col)?;
+    let mut keys: Vec<Value> = Vec::with_capacity(rows.len());
+    for (i, row) in rows.iter().enumerate() {
+        match tables_row_get(row, &column) {
+            Some(Value::Nil) | None => {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع العمود «{}» في كل صف لكن الصف {} بلا قيمة",
+                        D, column, i + 1
+                    ),
+                    line,
+                    col,
+                ))
+            }
+            Some(v) => keys.push(v.clone()),
+        }
+    }
+    let mut idx: Vec<usize> = (0..rows.len()).collect();
+    let mut err: Option<RioError> = None;
+    idx.sort_by(|&a, &b| {
+        if err.is_some() {
+            return std::cmp::Ordering::Equal;
+        }
+        match tables_cmp_cell(D, &keys[a], &keys[b], line, col) {
+            Ok(o) => {
+                if desc {
+                    o.reverse()
+                } else {
+                    o
+                }
+            }
+            Err(e) => {
+                err = Some(e);
+                std::cmp::Ordering::Equal
+            }
+        }
+    });
+    if let Some(e) = err {
+        return Err(e);
+    }
+    // أعيد ترتيب الصفوف الأصلية حسب idx (مستقر لأن sort_by مستقر).
+    let mut out: Vec<Value> = Vec::with_capacity(rows.len());
+    for i in idx {
+        out.push(Value::Dict(rows[i].clone()));
+    }
+    Ok(Value::List(out))
+}
+
+/// 168: رتب_بأعمدة(جدول، أعمدة) — ترتيب بمفاتيح متعددة:
+/// كل مواصفة نص (عمود تصاعديا) أو قاموس {عمود، اتجاه؟}.
+fn tables_sort_by_columns(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.رتب_بأعمدة";
+    need_args(D, args, 2, line, col)?;
+    let specs = need_list(D, &args[1], line, col)?;
+    if specs.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع قائمة أعمدة غير فارغة", D),
+            line,
+            col,
+        ));
+    }
+    let mut keys: Vec<(String, bool)> = Vec::new();
+    for spec in specs {
+        match spec {
+            Value::Str(name) => keys.push((name.clone(), false)),
+            Value::Dict(pairs) => {
+                let name = match tables_row_get(pairs, "عمود") {
+                    Some(Value::Str(s)) => s.clone(),
+                    _ => {
+                        return Err(RioError::typ(
+                            format!(
+                                "الدالة {} تتوقع مواصفة فيها «عمود» نصا",
+                                D
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                };
+                let desc = match tables_row_get(pairs, "اتجاه") {
+                    Some(v) => tables_dir(D, v, line, col)?,
+                    None => false,
+                };
+                keys.push((name, desc));
+            }
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع مواصفات نصا أو قاموسا لكن أعطيت {}",
+                        D,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        }
+    }
+    let rows = tables_need_table(D, &args[0], line, col)?;
+    let mut idx: Vec<usize> = (0..rows.len()).collect();
+    let mut err: Option<RioError> = None;
+    idx.sort_by(|&a, &b| {
+        if err.is_some() {
+            return std::cmp::Ordering::Equal;
+        }
+        for (name, desc) in &keys {
+            let va = tables_row_get(&rows[a], name);
+            let vb = tables_row_get(&rows[b], name);
+            match (va, vb) {
+                (Some(Value::Nil) | None, _) | (_, Some(Value::Nil) | None) => {
+                    err = Some(RioError::runtime(
+                        format!(
+                            "الدالة {} تتوقع العمود «{}» في كل صف",
+                            D, name
+                        ),
+                        line,
+                        col,
+                    ));
+                    return std::cmp::Ordering::Equal;
+                }
+                (Some(x), Some(y)) => match tables_cmp_cell(D, x, y, line, col) {
+                    Ok(std::cmp::Ordering::Equal) => continue,
+                    Ok(o) => {
+                        return if *desc { o.reverse() } else { o };
+                    }
+                    Err(e) => {
+                        err = Some(e);
+                        return std::cmp::Ordering::Equal;
+                    }
+                },
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+    if let Some(e) = err {
+        return Err(e);
+    }
+    Ok(Value::List(
+        idx.into_iter().map(|i| Value::Dict(rows[i].clone())).collect(),
+    ))
+}
+
+/// 168: رتب_الأعمدة(جدول، أعمدة) — إعادة ترتيب أعمدة
+/// الجدول (واختيارها): صفوف جديدة بمفاتيحها بالترتيب المعطى.
+fn tables_reorder_columns(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.رتب_الأعمدة";
+    need_args(D, args, 2, line, col)?;
+    let cols = need_list(D, &args[1], line, col)?;
+    let mut names: Vec<String> = Vec::new();
+    for c in cols {
+        let s = need_string(D, c, line, col)?;
+        if names.contains(&s) {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع أعمدة بلا تكرار لكن «{}» مكرر", D, s),
+                line,
+                col,
+            ));
+        }
+        names.push(s);
+    }
+    let rows = tables_need_table(D, &args[0], line, col)?;
+    let mut out: Vec<Value> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        let mut new_row: Vec<(String, Value)> = Vec::new();
+        for name in &names {
+            match tables_row_get(row, name) {
+                Some(v) => new_row.push((name.clone(), v.clone())),
+                None => {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة {} تتوقع العمود «{}» في كل صف لكن الصف {} بلا قيمة",
+                            D, name, i + 1
+                        ),
+                        line,
+                        col,
+                    ))
+                }
+            }
+        }
+        out.push(Value::Dict(new_row));
+    }
+    Ok(Value::List(out))
+}
+
+/// 170: اشتق_عمود(جدول، اسم، دالة) — عمود مشتق جديد:
+/// الدالة تستلم الصف (قاموسا) وتعيد قيمة الخلية.
+/// العمود الموجود أصلا خطأ (له حدث_عمود).
+fn tables_derive_column(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.اشتق_عمود";
+    need_args(D, args, 3, line, col)?;
+    let name = need_string(D, &args[1], line, col)?;
+    let rows = tables_need_table(D, &args[0], line, col)?;
+    for row in &rows {
+        if tables_row_get(row, &name).is_some() {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} تتوقع عمودا جديدا لكن «{}» موجود أصلا",
+                    D, name
+                ),
+                line,
+                col,
+            ));
+        }
+    }
+    let mut out: Vec<Value> = Vec::new();
+    for row in &rows {
+        let v = j3_call_single(ctx, &args[2], Value::Dict(row.clone()), line, col)?;
+        let mut new_row = row.clone();
+        new_row.push((name.clone(), v));
+        out.push(Value::Dict(new_row));
+    }
+    Ok(Value::List(out))
+}
+
+/// 170: حدث_عمود(جدول، اسم، دالة) — إعادة حساب عمود
+/// موجود: الدالة تستلم الصف وتعيد القيمة الجديدة.
+/// العمود الغائب خطأ.
+fn tables_update_column(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.حدث_عمود";
+    need_args(D, args, 3, line, col)?;
+    let name = need_string(D, &args[1], line, col)?;
+    let rows = tables_need_table(D, &args[0], line, col)?;
+    for (i, row) in rows.iter().enumerate() {
+        if tables_row_get(row, &name).is_none() {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} تتوقع العمود «{}» في كل صف لكن الصف {} بلا قيمة",
+                    D, name, i + 1
+                ),
+                line,
+                col,
+            ));
+        }
+    }
+    let mut out: Vec<Value> = Vec::new();
+    for row in &rows {
+        let v = j3_call_single(ctx, &args[2], Value::Dict(row.clone()), line, col)?;
+        let new_row: Vec<(String, Value)> = row
+            .iter()
+            .map(|(k, old)| {
+                if k == &name {
+                    (k.clone(), v.clone())
+                } else {
+                    (k.clone(), old.clone())
+                }
+            })
+            .collect();
+        out.push(Value::Dict(new_row));
+    }
+    Ok(Value::List(out))
+}
+
+/// 171: قارن_قائمتين(قديمة، جديدة) — فروق موضعية:
+/// قائمة قواميس {نوع، فهرس، قديم، جديد}؛ والنوع
+/// مغير أو مضاف أو محذوف، والغائب لاشيء.
+fn tables_compare_lists(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.قارن_قائمتين";
+    need_args(D, args, 2, line, col)?;
+    let old = need_list(D, &args[0], line, col)?;
+    let new = need_list(D, &args[1], line, col)?;
+    let n = old.len().max(new.len());
+    let mut out: Vec<Value> = Vec::new();
+    for i in 0..n {
+        let o = old.get(i);
+        let w = new.get(i);
+        match (o, w) {
+            (Some(x), Some(y)) => {
+                if !tables_value_eq(x, y) {
+                    out.push(Value::Dict(vec![
+                        ("نوع".to_string(), Value::Str("مغير".to_string())),
+                        ("فهرس".to_string(), Value::Number(i as f64)),
+                        ("قديم".to_string(), x.clone()),
+                        ("جديد".to_string(), y.clone()),
+                    ]));
+                }
+            }
+            (Some(x), None) => {
+                out.push(Value::Dict(vec![
+                    ("نوع".to_string(), Value::Str("محذوف".to_string())),
+                    ("فهرس".to_string(), Value::Number(i as f64)),
+                    ("قديم".to_string(), x.clone()),
+                    ("جديد".to_string(), Value::Nil),
+                ]));
+            }
+            (None, Some(y)) => {
+                out.push(Value::Dict(vec![
+                    ("نوع".to_string(), Value::Str("مضاف".to_string())),
+                    ("فهرس".to_string(), Value::Number(i as f64)),
+                    ("قديم".to_string(), Value::Nil),
+                    ("جديد".to_string(), y.clone()),
+                ]));
+            }
+            (None, None) => {}
+        }
+    }
+    Ok(Value::List(out))
+}
+
+/// 171: قارن_جدولين(قديم، جديد، مفتاح) — فروق بين
+/// نسختي جدول بمطابقة الصفوف على عمود المفتاح:
+/// قائمة قواميس {نوع، مفتاح، قديم، جديد}؛ والمفتاح
+/// المكرر في أي جدول خطأ، وقيمته عدد أو نص.
+fn tables_compare_tables(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.قارن_جدولين";
+    need_args(D, args, 3, line, col)?;
+    let key_col = need_string(D, &args[2], line, col)?;
+    let old_rows = tables_need_table(D, &args[0], line, col)?;
+    let new_rows = tables_need_table(D, &args[1], line, col)?;
+    let mut old_keys: Vec<(String, Value)> = Vec::new();
+    for (i, row) in old_rows.iter().enumerate() {
+        let k = tables_key_value(D, row, &key_col, i, line, col)?;
+        if old_keys.iter().any(|(s, _)| *s == k.0) {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع مفتاحا بلا تكرار لكن «{}» مكرر في الجدول القديم", D, k.0),
+                line,
+                col,
+            ));
+        }
+        old_keys.push(k);
+    }
+    let mut new_keys: Vec<(String, Value)> = Vec::new();
+    for (i, row) in new_rows.iter().enumerate() {
+        let k = tables_key_value(D, row, &key_col, i, line, col)?;
+        if new_keys.iter().any(|(s, _)| *s == k.0) {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع مفتاحا بلا تكرار لكن «{}» مكرر في الجدول الجديد", D, k.0),
+                line,
+                col,
+            ));
+        }
+        new_keys.push(k);
+    }
+    let mut out: Vec<Value> = Vec::new();
+    for (oi, (ks, kv)) in old_keys.iter().enumerate() {
+        match new_keys.iter().position(|(s, _)| s == ks) {
+            None => {
+                out.push(tables_diff("محذوف", kv.clone(), Value::Dict(old_rows[oi].clone()), Value::Nil));
+            }
+            Some(ni) => {
+                let old_row = Value::Dict(old_rows[oi].clone());
+                let new_row = Value::Dict(new_rows[ni].clone());
+                if !tables_value_eq(&old_row, &new_row) {
+                    out.push(tables_diff("مغير", kv.clone(), old_row, new_row));
+                }
+            }
+        }
+    }
+    for (ni, (ks, kv)) in new_keys.iter().enumerate() {
+        if !old_keys.iter().any(|(s, _)| s == ks) {
+            out.push(tables_diff("مضاف", kv.clone(), Value::Nil, Value::Dict(new_rows[ni].clone())));
+        }
+    }
+    Ok(Value::List(out))
+}
+
+/// قيمة مفتاح صف: نصها المطبوع للفهرسة + القيمة نفسها.
+/// المفتاح الغائب أو الفارغ أو غير العدد والنص خطأ.
+fn tables_key_value(
+    display: &str,
+    row: &[(String, Value)],
+    key_col: &str,
+    i: usize,
+    line: usize,
+    col: usize,
+) -> RioResult<(String, Value)> {
+    match tables_row_get(row, key_col) {
+        Some(Value::Number(_)) | Some(Value::Str(_)) => {
+            let v = tables_row_get(row, key_col).unwrap().clone();
+            Ok((v.fmt_value(), v))
+        }
+        _ => Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع المفتاح «{}» عددا أو نصا في كل صف لكن الصف {} بلا قيمة صالحة",
+                display, key_col, i + 1
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+fn tables_diff(kind: &str, key: Value, old: Value, new: Value) -> Value {
+    Value::Dict(vec![
+        ("نوع".to_string(), Value::Str(kind.to_string())),
+        ("مفتاح".to_string(), key),
+        ("قديم".to_string(), old),
+        ("جديد".to_string(), new),
+    ])
+}
+
+// ---------- 173: CSV ----------
+// التحليل صيغة RFC 4180 المبسطة: اقتباس بمضاعفة
+// علامة الاقتباس، وفاصل فاصلة، وسطر جديد \n أو \r\n،
+// وسطور فارغة تُتخطى. الصف الأول ترويسة (مفاتيح
+// بلا تكرار وبلا اسم فارغ)، وعدد حقول كل صف يجب
+// أن يساوي عدد الترويسة. قيمة الحقل: فارغ ← نص
+// فارغ؛ صحيح/خطأ ← منطقي؛ وعدد (غربي أو عربي
+// الأرقام مع ٫) ← عدد؛ وغير ذلك نص.
+// الكتابة بالتنسيق المطبوع نفسه (fmt_value) فيرد
+// التحليل الأعداد والمنطقيات كما كانت؛ والفارغ
+// (لاشيء) ← حقل فارغ؛ والقيمة المركبة خطأ.
+
+/// حلل نص CSV إلى قائمة صفوف (قواميس بمفاتيح الترويسة).
+fn tables_parse_csv_text(
+    display: &str,
+    text: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<Value>> {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut field = String::new();
+    let mut row: Vec<String> = Vec::new();
+    let mut chars = text.chars().peekable();
+    let mut in_quotes = false;
+    let mut field_quoted = false;
+    let mut field_started = false;
+    // حالة سطر فارغ: سطر بلا أي حرف يُتخطى؛ أما
+    // السطر «,» فصف من حقلين فارغين فيُحفظ.
+    let mut line_has_content = false;
+    macro_rules! end_field {
+        () => {
+            row.push(std::mem::take(&mut field));
+            field_quoted = false;
+            field_started = false;
+        };
+    }
+    macro_rules! end_row {
+        () => {
+            if line_has_content {
+                rows.push(std::mem::take(&mut row));
+            } else {
+                row.clear();
+            }
+            line_has_content = false;
+        };
+    }
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    field.push('"');
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                field.push(c);
+            }
+            continue;
+        }
+        match c {
+            '"' if !field_started => {
+                in_quotes = true;
+                field_quoted = true;
+                field_started = true;
+                line_has_content = true;
+            }
+            '"' => {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع علامة اقتباس في أول الحقل لا وسطه",
+                        display
+                    ),
+                    line,
+                    col,
+                ));
+            }
+            ',' => {
+                end_field!();
+                line_has_content = true;
+            }
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                end_field!();
+                end_row!();
+            }
+            '\n' => {
+                end_field!();
+                end_row!();
+            }
+            _ => {
+                field.push(c);
+                field_started = true;
+                line_has_content = true;
+            }
+        }
+    }
+    if in_quotes {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع إغلاق الاقتباس في نهاية النص", display),
+            line,
+            col,
+        ));
+    }
+    if field_started || field_quoted || !row.is_empty() {
+        end_field!();
+        end_row!();
+    }
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let header = rows[0].clone();
+    for (i, h) in header.iter().enumerate() {
+        if h.is_empty() {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} تتوقع ترويسة بلا اسم فارغ لكن العمود {} فارغ",
+                    display,
+                    i + 1
+                ),
+                line,
+                col,
+            ));
+        }
+        if header[..i].contains(h) {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} تتوقع ترويسة بلا تكرار لكن «{}» مكرر",
+                    display, h
+                ),
+                line,
+                col,
+            ));
+        }
+    }
+    let mut out: Vec<Value> = Vec::new();
+    for (ri, r) in rows.iter().skip(1).enumerate() {
+        if r.len() != header.len() {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} تتوقع {} حقولا في الصف {} لكن أعطيت {}",
+                    display,
+                    header.len(),
+                    ri + 2,
+                    r.len()
+                ),
+                line,
+                col,
+            ));
+        }
+        let mut pairs: Vec<(String, Value)> = Vec::new();
+        for (h, f) in header.iter().zip(r.iter()) {
+            pairs.push((h.clone(), tables_csv_field_value(f)));
+        }
+        out.push(Value::Dict(pairs));
+    }
+    Ok(out)
+}
+
+/// قيمة حقل CSV نصية إلى قيمة نيفا.
+fn tables_csv_field_value(s: &str) -> Value {
+    if s.is_empty() {
+        return Value::Str(String::new());
+    }
+    if s == "صحيح" {
+        return Value::Bool(true);
+    }
+    if s == "خطأ" {
+        return Value::Bool(false);
+    }
+    if let Some(n) = tables_parse_csv_number(s) {
+        return Value::Number(n);
+    }
+    Value::Str(s.to_string())
+}
+
+/// عدد CSV: أرقام غربية أو عربية (٠-٩) مع نقطة
+/// غربية أو ٫، وإشارة سالبة وأس اختياري.
+fn tables_parse_csv_number(s: &str) -> Option<f64> {
+    let norm: String = s
+        .chars()
+        .map(|c| match c {
+            '٠'..='٩' => ((c as u32 - '٠' as u32) as u8 + b'0') as char,
+            '٫' => '.',
+            other => other,
+        })
+        .collect();
+    let b = norm.as_bytes();
+    if b.is_empty() {
+        return None;
+    }
+    let mut i = 0;
+    if b[i] == b'-' {
+        i += 1;
+        if i >= b.len() {
+            return None;
+        }
+    }
+    let mut digits = 0;
+    let mut dot = false;
+    while i < b.len() {
+        let c = b[i];
+        if c.is_ascii_digit() {
+            digits += 1;
+        } else if c == b'.' && !dot {
+            dot = true;
+        } else {
+            break;
+        }
+        i += 1;
+    }
+    if digits == 0 {
+        return None;
+    }
+    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+        i += 1;
+        if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+            i += 1;
+        }
+        let mut edigits = 0;
+        while i < b.len() && b[i].is_ascii_digit() {
+            edigits += 1;
+            i += 1;
+        }
+        if edigits == 0 {
+            return None;
+        }
+    }
+    if i != b.len() {
+        return None;
+    }
+    let n: f64 = norm.parse().ok()?;
+    if n.is_finite() {
+        Some(n)
+    } else {
+        None
+    }
+}
+
+/// خلية إلى نص CSV (مع الاقتباس عند الحاجة).
+fn tables_csv_cell_text(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    let raw = match v {
+        Value::Nil => String::new(),
+        Value::Str(s) => s.clone(),
+        Value::Number(_) | Value::Bool(_) => v.fmt_value(),
+        other => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع خلايا عددا أو نصا أو منطقيا أو فارغا لكن أعطيت {}",
+                    display,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    if raw.contains(',') || raw.contains('"') || raw.contains('\n') || raw.contains('\r') {
+        Ok(format!("\"{}\"", raw.replace('"', "\"\"")))
+    } else {
+        Ok(raw)
+    }
+}
+
+/// جدول إلى نص CSV: الترويسة مفاتيح الصف الأول
+/// بالترتيب، وكل صف بعده بمفاتيح المجموعة نفسها.
+fn tables_build_csv_text(
+    display: &str,
+    rows: &[Vec<(String, Value)>],
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    if rows.is_empty() {
+        return Ok(String::new());
+    }
+    let header: Vec<String> = rows[0].iter().map(|(k, _)| k.clone()).collect();
+    let mut out = String::new();
+    out.push_str(&tables_csv_line(&header)?);
+    out.push('\n');
+    for (i, row) in rows.iter().enumerate() {
+        if row.len() != header.len()
+            || header.iter().any(|h| tables_row_get(row, h).is_none())
+        {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} تتوقع كل صف بمفاتيح الترويسة نفسها لكن الصف {} يخالفها",
+                    display,
+                    i + 1
+                ),
+                line,
+                col,
+            ));
+        }
+        let cells: Vec<String> = header
+            .iter()
+            .map(|h| tables_csv_cell_text(display, tables_row_get(row, h).unwrap(), line, col))
+            .collect::<RioResult<Vec<String>>>()?;
+        out.push_str(&cells.join(","));
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+fn tables_csv_line(cells: &[String]) -> RioResult<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for raw in cells {
+        if raw.contains(',') || raw.contains('"') || raw.contains('\n') || raw.contains('\r') {
+            parts.push(format!("\"{}\"", raw.replace('"', "\"\"")));
+        } else {
+            parts.push(raw.clone());
+        }
+    }
+    Ok(parts.join(","))
+}
+
+/// 173: حلل_csv(نص) — نص CSV إلى جدول.
+fn tables_parse_csv(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.حلل_csv";
+    need_args(D, args, 1, line, col)?;
+    let text = need_string(D, &args[0], line, col)?;
+    Ok(Value::List(tables_parse_csv_text(D, &text, line, col)?))
+}
+
+/// 173: كون_csv(جدول) — جدول إلى نص CSV.
+fn tables_build_csv(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.كون_csv";
+    need_args(D, args, 1, line, col)?;
+    let rows = tables_need_table(D, &args[0], line, col)?;
+    Ok(Value::Str(tables_build_csv_text(D, &rows, line, col)?))
+}
+
+/// 173: اقرأ_csv(مسار) — قراءة ملف CSV وتحليله.
+/// المسار النسبي مقابل مجلد الجلسة (كأنماط_من_ملف).
+fn tables_read_csv(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.اقرأ_csv";
+    need_args(D, args, 1, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let full = search_resolve_path(ctx, &path);
+    let content = std::fs::read_to_string(&full).map_err(|_| {
+        RioError::runtime(format!("تعذر قراءة الملف {}", path), line, col)
+    })?;
+    Ok(Value::List(tables_parse_csv_text(D, &content, line, col)?))
+}
+
+/// 173: اكتب_csv(مسار، جدول) — كتابة جدول ملف CSV.
+/// كتابة ذرية (كاكتب_ملف).
+fn tables_write_csv(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.اكتب_csv";
+    need_args(D, args, 2, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let rows = tables_need_table(D, &args[1], line, col)?;
+    let text = tables_build_csv_text(D, &rows, line, col)?;
+    let full = search_resolve_path(ctx, &path);
+    crate::install::write_atomic(&full, text.as_bytes()).map_err(|e| {
+        RioError::runtime(format!("تعذر كتابة الملف {}: {}", path, e), line, col)
+    })?;
+    Ok(Value::Nil)
+}
+
+// ---------- 174: قواعد الأعمال ----------
+
+/// 174: طبق_قواعد(قواعد، سجل) — أول قاعدة يصدق
+/// شرطها على السجل يعيد نتيجتها؛ وبلا مطابقة لاشيء.
+/// القاعدة قاموس {شرط: دالة(سجل)→منطقي، نتيجة: قيمة}.
+fn tables_apply_rules(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.طبق_قواعد";
+    need_args(D, args, 2, line, col)?;
+    let rules = need_list(D, &args[0], line, col)?;
+    let record = need_dict(D, &args[1], line, col)?.clone();
+    for (i, rule) in rules.iter().enumerate() {
+        let pairs = match rule {
+            Value::Dict(p) => p,
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع قواعد قواميس لكن القاعدة {} هي {}",
+                        D,
+                        i + 1,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let cond = match tables_row_get(pairs, "شرط") {
+            Some(v) => v.clone(),
+            None => {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع «شرط» في كل قاعدة لكن القاعدة {} بلا شرط",
+                        D,
+                        i + 1
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let result = match tables_row_get(pairs, "نتيجة") {
+            Some(v) => v.clone(),
+            None => {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع «نتيجة» في كل قاعدة لكن القاعدة {} بلا نتيجة",
+                        D,
+                        i + 1
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        };
+        if j3_call_bool(ctx, &cond, Value::Dict(record.clone()), D, line, col)? {
+            return Ok(result);
+        }
+    }
+    Ok(Value::Nil)
+}
+
+/// 174: جدول_قرارات(قرارات، سجل) — جدول قرارات:
+/// كل صف قاموس فيه «نتيجة» وشروط (باقي المفاتيح)؛
+/// والصف يطابق حين تساوي كل شروطه قيم السجل؛
+/// والصف بلا شروط (نتيجة وحدها) افتراضي يطابق دائما.
+/// أول مطابقة تفوز؛ وبلا مطابقة لاشيء.
+fn tables_decision_table(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "جداول.جدول_قرارات";
+    need_args(D, args, 2, line, col)?;
+    let rows = need_list(D, &args[0], line, col)?;
+    let record = need_dict(D, &args[1], line, col)?;
+    for (i, row) in rows.iter().enumerate() {
+        let pairs = match row {
+            Value::Dict(p) => p,
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع صفوف قرارات قواميس لكن الصف {} هو {}",
+                        D,
+                        i + 1,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let result = match tables_row_get(pairs, "نتيجة") {
+            Some(v) => v.clone(),
+            None => {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع «نتيجة» في كل صف لكن الصف {} بلا نتيجة",
+                        D,
+                        i + 1
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let mut matches = true;
+        for (k, v) in pairs {
+            if k == "نتيجة" {
+                continue;
+            }
+            match tables_row_get(record, k) {
+                Some(w) if tables_value_eq(v, w) => {}
+                _ => {
+                    matches = false;
+                    break;
+                }
+            }
+        }
+        if matches {
+            return Ok(result);
+        }
+    }
+    Ok(Value::Nil)
+}
+
+// ================= J12 (يدوي): الرسوميات والوسائط — الدفعة الأخيرة من الـ579 (§88) =================
+// مخرجات ملفات فقط (SVG/BMP/PNG/GIF/WAV) بلا أي نافذة تفاعلية أبدا؛
+// وكل الهندسة والموجات بأعداد صحيحة (جدول الجيب المولّد J12_SIN_TABLE)
+// فتطابق المرآة C بايتًا بايتًا. بلا صناديق خارجية إطلاقا.
+// المؤجل بقرار موثق: 176 و183 (OpenGL)، و185 (تشغيل صوت — لا مسار
+// تشغيل في المحرك)، وJPEG كتابة/قراءة، وقراءة PNG (تحتاج مفكك DEFLATE).
+
+const J12_PALETTE: [&str; 10] = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
+    "#bcbd22", "#17becf",
+];
+
+fn j12_milli(v: f64) -> i64 {
+    (v * 1000.0).round() as i64
+}
+
+fn j12_need_numbers(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<f64>> {
+    let items = need_list(display, v, line, col)?;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let x = need_number(display, item, line, col)?;
+        if !x.is_finite() || x.abs() > 1.0e9 {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع أعدادا محدودة ضمن المدى", display),
+                line,
+                col,
+            ));
+        }
+        out.push(x);
+    }
+    Ok(out)
+}
+
+fn j12_need_millis(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<i64>> {
+    Ok(j12_need_numbers(display, v, line, col)?
+        .iter()
+        .map(|&x| j12_milli(x))
+        .collect())
+}
+
+fn j12_need_labels(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<String>> {
+    let items = need_list(display, v, line, col)?;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        out.push(need_string(display, item, line, col)?);
+    }
+    Ok(out)
+}
+
+fn j12_need_int(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<i64> {
+    need_integer(display, v, line, col)
+}
+
+fn j12_svg_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn j12_write_file(
+    ctx: &mut dyn HandlerCaller,
+    path: &str,
+    bytes: &[u8],
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    let full = search_resolve_path(ctx, path);
+    crate::install::write_atomic(&full, bytes).map_err(|e| {
+        RioError::runtime(format!("تعذر كتابة الملف {}: {}", path, e), line, col)
+    })
+}
+
+fn j12_read_file(
+    ctx: &mut dyn HandlerCaller,
+    path: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<u8>> {
+    let full = search_resolve_path(ctx, path);
+    std::fs::read(&full)
+        .map_err(|_| RioError::runtime(format!("تعذر قراءة الملف {}", path), line, col))
+}
+
+fn j12_sin1024(a: i64) -> i64 {
+    J12_SIN_TABLE[(a & 1023) as usize] as i64
+}
+
+fn j12_cos1024(a: i64) -> i64 {
+    J12_SIN_TABLE[((a + 256) & 1023) as usize] as i64
+}
+
+fn j12_point(cx: i64, cy: i64, r: i64, a: i64) -> (i64, i64) {
+    (
+        cx + r * j12_cos1024(a) / 32767,
+        cy - r * j12_sin1024(a) / 32767,
+    )
+}
+
+fn j12_svg_open(w: i64, h: i64, title: &str) -> String {
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"0 0 {} {}\">\n<text x=\"{}\" y=\"24\" text-anchor=\"middle\" font-size=\"18\">{}</text>\n",
+        w,
+        h,
+        w,
+        h,
+        w / 2,
+        j12_svg_escape(title)
+    )
+}
+
+fn j12_svg_axes(s: &mut String) {
+    s.push_str("<line x1=\"60\" y1=\"370\" x2=\"620\" y2=\"370\" stroke=\"#000000\"/>\n");
+    s.push_str("<line x1=\"60\" y1=\"20\" x2=\"60\" y2=\"370\" stroke=\"#000000\"/>\n");
+}
+
+fn j12_line_x(i: i64, n: i64) -> i64 {
+    if n == 1 {
+        340
+    } else {
+        60 + i * 560 / (n - 1)
+    }
+}
+
+fn j12_line_y(v: i64, mn: i64, mx: i64) -> i64 {
+    if mx == mn {
+        195
+    } else {
+        370 - (v - mn) * 330 / (mx - mn)
+    }
+}
+
+fn j12_pie_slice(
+    cx: i64,
+    cy: i64,
+    r: i64,
+    a0: i64,
+    span: i64,
+    color: &str,
+    out: &mut String,
+) {
+    if span == 1024 {
+        out.push_str(&format!(
+            "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{}\"/>\n",
+            cx, cy, r, color
+        ));
+        return;
+    }
+    let (x0, y0) = j12_point(cx, cy, r, a0);
+    let (x1, y1) = j12_point(cx, cy, r, a0 + span);
+    let large = if span > 512 { 1 } else { 0 };
+    out.push_str(&format!(
+        "<path d=\"M {} {} L {} {} A {} {} 0 {} 1 {} {} Z\" fill=\"{}\"/>\n",
+        cx, cy, x0, y0, r, r, large, x1, y1, color
+    ));
+}
+
+fn j12_ring_sector(
+    cx: i64,
+    cy: i64,
+    r0: i64,
+    r1: i64,
+    a0: i64,
+    span: i64,
+    color: &str,
+    out: &mut String,
+) {
+    if span == 1024 {
+        j12_ring_sector(cx, cy, r0, r1, a0, 512, color, out);
+        j12_ring_sector(cx, cy, r0, r1, a0 + 512, 512, color, out);
+        return;
+    }
+    let (ox0, oy0) = j12_point(cx, cy, r1, a0);
+    let (ox1, oy1) = j12_point(cx, cy, r1, a0 + span);
+    let (ix1, iy1) = j12_point(cx, cy, r0, a0 + span);
+    let (ix0, iy0) = j12_point(cx, cy, r0, a0);
+    let large = if span > 512 { 1 } else { 0 };
+    out.push_str(&format!(
+        "<path d=\"M {} {} A {} {} 0 {} 1 {} {} L {} {} A {} {} 0 {} 0 {} {} Z\" fill=\"{}\"/>\n",
+        ox0, oy0, r1, r1, large, ox1, oy1, ix1, iy1, r0, r0, large, ix0, iy0, color
+    ));
+}
+
+fn j12_plot_line(title: &str, labels: &[String], values: &[i64]) -> String {
+    let n = values.len() as i64;
+    let mn = *values.iter().min().unwrap();
+    let mx = *values.iter().max().unwrap();
+    let mut s = j12_svg_open(640, 420, title);
+    j12_svg_axes(&mut s);
+    let mut pts = String::new();
+    for (i, &v) in values.iter().enumerate() {
+        if i > 0 {
+            pts.push(' ');
+        }
+        pts.push_str(&format!(
+            "{},{}",
+            j12_line_x(i as i64, n),
+            j12_line_y(v, mn, mx)
+        ));
+    }
+    s.push_str(&format!(
+        "<polyline points=\"{}\" fill=\"none\" stroke=\"#1f77b4\" stroke-width=\"2\"/>\n",
+        pts
+    ));
+    for (i, &v) in values.iter().enumerate() {
+        s.push_str(&format!(
+            "<circle cx=\"{}\" cy=\"{}\" r=\"4\" fill=\"#1f77b4\"/>\n",
+            j12_line_x(i as i64, n),
+            j12_line_y(v, mn, mx)
+        ));
+    }
+    for (i, label) in labels.iter().enumerate() {
+        s.push_str(&format!(
+            "<text x=\"{}\" y=\"395\" text-anchor=\"middle\" font-size=\"12\">{}</text>\n",
+            j12_line_x(i as i64, n),
+            j12_svg_escape(label)
+        ));
+    }
+    s.push_str("</svg>\n");
+    s
+}
+
+fn j12_plot_bars(title: &str, labels: &[String], values: &[i64]) -> String {
+    let n = values.len() as i64;
+    let mn = *values.iter().min().unwrap();
+    let mx = *values.iter().max().unwrap();
+    let lo = mn.min(0);
+    let hi = mx.max(0);
+    let slot = 560 / n;
+    let bw = slot * 7 / 10;
+    let mut s = j12_svg_open(640, 420, title);
+    j12_svg_axes(&mut s);
+    for (i, &v) in values.iter().enumerate() {
+        let x = 60 + (i as i64) * slot + slot * 3 / 20;
+        let h = if hi == lo {
+            0
+        } else {
+            (v - lo) * 330 / (hi - lo)
+        };
+        s.push_str(&format!(
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\"/>\n",
+            x,
+            370 - h,
+            bw,
+            h,
+            J12_PALETTE[i % 10]
+        ));
+    }
+    for (i, label) in labels.iter().enumerate() {
+        let x = 60 + (i as i64) * slot + slot / 2;
+        s.push_str(&format!(
+            "<text x=\"{}\" y=\"395\" text-anchor=\"middle\" font-size=\"12\">{}</text>\n",
+            x,
+            j12_svg_escape(label)
+        ));
+    }
+    s.push_str("</svg>\n");
+    s
+}
+
+fn j12_plot_pie(
+    display: &str,
+    title: &str,
+    labels: &[String],
+    values: &[i64],
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    for &v in values {
+        if v < 0 {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} تتوقع قيما غير سالبة للمخطط الدائري",
+                    display
+                ),
+                line,
+                col,
+            ));
+        }
+    }
+    let total: i64 = values.iter().sum();
+    if total <= 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع مجموع قيم موجبا للمخطط الدائري", display),
+            line,
+            col,
+        ));
+    }
+    let mut s = j12_svg_open(640, 420, title);
+    let mut start: i64 = 0;
+    let mut acc: i64 = 0;
+    for (i, &v) in values.iter().enumerate() {
+        let span = if i == values.len() - 1 {
+            1024 - acc
+        } else {
+            1024 * v / total
+        };
+        acc += span;
+        if span == 0 {
+            continue;
+        }
+        j12_pie_slice(320, 210, 150, start, span, J12_PALETTE[i % 10], &mut s);
+        let mid = start + span / 2;
+        let (lx, ly) = j12_point(320, 210, 185, mid);
+        s.push_str(&format!(
+            "<text x=\"{}\" y=\"{}\" text-anchor=\"middle\" font-size=\"12\">{}</text>\n",
+            lx,
+            ly,
+            j12_svg_escape(&labels[i])
+        ));
+        start += span;
+    }
+    s.push_str("</svg>\n");
+    Ok(s)
+}
+fn j12_dict_int(
+    display: &str,
+    pairs: &[(String, Value)],
+    key: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<i64> {
+    match dict_get(pairs, key) {
+        Some(v) => need_integer(display, v, line, col),
+        None => Err(RioError::runtime(
+            format!("الدالة {} تتوقع «{}» في كل شكل", display, key),
+            line,
+            col,
+        )),
+    }
+}
+
+fn j12_dict_color(pairs: &[(String, Value)]) -> String {
+    match dict_get(pairs, "لون") {
+        Some(Value::Str(s)) => s.clone(),
+        _ => "#000000".to_string(),
+    }
+}
+
+/// 181: ارسم_شبكة(مسار، عرض، ارتفاع، أشكال) — شبكة 20 بكسل +
+/// أشكال قواميس: دائرة {س، ص، نق}، مستطيل {س، ص، عرض، ارتفاع}،
+/// خط {س، ص، س٢، ص٢}، نقطة {س، ص}، نص {س، ص، نص}؛ واللون اختياري.
+fn charts_grid(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "مخططات.ارسم_شبكة";
+    need_args(D, args, 4, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let w = j12_need_int(D, &args[1], line, col)?;
+    let h = j12_need_int(D, &args[2], line, col)?;
+    if !(1..=2000).contains(&w) || !(1..=2000).contains(&h) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع العرض والارتفاع ضمن 1..2000", D),
+            line,
+            col,
+        ));
+    }
+    let shapes = need_list(D, &args[3], line, col)?;
+    if shapes.len() > 10000 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع ≤ 10000 شكل", D),
+            line,
+            col,
+        ));
+    }
+    let mut svg = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{}\" height=\"{}\" viewBox=\"0 0 {} {}\">\n",
+        w, h, w, h
+    );
+    let mut x = 20i64;
+    while x < w {
+        svg.push_str(&format!(
+            "<line x1=\"{}\" y1=\"0\" x2=\"{}\" y2=\"{}\" stroke=\"#e0e0e0\"/>\n",
+            x, x, h
+        ));
+        x += 20;
+    }
+    let mut y = 20i64;
+    while y < h {
+        svg.push_str(&format!(
+            "<line x1=\"0\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#e0e0e0\"/>\n",
+            y, w, y
+        ));
+        y += 20;
+    }
+    svg.push_str(&format!(
+        "<rect x=\"0\" y=\"0\" width=\"{}\" height=\"{}\" fill=\"none\" stroke=\"#000000\"/>\n",
+        w, h
+    ));
+    for item in shapes {
+        let pairs = match item {
+            Value::Dict(p) => p,
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع أشكالا قواميس لكن أعطيت {}",
+                        D,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ));
+            }
+        };
+        let kind = match dict_get(pairs, "شكل") {
+            Some(Value::Str(s)) => s.clone(),
+            _ => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} تتوقع «شكل» نصا في كل شكل", D),
+                    line,
+                    col,
+                ));
+            }
+        };
+        let color = j12_dict_color(pairs);
+        match kind.as_str() {
+            "دائرة" => {
+                let cx = j12_dict_int(D, pairs, "س", line, col)?;
+                let cy = j12_dict_int(D, pairs, "ص", line, col)?;
+                let r = j12_dict_int(D, pairs, "نق", line, col)?;
+                if r < 0 {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} تتوقع نصف قطر غير سالب", D),
+                        line,
+                        col,
+                    ));
+                }
+                svg.push_str(&format!(
+                    "<circle cx=\"{}\" cy=\"{}\" r=\"{}\" fill=\"{}\"/>\n",
+                    cx, cy, r, color
+                ));
+            }
+            "مستطيل" => {
+                let x = j12_dict_int(D, pairs, "س", line, col)?;
+                let y = j12_dict_int(D, pairs, "ص", line, col)?;
+                let ww = j12_dict_int(D, pairs, "عرض", line, col)?;
+                let hh = j12_dict_int(D, pairs, "ارتفاع", line, col)?;
+                if ww < 0 || hh < 0 {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} تتوقع أبعادا غير سالبة", D),
+                        line,
+                        col,
+                    ));
+                }
+                svg.push_str(&format!(
+                    "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\"/>\n",
+                    x, y, ww, hh, color
+                ));
+            }
+            "خط" => {
+                let x1 = j12_dict_int(D, pairs, "س", line, col)?;
+                let y1 = j12_dict_int(D, pairs, "ص", line, col)?;
+                let x2 = j12_dict_int(D, pairs, "س٢", line, col)?;
+                let y2 = j12_dict_int(D, pairs, "ص٢", line, col)?;
+                svg.push_str(&format!(
+                    "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"{}\" stroke-width=\"2\"/>\n",
+                    x1, y1, x2, y2, color
+                ));
+            }
+            "نقطة" => {
+                let cx = j12_dict_int(D, pairs, "س", line, col)?;
+                let cy = j12_dict_int(D, pairs, "ص", line, col)?;
+                svg.push_str(&format!(
+                    "<circle cx=\"{}\" cy=\"{}\" r=\"3\" fill=\"{}\"/>\n",
+                    cx, cy, color
+                ));
+            }
+            "نص" => {
+                let x = j12_dict_int(D, pairs, "س", line, col)?;
+                let y = j12_dict_int(D, pairs, "ص", line, col)?;
+                let text = match dict_get(pairs, "نص") {
+                    Some(Value::Str(s)) => s.clone(),
+                    _ => {
+                        return Err(RioError::runtime(
+                            format!("الدالة {} تتوقع «نص» نصا لشكل النص", D),
+                            line,
+                            col,
+                        ));
+                    }
+                };
+                svg.push_str(&format!(
+                    "<text x=\"{}\" y=\"{}\" font-size=\"14\" fill=\"{}\">{}</text>\n",
+                    x,
+                    y,
+                    color,
+                    j12_svg_escape(&text)
+                ));
+            }
+            _ => {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع شكلا من (دائرة، مستطيل، خط، نقطة، نص) لكن أعطيت {}",
+                        D, kind
+                    ),
+                    line,
+                    col,
+                ));
+            }
+        }
+    }
+    svg.push_str("</svg>\n");
+    j12_write_file(ctx, &path, svg.as_bytes(), line, col)?;
+    Ok(Value::Nil)
+}
+
+/// 182: ارسم_مدرجا(مسار، عنوان، قيم، فئات) — مدرج تكراري.
+fn charts_histogram(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "مخططات.ارسم_مدرجا";
+    need_args(D, args, 4, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let title = need_string(D, &args[1], line, col)?;
+    let values = j12_need_millis(D, &args[2], line, col)?;
+    let bins = j12_need_int(D, &args[3], line, col)?;
+    if values.is_empty() || values.len() > 100000 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع 1..100000 قيمة", D),
+            line,
+            col,
+        ));
+    }
+    if !(1..=100).contains(&bins) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع الفئات ضمن 1..100", D),
+            line,
+            col,
+        ));
+    }
+    let mn = *values.iter().min().unwrap();
+    let mx = *values.iter().max().unwrap();
+    let mut counts = vec![0i64; bins as usize];
+    for &v in &values {
+        let idx = if mx == mn {
+            0
+        } else {
+            (v - mn) * bins / (mx - mn + 1)
+        };
+        counts[idx as usize] += 1;
+    }
+    let mc = *counts.iter().max().unwrap();
+    let slot = 560 / bins;
+    let bw = slot * 7 / 10;
+    let mut svg = j12_svg_open(640, 420, &title);
+    j12_svg_axes(&mut svg);
+    for (i, &c) in counts.iter().enumerate() {
+        let x = 60 + (i as i64) * slot + slot * 3 / 20;
+        let h = if mc == 0 { 0 } else { c * 330 / mc };
+        svg.push_str(&format!(
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\"/>\n",
+            x,
+            370 - h,
+            bw,
+            h,
+            J12_PALETTE[i % 10]
+        ));
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"395\" text-anchor=\"middle\" font-size=\"12\">{}</text>\n",
+            x + bw / 2,
+            i
+        ));
+    }
+    svg.push_str("</svg>\n");
+    j12_write_file(ctx, &path, svg.as_bytes(), line, col)?;
+    Ok(Value::Nil)
+}
+
+fn j12_median(sorted: &[i64]) -> i64 {
+    let n = sorted.len();
+    if n == 0 {
+        return 0;
+    }
+    if n % 2 == 1 {
+        sorted[n / 2]
+    } else {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2
+    }
+}
+
+/// 182: ارسم_صندوقا(مسار، عنوان، تسميات، مجموعات) — مخطط صندوقي
+/// (وسيط وربيعان وطرفان) لكل مجموعة.
+fn charts_boxplot(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "مخططات.ارسم_صندوقا";
+    need_args(D, args, 4, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let title = need_string(D, &args[1], line, col)?;
+    let labels = j12_need_labels(D, &args[2], line, col)?;
+    let raw = need_list(D, &args[3], line, col)?;
+    if labels.is_empty() || labels.len() > 50 || labels.len() != raw.len() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع 1..50 مجموعة بتسميات مساوية لها", D),
+            line,
+            col,
+        ));
+    }
+    let mut groups: Vec<Vec<i64>> = Vec::with_capacity(raw.len());
+    for g in raw {
+        let vals = j12_need_millis(D, g, line, col)?;
+        if vals.is_empty() || vals.len() > 10000 {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع كل مجموعة 1..10000 قيمة", D),
+                line,
+                col,
+            ));
+        }
+        groups.push(vals);
+    }
+    let mut gmn = i64::MAX;
+    let mut gmx = i64::MIN;
+    for g in &groups {
+        for &v in g {
+            if v < gmn {
+                gmn = v;
+            }
+            if v > gmx {
+                gmx = v;
+            }
+        }
+    }
+    let y_of = |v: i64| -> i64 {
+        if gmx == gmn {
+            195
+        } else {
+            370 - (v - gmn) * 330 / (gmx - gmn)
+        }
+    };
+    let g = groups.len() as i64;
+    let slot = 560 / g;
+    let bw = slot * 6 / 10;
+    let mut svg = j12_svg_open(640, 420, &title);
+    j12_svg_axes(&mut svg);
+    for (i, grp) in groups.iter().enumerate() {
+        let mut s = grp.clone();
+        s.sort_unstable();
+        let n = s.len();
+        let med = j12_median(&s);
+        let q1 = j12_median(&s[..n / 2]);
+        let q3 = j12_median(&s[(n + 1) / 2..]);
+        let (q1, q3) = if n == 1 { (med, med) } else { (q1, q3) };
+        let cx = 60 + (i as i64) * slot + slot / 2;
+        let x0 = cx - bw / 2;
+        let x1 = x0 + bw;
+        svg.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#000000\"/>\n",
+            cx,
+            y_of(s[n - 1]),
+            cx,
+            y_of(s[0])
+        ));
+        svg.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#000000\"/>\n",
+            x0,
+            y_of(s[n - 1]),
+            x1,
+            y_of(s[n - 1])
+        ));
+        svg.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#000000\"/>\n",
+            x0,
+            y_of(s[0]),
+            x1,
+            y_of(s[0])
+        ));
+        svg.push_str(&format!(
+            "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\" stroke=\"#000000\"/>\n",
+            x0,
+            y_of(q3),
+            bw,
+            y_of(q1) - y_of(q3),
+            J12_PALETTE[i % 10]
+        ));
+        svg.push_str(&format!(
+            "<line x1=\"{}\" y1=\"{}\" x2=\"{}\" y2=\"{}\" stroke=\"#000000\" stroke-width=\"2\"/>\n",
+            x0,
+            y_of(med),
+            x1,
+            y_of(med)
+        ));
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"395\" text-anchor=\"middle\" font-size=\"12\">{}</text>\n",
+            cx,
+            j12_svg_escape(&labels[i])
+        ));
+    }
+    svg.push_str("</svg>\n");
+    j12_write_file(ctx, &path, svg.as_bytes(), line, col)?;
+    Ok(Value::Nil)
+}
+
+/// 177: ارسم_مخططا(مسار، نوع، عنوان، تسميات، قيم) — نوع خط/أعمدة/دائري.
+/// مخرج SVG نصي حتمي بإحداثيات صحيحة.
+fn charts_plot(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "مخططات.ارسم_مخططا";
+    need_args(D, args, 5, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let kind = need_string(D, &args[1], line, col)?;
+    let title = need_string(D, &args[2], line, col)?;
+    let labels = j12_need_labels(D, &args[3], line, col)?;
+    let values = j12_need_millis(D, &args[4], line, col)?;
+    if values.is_empty() || values.len() > 10000 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع 1..10000 قيمة", D),
+            line,
+            col,
+        ));
+    }
+    if labels.len() != values.len() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع عدد التسميات مساويا لعدد القيم", D),
+            line,
+            col,
+        ));
+    }
+    let svg = match kind.as_str() {
+        "خط" => j12_plot_line(&title, &labels, &values),
+        "أعمدة" => j12_plot_bars(&title, &labels, &values),
+        "دائري" => j12_plot_pie(D, &title, &labels, &values, line, col)?,
+        _ => {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} تتوقع نوعا من (خط، أعمدة، دائري) لكن أعطيت {}",
+                    D, kind
+                ),
+                line,
+                col,
+            ));
+        }
+    };
+    j12_write_file(ctx, &path, svg.as_bytes(), line, col)?;
+    Ok(Value::Nil)
+}
+
+/// 179: ارسم_مخططا_متراكما(مسار، عنوان، تسميات، أسماء، سلاسل) —
+/// أعمدة متراكمة؛ كل سلسلة قائمة أعداد بطول التسميات؛ القيم غير سالبة.
+fn charts_stacked(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "مخططات.ارسم_مخططا_متراكما";
+    need_args(D, args, 5, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let title = need_string(D, &args[1], line, col)?;
+    let labels = j12_need_labels(D, &args[2], line, col)?;
+    let names = j12_need_labels(D, &args[3], line, col)?;
+    let series_raw = need_list(D, &args[4], line, col)?;
+    if labels.is_empty() || labels.len() > 1000 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع 1..1000 تسمية", D),
+            line,
+            col,
+        ));
+    }
+    if names.is_empty() || names.len() > 10 || names.len() != series_raw.len() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع 1..10 سلاسل بأسماء مساوية لها", D),
+            line,
+            col,
+        ));
+    }
+    let mut series: Vec<Vec<i64>> = Vec::with_capacity(series_raw.len());
+    for s in series_raw {
+        let vals = j12_need_millis(D, s, line, col)?;
+        if vals.len() != labels.len() {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع كل سلسلة بطول التسميات", D),
+                line,
+                col,
+            ));
+        }
+        for &v in &vals {
+            if v < 0 {
+                return Err(RioError::runtime(
+                    format!("الدالة {} تتوقع قيما غير سالبة", D),
+                    line,
+                    col,
+                ));
+            }
+        }
+        series.push(vals);
+    }
+    let m = labels.len() as i64;
+    let mut totals = vec![0i64; labels.len()];
+    for s in &series {
+        for (i, &v) in s.iter().enumerate() {
+            totals[i] += v;
+        }
+    }
+    let mx = *totals.iter().max().unwrap();
+    let slot = 410 / m;
+    let bw = slot * 7 / 10;
+    let mut svg = j12_svg_open(640, 420, &title);
+    svg.push_str("<line x1=\"60\" y1=\"370\" x2=\"470\" y2=\"370\" stroke=\"#000000\"/>\n");
+    svg.push_str("<line x1=\"60\" y1=\"20\" x2=\"60\" y2=\"370\" stroke=\"#000000\"/>\n");
+    for (i, _) in labels.iter().enumerate() {
+        let x = 60 + (i as i64) * slot + slot * 3 / 20;
+        let mut ycur: i64 = 370;
+        for (j, s) in series.iter().enumerate() {
+            let h = if mx == 0 { 0 } else { s[i] * 330 / mx };
+            svg.push_str(&format!(
+                "<rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{}\"/>\n",
+                x,
+                ycur - h,
+                bw,
+                h,
+                J12_PALETTE[j % 10]
+            ));
+            ycur -= h;
+        }
+        svg.push_str(&format!(
+            "<text x=\"{}\" y=\"395\" text-anchor=\"middle\" font-size=\"12\">{}</text>\n",
+            x + bw / 2,
+            j12_svg_escape(&labels[i])
+        ));
+    }
+    for (j, name) in names.iter().enumerate() {
+        let y = 30 + (j as i64) * 24;
+        svg.push_str(&format!(
+            "<rect x=\"480\" y=\"{}\" width=\"14\" height=\"14\" fill=\"{}\"/>\n",
+            y,
+            J12_PALETTE[j % 10]
+        ));
+        svg.push_str(&format!(
+            "<text x=\"500\" y=\"{}\" font-size=\"12\">{}</text>\n",
+            y + 12,
+            j12_svg_escape(name)
+        ));
+    }
+    svg.push_str("</svg>\n");
+    j12_write_file(ctx, &path, svg.as_bytes(), line, col)?;
+    Ok(Value::Nil)
+}
+
+struct J12Node {
+    name: String,
+    value: i64,
+    parent: String,
+}
+
+fn j12_sunburst_totals(
+    nodes: &[J12Node],
+    children: &[Vec<usize>],
+    idx: usize,
+    totals: &mut [i64],
+) -> i64 {
+    let mut t = nodes[idx].value;
+    for &c in &children[idx] {
+        t += j12_sunburst_totals(nodes, children, c, totals);
+    }
+    totals[idx] = t;
+    t
+}
+
+fn j12_sunburst_draw(
+    nodes: &[J12Node],
+    children: &[Vec<usize>],
+    totals: &[i64],
+    idx: usize,
+    depth: usize,
+    a0: i64,
+    span: i64,
+    single_root: bool,
+    out: &mut String,
+) {
+    let color = J12_PALETTE[idx % 10];
+    if depth == 0 && single_root {
+        out.push_str(&format!(
+            "<circle cx=\"320\" cy=\"210\" r=\"28\" fill=\"{}\"/>\n",
+            color
+        ));
+        out.push_str(&format!(
+            "<text x=\"320\" y=\"214\" text-anchor=\"middle\" font-size=\"11\">{}</text>\n",
+            j12_svg_escape(&nodes[idx].name)
+        ));
+    } else {
+        let inner = 28 + (depth.saturating_sub(1) as i64) * 28;
+        let outer = inner + 28;
+        j12_ring_sector(320, 210, inner, outer, a0, span, color, out);
+        if span >= 96 {
+            let mid = a0 + span / 2;
+            let (lx, ly) = j12_point(320, 210, (inner + outer) / 2, mid);
+            out.push_str(&format!(
+                "<text x=\"{}\" y=\"{}\" text-anchor=\"middle\" font-size=\"11\">{}</text>\n",
+                lx,
+                ly,
+                j12_svg_escape(&nodes[idx].name)
+            ));
+        }
+    }
+    let mut acc: i64 = 0;
+    let n = children[idx].len();
+    for (k, &c) in children[idx].iter().enumerate() {
+        let cspan = if k == n - 1 {
+            span - acc
+        } else if totals[idx] == 0 {
+            0
+        } else {
+            span * totals[c] / totals[idx]
+        };
+        acc += cspan;
+        if cspan == 0 {
+            continue;
+        }
+        j12_sunburst_draw(
+            nodes,
+            children,
+            totals,
+            c,
+            depth + 1,
+            a0 + acc - cspan,
+            cspan,
+            single_root,
+            out,
+        );
+    }
+}
+
+/// 180: ارسم_مخططا_شمسيا(مسار، عنوان، عقد) — عقد قواميس
+/// {اسم، قيمة، أب}؛ الأب "" للجذر؛ العمق ≤ 5؛ القيم غير سالبة.
+fn charts_sunburst(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "مخططات.ارسم_مخططا_شمسيا";
+    need_args(D, args, 3, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let title = need_string(D, &args[1], line, col)?;
+    let raw = need_list(D, &args[2], line, col)?;
+    if raw.is_empty() || raw.len() > 1000 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع 1..1000 عقدة", D),
+            line,
+            col,
+        ));
+    }
+    let mut nodes: Vec<J12Node> = Vec::with_capacity(raw.len());
+    for item in raw {
+        let pairs = match item {
+            Value::Dict(p) => p,
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع عقدا قواميس لكن أعطيت {}",
+                        D,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ));
+            }
+        };
+        let name = match dict_get(pairs, "اسم") {
+            Some(Value::Str(s)) => s.clone(),
+            _ => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} تتوقع «اسم» نصا في كل عقدة", D),
+                    line,
+                    col,
+                ));
+            }
+        };
+        let value = match dict_get(pairs, "قيمة") {
+            Some(v) => need_number(D, v, line, col)?,
+            None => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} تتوقع «قيمة» في كل عقدة", D),
+                    line,
+                    col,
+                ));
+            }
+        };
+        if !value.is_finite() || value.abs() > 1.0e9 || value < 0.0 {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع قيما غير سالبة محدودة", D),
+                line,
+                col,
+            ));
+        }
+        let parent = match dict_get(pairs, "أب") {
+            Some(Value::Str(s)) => s.clone(),
+            _ => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} تتوقع «أب» نصا في كل عقدة", D),
+                    line,
+                    col,
+                ));
+            }
+        };
+        nodes.push(J12Node {
+            name,
+            value: j12_milli(value),
+            parent,
+        });
+    }
+    for (i, n) in nodes.iter().enumerate() {
+        for (j, m) in nodes.iter().enumerate() {
+            if i != j && n.name == m.name {
+                return Err(RioError::runtime(
+                    format!("الدالة {} تتوقع أسماء عقد فريدة", D),
+                    line,
+                    col,
+                ));
+            }
+        }
+        if n.parent == n.name {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع الأب غير العقدة نفسها", D),
+                line,
+                col,
+            ));
+        }
+        if !n.parent.is_empty() && !nodes.iter().any(|m| m.name == n.parent) {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع كل أب عقدة موجودة", D),
+                line,
+                col,
+            ));
+        }
+    }
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+    let mut roots: Vec<usize> = Vec::new();
+    for (i, n) in nodes.iter().enumerate() {
+        if n.parent.is_empty() {
+            roots.push(i);
+        } else {
+            let p = nodes.iter().position(|m| m.name == n.parent).unwrap();
+            children[p].push(i);
+        }
+    }
+    if roots.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع جذرا واحدا على الأقل (أب فارغ)", D),
+            line,
+            col,
+        ));
+    }
+    for i in 0..nodes.len() {
+        let mut depth = 0usize;
+        let mut cur = i;
+        loop {
+            if nodes[cur].parent.is_empty() {
+                break;
+            }
+            depth += 1;
+            if depth > nodes.len() {
+                return Err(RioError::runtime(
+                    format!("الدالة {} تتوقع عقدا بلا دورة", D),
+                    line,
+                    col,
+                ));
+            }
+            cur = nodes.iter().position(|m| m.name == nodes[cur].parent).unwrap();
+        }
+        if depth > 5 {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع عمق عقد ≤ 5", D),
+                line,
+                col,
+            ));
+        }
+    }
+    let mut totals = vec![0i64; nodes.len()];
+    for &r in &roots {
+        j12_sunburst_totals(&nodes, &children, r, &mut totals);
+    }
+    let grand: i64 = roots.iter().map(|&r| totals[r]).sum();
+    if grand <= 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع مجموع قيم موجبا", D),
+            line,
+            col,
+        ));
+    }
+    let mut svg = j12_svg_open(640, 420, &title);
+    if roots.len() > 1 {
+        svg.push_str("<circle cx=\"320\" cy=\"210\" r=\"28\" fill=\"#ffffff\" stroke=\"#000000\"/>\n");
+    }
+    let single_root = roots.len() == 1;
+    let mut acc: i64 = 0;
+    for (k, &r) in roots.iter().enumerate() {
+        let span = if k == roots.len() - 1 {
+            1024 - acc
+        } else {
+            1024 * totals[r] / grand
+        };
+        acc += span;
+        if span == 0 {
+            continue;
+        }
+        j12_sunburst_draw(
+            &nodes,
+            &children,
+            &totals,
+            r,
+            0,
+            acc - span,
+            span,
+            single_root,
+            &mut svg,
+        );
+    }
+    svg.push_str("</svg>\n");
+    j12_write_file(ctx, &path, svg.as_bytes(), line, col)?;
+    Ok(Value::Nil)
+}
+
+// ---------- J12: صور (178 جزئيا، 188) ----------
+
+fn j12_need_pixels(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<[u8; 3]>> {
+    let items = need_list(display, v, line, col)?;
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let px = need_list(display, item, line, col)?;
+        if px.len() != 3 {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} تتوقع كل بكسل قائمة [أحمر، أخضر، أزرق]",
+                    display
+                ),
+                line,
+                col,
+            ));
+        }
+        let mut rgb = [0u8; 3];
+        for (k, c) in px.iter().enumerate() {
+            let n = need_number(display, c, line, col)?;
+            if n.fract() != 0.0 || !(0.0..=255.0).contains(&n) {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} تتوقع كل قناة لون عددا صحيحا 0..255",
+                        display
+                    ),
+                    line,
+                    col,
+                ));
+            }
+            rgb[k] = n as u8;
+        }
+        out.push(rgb);
+    }
+    Ok(out)
+}
+
+fn j12_check_dims(display: &str, w: i64, h: i64, line: usize, col: usize) -> RioResult<()> {
+    if !(1..=2000).contains(&w) || !(1..=2000).contains(&h) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع العرض والارتفاع ضمن 1..2000", display),
+            line,
+            col,
+        ));
+    }
+    if w * h > 4_000_000 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع عدد البكسلات ≤ 4000000", display),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+fn j12_bmp_bytes(w: i64, h: i64, px: &[[u8; 3]]) -> Vec<u8> {
+    let row = ((w * 3 + 3) / 4) * 4;
+    let data_size = row * h;
+    let mut out = Vec::with_capacity((54 + data_size) as usize);
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&((54 + data_size) as u32).to_le_bytes());
+    out.extend_from_slice(&[0, 0, 0, 0]);
+    out.extend_from_slice(&54u32.to_le_bytes());
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&(w as u32).to_le_bytes());
+    out.extend_from_slice(&(h as u32).to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&24u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&(data_size as u32).to_le_bytes());
+    out.extend_from_slice(&2835u32.to_le_bytes());
+    out.extend_from_slice(&2835u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    for y in (0..h).rev() {
+        for x in 0..w {
+            let p = px[(y * w + x) as usize];
+            out.push(p[2]);
+            out.push(p[1]);
+            out.push(p[0]);
+        }
+        for _ in 0..(row - w * 3) {
+            out.push(0);
+        }
+    }
+    out
+}
+
+fn j12_u16(data: &[u8], off: usize) -> Option<u16> {
+    if off + 2 > data.len() {
+        return None;
+    }
+    Some(data[off] as u16 | ((data[off + 1] as u16) << 8))
+}
+
+fn j12_u32(data: &[u8], off: usize) -> Option<u32> {
+    if off + 4 > data.len() {
+        return None;
+    }
+    Some(
+        data[off] as u32
+            | ((data[off + 1] as u32) << 8)
+            | ((data[off + 2] as u32) << 16)
+            | ((data[off + 3] as u32) << 24),
+    )
+}
+
+fn j12_parse_bmp(
+    display: &str,
+    data: &[u8],
+    line: usize,
+    col: usize,
+) -> RioResult<(i64, i64, Vec<[u8; 3]>)> {
+    let bad = || {
+        RioError::runtime(format!("الدالة {} تتوقع ملف BMP صالحا", display), line, col)
+    };
+    if data.len() < 54 || &data[0..2] != b"BM" {
+        return Err(bad());
+    }
+    let off = j12_u32(data, 10).ok_or_else(bad)? as usize;
+    let hsize = j12_u32(data, 14).ok_or_else(bad)?;
+    let w = j12_u32(data, 18).ok_or_else(bad)? as i64;
+    let h = j12_u32(data, 22).ok_or_else(bad)? as i64;
+    let planes = j12_u16(data, 26).ok_or_else(bad)?;
+    let bpp = j12_u16(data, 28).ok_or_else(bad)?;
+    let comp = j12_u32(data, 30).ok_or_else(bad)?;
+    if hsize != 40 || planes != 1 || bpp != 24 || comp != 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع ملف BMP غير مضغوط 24-بت", display),
+            line,
+            col,
+        ));
+    }
+    if !(1..=2000).contains(&w) || !(1..=2000).contains(&h) || w * h > 4_000_000 {
+        return Err(bad());
+    }
+    let row = ((w * 3 + 3) / 4) * 4;
+    if off + (row * h) as usize > data.len() {
+        return Err(bad());
+    }
+    let mut px = Vec::with_capacity((w * h) as usize);
+    for y in (0..h).rev() {
+        for x in 0..w {
+            let p = off + (y * row + x * 3) as usize;
+            px.push([data[p + 2], data[p + 1], data[p]]);
+        }
+    }
+    Ok((w, h, px))
+}
+
+/// 178: اكتب_bmp(مسار، عرض، ارتفاع، بكسلات) — بكسلات قوائم [ر، غ، ب].
+fn images_write_bmp(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "صور.اكتب_bmp";
+    need_args(D, args, 4, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let w = j12_need_int(D, &args[1], line, col)?;
+    let h = j12_need_int(D, &args[2], line, col)?;
+    j12_check_dims(D, w, h, line, col)?;
+    let px = j12_need_pixels(D, &args[3], line, col)?;
+    if px.len() as i64 != w * h {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع عدد البكسلات مساويا للعرض × الارتفاع",
+                D
+            ),
+            line,
+            col,
+        ));
+    }
+    let bytes = j12_bmp_bytes(w, h, &px);
+    j12_write_file(ctx, &path, &bytes, line, col)?;
+    Ok(Value::Nil)
+}
+
+/// 178: اقرأ_bmp(مسار) — قاموس {عرض، ارتفاع، بكسلات}.
+fn images_read_bmp(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "صور.اقرأ_bmp";
+    need_args(D, args, 1, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let data = j12_read_file(ctx, &path, line, col)?;
+    let (w, h, px) = j12_parse_bmp(D, &data, line, col)?;
+    let pixels = Value::List(
+        px.iter()
+            .map(|p| {
+                Value::List(vec![
+                    Value::Number(p[0] as f64),
+                    Value::Number(p[1] as f64),
+                    Value::Number(p[2] as f64),
+                ])
+            })
+            .collect(),
+    );
+    Ok(Value::Dict(vec![
+        ("عرض".to_string(), Value::Number(w as f64)),
+        ("ارتفاع".to_string(), Value::Number(h as f64)),
+        ("بكسلات".to_string(), pixels),
+    ]))
+}
+
+fn j12_crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    crc ^ 0xFFFF_FFFF
+}
+
+fn j12_adler32(data: &[u8]) -> u32 {
+    let mut a: u32 = 1;
+    let mut b: u32 = 0;
+    for &x in data {
+        a = (a + x as u32) % 65521;
+        b = (b + a) % 65521;
+    }
+    (b << 16) | a
+}
+
+fn j12_png_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+    out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    out.extend_from_slice(kind);
+    out.extend_from_slice(data);
+    let mut crc_data = Vec::with_capacity(4 + data.len());
+    crc_data.extend_from_slice(kind);
+    crc_data.extend_from_slice(data);
+    out.extend_from_slice(&j12_crc32(&crc_data).to_be_bytes());
+}
+
+fn j12_png_bytes(w: i64, h: i64, px: &[[u8; 3]]) -> Vec<u8> {
+    let mut out = vec![137, 80, 78, 71, 13, 10, 26, 10];
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&(w as u32).to_be_bytes());
+    ihdr.extend_from_slice(&(h as u32).to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+    j12_png_chunk(&mut out, b"IHDR", &ihdr);
+    let mut raw = Vec::with_capacity((1 + w as usize * 3) * h as usize);
+    for y in 0..h {
+        raw.push(0);
+        for x in 0..w {
+            let p = px[(y * w + x) as usize];
+            raw.push(p[0]);
+            raw.push(p[1]);
+            raw.push(p[2]);
+        }
+    }
+    let mut z = vec![0x78, 0x01];
+    let mut off = 0usize;
+    while off < raw.len() {
+        let chunk = std::cmp::min(65535, raw.len() - off);
+        let last = off + chunk >= raw.len();
+        z.push(if last { 1 } else { 0 });
+        z.extend_from_slice(&(chunk as u16).to_le_bytes());
+        z.extend_from_slice(&(!(chunk as u16)).to_le_bytes());
+        z.extend_from_slice(&raw[off..off + chunk]);
+        off += chunk;
+    }
+    z.extend_from_slice(&j12_adler32(&raw).to_be_bytes());
+    j12_png_chunk(&mut out, b"IDAT", &z);
+    j12_png_chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+/// 178: اكتب_png(مسار، عرض، ارتفاع، بكسلات) — PNG بكتل zlib مخزنة.
+fn images_write_png(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "صور.اكتب_png";
+    need_args(D, args, 4, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let w = j12_need_int(D, &args[1], line, col)?;
+    let h = j12_need_int(D, &args[2], line, col)?;
+    j12_check_dims(D, w, h, line, col)?;
+    let px = j12_need_pixels(D, &args[3], line, col)?;
+    if px.len() as i64 != w * h {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع عدد البكسلات مساويا للعرض × الارتفاع",
+                D
+            ),
+            line,
+            col,
+        ));
+    }
+    let bytes = j12_png_bytes(w, h, &px);
+    j12_write_file(ctx, &path, &bytes, line, col)?;
+    Ok(Value::Nil)
+}
+
+/// 186: حول_bmp_إلى_png(مصدر، هدف) — قراءة BMP وكتابته PNG.
+fn images_bmp_to_png(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "صور.حول_bmp_إلى_png";
+    need_args(D, args, 2, line, col)?;
+    let src = need_string(D, &args[0], line, col)?;
+    let dst = need_string(D, &args[1], line, col)?;
+    let data = j12_read_file(ctx, &src, line, col)?;
+    let (w, h, px) = j12_parse_bmp(D, &data, line, col)?;
+    let bytes = j12_png_bytes(w, h, &px);
+    j12_write_file(ctx, &dst, &bytes, line, col)?;
+    Ok(Value::Nil)
+}
+
+fn j12_lzw_emit(out: &mut Vec<u8>, bitbuf: &mut u32, bitcnt: &mut u32, code: u32, size: u32) {
+    *bitbuf |= code << *bitcnt;
+    *bitcnt += size;
+    while *bitcnt >= 8 {
+        out.push((*bitbuf & 0xFF) as u8);
+        *bitbuf >>= 8;
+        *bitcnt -= 8;
+    }
+}
+
+fn j12_gif_lzw(pixels: &[u8]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    let mut bitbuf: u32 = 0;
+    let mut bitcnt: u32 = 0;
+    let mut code_size: u32 = 9;
+    let mut next_code: u32 = 258;
+    let mut dict: Vec<(u32, u8)> = Vec::new();
+    j12_lzw_emit(&mut out, &mut bitbuf, &mut bitcnt, 256, code_size);
+    let mut buffer: u32 = pixels[0] as u32;
+    for &k in &pixels[1..] {
+        let k = k as u32;
+        let mut found: Option<u32> = None;
+        for (i, &(p, s)) in dict.iter().enumerate() {
+            if p == buffer && s as u32 == k {
+                found = Some(258 + i as u32);
+                break;
+            }
+        }
+        if let Some(code) = found {
+            buffer = code;
+        } else {
+            j12_lzw_emit(&mut out, &mut bitbuf, &mut bitcnt, buffer, code_size);
+            if next_code == 4096 {
+                j12_lzw_emit(&mut out, &mut bitbuf, &mut bitcnt, 256, code_size);
+                dict.clear();
+                next_code = 258;
+                code_size = 9;
+            } else {
+                dict.push((buffer, k as u8));
+                next_code += 1;
+                if next_code == (1 << code_size) && code_size < 12 {
+                    code_size += 1;
+                }
+            }
+            buffer = k;
+        }
+    }
+    j12_lzw_emit(&mut out, &mut bitbuf, &mut bitcnt, buffer, code_size);
+    j12_lzw_emit(&mut out, &mut bitbuf, &mut bitcnt, 257, code_size);
+    if bitcnt > 0 {
+        out.push((bitbuf & 0xFF) as u8);
+    }
+    out
+}
+
+fn j12_gif_bytes(w: i64, h: i64, frames: &[Vec<u8>], delay: i64) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"GIF89a");
+    out.extend_from_slice(&(w as u16).to_le_bytes());
+    out.extend_from_slice(&(h as u16).to_le_bytes());
+    out.extend_from_slice(&[0xF7, 0, 0]);
+    for g in 0..256u16 {
+        out.push(g as u8);
+        out.push(g as u8);
+        out.push(g as u8);
+    }
+    out.extend_from_slice(&[0x21, 0xFF, 11]);
+    out.extend_from_slice(b"NETSCAPE2.0");
+    out.extend_from_slice(&[3, 1, 0, 0, 0]);
+    for frame in frames {
+        out.extend_from_slice(&[0x21, 0xF9, 4, 0x00]);
+        out.extend_from_slice(&(delay as u16).to_le_bytes());
+        out.extend_from_slice(&[0, 0]);
+        out.push(0x2C);
+        out.extend_from_slice(&[0, 0, 0, 0]);
+        out.extend_from_slice(&(w as u16).to_le_bytes());
+        out.extend_from_slice(&(h as u16).to_le_bytes());
+        out.push(0);
+        out.push(8);
+        let comp = j12_gif_lzw(frame);
+        let mut off = 0usize;
+        while off < comp.len() {
+            let n = std::cmp::min(255, comp.len() - off);
+            out.push(n as u8);
+            out.extend_from_slice(&comp[off..off + n]);
+            off += n;
+        }
+        out.push(0);
+    }
+    out.push(0x3B);
+    out
+}
+
+/// 188: أنشئ_gif(مسار، عرض، ارتفاع، إطارات، تأخير) — كل إطار قائمة
+/// أعداد 0..255 (رمادي) بطول العرض × الارتفاع؛ والتأخير بالمئة من الثانية.
+fn images_make_gif(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "صور.أنشئ_gif";
+    need_args(D, args, 5, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let w = j12_need_int(D, &args[1], line, col)?;
+    let h = j12_need_int(D, &args[2], line, col)?;
+    j12_check_dims(D, w, h, line, col)?;
+    let raw_frames = need_list(D, &args[3], line, col)?;
+    let delay = j12_need_int(D, &args[4], line, col)?;
+    if raw_frames.is_empty() || raw_frames.len() > 64 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع 1..64 إطارا", D),
+            line,
+            col,
+        ));
+    }
+    if !(0..=6000).contains(&delay) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع التأخير ضمن 0..6000", D),
+            line,
+            col,
+        ));
+    }
+    let mut frames: Vec<Vec<u8>> = Vec::with_capacity(raw_frames.len());
+    for f in raw_frames {
+        let items = need_list(D, f, line, col)?;
+        if items.len() as i64 != w * h {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} تتوقع كل إطار بطول العرض × الارتفاع",
+                    D
+                ),
+                line,
+                col,
+            ));
+        }
+        let mut frame = Vec::with_capacity(items.len());
+        for v in items {
+            let n = need_number(D, v, line, col)?;
+            if n.fract() != 0.0 || !(0.0..=255.0).contains(&n) {
+                return Err(RioError::runtime(
+                    format!("الدالة {} تتوقع كل بكسل عددا صحيحا 0..255", D),
+                    line,
+                    col,
+                ));
+            }
+            frame.push(n as u8);
+        }
+        frames.push(frame);
+    }
+    let bytes = j12_gif_bytes(w, h, &frames, delay);
+    j12_write_file(ctx, &path, &bytes, line, col)?;
+    Ok(Value::Nil)
+}
+
+/// بصمة ملف (SHA-256 ست عشريا) — للتحقق من المخرجات الثنائية
+/// بلا تضمين بايتات في الحالات.
+fn images_file_hash(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "صور.بصمة_ملف";
+    need_args(D, args, 1, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let data = j12_read_file(ctx, &path, line, col)?;
+    Ok(Value::Str(crate::crypto::sha256_hex(&data)))
+}
+
+// ---------- J12: وسائط (184، 186) ومحاكاة (187) ----------
+
+fn j12_wave_step(freq: f64) -> i64 {
+    (freq * 1048576.0 / 44100.0).round() as i64
+}
+
+fn j12_wave_sample(wave: &str, step: i64, i: i64) -> i64 {
+    let phase = i * step;
+    let idx = ((phase >> 10) & 1023) as usize;
+    let frac = phase & 1023;
+    match wave {
+        "جيب" => {
+            let a = J12_SIN_TABLE[idx] as i64;
+            let b = J12_SIN_TABLE[(idx + 1) & 1023] as i64;
+            let s = (a * (1024 - frac) + b * frac) / 1024;
+            s * 20000 / 32767
+        }
+        "مربع" => {
+            if idx < 512 {
+                20000
+            } else {
+                -20000
+            }
+        }
+        "منشار" => (idx as i64 * 40000) / 1024 - 20000,
+        "مثلث" => {
+            if idx < 256 {
+                (idx as i64 * 20000) / 256
+            } else if idx < 768 {
+                20000 - ((idx - 256) as i64 * 20000) / 256
+            } else {
+                -20000 + ((idx - 768) as i64 * 20000) / 256
+            }
+        }
+        _ => 0,
+    }
+}
+
+fn j12_wav_bytes(rate: u32, channels: u16, bits: u16, samples: &[i32]) -> Vec<u8> {
+    let bytes_per_sample = (bits / 8) as usize;
+    let frame_bytes = channels as usize * bytes_per_sample;
+    let frames = samples.len() / channels as usize;
+    let data_size = frames * frame_bytes;
+    let mut out = Vec::with_capacity(44 + data_size);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&((36 + data_size) as u32).to_le_bytes());
+    out.extend_from_slice(b"WAVE");
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&channels.to_le_bytes());
+    out.extend_from_slice(&rate.to_le_bytes());
+    out.extend_from_slice(&(rate * frame_bytes as u32).to_le_bytes());
+    out.extend_from_slice(&(frame_bytes as u16).to_le_bytes());
+    out.extend_from_slice(&bits.to_le_bytes());
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(data_size as u32).to_le_bytes());
+    for &s in samples {
+        if bits == 16 {
+            out.extend_from_slice(&(s as i16).to_le_bytes());
+        } else {
+            out.push((s + 128) as u8);
+        }
+    }
+    out
+}
+
+struct J12Wav {
+    rate: u32,
+    channels: u16,
+    bits: u16,
+    samples: Vec<i32>,
+}
+
+fn j12_parse_wav(
+    display: &str,
+    data: &[u8],
+    line: usize,
+    col: usize,
+) -> RioResult<J12Wav> {
+    let bad = || RioError::runtime(format!("الدالة {} تتوقع ملف WAV صالحا", display), line, col);
+    if data.len() < 44 || &data[0..4] != b"RIFF" || &data[8..12] != b"WAVE" {
+        return Err(bad());
+    }
+    let mut fmt: Option<(u16, u16, u32, u16)> = None;
+    let mut data_off: Option<usize> = None;
+    let mut data_len: usize = 0;
+    let mut off = 12usize;
+    while off + 8 <= data.len() {
+        let id = &data[off..off + 4];
+        let size = j12_u32(data, off + 4).ok_or_else(bad)? as usize;
+        let start = off + 8;
+        if start + size > data.len() {
+            break;
+        }
+        if id == b"fmt " {
+            if size < 16 {
+                return Err(bad());
+            }
+            let format = j12_u16(data, start).ok_or_else(bad)?;
+            let channels = j12_u16(data, start + 2).ok_or_else(bad)?;
+            let rate = j12_u32(data, start + 4).ok_or_else(bad)?;
+            let bits = j12_u16(data, start + 14).ok_or_else(bad)?;
+            fmt = Some((format, channels, rate, bits));
+        } else if id == b"data" {
+            data_off = Some(start);
+            data_len = size;
+        }
+        off = start + size + (size % 2);
+    }
+    let (format, channels, rate, bits) = fmt.ok_or_else(bad)?;
+    let start = data_off.ok_or_else(bad)?;
+    if format != 1 || !(1..=2).contains(&channels) || (bits != 8 && bits != 16) {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع ملف WAV بنبضة PCM أحادية أو ثنائية 8 أو 16 بت",
+                display
+            ),
+            line,
+            col,
+        ));
+    }
+    if rate == 0 || rate > 384000 {
+        return Err(bad());
+    }
+    let frame_bytes = channels as usize * (bits as usize / 8);
+    if data_len % frame_bytes != 0 {
+        return Err(bad());
+    }
+    let total = data_len / (bits as usize / 8);
+    if total > 1_000_000 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع ملف صوت ≤ 1000000 عينة", display),
+            line,
+            col,
+        ));
+    }
+    let mut samples = Vec::with_capacity(total);
+    if bits == 16 {
+        for i in 0..total {
+            let v = j12_u16(data, start + i * 2).ok_or_else(bad)? as i16;
+            samples.push(v as i32);
+        }
+    } else {
+        for i in 0..total {
+            samples.push(data[start + i] as i32 - 128);
+        }
+    }
+    Ok(J12Wav {
+        rate,
+        channels,
+        bits,
+        samples,
+    })
+}
+
+/// 184: ولد_صوتا(مسار، تردد، مدة، موجة) — WAV أحادي 16-بت 44100 هرتز؛
+/// الموجة جيب/مربع/منشار/مثلث؛ والمدة 0.01..60 ثانية؛ والتردد 20..20000.
+fn media_make_tone(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "وسائط.ولد_صوتا";
+    need_args(D, args, 4, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let freq = need_number(D, &args[1], line, col)?;
+    let duration = need_number(D, &args[2], line, col)?;
+    let wave = need_string(D, &args[3], line, col)?;
+    if !matches!(wave.as_str(), "جيب" | "مربع" | "منشار" | "مثلث") {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع موجة من (جيب، مربع، منشار، مثلث) لكن أعطيت {}",
+                D, wave
+            ),
+            line,
+            col,
+        ));
+    }
+    if !freq.is_finite() || !(20.0..=20000.0).contains(&freq) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع التردد ضمن 20..20000", D),
+            line,
+            col,
+        ));
+    }
+    if !duration.is_finite() || !(0.01..=60.0).contains(&duration) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع المدة ضمن 0.01..60 ثانية", D),
+            line,
+            col,
+        ));
+    }
+    let n = (duration * 44100.0).round() as i64;
+    let step = j12_wave_step(freq);
+    let mut samples = Vec::with_capacity(n as usize);
+    for i in 0..n {
+        samples.push(j12_wave_sample(&wave, step, i) as i32);
+    }
+    let bytes = j12_wav_bytes(44100, 1, 16, &samples);
+    j12_write_file(ctx, &path, &bytes, line, col)?;
+    Ok(Value::Nil)
+}
+
+/// 186: حول_صوتا(مصدر، هدف، معدل) — تغيير معدل عينات WAV
+/// (إعادة أخذ بالأقرب) مع بقاء القنوات والبتات.
+fn media_convert_tone(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "وسائط.حول_صوتا";
+    need_args(D, args, 3, line, col)?;
+    let src = need_string(D, &args[0], line, col)?;
+    let dst = need_string(D, &args[1], line, col)?;
+    let new_rate = j12_need_int(D, &args[2], line, col)?;
+    if !(8000..=192000).contains(&new_rate) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع المعدل ضمن 8000..192000", D),
+            line,
+            col,
+        ));
+    }
+    let data = j12_read_file(ctx, &src, line, col)?;
+    let wav = j12_parse_wav(D, &data, line, col)?;
+    let ch = wav.channels as usize;
+    let frames = wav.samples.len() / ch;
+    let out_frames = (frames as i64 * new_rate / wav.rate as i64) as usize;
+    let mut out = Vec::with_capacity(out_frames * ch);
+    for j in 0..out_frames {
+        let s = j * wav.rate as usize / new_rate as usize;
+        for c in 0..ch {
+            out.push(wav.samples[s * ch + c]);
+        }
+    }
+    let bytes = j12_wav_bytes(new_rate as u32, wav.channels, wav.bits, &out);
+    j12_write_file(ctx, &dst, &bytes, line, col)?;
+    Ok(Value::Nil)
+}
+
+/// اقرأ_صوتا(مصدر) — قاموس {معدل، قنوات، بتات، عينات}.
+fn media_read_tone(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "وسائط.اقرأ_صوتا";
+    need_args(D, args, 1, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let data = j12_read_file(ctx, &path, line, col)?;
+    let wav = j12_parse_wav(D, &data, line, col)?;
+    Ok(Value::Dict(vec![
+        ("معدل".to_string(), Value::Number(wav.rate as f64)),
+        ("قنوات".to_string(), Value::Number(wav.channels as f64)),
+        ("بتات".to_string(), Value::Number(wav.bits as f64)),
+        (
+            "عينات".to_string(),
+            Value::List(
+                wav.samples
+                    .iter()
+                    .map(|&s| Value::Number(s as f64))
+                    .collect(),
+            ),
+        ),
+    ]))
+}
+
+/// 187: حاك_حياة(مسار، عرض، ارتفاع، خلايا، خطوات) — لعبة الحياة
+/// (كونواي) بلا التفاف؛ والمخرج BMP بخلية 10 بكسل (حي أسود).
+fn sim_life(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "محاكاة.حاك_حياة";
+    need_args(D, args, 5, line, col)?;
+    let path = need_string(D, &args[0], line, col)?;
+    let w = j12_need_int(D, &args[1], line, col)?;
+    let h = j12_need_int(D, &args[2], line, col)?;
+    if !(1..=500).contains(&w) || !(1..=500).contains(&h) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع العرض والارتفاع ضمن 1..500", D),
+            line,
+            col,
+        ));
+    }
+    let cells = need_list(D, &args[3], line, col)?;
+    let steps = j12_need_int(D, &args[4], line, col)?;
+    if !(0..=10000).contains(&steps) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع الخطوات ضمن 0..10000", D),
+            line,
+            col,
+        ));
+    }
+    let mut grid = vec![false; (w * h) as usize];
+    for cell in cells {
+        let xy = need_list(D, cell, line, col)?;
+        if xy.len() != 2 {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع كل خلية قائمة [س، ص]", D),
+                line,
+                col,
+            ));
+        }
+        let x = j12_need_int(D, &xy[0], line, col)?;
+        let y = j12_need_int(D, &xy[1], line, col)?;
+        if !(0..w).contains(&x) || !(0..h).contains(&y) {
+            return Err(RioError::runtime(
+                format!("الدالة {} تتوقع كل خلية داخل الشبكة", D),
+                line,
+                col,
+            ));
+        }
+        grid[(y * w + x) as usize] = true;
+    }
+    let mut next = vec![false; (w * h) as usize];
+    for _ in 0..steps {
+        for y in 0..h {
+            for x in 0..w {
+                let mut n = 0i64;
+                for dy in -1..=1 {
+                    for dx in -1..=1 {
+                        if dx == 0 && dy == 0 {
+                            continue;
+                        }
+                        let nx = x + dx;
+                        let ny = y + dy;
+                        if (0..w).contains(&nx)
+                            && (0..h).contains(&ny)
+                            && grid[(ny * w + nx) as usize]
+                        {
+                            n += 1;
+                        }
+                    }
+                }
+                let alive = grid[(y * w + x) as usize];
+                next[(y * w + x) as usize] = n == 3 || (alive && n == 2);
+            }
+        }
+        std::mem::swap(&mut grid, &mut next);
+    }
+    let cell = 10i64;
+    let mut px = Vec::with_capacity((w * cell * h * cell) as usize);
+    for y in 0..(h * cell) {
+        for x in 0..(w * cell) {
+            let alive = grid[((y / cell) * w + (x / cell)) as usize];
+            px.push(if alive { [0u8, 0, 0] } else { [255u8, 255, 255] });
+        }
+    }
+    let bytes = j12_bmp_bytes(w * cell, h * cell, &px);
+    j12_write_file(ctx, &path, &bytes, line, col)?;
+    Ok(Value::Nil)
+}
+
+// ============================================================
+// ج6 (الدفعة الأخيرة من الـ579 — الأنواع والأعداد والدقة):
+// البنود 99 (بت) و101 (مركب) و102 (دقة ممتدة) و103 (كسر)
+// و105 (معلب) و106 (جمع دقيق). الأنواع الجديدة قيم
+// حقيقية (Value::BigInt/Rational/Complex/Bits/Boxed) لا
+// نصوص — والعمليات عليها في interpreter.rs (المساعدات
+// المشتركة add_values/arith_values/neg_value/compare_values).
+// f64 الافتراضية بلا أي تغيير في دلالتها.
+// ============================================================
+
+use crate::value as j6v;
+
+fn j6_need_args_range(
+    display: &str,
+    args: &[Value],
+    min: usize,
+    max: usize,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    if args.len() < min || args.len() > max {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع {} إلى {} معاملات لكن أعطيت {}",
+                display,
+                min,
+                max,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+fn j6_need_bigint(display: &str, v: &Value, line: usize, col: usize) -> RioResult<String> {
+    match v {
+        Value::BigInt(s) => Ok(s.clone()),
+        Value::Number(n) => j6v::bigint_from_f64(*n).ok_or_else(|| {
+            RioError::typ(
+                format!("{} تتطلب عددا صحيحا، وليس كسرا", display),
+                line,
+                col,
+            )
+        }),
+        Value::Str(s) => j6v::bigint_norm(s).ok_or_else(|| {
+            RioError::typ(format!("عدد كبير غير صالح: {}", s), line, col)
+        }),
+        other => Err(RioError::typ(
+            format!("{} تتطلب عددا كبيرا، وليس {}", display, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+fn j6_need_rational(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<(String, String)> {
+    match v {
+        Value::Rational(n, d) => Ok((n.clone(), d.clone())),
+        Value::BigInt(s) => Ok((s.clone(), "1".to_string())),
+        Value::Number(n) => j6v::rat_from_f64(*n).ok_or_else(|| {
+            RioError::typ(
+                format!("{} تتطلب عددا منتهيا", display),
+                line,
+                col,
+            )
+        }),
+        other => Err(RioError::typ(
+            format!("{} تتطلب كسرا، وليس {}", display, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+fn j6_need_complex(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<(f64, f64)> {
+    j6v::value_to_complex(v).ok_or_else(|| {
+        RioError::typ(
+            format!("{} تتطلب عددا مركبا، وليس {}", display, other_type(v)),
+            line,
+            col,
+        )
+    })
+}
+
+fn other_type(v: &Value) -> &'static str {
+    v.type_name()
+}
+
+fn j6_need_bits(display: &str, v: &Value, line: usize, col: usize) -> RioResult<Vec<bool>> {
+    match v {
+        Value::Bits(b) => Ok(b.clone()),
+        other => Err(RioError::typ(
+            format!("{} تتطلب بت، وليس {}", display, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+fn j6_need_boxed(display: &str, v: &Value, line: usize, col: usize) -> RioResult<Value> {
+    match v {
+        Value::Boxed(inner) => Ok((**inner).clone()),
+        other => Err(RioError::typ(
+            format!("{} تتطلب معلبا، وليس {}", display, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+fn j6_need_count(display: &str, v: &Value, line: usize, col: usize) -> RioResult<usize> {
+    match v {
+        Value::Number(n) if n.is_finite() && n.fract() == 0.0 && *n >= 0.0 => Ok(*n as usize),
+        Value::BigInt(s) => {
+            let f = j6v::bigint_to_f64(s);
+            if f.is_finite() && f >= 0.0 && f <= (usize::MAX as f64) {
+                Ok(f as usize)
+            } else {
+                Err(RioError::typ(
+                    format!("{} تتطلب عددا صحيحا غير سالب", display),
+                    line,
+                    col,
+                ))
+            }
+        }
+        other => Err(RioError::typ(
+            format!("{} تتطلب عددا صحيحا غير سالب، وليس {}", display, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+fn j6_need_f64(display: &str, v: &Value, line: usize, col: usize) -> RioResult<f64> {
+    match v {
+        Value::Number(n) => Ok(*n),
+        Value::BigInt(s) => Ok(j6v::bigint_to_f64(s)),
+        Value::Rational(n, d) => Ok(j6v::rat_to_f64(&(n.clone(), d.clone()))),
+        Value::Complex(re, im) => {
+            if *im == 0.0 {
+                Ok(*re)
+            } else {
+                Err(RioError::typ(
+                    format!("{} تتطلب عددا حقيقيا، وليس مركبا بتخيلي", display),
+                    line,
+                    col,
+                ))
+            }
+        }
+        other => Err(RioError::typ(
+            format!("{} تتطلب عددا، وليس {}", display, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+// ---------- دقة (102 + 106) ----------
+
+fn precision_big(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "دقة.كبير";
+    need_args(D, args, 1, line, col)?;
+    Ok(Value::BigInt(j6_need_bigint(D, &args[0], line, col)?))
+}
+
+fn precision_to_number(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "دقة.إلى_عدد";
+    need_args(D, args, 1, line, col)?;
+    Ok(Value::Number(j6_need_f64(D, &args[0], line, col)?))
+}
+
+fn precision_to_text(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "دقة.إلى_نص";
+    need_args(D, args, 1, line, col)?;
+    Ok(Value::Str(args[0].fmt_value()))
+}
+
+fn precision_pow(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "دقة.أس";
+    need_args(D, args, 2, line, col)?;
+    let base = j6_need_bigint(D, &args[0], line, col)?;
+    let exp = match &args[1] {
+        Value::Number(n) if n.is_finite() && n.fract() == 0.0 => *n as i64,
+        Value::BigInt(s) => {
+            let f = j6v::bigint_to_f64(s);
+            if f.abs() > 1_000_000.0 {
+                return Err(RioError::typ(
+                    "دقة.أس تتطلب أسا في حدود المعقول".to_string(),
+                    line,
+                    col,
+                ));
+            }
+            f as i64
+        }
+        other => {
+            return Err(RioError::typ(
+                format!("دقة.أس تتطلب أسا صحيحا، وليس {}", other.type_name()),
+                line,
+                col,
+            ));
+        }
+    };
+    if exp < 0 {
+        // أس سالب = كسر دقيق (1 / أساس^|أس|).
+        let mut acc = "1".to_string();
+        let mut b = base.clone();
+        let mut e = (-exp) as u64;
+        while e > 0 {
+            if e % 2 == 1 {
+                acc = j6v::bigint_mul(&acc, &b);
+            }
+            e /= 2;
+            if e > 0 {
+                b = j6v::bigint_mul(&b, &b);
+            }
+        }
+        let (n, d) = j6v::rat_norm("1", &acc)
+            .unwrap_or_else(|| ("0".to_string(), "1".to_string()));
+        return Ok(Value::Rational(n, d));
+    }
+    let mut acc = "1".to_string();
+    let mut b = base;
+    let mut e = exp as u64;
+    while e > 0 {
+        if e % 2 == 1 {
+            acc = j6v::bigint_mul(&acc, &b);
+        }
+        e /= 2;
+        if e > 0 {
+            b = j6v::bigint_mul(&b, &b);
+        }
+    }
+    Ok(Value::BigInt(acc))
+}
+
+fn precision_exact_sum(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "دقة.جمع_دقيق";
+    need_args(D, args, 1, line, col)?;
+    let items = match &args[0] {
+        Value::List(items) => items.clone(),
+        other => {
+            return Err(RioError::typ(
+                format!("دقة.جمع_دقيق يتطلب قائمة، وليس {}", other.type_name()),
+                line,
+                col,
+            ));
+        }
+    };
+    if items.is_empty() {
+        return Ok(Value::Number(0.0));
+    }
+    // مركب أولا (بـf64)؛ ثم دقيق (كبير/كسر)؛ ثم عائم معوض (نويمر).
+    if items.iter().any(|v| matches!(v, Value::Complex(..))) {
+        let mut re = 0.0f64;
+        let mut im = 0.0f64;
+        for v in &items {
+            match j6v::value_to_complex(v) {
+                Some((a, b)) => {
+                    re += a;
+                    im += b;
+                }
+                None => {
+                    return Err(RioError::typ(
+                        format!(
+                            "دقة.جمع_دقيق يتطلب قائمة أعداد، وجد {}",
+                            v.type_name()
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+            }
+        }
+        return Ok(Value::Complex(re, im));
+    }
+    if items
+        .iter()
+        .any(|v| matches!(v, Value::BigInt(_) | Value::Rational(_, _)))
+    {
+        if items.iter().all(|v| matches!(v, Value::BigInt(_))) {
+            let mut acc = "0".to_string();
+            for v in &items {
+                if let Value::BigInt(s) = v {
+                    acc = j6v::bigint_add(&acc, s);
+                }
+            }
+            return Ok(Value::BigInt(acc));
+        }
+        let mut acc = ("0".to_string(), "1".to_string());
+        for v in &items {
+            match j6v::value_to_rational(v) {
+                Some(r) => acc = j6v::rat_add(&acc, &r),
+                None => {
+                    return Err(RioError::typ(
+                        format!(
+                            "دقة.جمع_دقيق يتطلب قائمة أعداد، وجد {}",
+                            v.type_name()
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+            }
+        }
+        let (n, d) = acc;
+        return Ok(Value::Rational(n, d));
+    }
+    // عائم معوض (خوارزمية نويمر): 0.1 عشر مرات = 1 لا 0.999...
+    let mut sum = 0.0f64;
+    let mut c = 0.0f64;
+    for v in &items {
+        let x = match v {
+            Value::Number(n) => *n,
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "دقة.جمع_دقيق يتطلب قائمة أعداد، وجد {}",
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ));
+            }
+        };
+        let t = sum + x;
+        if sum.abs() >= x.abs() {
+            c += (sum - t) + x;
+        } else {
+            c += (x - t) + sum;
+        }
+        sum = t;
+    }
+    Ok(Value::Number(sum + c))
+}
+
+// ---------- كسر (103) ----------
+
+fn rational_new(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "كسر.جديد";
+    j6_need_args_range(D, args, 1, 2, line, col)?;
+    let num = j6_need_bigint(D, &args[0], line, col)?;
+    let den = if args.len() == 2 {
+        j6_need_bigint(D, &args[1], line, col)?
+    } else {
+        "1".to_string()
+    };
+    match j6v::rat_norm(&num, &den) {
+        Some((n, d)) => Ok(Value::Rational(n, d)),
+        None => Err(RioError::typ(
+            "مقام الكسر لا يمكن أن يكون صفرا".to_string(),
+            line,
+            col,
+        )),
+    }
+}
+
+fn rational_num(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "كسر.بسط";
+    need_args(D, args, 1, line, col)?;
+    let (n, _) = j6_need_rational(D, &args[0], line, col)?;
+    Ok(Value::BigInt(n))
+}
+
+fn rational_den(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "كسر.مقام";
+    need_args(D, args, 1, line, col)?;
+    let (_, d) = j6_need_rational(D, &args[0], line, col)?;
+    Ok(Value::BigInt(d))
+}
+
+fn rational_to_number(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "كسر.إلى_عدد";
+    need_args(D, args, 1, line, col)?;
+    let r = j6_need_rational(D, &args[0], line, col)?;
+    Ok(Value::Number(j6v::rat_to_f64(&r)))
+}
+
+fn rational_to_text(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "كسر.إلى_نص";
+    need_args(D, args, 1, line, col)?;
+    let _ = j6_need_rational(D, &args[0], line, col)?;
+    Ok(Value::Str(args[0].fmt_value()))
+}
+
+fn rational_from_number(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "كسر.من_عدد";
+    need_args(D, args, 1, line, col)?;
+    match &args[0] {
+        Value::Number(n) => match j6v::rat_from_f64(*n) {
+            Some((a, b)) => Ok(Value::Rational(a, b)),
+            None => Err(RioError::typ(
+                "كسر.من_عدد يتطلب عددا منتهيا".to_string(),
+                line,
+                col,
+            )),
+        },
+        other => {
+            let r = j6_need_rational(D, other, line, col)?;
+            Ok(Value::Rational(r.0, r.1))
+        }
+    }
+}
+
+// ---------- مركب (101) ----------
+
+fn complex_new(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "مركب.جديد";
+    j6_need_args_range(D, args, 1, 2, line, col)?;
+    let re = j6_need_f64(D, &args[0], line, col)?;
+    let im = if args.len() == 2 {
+        j6_need_f64(D, &args[1], line, col)?
+    } else {
+        0.0
+    };
+    Ok(Value::Complex(re, im))
+}
+
+fn complex_real(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "مركب.حقيقي";
+    need_args(D, args, 1, line, col)?;
+    let (re, _) = j6_need_complex(D, &args[0], line, col)?;
+    Ok(Value::Number(re))
+}
+
+fn complex_imag(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "مركب.تخيلي";
+    need_args(D, args, 1, line, col)?;
+    let (_, im) = j6_need_complex(D, &args[0], line, col)?;
+    Ok(Value::Number(im))
+}
+
+fn complex_abs(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "مركب.مقدار";
+    need_args(D, args, 1, line, col)?;
+    let (re, im) = j6_need_complex(D, &args[0], line, col)?;
+    Ok(Value::Number((re * re + im * im).sqrt()))
+}
+
+fn complex_conj(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "مركب.مرافق";
+    need_args(D, args, 1, line, col)?;
+    let (re, im) = j6_need_complex(D, &args[0], line, col)?;
+    Ok(Value::Complex(re, -im))
+}
+
+fn complex_to_text(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "مركب.إلى_نص";
+    need_args(D, args, 1, line, col)?;
+    let _ = j6_need_complex(D, &args[0], line, col)?;
+    Ok(Value::Str(args[0].fmt_value()))
+}
+
+// ---------- بت (99) ----------
+
+fn bits_from_number(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "بت.من_عدد";
+    j6_need_args_range(D, args, 1, 2, line, col)?;
+    let n = j6_need_count(D, &args[0], line, col)?;
+    let len = if args.len() == 2 {
+        Some(j6_need_count(D, &args[1], line, col)?)
+    } else {
+        None
+    };
+    let mut bits: Vec<bool> = Vec::new();
+    let mut x = n;
+    if x == 0 {
+        bits.push(false);
+    } else {
+        while x > 0 {
+            bits.push(x % 2 == 1);
+            x /= 2;
+        }
+        bits.reverse();
+    }
+    if let Some(want) = len {
+        if bits.len() > want {
+            return Err(RioError::typ(
+                format!(
+                    "العدد لا يتسع في {} بت (يحتاج {})",
+                    want,
+                    bits.len()
+                ),
+                line,
+                col,
+            ));
+        }
+        while bits.len() < want {
+            bits.insert(0, false);
+        }
+    }
+    Ok(Value::Bits(bits))
+}
+
+fn bits_from_text(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "بت.من_نص";
+    need_args(D, args, 1, line, col)?;
+    let s = need_string(D, &args[0], line, col)?;
+    if s.is_empty() {
+        return Err(RioError::typ(
+            "بت.من_نص يتطلب نصا غير فارغ من 0 و1".to_string(),
+            line,
+            col,
+        ));
+    }
+    let mut bits = Vec::new();
+    for c in s.chars() {
+        match c {
+            '0' | '٠' => bits.push(false),
+            '1' | '١' => bits.push(true),
+            _ => {
+                return Err(RioError::typ(
+                    "نص البت يتطلب 0 و1 فقط".to_string(),
+                    line,
+                    col,
+                ));
+            }
+        }
+    }
+    Ok(Value::Bits(bits))
+}
+
+fn bits_to_number(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "بت.إلى_عدد";
+    need_args(D, args, 1, line, col)?;
+    let bits = j6_need_bits(D, &args[0], line, col)?;
+    let mut v = 0.0f64;
+    for b in &bits {
+        v = v * 2.0 + if *b { 1.0 } else { 0.0 };
+    }
+    Ok(Value::Number(v))
+}
+
+fn bits_to_text(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "بت.إلى_نص";
+    need_args(D, args, 1, line, col)?;
+    let bits = j6_need_bits(D, &args[0], line, col)?;
+    let s: String = bits.iter().map(|b| if *b { '1' } else { '0' }).collect();
+    Ok(Value::Str(s))
+}
+
+fn bits_len(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "بت.طول";
+    need_args(D, args, 1, line, col)?;
+    let bits = j6_need_bits(D, &args[0], line, col)?;
+    Ok(Value::Number(bits.len() as f64))
+}
+
+fn bits_binop(
+    display: &str,
+    args: &[Value],
+    line: usize,
+    col: usize,
+    f: fn(bool, bool) -> bool,
+) -> RioResult<Value> {
+    need_args(display, args, 2, line, col)?;
+    let a = j6_need_bits(display, &args[0], line, col)?;
+    let b = j6_need_bits(display, &args[1], line, col)?;
+    if a.len() != b.len() {
+        return Err(RioError::typ(
+            format!(
+                "عمليات البت تتطلب أطوالا متساوية ({} مقابل {})",
+                a.len(),
+                b.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Bits(
+        a.iter().zip(b.iter()).map(|(x, y)| f(*x, *y)).collect(),
+    ))
+}
+
+fn bits_and(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    bits_binop("بت.و", args, line, col, |a, b| a && b)
+}
+
+fn bits_or(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    bits_binop("بت.أو", args, line, col, |a, b| a || b)
+}
+
+fn bits_xor(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    bits_binop("بت.حصري", args, line, col, |a, b| a != b)
+}
+
+fn bits_not(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "بت.ليس";
+    need_args(D, args, 1, line, col)?;
+    let bits = j6_need_bits(D, &args[0], line, col)?;
+    Ok(Value::Bits(bits.iter().map(|b| !*b).collect()))
+}
+
+fn bits_rotate(
+    display: &str,
+    args: &[Value],
+    line: usize,
+    col: usize,
+    left: bool,
+) -> RioResult<Value> {
+    need_args(display, args, 2, line, col)?;
+    let bits = j6_need_bits(display, &args[0], line, col)?;
+    let n = j6_need_count(display, &args[1], line, col)?;
+    if bits.is_empty() {
+        return Ok(Value::Bits(bits));
+    }
+    let k = n % bits.len();
+    let mut out = bits.clone();
+    if left {
+        out.rotate_left(k);
+    } else {
+        out.rotate_right(k);
+    }
+    Ok(Value::Bits(out))
+}
+
+fn bits_rotl(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    bits_rotate("بت.أدر_يسار", args, line, col, true)
+}
+
+fn bits_rotr(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    bits_rotate("بت.أدر_يمين", args, line, col, false)
+}
+
+fn bits_shift(
+    display: &str,
+    args: &[Value],
+    line: usize,
+    col: usize,
+    left: bool,
+) -> RioResult<Value> {
+    need_args(display, args, 2, line, col)?;
+    let bits = j6_need_bits(display, &args[0], line, col)?;
+    let n = j6_need_count(display, &args[1], line, col)?;
+    let len = bits.len();
+    let mut out = vec![false; len];
+    if n < len {
+        if left {
+            out[..len - n].copy_from_slice(&bits[n..]);
+        } else {
+            out[n..].copy_from_slice(&bits[..len - n]);
+        }
+    }
+    Ok(Value::Bits(out))
+}
+
+fn bits_shl(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    bits_shift("بت.أزح_يسار", args, line, col, true)
+}
+
+fn bits_shr(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    bits_shift("بت.أزح_يمين", args, line, col, false)
+}
+
+// ---------- معلب (105) ----------
+
+fn boxed_new(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "معلب.جديد";
+    need_args(D, args, 1, line, col)?;
+    Ok(Value::Boxed(Box::new(args[0].clone())))
+}
+
+fn boxed_open(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "معلب.افتح";
+    need_args(D, args, 1, line, col)?;
+    j6_need_boxed(D, &args[0], line, col)
+}
+
+fn boxed_is(
+    _: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const D: &str = "معلب.هو_معلب";
+    need_args(D, args, 1, line, col)?;
+    Ok(Value::Bool(matches!(args[0], Value::Boxed(_))))
+}
+
+// ---------- جداول التسجيل (توليد جدولي — انظر j6gen) ----------
+// BEGIN J6-GEN entries-precision
+fn precision_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("كبير", native("كبير", precision_big)),
+        ("إلى_عدد", native("إلى_عدد", precision_to_number)),
+        ("إلى_نص", native("إلى_نص", precision_to_text)),
+        ("أس", native("أس", precision_pow)),
+        ("جمع_دقيق", native("جمع_دقيق", precision_exact_sum)),
+    ]
+}
+// END J6-GEN entries-precision
+// BEGIN J6-GEN entries-rational
+fn rational_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("جديد", native("جديد", rational_new)),
+        ("بسط", native("بسط", rational_num)),
+        ("مقام", native("مقام", rational_den)),
+        ("إلى_عدد", native("إلى_عدد", rational_to_number)),
+        ("إلى_نص", native("إلى_نص", rational_to_text)),
+        ("من_عدد", native("من_عدد", rational_from_number)),
+    ]
+}
+// END J6-GEN entries-rational
+// BEGIN J6-GEN entries-complex
+fn complex_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("جديد", native("جديد", complex_new)),
+        ("حقيقي", native("حقيقي", complex_real)),
+        ("تخيلي", native("تخيلي", complex_imag)),
+        ("مقدار", native("مقدار", complex_abs)),
+        ("مرافق", native("مرافق", complex_conj)),
+        ("إلى_نص", native("إلى_نص", complex_to_text)),
+    ]
+}
+// END J6-GEN entries-complex
+// BEGIN J6-GEN entries-bits
+fn bits_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("من_عدد", native("من_عدد", bits_from_number)),
+        ("من_نص", native("من_نص", bits_from_text)),
+        ("إلى_عدد", native("إلى_عدد", bits_to_number)),
+        ("إلى_نص", native("إلى_نص", bits_to_text)),
+        ("طول", native("طول", bits_len)),
+        ("و", native("و", bits_and)),
+        ("او", native("او", bits_or)),
+        ("حصري", native("حصري", bits_xor)),
+        ("ليس", native("ليس", bits_not)),
+        ("أدر_يسار", native("أدر_يسار", bits_rotl)),
+        ("أدر_يمين", native("أدر_يمين", bits_rotr)),
+        ("أزح_يسار", native("أزح_يسار", bits_shl)),
+        ("أزح_يمين", native("أزح_يمين", bits_shr)),
+    ]
+}
+// END J6-GEN entries-bits
+// BEGIN J6-GEN entries-boxed
+fn boxed_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("جديد", native("جديد", boxed_new)),
+        ("افتح", native("افتح", boxed_open)),
+        ("هو_معلب", native("هو_معلب", boxed_is)),
+    ]
+}
+// END J6-GEN entries-boxed

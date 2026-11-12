@@ -178,7 +178,7 @@ pub enum Op {
     /// ليست دالة» يبلَّغان به، كما في المفسر؛ وباقي
     /// أخطاء الاستدعاء (المعاملات والإرجاع) بموضع
     /// تعليمة الاستدعاء نفسه (موضع القوس).
-    Call { name: String, nargs: usize, callee_line: usize, callee_col: usize },
+    Call { name: String, nargs: usize, kwargs: Vec<String>, callee_line: usize, callee_col: usize, type_args: Vec<String> },
     Return,
     BuildList(usize),
     BuildDict(Vec<String>),
@@ -197,12 +197,12 @@ pub enum Op {
     /// موضع الاسم — خطأا «استخدم أنشئ» و«القيمة ليست
     /// دالة» حين يظلل الاسم قيمة مربوطة يبلَّغان به،
     /// كما في المفسر؛ وباقي الأخطاء بموضع التعليمة.
-    Builtin { name: String, nargs: usize, callee_line: usize, callee_col: usize },
+    Builtin { name: String, nargs: usize, kwargs: Vec<String>, callee_line: usize, callee_col: usize },
     DefineClass(VmClassDef),
     DefineInterface(String, Vec<(String, usize)>),
     Dot(String),
     StoreDot(String),
-    Create(String, usize),
+    Create { class: String, nargs: usize, kwargs: Vec<String>, type_args: Vec<String> },
     /// مهمة 3 (ك-1.3): استدعاء طريقة عبر نقطة مباشرة
     /// (ك.طريقة(...)). يسحب الهدف ثم المعاملات (المعاملات
     /// تُقيَّم أولا، كما في المفسر): نص/قائمة ← طريقة
@@ -211,7 +211,7 @@ pub enum Op {
     /// حين يكون معرّفا عاديا، لتكتب طرق القوائم المعدِّلة
     /// (أضف/أزل) رجعيا إليه؛ وغيابه يعني هدفا غير متغير
     /// فيرفض التعديل برسالة المفسر نفسها.
-    CallDotMethod { name: String, var: Option<String>, nargs: usize },
+    CallDotMethod { name: String, var: Option<String>, nargs: usize, kwargs: Vec<String> },
     /// Phase ك-1: create a closure value from the defining
     /// scope chain and push it (a Lambda expression).
     MakeClosure(ClosureDef),
@@ -225,7 +225,7 @@ pub enum Op {
     /// `callee_line/callee_col` موضع تعبير المستدعى
     /// نفسه — خطأ «القيمة ليست دالة» يبلَّغ به، كما في
     /// المفسر؛ وباقي أخطاء الاستدعاء بموضع التعليمة.
-    CallValue { nargs: usize, callee_line: usize, callee_col: usize },
+    CallValue { nargs: usize, kwargs: Vec<String>, callee_line: usize, callee_col: usize, type_args: Vec<String> },
     /// مهمة 6 (بوابة التكافؤ ك-1.5): فحص منطقي بسياق
     /// المفسر — يسحب القيمة؛ إن كانت منطقية أعادها،
     /// وإلا أخطأ برسالة السياق (إذا/وإلا إذا/و/أو).
@@ -310,6 +310,20 @@ pub struct ClosureDef {
     pub param_types: Vec<Option<String>>,
     pub return_type: Option<String>,
     pub body: Vec<Stmt>,
+    /// ب6: جسمها يحوي `ولد` — فاستدعاؤها يعيد مولدا
+    /// لا ينفذ جسمها إلا عند التقدم.
+    pub is_generator: bool,
+    /// الدفعة الأخيرة DEF (البنود 109–112): تعبيرات
+    /// القيم الافتراضية وجامعا الزائد — تُقيَّم
+    /// الافتراضيات وقت التعريف في زمن التشغيل
+    /// (DefineClosure/MakeClosure)؛ وإعلانات النطاق
+    /// تُحسَب من الجسم نفسه هناك فلا تُخزَّن هنا.
+    pub defaults: Vec<Option<Expr>>,
+    pub vararg: Option<String>,
+    pub kwarg: Option<String>,
+    // البنود 145–147 (العموميات — الاجتماع 83 §98):
+    // معاملات النوع المعلنة للدالة.
+    pub type_params: Vec<crate::ast::TypeParam>,
 }
 
 /// Phase ك-1: unique closure ids, process-wide. A static
@@ -350,6 +364,9 @@ pub struct VmClassDef {
     pub interfaces: Vec<String>,
     pub methods: HashMap<String, FunctionDef>,
     pub own_method_ids: HashMap<String, u64>,
+    // البنود 145–147 (العموميات — الاجتماع 83 §98):
+    // معاملات النوع المعلنة للفئة.
+    pub type_params: Vec<crate::ast::TypeParam>,
 }
 
 /// Slice 4: the 9 pure builtins the VM knows.
@@ -363,9 +380,16 @@ pub struct VmClassDef {
 /// افهم_تشكيلة، افهم_فهرس) — بلا أسمائها هنا يصدر
 /// المترجم Op::Call فيخطئ التشغيل «دالة غير معرفة
 /// في VM»، كما في تنبيه الدرس الدائم فوق.
-const PURE_BUILTINS: [&str; 14] =
+const PURE_BUILTINS: [&str; 24] =
     ["طول", "مدى", "مجموع", "أدنى", "أقصى", "مطلق", "عدد", "نص", "نوع",
-     "مترابطة", "تشكيلة", "افهم_قائمة", "افهم_تشكيلة", "افهم_فهرس"];
+     "مترابطة", "تشكيلة", "افهم_قائمة", "افهم_تشكيلة", "افهم_فهرس",
+     // ج6: مدمجات الصيغ الحرفية المفككة في المحلل.
+     "عدد_كبير", "كسر", "مركب", "كسر_حرفي", "مركب_حرفي",
+     // ب6: تقدم المولد وإغلاقه.
+     "التالي", "أغلق_المولد",
+     // البند 88 — مدير السياق (الاجتماع 88 §103):
+     // الاستدعاءات الداخلية المفككة في المحلل من `عند`.
+     "__عند_افحص", "__عند_خطأ", "__عند_أعد_رفع"];
 
 fn is_pure_builtin(name: &str) -> bool {
     PURE_BUILTINS.contains(&name)
@@ -443,6 +467,24 @@ pub struct FunctionDef {
     pub param_types: Vec<Option<String>>,
     pub return_type: Option<String>,
     pub code: Vec<Instr>,
+    /// ب6: جسمها يحوي `ولد` — فاستدعاؤها يعيد مولدا
+    /// لا ينفذ جسمها إلا عند التقدم.
+    pub is_generator: bool,
+    /// الدفعة الأخيرة DEF (البنود 109–112، الاجتماع 83
+    /// §98): تعبيرات القيم الافتراضية (تُقيَّم وقت
+    /// التعريف في مسار الإغلاق، ووقت الاستدعاء في
+    /// مسار الجدول — الاستدعاء الأمامي)، وجامعا
+    /// الزائد الموضعي والمفتاحي؛ وإعلانات `عام`/
+    /// `نطاق` في الجسم (لمسار الجدول — فمسار الإغلاق
+    /// يأخذها من قيمة الدالة نفسها).
+    pub defaults: Vec<Option<Expr>>,
+    pub vararg: Option<String>,
+    pub kwarg: Option<String>,
+    pub global_names: Vec<String>,
+    pub nonlocal_names: Vec<String>,
+    // البنود 145–147 (العموميات — الاجتماع 83 §98):
+    // معاملات النوع المعلنة للدالة.
+    pub type_params: Vec<crate::ast::TypeParam>,
 }
 
 #[derive(Debug, Clone)]
@@ -792,7 +834,7 @@ impl Compiler {
                 self.emit(Op::Continue, stmt.line, stmt.col);
                 Ok(())
             }
-            StmtKind::Try { try_body, except_body, finally_body } => {
+            StmtKind::Try { try_body, except_body, else_body, finally_body } => {
                 // ك-1.2: ترتيب التعليمات في التدفق:
                 //   TryBegin -> جسم حاول -> EndTryBlock
                 //   -> جسم أخيرا -> EndFinally
@@ -809,6 +851,15 @@ impl Compiler {
                 );
                 for s in try_body {
                     self.compile_stmt(s)?;
+                }
+                // البند 98 (`والا` بعد حاول): يُترجَم جسمها
+                // بعد جسم حاول مباشرة وقبل EndTryBlock — فخطأ
+                // فيها يمسكه `ماعدا` نفسه (كالمفسر والأصلي)،
+                // وإكمالها العادي يمر إلى أخيرا/بعد.
+                if let Some(els) = else_body {
+                    for s in els {
+                        self.compile_stmt(s)?;
+                    }
                 }
                 let end_try_idx = self.emit(
                     Op::EndTryBlock { finally_pc: None, after_pc: 0 },
@@ -887,8 +938,10 @@ impl Compiler {
                     self.emit(
                         Op::CallValue {
                             nargs: 1,
+                            kwargs: Vec::new(),
                             callee_line: dec.line,
                             callee_col: dec.col,
+                            type_args: Vec::new(),
                         },
                         stmt.line,
                         stmt.col,
@@ -897,7 +950,8 @@ impl Compiler {
                 }
                 Ok(())
             }
-            StmtKind::FuncDef { name, params, param_types, return_type, body } => {
+            StmtKind::FuncDef { name, params, param_types, return_type, defaults, vararg, kwarg, type_params, body } => {
+                let (global_names, nonlocal_names) = crate::ast::collect_scope_decls(body);
                 // Phase ك-1: every دالة definition becomes a
                 // closure value at runtime (DefineClosure), so
                 // it captures its defining scope chain exactly
@@ -921,6 +975,15 @@ impl Compiler {
                     param_types: param_types.clone(),
                     return_type: return_type.clone(),
                     code,
+                    // ب6: جسم يحوي `ولد` → مولد.
+                    is_generator: crate::ast::body_has_yield(body),
+                    // الدفعة الأخيرة DEF (البنود 109–112 و77 و78).
+                    defaults: defaults.clone(),
+                    vararg: vararg.clone(),
+                    kwarg: kwarg.clone(),
+                    global_names,
+                    nonlocal_names,
+                    type_params: type_params.clone(),
                 };
                 self.functions.insert(name.clone(), def.clone());
                 self.closures.insert(id, def);
@@ -932,13 +995,20 @@ impl Compiler {
                         param_types: param_types.clone(),
                         return_type: return_type.clone(),
                         body: body.clone(),
+                        // ب6: كـ FunctionDef أعلاه.
+                        is_generator: crate::ast::body_has_yield(body),
+                        // الدفعة الأخيرة DEF (البنود 109–112).
+                        defaults: defaults.clone(),
+                        vararg: vararg.clone(),
+                        kwarg: kwarg.clone(),
+                        type_params: type_params.clone(),
                     }),
                     stmt.line,
                     stmt.col,
                 );
                 Ok(())
             }
-            StmtKind::ClassDef { name, base, interfaces, methods } => {
+            StmtKind::ClassDef { name, base, interfaces, type_params, methods } => {
                 // Slice 5: compile each method body with a fresh
                 // sub-compiler (like FuncDef), merge nested
                 // functions into this table, then flatten: base
@@ -957,7 +1027,8 @@ impl Compiler {
                 // دوال تحمل سلسلة النطاق المعرِّف.
                 let mut own_ids: HashMap<String, u64> = HashMap::new();
                 for m in methods {
-                    if let StmtKind::FuncDef { name: mn, params, param_types, return_type, body } = &m.kind {
+                    if let StmtKind::FuncDef { name: mn, params, param_types, return_type, defaults, vararg, kwarg, type_params: m_type_params, body } = &m.kind {
+                        let (m_global, m_nonlocal) = crate::ast::collect_scope_decls(body);
                         let mut sub = self.sub_compiler();
                         for s in body {
                             sub.compile_stmt(s)?;
@@ -969,6 +1040,15 @@ impl Compiler {
                             param_types: param_types.clone(),
                             return_type: return_type.clone(),
                             code,
+                            // ب6: طريقة تحوي `ولد` → مولد.
+                            is_generator: crate::ast::body_has_yield(body),
+                            // الدفعة الأخيرة DEF (البنود 109–112 و77 و78).
+                            defaults: defaults.clone(),
+                            vararg: vararg.clone(),
+                            kwarg: kwarg.clone(),
+                            global_names: m_global,
+                            nonlocal_names: m_nonlocal,
+                            type_params: m_type_params.clone(),
                         };
                         let id = next_closure_id();
                         self.closures.insert(id, fdef.clone());
@@ -982,6 +1062,7 @@ impl Compiler {
                     interfaces: interfaces.clone(),
                     methods: flat,
                     own_method_ids: own_ids,
+                    type_params: type_params.clone(),
                 };
                 self.classes.insert(name.clone(), def.clone());
                 self.emit(Op::DefineClass(def), stmt.line, stmt.col);
@@ -1018,6 +1099,10 @@ impl Compiler {
                 Ok(())
             }
             StmtKind::Export { .. } => Ok(()),
+            // الدفعة الأخيرة DEF (البنود 77 و78 و104):
+            // إعلان النطاق والاسم المستعار بلا تعليمات —
+            // أثرهما في الترجمة/الإسناد (المرحلتان ب وهـ).
+            StmtKind::GlobalDecl { .. } | StmtKind::NonlocalDecl { .. } | StmtKind::TypeAlias { .. } => Ok(()),
             _ => Err(RioError::parse(
                 "الآلة الافتراضية: هذه الجملة غير مدعومة بعد، استخدم المفسر الافتراضي",
                 stmt.line,
@@ -1045,6 +1130,15 @@ impl Compiler {
                 Ok(())
             }
             ExprKind::Ident(name) => {
+                self.emit(Op::Load(name.clone()), expr.line, expr.col);
+                Ok(())
+            }
+            // البند 73 (`:=`): يقيّم القيمة، يخزّنها
+            // كإسناد عادي (أقرب ربط)، ثم يعيد تحميلها
+            // فتبقى القيمة نفسها نتيجة التعبير.
+            ExprKind::AssignExpr { name, value } => {
+                self.compile_expr(value)?;
+                self.emit(Op::Store(name.clone()), expr.line, expr.col);
                 self.emit(Op::Load(name.clone()), expr.line, expr.col);
                 Ok(())
             }
@@ -1080,11 +1174,15 @@ impl Compiler {
                 self.emit(Op::Dot(name.clone()), expr.line, expr.col);
                 Ok(())
             }
-            ExprKind::Create { class, args } => {
+            ExprKind::Create { class, args, kwargs, type_args } => {
                 for a in args {
                     self.compile_expr(a)?;
                 }
-                self.emit(Op::Create(class.clone(), args.len()), expr.line, expr.col);
+                for (_, v) in kwargs {
+                    self.compile_expr(v)?;
+                }
+                let kw_names: Vec<String> = kwargs.iter().map(|(k, _)| k.clone()).collect();
+                self.emit(Op::Create { class: class.clone(), nargs: args.len(), kwargs: kw_names, type_args: type_args.clone() }, expr.line, expr.col);
                 Ok(())
             }
             ExprKind::Unary { op, expr: inner } => {
@@ -1148,7 +1246,10 @@ impl Compiler {
                 self.emit(op, expr.line, expr.col);
                 Ok(())
             }
-            ExprKind::Call { callee, args } => {
+            ExprKind::Call { callee, args, kwargs, type_args } => {
+                // البنود 109–112: المفتاحيات تُصدَر قيما
+                // بعد الموضعية، وأسماؤها في التعليمة.
+                let kw_names: Vec<String> = kwargs.iter().map(|(k, _)| k.clone()).collect();
                 // مهمة 3: استدعاء عبر نقطة (ك.طريقة(...))
                 // يُترجَم إلى CallDotMethod: المعاملات أولا
                 // ثم الهدف (ترتيب تقييم المفسر نفسه)،
@@ -1160,6 +1261,9 @@ impl Compiler {
                     for a in args {
                         self.compile_expr(a)?;
                     }
+                    for (_, v) in kwargs {
+                        self.compile_expr(v)?;
+                    }
                     self.compile_expr(target)?;
                     let var = if let ExprKind::Ident(v) = &target.kind {
                         Some(v.clone())
@@ -1167,7 +1271,7 @@ impl Compiler {
                         None
                     };
                     self.emit(
-                        Op::CallDotMethod { name: name.clone(), var, nargs: args.len() },
+                        Op::CallDotMethod { name: name.clone(), var, nargs: args.len(), kwargs: kw_names },
                         expr.line,
                         expr.col,
                     );
@@ -1182,12 +1286,17 @@ impl Compiler {
                     for a in args {
                         self.compile_expr(a)?;
                     }
+                    for (_, v) in kwargs {
+                        self.compile_expr(v)?;
+                    }
                     self.compile_expr(callee)?;
                     self.emit(
                         Op::CallValue {
                             nargs: args.len(),
+                            kwargs: kw_names,
                             callee_line: callee.line,
                             callee_col: callee.col,
+                            type_args: type_args.clone(),
                         },
                         expr.line,
                         expr.col,
@@ -1203,19 +1312,26 @@ impl Compiler {
                 for a in args {
                     self.compile_expr(a)?;
                 }
+                for (_, v) in kwargs {
+                    self.compile_expr(v)?;
+                }
                 // Slice 4: resolution order matches the
                 // interpreter (user function first, then
                 // builtin). A user function defined earlier
                 // in the program wins over a builtin name.
                 // A same-named variable is checked at
                 // runtime by Op::Builtin itself.
-                if self.functions.contains_key(&name) {
+                // البنود 145–147: استدعاء مخصَّص لا يمر
+                // بالمدمجة أبدا — فالمدمجة بلا معاملات نوع.
+                if self.functions.contains_key(&name) || !type_args.is_empty() {
                     self.emit(
                         Op::Call {
                             name,
                             nargs: args.len(),
+                            kwargs: kw_names.clone(),
                             callee_line: callee.line,
                             callee_col: callee.col,
+                            type_args: type_args.clone(),
                         },
                         expr.line,
                         expr.col,
@@ -1225,6 +1341,7 @@ impl Compiler {
                         Op::Builtin {
                             name,
                             nargs: args.len(),
+                            kwargs: kw_names.clone(),
                             callee_line: callee.line,
                             callee_col: callee.col,
                         },
@@ -1236,8 +1353,10 @@ impl Compiler {
                         Op::Call {
                             name,
                             nargs: args.len(),
+                            kwargs: kw_names,
                             callee_line: callee.line,
                             callee_col: callee.col,
+                            type_args: type_args.clone(),
                         },
                         expr.line,
                         expr.col,
@@ -1262,6 +1381,17 @@ impl Compiler {
                     param_types: param_types.clone(),
                     return_type: None,
                     code,
+                    // ب6: لامدا تحوي ولدا في تعبيرها → مولد.
+                    is_generator: crate::ast::body_has_yield(&[Stmt::new(StmtKind::Return { value: Some((**body).clone()) }, expr.line, expr.col)]),
+                    // الدفعة الأخيرة DEF: لامدا بلا افتراضيات
+                    // ولا جامعين ولا إعلانات (تُرفض تحليلا).
+                    defaults: vec![None; params.len()],
+                    vararg: None,
+                    kwarg: None,
+                    global_names: vec![],
+                    nonlocal_names: vec![],
+                    // البنود 145–147: لامدا بلا معاملات نوع.
+                    type_params: Vec::new(),
                 };
                 self.closures.insert(id, def);
                 self.emit(
@@ -1276,6 +1406,13 @@ impl Compiler {
                             expr.line,
                             expr.col,
                         )],
+                        // ب6: كـ FunctionDef أعلاه.
+                        is_generator: crate::ast::body_has_yield(&[Stmt::new(StmtKind::Return { value: Some((**body).clone()) }, expr.line, expr.col)]),
+                        // الدفعة الأخيرة DEF: كـ FunctionDef أعلاه.
+                        defaults: vec![None; params.len()],
+                        vararg: None,
+                        kwarg: None,
+                        type_params: Vec::new(),
                     }),
                     expr.line,
                     expr.col,
@@ -1294,6 +1431,10 @@ impl Compiler {
 #[derive(Debug, Clone)]
 enum LoopState {
     For { items: Vec<Value>, index: usize, var: String, end_pc: usize, continue_pc: usize },
+    /// ب6: حلقة `لكل` على مولد — تُستأنف القيم واحدة
+    /// واحدة؛ والاستنفاد ينهي الحلقة بصمت (لا خطأ).
+    /// end_pc تعليمة LoopEnd، وcontinue_pc رأس الحلقة.
+    Gen { gen: Value, var: String, end_pc: usize, continue_pc: usize },
     Count { remaining: usize, end_pc: usize, continue_pc: usize },
     While { iterations: usize, end_pc: usize, continue_pc: usize },
 }
@@ -1314,6 +1455,10 @@ enum FlowResume {
     /// ينهي البرنامج كله — يهرب من كل معالج كـ Return،
     /// ويشغّل `أخيرا` في طريقه، ولا يمسكه `ماعدا`.
     Exit(u8),
+    /// ب6 — إغلاق مولد (`أغلق_المولد`): يهرب من كل
+    /// معالج كـ Return، مشغّلا `أخيرا` في طريقه، ثم
+    /// ينهي آلة المولد المعلقة بلا قيمة إرجاع.
+    Close,
     /// اكسر/تابع بلا حلقة محيطة: تُشغَّل أخيرا أولا، ثم
     /// يُرفع الخطأ بالرسالة المخزنة.
     NoLoop(&'static str),
@@ -1340,11 +1485,14 @@ struct Handler {
 }
 
 /// ك-1.2: ما تعيده خطوة تنفيذ واحدة: متابعة، أو اكتمال
-/// الدالة (ارجع).
+/// الدالة (ارجع)، أو تعليق مولد عند `ولد` (ب6: تتوقف
+/// الحلقة ويبقى الإطار — pc والمكدس والمعالجات —
+/// محفوظا في الآلة للاستئناف التالي).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StepFlow {
     Next,
     Returned,
+    Suspended,
 }
 
 /// ك-1.2: ما قرره unwind_flow: متابعة التنفيذ (قفز إلى
@@ -1364,6 +1512,13 @@ pub struct Vm {
     /// value can capture its defining chain and later calls
     /// still share it with the defining environment.
     pub env: Vec<Rc<RefCell<HashMap<String, Value>>>>,
+    // الدفعة الأخيرة DEF (البنود 77 و78): إعلانات
+    // النطاق للدالة الجارية — (عام، نطاق)؛ فارغة
+    // في المستوى الأعلى. تُضبط في child() من
+    // FunctionDef المنفَّذة؛ فالقراءة والكتابة
+    // عبر lookup/assign تتبعانها بلا عمليات جديدة.
+    pub global_names: HashSet<String>,
+    pub nonlocal_names: HashSet<String>,
     pub output: String,
     pub functions: Rc<HashMap<String, FunctionDef>>,
     /// Phase ك-1: compiled closure bodies by id (the registry
@@ -1432,6 +1587,10 @@ pub struct Vm {
     /// آخر أمر مكتمل (0 أولا؛ و1 بعد خطأ ممسوك بـ`ماعدا`).
     exit_code: Option<u8>,
     last_exit_code: u8,
+    // البند 88 — مدير السياق (الاجتماع 88 §103):
+    // الخطأ الممسوك بآخر `ماعدا` دخلت — مرآة المفسر
+    // حرفيا؛ ونسخ الدوال/الوحدات تبدأ بلا خطأ ممسوك.
+    caught_error: Option<RioError>,
     // المرحلة (ج) — التوجيه والأنابيب (اجتماعا 62
     // و63 §77 و§78): رموز مراحل آخر أنبوب تقرأها
     // `رموز_الأنبوب()` — مرآة المفسر.
@@ -1449,6 +1608,21 @@ pub struct Vm {
     // 4096 تعليمة. ترثهما VM الفرعية (دالة) من أمها.
     pub eval_deadline: Option<std::time::Instant>,
     pub eval_steps: u64,
+    // ب6 — المولدات: قيمة `ولد` المعلقة حين تتوقف
+    // هذه الآلة (تعليق لا إرجاع)؛ ويأخذها المستأنف.
+    pub yielded: Option<Value>,
+    // ب6: تفويضات `ولد من` النشطة في هذه الآلة،
+    // بموقع تعليمة الاستدعاء — فيُستأنف الفرعي نفسه
+    // عند إعادة دخول الموقع، بلا إعادة تقييم تعبيره.
+    pub delegates: HashMap<usize, Value>,
+    // ب6: أُغلقت هذه الآلة (أغلق_المولد) — تنتهي بلا
+    // قيمة إرجاع بعد تشغيل `أخيرا`.
+    pub gen_closed: bool,
+    // ب6: ترجمة دوال مفسر (بلا vm_id) عند الطلب —
+    // بمفتاح نص التصحيح (الاسم والمعاملات والجسم) —
+    // فلا تُعاد ترجمة الدالة نفسها في كل استدعاء داخل
+    // جسم مولد. مشترك (Rc) مع كل VM فرعية كـ closures.
+    pub interp_fn_cache: Rc<RefCell<HashMap<String, (FunctionDef, HashMap<u64, FunctionDef>)>>>,
 }
 
 impl Vm {
@@ -1458,6 +1632,10 @@ impl Vm {
             pc: 0,
             stack: Vec::new(),
             env: vec![Rc::new(RefCell::new(HashMap::new()))],
+            // الدفعة الأخيرة DEF (البنود 77 و78): المستوى
+            // الأعلى بلا إعلانات.
+            global_names: HashSet::new(),
+            nonlocal_names: HashSet::new(),
             output: String::new(),
             functions: Rc::new(compiled.functions),
             closures: Rc::new(RefCell::new(compiled.closures)),
@@ -1486,18 +1664,42 @@ impl Vm {
             pending_return: None,
             exit_code: None,
             last_exit_code: 0,
+            caught_error: None,
             pipe_status: Vec::new(),
             frozen: Rc::new(RefCell::new(HashSet::new())),
             namerefs: Rc::new(RefCell::new(HashMap::new())),
             started: Rc::new(crate::time::SessionClock::now()),
             eval_deadline: None,
             eval_steps: 0,
+            yielded: None,
+            delegates: HashMap::new(),
+            gen_closed: false,
+            interp_fn_cache: Rc::new(RefCell::new(HashMap::new())),
         }
     }
 
     /// Look a name up innermost-first, like the interpreter.
     fn lookup(&self, name: &str) -> Option<Value> {
         let resolved = self.resolve_name(name);
+        // الدفعة الأخيرة DEF (البنود 77 و78): إعلان
+        // النطاق للدالة الجارية يوجّه القراءة — عام
+        // من env[0] وحده، ونطاق من المحيط وحده
+        // (1..len-1)، وإلا أقرب ربط كالسابق.
+        if self.global_names.contains(&resolved) {
+            return self
+                .env
+                .first()
+                .and_then(|s| s.borrow().get(&resolved).cloned());
+        }
+        if self.nonlocal_names.contains(&resolved) {
+            let n = self.env.len();
+            for scope in self.env.iter().take(n.saturating_sub(1)).skip(1).rev() {
+                if let Some(v) = scope.borrow().get(&resolved) {
+                    return Some(v.clone());
+                }
+            }
+            return None;
+        }
         for scope in self.env.iter().rev() {
             if let Some(v) = scope.borrow().get(&resolved) {
                 return Some(v.clone());
@@ -2166,6 +2368,32 @@ impl Vm {
                 col,
             ));
         }
+        // الدفعة الأخيرة DEF (البنود 77 و78): إعلان
+        // النطاق يوجّه الكتابة — عام إلى env[0]
+        // (يُعرَّف هناك إن غاب)، ونطاق إلى أقرب
+        // ربط محيط، وغيابه خطأ عربي صريح.
+        if self.global_names.contains(&resolved) {
+            if let Some(scope) = self.env.first() {
+                scope.borrow_mut().insert(resolved, value);
+            } else {
+                self.define(&resolved, value);
+            }
+            return Ok(());
+        }
+        if self.nonlocal_names.contains(&resolved) {
+            let n = self.env.len();
+            for i in (1..n.saturating_sub(1)).rev() {
+                if self.env[i].borrow().contains_key(&resolved) {
+                    self.env[i].borrow_mut().insert(resolved, value);
+                    return Ok(());
+                }
+            }
+            return Err(RioError::runtime(
+                format!("لا يوجد ربط محيط للمتغير: {}", name),
+                line,
+                col,
+            ));
+        }
         for scope in self.env.iter().rev() {
             if scope.borrow().contains_key(&resolved) {
                 scope.borrow_mut().insert(resolved, value);
@@ -2179,6 +2407,20 @@ impl Vm {
     /// The scope index holding a name (innermost first), for
     /// in-place slot mutation (index assignment).
     fn lookup_scope_index(&self, name: &str) -> Option<usize> {
+        // الدفعة الأخيرة DEF (البنود 77 و78): كـ lookup —
+        // عام من env[0] وحده، ونطاق من المحيط وحده.
+        if self.global_names.contains(name) {
+            return self.env.first().filter(|s| s.borrow().contains_key(name)).map(|_| 0);
+        }
+        if self.nonlocal_names.contains(name) {
+            let n = self.env.len();
+            for i in (1..n.saturating_sub(1)).rev() {
+                if self.env[i].borrow().contains_key(name) {
+                    return Some(i);
+                }
+            }
+            return None;
+        }
         for (i, scope) in self.env.iter().enumerate().rev() {
             if scope.borrow().contains_key(name) {
                 return Some(i);
@@ -2189,8 +2431,13 @@ impl Vm {
 
     /// Phase ك-1: build a closure value from a ClosureDef,
     /// capturing the current scope chain (shared Rc scopes).
-    fn make_closure_value(&self, def: &ClosureDef) -> Value {
-        Value::Function {
+    fn make_closure_value(&mut self, def: &ClosureDef) -> RioResult<Value> {
+        // الدفعة الأخيرة DEF (البنود 77 و78 و109–112):
+        // إعلانات النطاق من الجسم؛ والافتراضيات
+        // تُقيَّم وقت التعريف في نطاق التعريف.
+        let (global_names, nonlocal_names) = crate::ast::collect_scope_decls(&def.body);
+        let defaults = self.eval_defaults(&def.defaults)?;
+        Ok(Value::Function {
             name: def.name.clone(),
             params: def.params.clone(),
             body: def.body.clone(),
@@ -2199,7 +2446,13 @@ impl Vm {
             return_type: def.return_type.clone(),
             captured: Some(self.env.clone()),
             vm_id: Some(def.id),
-        }
+            global_names,
+            nonlocal_names,
+            defaults,
+            vararg: def.vararg.clone(),
+            kwarg: def.kwarg.clone(),
+            type_params: def.type_params.clone(),
+        })
     }
 
     fn child(&self, func: &FunctionDef, args: Vec<Value>) -> Vm {
@@ -2212,6 +2465,10 @@ impl Vm {
             pc: 0,
             stack: Vec::new(),
             env: vec![Rc::new(RefCell::new(scope))],
+            // الدفعة الأخيرة DEF (البنود 77 و78): إعلانات
+            // الدالة المنفَّذة من تعريفها.
+            global_names: func.global_names.iter().cloned().collect(),
+            nonlocal_names: func.nonlocal_names.iter().cloned().collect(),
             output: String::new(),
             functions: Rc::clone(&self.functions),
             closures: Rc::clone(&self.closures),
@@ -2248,6 +2505,8 @@ impl Vm {
             // كالمفسر (نسخة واحدة) حرفيا.
             exit_code: None,
             last_exit_code: self.last_exit_code,
+            // البند 88: نسخة الدالة تبدأ بلا خطأ ممسوك.
+            caught_error: None,
             // الدفعة 4 — المتغيرات (اجتماع 58 §73):
             // الدالة تشارك المجمدات والمراجع وبدء
             // الجلسة مع متصلها.
@@ -2257,6 +2516,10 @@ impl Vm {
             // J3-69: الدالة ترث مهلة تنفيذ النص من أمها.
             eval_deadline: self.eval_deadline,
             eval_steps: 0,
+            yielded: None,
+            delegates: HashMap::new(),
+            gen_closed: false,
+            interp_fn_cache: Rc::clone(&self.interp_fn_cache),
         }
     }
 
@@ -2272,6 +2535,10 @@ impl Vm {
             pc: 0,
             stack: Vec::new(),
             env: vec![Rc::new(RefCell::new(HashMap::new()))],
+            // الدفعة الأخيرة DEF (البنود 77 و78): المستوى
+            // الأعلى بلا إعلانات.
+            global_names: HashSet::new(),
+            nonlocal_names: HashSet::new(),
             output: String::new(),
             functions: Rc::new(compiled.functions),
             closures: Rc::clone(&self.closures),
@@ -2303,6 +2570,8 @@ impl Vm {
             // الدفعة 1: كـ child — الوحدة ترث رمز آخر أمر.
             exit_code: None,
             last_exit_code: self.last_exit_code,
+            // البند 88: نسخة الوحدة تبدأ بلا خطأ ممسوك.
+            caught_error: None,
             // الدفعة 4 — المتغيرات (اجتماع 58 §73):
             // الوحدة تشارك المجمدات والمراجع وبدء
             // الجلسة مع أمها.
@@ -2312,6 +2581,10 @@ impl Vm {
             // J3-69: الوحدة ترث مهلة تنفيذ النص من أمها.
             eval_deadline: self.eval_deadline,
             eval_steps: 0,
+            yielded: None,
+            delegates: HashMap::new(),
+            gen_closed: false,
+            interp_fn_cache: Rc::clone(&self.interp_fn_cache),
         }
     }
 
@@ -2330,6 +2603,9 @@ impl Vm {
             pc: 0,
             stack: Vec::new(),
             env: self.env.clone(),
+            // الدفعة الأخيرة DEF: تشغيل مصدر — بلا إعلانات.
+            global_names: HashSet::new(),
+            nonlocal_names: HashSet::new(),
             output: String::new(),
             functions: Rc::new(functions),
             closures: Rc::clone(&self.closures),
@@ -2355,12 +2631,18 @@ impl Vm {
             pending_return: None,
             exit_code: None,
             last_exit_code: self.last_exit_code,
+            // البند 88: نسخة المصدر تبدأ بلا خطأ ممسوك.
+            caught_error: None,
             frozen: Rc::clone(&self.frozen),
             namerefs: Rc::clone(&self.namerefs),
             started: Rc::clone(&self.started),
             // J3-69: نسخة المصدر ترث مهلة تنفيذ النص من أمها.
             eval_deadline: self.eval_deadline,
             eval_steps: 0,
+            yielded: None,
+            delegates: HashMap::new(),
+            gen_closed: false,
+            interp_fn_cache: Rc::clone(&self.interp_fn_cache),
         }
     }
 
@@ -2381,33 +2663,233 @@ impl Vm {
         child
     }
 
-    /// مهمة 3: فحص أنواع المعاملات برسائل المفسر نفسها؛
-    /// `kind` هي «الدالة» أو «الطريقة».
-    fn check_param_types(
-        kind: &str,
-        name: &str,
-        params: &[String],
-        param_types: &[Option<String>],
-        args: &[Value],
-        line: usize,
-        col: usize,
-    ) -> RioResult<()> {
-        for (i, arg) in args.iter().enumerate() {
-            if let Some(Some(pt)) = param_types.get(i) {
-                // البند 8: الفحص بنيوي (قائمة[عدد] تفحص عناصرها).
-                if !arg.matches_declared_type(pt) {
-                    return Err(RioError::typ(
-                        format!(
-                            "نوع غير متطابق: معامل {} في {} {} معلن {}، لكن القيمة {}",
-                            params[i], kind, name, pt, arg.type_name()
-                        ),
-                        line,
-                        col,
-                    ));
-                }
+    /// البنود 109–112: ابن فرعيا يربط الربط المحلول
+    /// بالاسم (لا بالموضع) — فالجامعان يأتيان بعد
+    /// المعاملات المسماة.
+    fn child_with_bindings(&self, func: &FunctionDef, bindings: Vec<(String, Value)>) -> Vm {
+        let mut child = self.child(func, Vec::new());
+        if let Some(scope) = child.env.first() {
+            let mut s = scope.borrow_mut();
+            for (name, val) in bindings {
+                s.insert(name, val);
             }
         }
-        Ok(())
+        child
+    }
+
+    /// كـ child_closure لكن بالربط المحلول بالاسم.
+    fn child_closure_with_bindings(
+        &self,
+        func: &FunctionDef,
+        bindings: Vec<(String, Value)>,
+        captured: Vec<Rc<RefCell<HashMap<String, Value>>>>,
+    ) -> Vm {
+        let mut child = self.child_with_bindings(func, bindings);
+        let mut env = captured;
+        env.append(&mut child.env);
+        child.env = env;
+        child
+    }
+
+    /// البنود 109–112: آلة خدش تشارك بيئة هذه الآلة
+    /// (سلسلة النطاق الحالية نفسها) وجداولها وسياستها —
+    /// لتقييم تعبيرات الافتراضيات وقت التعريف.
+    fn scratch_vm(&self, compiled: CompiledProgram) -> Vm {
+        Vm {
+            code: compiled.code,
+            pc: 0,
+            stack: Vec::new(),
+            env: self.env.clone(),
+            global_names: self.global_names.clone(),
+            nonlocal_names: self.nonlocal_names.clone(),
+            output: String::new(),
+            functions: Rc::clone(&self.functions),
+            closures: Rc::clone(&self.closures),
+            program_dir: self.program_dir.clone(),
+            file_policy: Rc::clone(&self.file_policy),
+            cwd: Rc::clone(&self.cwd),
+            dir_stack: Rc::clone(&self.dir_stack),
+            cdpath: Rc::clone(&self.cdpath),
+            physical_mode: Rc::clone(&self.physical_mode),
+            loaded_modules: Rc::clone(&self.loaded_modules),
+            loading_stack: Rc::clone(&self.loading_stack),
+            return_value: None,
+            call_depth: self.call_depth,
+            server_allowed: self.server_allowed,
+            source_file: self.source_file.clone(),
+            live_output: self.live_output,
+            module_files: Rc::clone(&self.module_files),
+            loop_states: Vec::new(),
+            handlers: Vec::new(),
+            finally_stack: Vec::new(),
+            pending_flow: None,
+            pending_return: None,
+            exit_code: None,
+            last_exit_code: self.last_exit_code,
+            caught_error: None,
+            pipe_status: self.pipe_status.clone(),
+            frozen: Rc::clone(&self.frozen),
+            namerefs: Rc::clone(&self.namerefs),
+            started: Rc::clone(&self.started),
+            eval_deadline: self.eval_deadline,
+            eval_steps: self.eval_steps,
+            yielded: None,
+            delegates: HashMap::new(),
+            gen_closed: false,
+            interp_fn_cache: Rc::clone(&self.interp_fn_cache),
+        }
+    }
+
+    /// البنود 109–112: قيّم تعبيرات الافتراضيات وقت
+    /// التعريف في آلة خدش تشارك البيئة؛ وإغلاقات
+    /// التعبير تُدمَج في السجل المشترك (كـ load)،
+    /// ومخرجات الخدش تُلحَق بمخرجات هذه الآلة.
+    fn eval_defaults(
+        &mut self,
+        defaults: &[Option<Expr>],
+    ) -> RioResult<Vec<Option<Value>>> {
+        let mut out = Vec::with_capacity(defaults.len());
+        for d in defaults {
+            match d {
+                Some(e) => {
+                    let compiled = Compiler::compile_expr_program(e)?;
+                    let extra = compiled.closures.clone();
+                    self.closures.borrow_mut().extend(extra);
+                    let mut scratch = self.scratch_vm(compiled);
+                    scratch.run()?;
+                    self.output.push_str(&scratch.output);
+                    if let Some(code) = scratch.exit_code {
+                        self.exit_code = Some(code);
+                    }
+                    self.last_exit_code = scratch.last_exit_code;
+                    out.push(scratch.pop_result());
+                }
+                None => out.push(None),
+            }
+        }
+        Ok(out)
+    }
+
+    /// ب6: أنشئ مولدا من تعريف مترجم في آلة فرعية
+    /// معلقة (بلا تشغيل جسمها) — للمسارات الثلاثة
+    /// (إغلاق قيمة، وجدول دوال، وطريقة).
+    fn make_generator(
+        &self,
+        def: &FunctionDef,
+        args: Vec<Value>,
+        captured: Vec<Rc<RefCell<HashMap<String, Value>>>>,
+        name: &str,
+        return_type: &Option<String>,
+    ) -> Value {
+        let child = self.child_closure(def, args, captured);
+        register_generator(name, return_type.clone(), child)
+    }
+
+    /// ب6: نفّذ فكّ إغلاق على آلة معلقة: فكّ معالجات
+    /// `حاول` (تشغيل `أخيرا`) ثم انتهاء بلا إرجاع.
+    /// يُستدعى من close_generator بعد إخراج الآلة من
+    /// السجل؛ فإن علّق جسم `أخيرا` نفسه عند `ولد`
+    /// عاد التشغيل مع yielded معيّنة فيكشفها المتصل.
+    fn close_run(&mut self) -> RioResult<()> {
+        self.pending_flow = Some(FlowResume::Close);
+        match self.unwind_flow(1, 1)? {
+            UnwindOutcome::Continue => self.run_inner(),
+            UnwindOutcome::ReturnNow => Ok(()),
+        }
+    }
+
+    /// ب6: خطوة `ولد من` (تعليمة الاستدعاء `idx`):
+    /// أول دخول يقيّم المعامل مفوَّضا ويحفظه بموقعه؛
+    /// وإعادة الدخول (بعد تعليق) تستأنف المحفوظ بلا
+    /// إعادة تقييم. قيمة مفوَّضة تعلّق الخارجي مع
+    /// إعادة التموضع إلى الموقع نفسه؛ واستنفاد الفرعي
+    /// يدفع قيمة `ارجع` فيه نتيجة للتعبير.
+    fn step_yield_from(&mut self, idx: usize, nargs: usize, line: usize, col: usize) -> RioResult<StepFlow> {
+        let delegate = if let Some(d) = self.delegates.get(&idx).cloned() {
+            d
+        } else {
+            if self.stack.len() < nargs {
+                return Err(RioError::runtime("مكدس VM فارغ عند الاستدعاء", line, col));
+            }
+            let start = self.stack.len() - nargs;
+            let args: Vec<Value> = self.stack.drain(start..).collect();
+            let d = args.into_iter().next().unwrap_or(Value::Nil);
+            if !matches!(d, Value::Generator { .. }) {
+                return Err(RioError::typ(
+                    format!("ولد من يتطلب مولدا، وليس {}", d.type_name()),
+                    line,
+                    col,
+                ));
+            }
+            self.delegates.insert(idx, d.clone());
+            d
+        };
+        match resume_generator(self, &delegate, line, col)? {
+            GenResume::Yielded(v) => {
+                self.yielded = Some(v);
+                self.pc = idx;
+                Ok(StepFlow::Suspended)
+            }
+            GenResume::Exhausted(ret) => {
+                self.delegates.remove(&idx);
+                self.stack.push(ret);
+                Ok(StepFlow::Next)
+            }
+        }
+    }
+
+    /// ب6: أنشئ مولد تعبير توليدي من معامله الثلاثة
+    /// (دالة التعبير، دالة الشرط أو لاشيء، القابل) —
+    /// آلة فرعية بجسم اصطناعي، في سلسلة نطاق المتصل.
+    fn make_genexpr(&mut self, args: Vec<Value>, line: usize, col: usize) -> RioResult<Value> {
+        if args.len() != 3 {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة المدمجة {} تتوقع 3 معاملات لكن أعطيت {}",
+                    crate::ast::GENEXPR_CALL,
+                    args.len()
+                ),
+                line,
+                col,
+            ));
+        }
+        let mut it = args.into_iter();
+        let elem = it.next().unwrap();
+        let cond = it.next().unwrap();
+        let iterable = it.next().unwrap();
+        let has_cond = !matches!(cond, Value::Nil);
+        let body = genexpr_body(has_cond);
+        let params = vec!["__عنصر".to_string(), "__شرط".to_string(), "__قابل".to_string()];
+        let param_types = vec![None, None, None];
+        let (def, extra) = compile_function_body(&body, &params, &param_types, &None)?;
+        let mut child = self.child(&def, vec![elem, cond, iterable]);
+        let mut env = self.env.clone();
+        env.append(&mut child.env);
+        child.env = env;
+        child.closures.borrow_mut().extend(extra);
+        Ok(register_generator("تعبير مولد", None, child))
+    }
+
+    /// ب6: ترجمة دالة مفسر (قيمة بلا vm_id) عند الطلب
+    /// — لجسم مولد يستدعي دوالا عرّفها المفسر (بما فيها
+    /// لامدا التعبير التوليدي). النتيجة مخزّنة بمفتاح
+    /// نص التصحيح، وإغلاقاتها المتداخلة تُدمَج في
+    /// السجل المشترك.
+    fn compile_interp_function(&mut self, func: &Value) -> RioResult<FunctionDef> {
+        let (name, params, param_types, return_type, body) = match func {
+            Value::Function { name, params, param_types, return_type, body, .. } => {
+                (name.clone(), params.clone(), param_types.clone(), return_type.clone(), body.clone())
+            }
+            _ => unreachable!(),
+        };
+        let key = format!("{:?}", (&name, &params, &param_types, &return_type, &body));
+        if let Some((def, _)) = self.interp_fn_cache.borrow().get(&key) {
+            return Ok(def.clone());
+        }
+        let (def, extra) = compile_function_body(&body, &params, &param_types, &return_type)?;
+        self.closures.borrow_mut().extend(extra.clone());
+        self.interp_fn_cache.borrow_mut().insert(key, (def.clone(), extra));
+        Ok(def)
     }
 
     /// مهمة 3: فحص نوع الإرجاع برسائل المفسر نفسها: إن
@@ -2690,53 +3172,95 @@ impl Vm {
     /// message keeps its "في VM" suffix, like Op::Call.
     /// مهمة 3: نوع الإرجاع يُفحص هنا أيضا، برسائل
     /// المفسر نفسها.
+    /// البنود 109–112: قسّم قيم استدعاء مسحوبة من
+    /// المكدس إلى موضعية ومفتاحية — الموضعية أولا ثم
+    /// قيم المفتاحيات بترتيب أسمائها.
+    fn split_call_values(
+        all: Vec<Value>,
+        nargs: usize,
+        kwargs: &[String],
+    ) -> (Vec<Value>, Vec<(String, Value)>) {
+        let mut it = all.into_iter();
+        let mut args = Vec::with_capacity(nargs);
+        for _ in 0..nargs {
+            if let Some(v) = it.next() {
+                args.push(v);
+            }
+        }
+        let mut kw = Vec::with_capacity(kwargs.len());
+        for (k, v) in kwargs.iter().zip(it) {
+            kw.push((k.clone(), v));
+        }
+        (args, kw)
+    }
+
     fn call_closure_value(
         &mut self,
         func: Value,
         args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+        type_args: &[String],
         line: usize,
         col: usize,
     ) -> RioResult<Value> {
-        let (name, params, param_types, return_type, captured, vm_id, module) = match func {
-            Value::Function { name, params, param_types, return_type, captured, vm_id, module, .. } => {
-                (name, params, param_types, return_type, captured, vm_id, module)
+        let vm_id = match &func {
+            Value::Function { vm_id, .. } => *vm_id,
+            _ => unreachable!(),
+        };
+        let def = match vm_id {
+            Some(id) => match self.closures.borrow().get(&id) {
+                Some(d) => d.clone(),
+                None => {
+                    let fname = match &func {
+                        Value::Function { name, .. } => name.clone(),
+                        _ => unreachable!(),
+                    };
+                    return Err(RioError::runtime(
+                        format!("دالة غير معرفة في VM: {}", fname),
+                        line,
+                        col,
+                    ));
+                }
+            },
+            // ب6: قيمة دالة عرّفها المفسر (بلا vm_id) —
+            // تُترجَم عند الطلب (كلامدا التعبير التوليدي
+            // ودوال جسم مولد)، لا أن تُرفَض.
+            None => self.compile_interp_function(&func)?,
+        };
+        let (name, params, param_types, return_type, captured, module, defaults, vararg, kwarg, type_params) = match func {
+            Value::Function { name, params, param_types, return_type, captured, module, defaults, vararg, kwarg, type_params, .. } => {
+                (name, params, param_types, return_type, captured, module, defaults, vararg, kwarg, type_params)
             }
             _ => unreachable!(),
         };
-        let id = match vm_id {
-            Some(id) => id,
-            None => {
-                return Err(RioError::runtime(
-                    format!("القيمة {} ليست دالة قابلة للاستدعاء في VM", name),
-                    line,
-                    col,
-                ));
-            }
-        };
-        let def = match self.closures.borrow().get(&id) {
-            Some(d) => d.clone(),
-            None => {
-                return Err(RioError::runtime(
-                    format!("دالة غير معرفة في VM: {}", name),
-                    line,
-                    col,
-                ));
-            }
-        };
-        if args.len() != params.len() {
-            return Err(RioError::runtime(
-                format!(
-                    "عدد المعاملات غير صحيح: الدالة {} تتوقع {} لكن أعطيت {}",
-                    name,
-                    params.len(),
-                    args.len()
-                ),
-                line,
-                col,
-            ));
-        }
-        // Phase 1A Step 3 (runtime part): param types, `أي` = no check.
-        Self::check_param_types("الدالة", &name, &params, &param_types, &args, line, col)?;
+        // البنود 145–147: حلّ ربط النوع وقت الاستدعاء،
+        // واستبداله في أنواع المعاملات ونوع الإرجاع.
+        let type_binding = crate::interpreter::resolve_type_binding(
+            &type_params,
+            type_args,
+            "الدالة",
+            &name,
+            line,
+            col,
+        )?;
+        let param_types = crate::interpreter::substitute_param_types(&param_types, &type_binding);
+        let return_type = return_type
+            .map(|rt| crate::interpreter::substitute_declared_type(&rt, &type_binding));
+        // البنود 109–112: المطابقة المشتركة (عدد
+        // وافتراضيات ومفتاحيات وجامعان وأنواع).
+        let resolved = crate::interpreter::resolve_call_args(
+            &name,
+            "الدالة",
+            &params,
+            &param_types,
+            &defaults,
+            vararg.as_deref(),
+            kwarg.as_deref(),
+            args,
+            kwargs,
+            line,
+            col,
+        )?;
         // Same depth limit as the interpreter (Meeting 15).
         if self.call_depth >= crate::interpreter::MAX_CALL_DEPTH {
             return Err(RioError::runtime(
@@ -2756,7 +3280,7 @@ impl Vm {
             Some(chain) => chain,
             None => captured.unwrap_or_default(),
         };
-        let mut child_vm = self.child_closure(&def, args, captured);
+        let mut child_vm = self.child_closure_with_bindings(&def, resolved.bindings, captured);
         // اجتماع 32، السؤال الخامس: دالة وحدة تُنفَّذ
         // بملف وحدتها — فإن كانت بلا وحدة ورثت ملف أمها
         // (child_closure) كما هو.
@@ -2764,6 +3288,11 @@ impl Vm {
             if let Some(f) = self.module_files.borrow().get(m).cloned() {
                 child_vm.source_file = Some(f);
             }
+        }
+        // ب6: دالة مولد — أعد كائن مولد (آلة فرعية
+        // معلقة) بلا تشغيل جسمها.
+        if def.is_generator {
+            return Ok(register_generator(&name, return_type.clone(), child_vm));
         }
         match child_vm.run() {
             Ok(()) => {
@@ -2798,28 +3327,74 @@ impl Vm {
         func: Value,
         instance: Rc<crate::value::InstanceData>,
         args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+        type_args: &[String],
         line: usize,
         col: usize,
     ) -> RioResult<Value> {
-        let (name, params, param_types, return_type, captured, vm_id, module) = match func {
-            Value::Function { name, params, param_types, return_type, captured, vm_id, module, .. } => {
-                (name, params, param_types, return_type, captured, vm_id, module)
+        let vm_id = match &func {
+            Value::Function { vm_id, .. } => *vm_id,
+            _ => unreachable!(),
+        };
+        let def = match vm_id {
+            Some(id) => match self.closures.borrow().get(&id) {
+                Some(d) => d.clone(),
+                None => {
+                    let fname = match &func {
+                        Value::Function { name, .. } => name.clone(),
+                        _ => unreachable!(),
+                    };
+                    return Err(RioError::runtime(
+                        format!("دالة غير معرفة في VM: {}", fname),
+                        line,
+                        col,
+                    ));
+                }
+            },
+            // ب6: طريقة عرّفها المفسر (بلا vm_id) —
+            // تُترجَم عند الطلب كما في call_closure_value.
+            None => self.compile_interp_function(&func)?,
+        };
+        let (name, params, param_types, return_type, captured, module, defaults, vararg, kwarg, type_params) = match func {
+            Value::Function { name, params, param_types, return_type, captured, module, defaults, vararg, kwarg, type_params, .. } => {
+                (name, params, param_types, return_type, captured, module, defaults, vararg, kwarg, type_params)
             }
             _ => unreachable!(),
         };
-        if args.len() != params.len() {
-            return Err(RioError::runtime(
-                format!(
-                    "عدد المعاملات غير صحيح: الطريقة {} تتوقع {} لكن أعطيت {}",
-                    name,
-                    params.len(),
-                    args.len()
-                ),
-                line,
-                col,
-            ));
+        // البنود 145–147: ربط الطريقة نفسها أولا، ثم
+        // ربط الفئة المخزّن على الكائن للأسماء الباقية.
+        let mut type_binding = crate::interpreter::resolve_type_binding(
+            &type_params,
+            type_args,
+            "الطريقة",
+            &name,
+            line,
+            col,
+        )?;
+        for (k, v) in &instance.type_binding {
+            if !type_binding.iter().any(|(n, _)| n == k)
+                && !type_params.iter().any(|tp| tp.name == *k)
+            {
+                type_binding.push((k.clone(), v.clone()));
+            }
         }
-        Self::check_param_types("الطريقة", &name, &params, &param_types, &args, line, col)?;
+        let param_types = crate::interpreter::substitute_param_types(&param_types, &type_binding);
+        let return_type = return_type
+            .map(|rt| crate::interpreter::substitute_declared_type(&rt, &type_binding));
+        // البنود 109–112: المطابقة المشتركة.
+        let resolved = crate::interpreter::resolve_call_args(
+            &name,
+            "الطريقة",
+            &params,
+            &param_types,
+            &defaults,
+            vararg.as_deref(),
+            kwarg.as_deref(),
+            args,
+            kwargs,
+            line,
+            col,
+        )?;
         if self.call_depth >= crate::interpreter::MAX_CALL_DEPTH {
             return Err(RioError::runtime(
                 format!(
@@ -2830,26 +3405,6 @@ impl Vm {
                 col,
             ));
         }
-        let id = match vm_id {
-            Some(id) => id,
-            None => {
-                return Err(RioError::runtime(
-                    format!("القيمة {} ليست دالة قابلة للاستدعاء في VM", name),
-                    line,
-                    col,
-                ));
-            }
-        };
-        let def = match self.closures.borrow().get(&id) {
-            Some(d) => d.clone(),
-            None => {
-                return Err(RioError::runtime(
-                    format!("دالة غير معرفة في VM: {}", name),
-                    line,
-                    col,
-                ));
-            }
-        };
         // The method runs in its captured chain (like a
         // closure), with نفس bound in the param scope —
         // exactly like the interpreter's call_method.
@@ -2859,7 +3414,7 @@ impl Vm {
             Some(chain) => chain,
             None => captured.unwrap_or_default(),
         };
-        let mut child_vm = self.child_closure(&def, args, captured);
+        let mut child_vm = self.child_closure_with_bindings(&def, resolved.bindings, captured);
         child_vm.define("نفس", Value::Instance(instance));
         // اجتماع 32، السؤال الخامس: كـ call_closure_value —
         // طريقة وحدة تُنفَّذ بملف وحدتها.
@@ -2867,6 +3422,10 @@ impl Vm {
             if let Some(f) = self.module_files.borrow().get(m).cloned() {
                 child_vm.source_file = Some(f);
             }
+        }
+        // ب6: طريقة مولد — أعد كائن مولد بلا تشغيل جسمها.
+        if def.is_generator {
+            return Ok(register_generator(&name, return_type.clone(), child_vm));
         }
         match child_vm.run() {
             Ok(()) => {
@@ -2895,15 +3454,20 @@ impl Vm {
         &mut self,
         callee: Value,
         args: Vec<Value>,
+        kwargs: Vec<(String, Value)>,
+        type_args: &[String],
         line: usize,
         col: usize,
     ) -> RioResult<Value> {
         match callee {
-            Value::Function { .. } => self.call_closure_value(callee, args, line, col),
+            Value::Function { .. } => self.call_closure_value(callee, args, kwargs, type_args, line, col),
             Value::BoundMethod { func, instance } => {
-                self.call_method_value(*func, instance, args, line, col)
+                self.call_method_value(*func, instance, args, kwargs, type_args, line, col)
             }
-            Value::NativeFunction { func, .. } => func(self, &args, line, col),
+            Value::NativeFunction { func, .. } => {
+                crate::interpreter::reject_kwargs(&kwargs, line, col)?;
+                func(self, &args, line, col)
+            }
             other => Err(RioError::typ(
                 format!("القيمة {} ليست دالة", other.type_name()),
                 line,
@@ -3246,6 +3810,8 @@ impl Vm {
                     Value::Dict(pairs) => Value::Number(pairs.len() as f64),
                     Value::Tuple(items) => Value::Number(items.len() as f64),
                     Value::Set(items) => Value::Number(items.len() as f64),
+                    // ج6: طول البت عدد بتاته.
+                    Value::Bits(bits) => Value::Number(bits.len() as f64),
                     other => {
                         return Err(RioError::typ(
                             format!("طول يتطلب قائمة أو نصا أو قاموسا، وليس {}", other.type_name()),
@@ -3254,6 +3820,117 @@ impl Vm {
                         ));
                     }
                 })
+            }
+            // ج6: الصيغ الحرفية — مرآة call_builtin في
+            // المفسر حرفيا (الرسائل والدلالة نفسيهما).
+            "عدد_كبير" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Str(s) => match crate::value::bigint_norm(s) {
+                        Some(n) => Ok(Value::BigInt(n)),
+                        None => Err(RioError::typ(
+                            format!("عدد كبير غير صالح: {}", s),
+                            line,
+                            col,
+                        )),
+                    },
+                    Value::Number(n) => match crate::value::bigint_from_f64(*n) {
+                        Some(v) => Ok(Value::BigInt(v)),
+                        None => Err(RioError::typ(
+                            "عدد_كبير يتطلب عددا صحيحا، وليس كسرا".to_string(),
+                            line,
+                            col,
+                        )),
+                    },
+                    Value::BigInt(s) => Ok(Value::BigInt(s.clone())),
+                    other => Err(RioError::typ(
+                        format!(
+                            "عدد_كبير يتطلب نصا أو عددا، وليس {}",
+                            other.type_name()
+                        ),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "كسر" | "كسر_حرفي" => {
+                if args.is_empty() || args.len() > 2 {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة المدمجة {} تتوقع 1 أو 2 معاملات لكن أعطيت {}",
+                            name,
+                            args.len()
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+                let part = |v: &Value| -> RioResult<String> {
+                    match v {
+                        Value::Number(n) => match crate::value::bigint_from_f64(*n) {
+                            Some(s) => Ok(s),
+                            None => Err(RioError::typ(
+                                "كسر يتطلب بسطا ومقاما صحيحين".to_string(),
+                                line,
+                                col,
+                            )),
+                        },
+                        Value::BigInt(s) => Ok(s.clone()),
+                        Value::Str(s) => crate::value::bigint_norm(s).ok_or_else(|| {
+                            RioError::typ(format!("عدد كبير غير صالح: {}", s), line, col)
+                        }),
+                        other => Err(RioError::typ(
+                            format!("كسر يتطلب أعدادا صحيحة، وليس {}", other.type_name()),
+                            line,
+                            col,
+                        )),
+                    }
+                };
+                let num = part(&args[0])?;
+                let den = if args.len() == 2 {
+                    part(&args[1])?
+                } else {
+                    "1".to_string()
+                };
+                match crate::value::rat_norm(&num, &den) {
+                    Some((n, d)) => Ok(Value::Rational(n, d)),
+                    None => Err(RioError::typ(
+                        "مقام الكسر لا يمكن أن يكون صفرا".to_string(),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "مركب" | "مركب_حرفي" => {
+                if args.is_empty() || args.len() > 2 {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة المدمجة {} تتوقع 1 أو 2 معاملات لكن أعطيت {}",
+                            name,
+                            args.len()
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+                let part = |v: &Value| -> RioResult<f64> {
+                    match crate::value::value_to_complex(v) {
+                        Some((re, 0.0)) => Ok(re),
+                        Some(_) => Err(RioError::typ(
+                            "مركب يتطلب جزأين حقيقيين".to_string(),
+                            line,
+                            col,
+                        )),
+                        None => Err(RioError::typ(
+                            format!("مركب يتطلب أعدادا، وليس {}", v.type_name()),
+                            line,
+                            col,
+                        )),
+                    }
+                };
+                let re = part(&args[0])?;
+                let im = if args.len() == 2 { part(&args[1])? } else { 0.0 };
+                Ok(Value::Complex(re, im))
             }
             // الدفعة 3 من الـ579 (البنود 138 و139
             // و141–143) — مرآة call_builtin في المفسر
@@ -3447,6 +4124,19 @@ impl Vm {
                 arity(1)?;
                 match &args[0] {
                     Value::Number(n) => Ok(Value::Number(n.abs())),
+                    // ج6: مطلق الكبير/الكسر دقيق، والمركب مقداره.
+                    Value::BigInt(s) => Ok(Value::BigInt(
+                        if s.starts_with('-') { s[1..].to_string() } else { s.clone() },
+                    )),
+                    Value::Rational(n, d) => {
+                        let (nn, dd) = crate::value::rat_norm(
+                            &if n.starts_with('-') { n[1..].to_string() } else { n.clone() },
+                            d,
+                        )
+                        .unwrap_or_else(|| ("0".to_string(), "1".to_string()));
+                        Ok(Value::Rational(nn, dd))
+                    }
+                    Value::Complex(re, im) => Ok(Value::Number((re * re + im * im).sqrt())),
                     other => Err(RioError::typ(
                         format!("مطلق يتطلب عددا، وليس {}", other.type_name()),
                         line,
@@ -3459,6 +4149,30 @@ impl Vm {
                 match &args[0] {
                     Value::Number(n) => Ok(Value::Number(*n)),
                     Value::Bool(b) => Ok(Value::Number(if *b { 1.0 } else { 0.0 })),
+                    // ج6: الكبير/الكسر إلى f64، والمركب
+                    // الحقيقي الخالص إلى جزئه، والبت إلى قيمته.
+                    Value::BigInt(s) => Ok(Value::Number(crate::value::bigint_to_f64(s))),
+                    Value::Rational(n, d) => Ok(Value::Number(crate::value::rat_to_f64(
+                        &(n.clone(), d.clone()),
+                    ))),
+                    Value::Complex(re, im) => {
+                        if *im == 0.0 {
+                            Ok(Value::Number(*re))
+                        } else {
+                            Err(RioError::typ(
+                                "لا يمكن تحويل عدد مركب بتخيلي غير صفري إلى عدد".to_string(),
+                                line,
+                                col,
+                            ))
+                        }
+                    }
+                    Value::Bits(bits) => {
+                        let mut v = 0.0;
+                        for b in bits {
+                            v = v * 2.0 + if *b { 1.0 } else { 0.0 };
+                        }
+                        Ok(Value::Number(v))
+                    }
                     Value::Str(s) => {
                         let cleaned: String = s
                             .trim()
@@ -3486,6 +4200,52 @@ impl Vm {
             "نوع" => {
                 arity(1)?;
                 Ok(Value::Str(args[0].type_name().to_string()))
+            }
+            // ب6: تقدم المولد وإغلاقه — مرآة call_builtin
+            // في المفسر حرفيا (الرسائل نفسها): الاستنفاد
+            // خطأ وقت تشغيل يلتقطه `ماعدا`، لا قيمة.
+            "التالي" => {
+                arity(1)?;
+                let gname = match &args[0] {
+                    Value::Generator { name, .. } => name.clone(),
+                    _ => String::new(),
+                };
+                match resume_generator(self, &args[0], line, col)? {
+                    GenResume::Yielded(v) => Ok(v),
+                    GenResume::Exhausted(_) => Err(RioError::runtime(
+                        format!("المولد {} مستنفد — لا قيم بعد", gname),
+                        line,
+                        col,
+                    )),
+                }
+            }
+            "أغلق_المولد" => {
+                arity(1)?;
+                close_generator(self, &args[0], line, col)?;
+                Ok(Value::Nil)
+            }
+            // البند 88 — مدير السياق (الاجتماع 88 §103):
+            // مرآة call_builtin في المفسر حرفيا.
+            "__عند_افحص" => {
+                arity(1)?;
+                Value::عند_افحص(&args[0], line, col)?;
+                Ok(Value::Nil)
+            }
+            "__عند_خطأ" => {
+                arity(0)?;
+                Ok(match &self.caught_error {
+                    Some(e) => Value::عند_قاموس_خطأ(e),
+                    None => Value::Nil,
+                })
+            }
+            "__عند_أعد_رفع" => {
+                arity(1)?;
+                match &args[0] {
+                    Value::Dict(pairs) => {
+                        Err(Value::عند_خطأ_من_قاموس(pairs, line, col))
+                    }
+                    _ => Ok(Value::Nil),
+                }
             }
             _ => Err(RioError::runtime(
                 format!("دالة مدمجة غير معروفة في VM: {}", name),
@@ -6557,6 +7317,11 @@ impl Vm {
                     }
                 }
                 Ok(StepFlow::Returned) => return Ok(()),
+                // ب6: تعليق مولد عند `ولد` — تنتهي هذه
+                // الجولة ويبقى الإطار (pc والمكدس
+                // والمعالجات) محفوظا في الآلة؛ والقيمة
+                // المعلقة في `yielded` يأخذها المستأنف.
+                Ok(StepFlow::Suspended) => return Ok(()),
                 // خطأ اعترضه on_error وعولج (أعاد التموضع
                 // إلى ماعدا/أخيرا) فتواصل الحلقة؛ وإن لم
                 // يمسكه معالج فـ `?` تعيده إلى المتصل.
@@ -6654,55 +7419,23 @@ impl Vm {
                         self.stack.push(joined);
                         return Ok(StepFlow::Next);
                     }
-                    let (a, b) = match (&l, &r) {
-                        (Value::Number(a), Value::Number(b)) => (*a, *b),
-                        (Value::Str(a), Value::Str(b)) if matches!(instr.op, Op::Add) => {
-                            self.stack.push(Value::Str(format!("{}{}", a, b)));
-                            return Ok(StepFlow::Next);
-                        }
-                        // مهمة 6: جمع قائمتين يدمجهما، كما
-                        // في المفسر (ذراع الجمع وحده).
-                        (Value::List(a), Value::List(b)) if matches!(instr.op, Op::Add) => {
-                            let mut out = a.clone();
-                            out.extend(b.iter().cloned());
-                            self.stack.push(Value::List(out));
-                            return Ok(StepFlow::Next);
-                        }
-                        _ => {
-                            // مهمة 6: رسالة الجمع في المفسر
-                            // خاصة («لا يمكن جمع ...»)، وباقي
-                            // العمليات بالرسالة العامة نفسها.
-                            let msg = if matches!(instr.op, Op::Add) {
-                                format!("لا يمكن جمع {} و {}", l.type_name(), r.type_name())
-                            } else {
-                                format!(
-                                    "العملية الحسابية تتطلب عددين، وليس {} و {}",
-                                    l.type_name(),
-                                    r.type_name()
-                                )
-                            };
-                            return Err(RioError::typ(msg, line, col));
-                        }
-                    };
-                    let v = match instr.op {
-                        Op::Add => Value::Number(a + b),
-                        Op::Sub => Value::Number(a - b),
-                        Op::Mul => Value::Number(a * b),
-                        Op::Div => {
-                            if b == 0.0 {
-                                return Err(RioError::runtime("قسمة على صفر", line, col));
-                            }
-                            Value::Number(a / b)
-                        }
-                        Op::Mod => {
-                            if b == 0.0 {
-                                return Err(RioError::runtime("باقي القسمة على صفر", line, col));
-                            }
-                            Value::Number(a % b)
-                        }
-                        _ => unreachable!(),
-                    };
+                    // ج6: باقي العمليات مساعد المفسر نفسه
+                    // (كبير/كسر/مركب) — فتتطابق الرسائل.
+                    let v = crate::interpreter::Interpreter::arith_values(
+                        match instr.op {
+                            Op::Sub => crate::ast::BinOp::Sub,
+                            Op::Mul => crate::ast::BinOp::Mul,
+                            Op::Div => crate::ast::BinOp::Div,
+                            Op::Mod => crate::ast::BinOp::Mod,
+                            _ => unreachable!(),
+                        },
+                        &l,
+                        &r,
+                        line,
+                        col,
+                    )?;
                     self.stack.push(v);
+                    return Ok(StepFlow::Next);
                 }
                 Op::Eq => {
                     let r = self.pop(line, col)?;
@@ -6717,18 +7450,23 @@ impl Vm {
                 Op::Lt | Op::Gt | Op::LtEq | Op::GtEq => {
                     let r = self.pop(line, col)?;
                     let l = self.pop(line, col)?;
-                    let ord = match (&l, &r) {
-                        (Value::Number(a), Value::Number(b)) => a.partial_cmp(b),
-                        (Value::Str(a), Value::Str(b)) => Some(a.cmp(b)),
-                        _ => {
+                    // ج6: الترتيب المشترك (مفسر + آلة).
+                    let ord = match crate::interpreter::Interpreter::compare_values(
+                        &l, &r, line, col,
+                    )? {
+                        Some(ord) => ord,
+                        None => {
                             return Err(RioError::typ(
-                                format!("المقارنة تتطلب عددين أو نصين، وليس {} و {}", l.type_name(), r.type_name()),
+                                format!(
+                                    "المقارنة تتطلب عددين أو نصين، وليس {} و {}",
+                                    l.type_name(),
+                                    r.type_name()
+                                ),
                                 line,
                                 col,
                             ));
                         }
                     };
-                    let ord = ord.ok_or_else(|| RioError::runtime("مقارنة غير صالحة", line, col))?;
                     let b = match instr.op {
                         Op::Lt => ord == std::cmp::Ordering::Less,
                         Op::Gt => ord == std::cmp::Ordering::Greater,
@@ -6763,16 +7501,10 @@ impl Vm {
                     }
                 }
                 Op::Neg => {
-                    match self.pop(line, col)? {
-                        Value::Number(n) => self.stack.push(Value::Number(-n)),
-                        other => {
-                            return Err(RioError::typ(
-                                format!("السالب يتطلب عددا، وليس {}", other.type_name()),
-                                line,
-                                col,
-                            ));
-                        }
-                    }
+                    // ج6: السالب المشترك (عدد/كبير/كسر/مركب).
+                    let v = self.pop(line, col)?;
+                    let neg = crate::interpreter::Interpreter::neg_value(&v, line, col)?;
+                    self.stack.push(neg);
                 }
                 Op::Jump(target) => {
                     self.pc = target;
@@ -6947,6 +7679,30 @@ impl Vm {
                                     )
                                 })?
                         }
+                        // ج6: فهرسة البت — عدد 0/1 بالموضع.
+                        (Value::Bits(bits), Value::Number(x)) => {
+                            if x.fract() != 0.0 || *x < 0.0 {
+                                return Err(RioError::typ(
+                                    "فهرس البت يجب أن يكون عددا صحيحا",
+                                    idx_line,
+                                    idx_col,
+                                ));
+                            }
+                            let i = *x as usize;
+                            bits.get(i)
+                                .map(|b| Value::Number(if *b { 1.0 } else { 0.0 }))
+                                .ok_or_else(|| {
+                                    RioError::runtime(
+                                        format!(
+                                            "فهرس خارج النطاق: {} والبت طوله {}",
+                                            i,
+                                            bits.len()
+                                        ),
+                                        idx_line,
+                                        idx_col,
+                                    )
+                                })?
+                        }
                         _ => {
                             return Err(RioError::typ(
                                 format!(
@@ -7055,12 +7811,14 @@ impl Vm {
                         }
                     }
                 }
-                Op::Builtin { name, nargs: n, callee_line, callee_col } => {
-                    if self.stack.len() < n {
+                Op::Builtin { name, nargs: n, kwargs, callee_line, callee_col } => {
+                    let total = n + kwargs.len();
+                    if self.stack.len() < total {
                         return Err(RioError::runtime("مكدس VM فارغ عند استدعاء دالة مدمجة", line, col));
                     }
-                    let start = self.stack.len() - n;
-                    let args: Vec<Value> = self.stack.drain(start..).collect();
+                    let start = self.stack.len() - total;
+                    let all: Vec<Value> = self.stack.drain(start..).collect();
+                    let (args, kwarg_values) = Self::split_call_values(all, n, &kwargs);
                     // Resolution order, like the interpreter: a
                     // name bound in the environment wins over the
                     // builtin. مهمة 4: إن كانت القيمة المربوطة
@@ -7074,7 +7832,7 @@ impl Vm {
                             Value::Function { .. }
                             | Value::BoundMethod { .. }
                             | Value::NativeFunction { .. } => {
-                                let result = self.call_value(v, args, line, col)?;
+                                let result = self.call_value(v, args, kwarg_values, &[], line, col)?;
                                 self.stack.push(result);
                                 return Ok(StepFlow::Next);
                             }
@@ -7098,7 +7856,9 @@ impl Vm {
                         }
                     }
                     // مهمة 5: ملف/ادخل → call_file_builtin؛
-                    // خالصة → call_pure_builtin.
+                    // خالصة → call_pure_builtin. المدمجات
+                    // ترفض المفتاحيات (البنود 109–112).
+                    crate::interpreter::reject_kwargs(&kwarg_values, line, col)?;
                     let result = if is_pure_builtin(&name) {
                         self.call_pure_builtin(&name, args, line, col)?
                     } else {
@@ -7106,12 +7866,47 @@ impl Vm {
                     };
                     self.stack.push(result);
                 }
-                Op::Call { name, nargs: n, callee_line, callee_col } => {
-                    if self.stack.len() < n {
+                Op::Call { name, nargs: n, kwargs, callee_line, callee_col, type_args } => {
+                    // البنود 145–147: استدعاء مخصَّص لمدمجة
+                    // بالاسم (طول[عدد]) زائد لا مجهول.
+                    if !type_args.is_empty() && (is_pure_builtin(&name) || is_file_builtin(&name)) && self.lookup(&name).is_none() {
+                        crate::interpreter::resolve_type_binding(&[], type_args.as_slice(), "الدالة", &name, line, col)?;
+                    }
+                    // ب6: الاستدعاءات الداخلية للتوليد — تعترض
+                    // هنا قبل أي بحث في النطاق.
+                    if name == crate::ast::YIELD_CALL {
+                        let total = n + kwargs.len();
+                        if self.stack.len() < total {
+                            return Err(RioError::runtime("مكدس VM فارغ عند الاستدعاء", line, col));
+                        }
+                        let start = self.stack.len() - total;
+                        let args: Vec<Value> = self.stack.drain(start..).collect();
+                        let v = args.into_iter().next().unwrap_or(Value::Nil);
+                        self.yielded = Some(v);
+                        self.stack.push(Value::Nil);
+                        return Ok(StepFlow::Suspended);
+                    }
+                    if name == crate::ast::YIELD_FROM_CALL {
+                        return self.step_yield_from(idx, n, line, col);
+                    }
+                    if name == crate::ast::GENEXPR_CALL {
+                        let total = n + kwargs.len();
+                        if self.stack.len() < total {
+                            return Err(RioError::runtime("مكدس VM فارغ عند الاستدعاء", line, col));
+                        }
+                        let start = self.stack.len() - total;
+                        let args: Vec<Value> = self.stack.drain(start..).collect();
+                        let gen = self.make_genexpr(args, line, col)?;
+                        self.stack.push(gen);
+                        return Ok(StepFlow::Next);
+                    }
+                    let total = n + kwargs.len();
+                    if self.stack.len() < total {
                         return Err(RioError::runtime("مكدس VM فارغ عند الاستدعاء", line, col));
                     }
-                    let start = self.stack.len() - n;
-                    let args: Vec<Value> = self.stack.drain(start..).collect();
+                    let start = self.stack.len() - total;
+                    let all: Vec<Value> = self.stack.drain(start..).collect();
+                    let (args, kwarg_values) = Self::split_call_values(all, n, &kwargs);
                     // Phase ك-1: env-first, like the interpreter.
                     // A closure value bound in the environment
                     // wins over the compiled table, so nested
@@ -7120,22 +7915,24 @@ impl Vm {
                     if let Some(v) = self.lookup(&name) {
                         match v {
                             Value::BoundMethod { func, instance } => {
-                                let result = self.call_method_value(
-                                    *func, instance, args, line, col,
-                                )?;
+                                let result = self.call_method_value(*func, instance, args, kwarg_values, type_args.as_slice(), line, col)?;
                                 self.stack.push(result);
                                 return Ok(StepFlow::Next);
                             }
                             Value::Function { .. } => {
                                 let result =
-                                    self.call_closure_value(v, args, line, col)?;
+                                    self.call_closure_value(v, args, kwarg_values, type_args.as_slice(), line, col)?;
                                 self.stack.push(result);
                                 return Ok(StepFlow::Next);
                             }
                             // مهمة 4: دالة أصلية مستوردة بالاسم
                             // (من رياضيات استورد جذر) — تُستدعى
                             // بالمؤشر مباشرة، كما في المفسر.
-                            Value::NativeFunction { func, .. } => {
+                            Value::NativeFunction { name: fname, func, .. } => {
+                                // البنود 145–147: المدمجة بلا
+                                // معاملات نوع — فأي تخصيص زائد.
+                                crate::interpreter::resolve_type_binding(&[], type_args.as_slice(), "الدالة", fname.as_str(), line, col)?;
+                                crate::interpreter::reject_kwargs(&kwarg_values, line, col)?;
                                 let result = func(self, &args, line, col)?;
                                 self.stack.push(result);
                                 return Ok(StepFlow::Next);
@@ -7179,26 +7976,34 @@ impl Vm {
                             ));
                         }
                     };
-                    if func.params.len() != n {
-                        return Err(RioError::runtime(
-                            format!(
-                                "الدالة {} تتوقع {} معاملات لكن أعطيت {}",
-                                name,
-                                func.params.len(),
-                                n
-                            ),
-                            line,
-                            col,
-                        ));
-                    }
-                    // مهمة 3: أنواع المعاملات كما في المفسر
-                    // (كانت تُفحص لإغلاقات القيم فقط).
-                    Self::check_param_types(
+                    // البنود 109–112: مسار الجدول الاحتياطي
+                    // (استدعاء أمامي — المفسر يرفضه أصلا):
+                    // الافتراضيات تُقيَّم وقت الاستدعاء في
+                    // بيئة المتصل، ثم المطابقة المشتركة.
+                    // البنود 145–147: حلّ ربط النوع أولا،
+                    // واستبداله في أنواع المعاملات والإرجاع.
+                    let type_binding = crate::interpreter::resolve_type_binding(
+                        &func.type_params,
+                        type_args.as_slice(),
                         "الدالة",
                         &name,
+                        line,
+                        col,
+                    )?;
+                    let param_types = crate::interpreter::substitute_param_types(&func.param_types, &type_binding);
+                    let return_type = func.return_type.clone()
+                        .map(|rt| crate::interpreter::substitute_declared_type(&rt, &type_binding));
+                    let default_values = self.eval_defaults(&func.defaults)?;
+                    let resolved = crate::interpreter::resolve_call_args(
+                        &name,
+                        "الدالة",
                         &func.params,
-                        &func.param_types,
-                        &args,
+                        &param_types,
+                        &default_values,
+                        func.vararg.as_deref(),
+                        func.kwarg.as_deref(),
+                        args,
+                        kwarg_values,
                         line,
                         col,
                     )?;
@@ -7213,7 +8018,7 @@ impl Vm {
                             col,
                         ));
                     }
-                    let mut child_vm = self.child(&func, args);
+                    let mut child_vm = self.child_with_bindings(&func, resolved.bindings);
                     match child_vm.run() {
                         Ok(()) => {
                             self.output.push_str(&child_vm.output);
@@ -7228,7 +8033,7 @@ impl Vm {
                             Self::check_return_type(
                                 "الدالة",
                                 &name,
-                                &func.return_type,
+                                &return_type,
                                 returned,
                                 &ret,
                                 line,
@@ -7323,6 +8128,11 @@ impl Vm {
                     }
                     for (mname, id) in &def.own_method_ids {
                         if let Some(fdef) = def.methods.get(mname) {
+                            // الدفعة الأخيرة DEF (البنود
+                            // 109–112): افتراضيات الطريقة
+                            // تُقيَّم وقت تعريف الفئة في نطاق
+                            // التعريف.
+                            let m_defaults = self.eval_defaults(&fdef.defaults)?;
                             methods.insert(
                                 mname.clone(),
                                 Value::Function {
@@ -7339,6 +8149,14 @@ impl Vm {
                                     return_type: fdef.return_type.clone(),
                                     captured: Some(self.env.clone()),
                                     vm_id: Some(*id),
+                                    // الدفعة الأخيرة DEF: إعلانات
+                                    // وجامعان من تعريف الطريقة.
+                                    global_names: fdef.global_names.clone(),
+                                    nonlocal_names: fdef.nonlocal_names.clone(),
+                                    defaults: m_defaults,
+                                    vararg: fdef.vararg.clone(),
+                                    kwarg: fdef.kwarg.clone(),
+                                    type_params: fdef.type_params.clone(),
                                 },
                             );
                         }
@@ -7348,6 +8166,7 @@ impl Vm {
                         methods,
                         base: base_data,
                         interfaces: def.interfaces.clone(),
+                        type_params: def.type_params.clone(),
                     });
                     self.define(&def.name, Value::Class(class_data));
                 }
@@ -7436,12 +8255,14 @@ impl Vm {
                         }
                     }
                 }
-                Op::Create(class_name, n) => {
-                    if self.stack.len() < n {
+                Op::Create { class: class_name, nargs: n, kwargs, type_args } => {
+                    let total = n + kwargs.len();
+                    if self.stack.len() < total {
                         return Err(RioError::runtime("مكدس VM فارغ عند الإنشاء", line, col));
                     }
-                    let start = self.stack.len() - n;
-                    let args: Vec<Value> = self.stack.drain(start..).collect();
+                    let start = self.stack.len() - total;
+                    let all: Vec<Value> = self.stack.drain(start..).collect();
+                    let (args, kwarg_values) = Self::split_call_values(all, n, &kwargs);
                     let class_data = match self.lookup(&class_name) {
                         Some(Value::Class(data)) => Rc::clone(&data),
                         Some(other) => {
@@ -7459,9 +8280,20 @@ impl Vm {
                             ));
                         }
                     };
+                    // البنود 145–147: الربط يُحلّ ويُخزَّن وقت
+                    // الإنشاء — قبل المنشئ ليراه.
+                    let type_binding = crate::interpreter::resolve_type_binding(
+                        &class_data.type_params,
+                        type_args.as_slice(),
+                        "الفئة",
+                        &class_data.name,
+                        line,
+                        col,
+                    )?;
                     let instance = Rc::new(crate::value::InstanceData {
                         class: Rc::clone(&class_data),
                         fields: std::cell::RefCell::new(HashMap::new()),
+                        type_binding,
                     });
                     // Constructor: a method named أنشئ, if present
                     // (own or inherited via the base chain),
@@ -7471,18 +8303,20 @@ impl Vm {
                             func,
                             Rc::clone(&instance),
                             args,
+                            kwarg_values,
+                            &[],
                             line,
                             col,
                         );
                         // The constructor's return value is
                         // discarded, like in the interpreter.
                         let _ = result?;
-                    } else if !args.is_empty() {
+                    } else if !args.is_empty() || !kwarg_values.is_empty() {
                         return Err(RioError::runtime(
                             format!(
                                 "الفئة {} ليس لها منشئ أنشئ، لكن أعطيت {} معاملات",
                                 class_data.name,
-                                args.len()
+                                args.len() + kwarg_values.len()
                             ),
                             line,
                             col,
@@ -7490,21 +8324,24 @@ impl Vm {
                     }
                     self.stack.push(Value::Instance(instance));
                 }
-                Op::CallDotMethod { name, var, nargs } => {
+                Op::CallDotMethod { name, var, nargs, kwargs } => {
                     // مهمة 3: استدعاء عبر نقطة مباشرة. المكدس
                     // عند الدخول: [معامل1، ...، معاملN،
                     // الهدف] (المعاملات قُيّمت أولا، كما في
                     // المفسر). نص/قائمة ← طريقة مدمجة؛ كائن
                     // ← حقل أولا ثم طريقة؛ غيرهما ← خطأ
                     // الوصول بالنقطة نفسه في المفسر.
-                    if self.stack.len() < nargs + 1 {
+                    let total = nargs + kwargs.len();
+                    if self.stack.len() < total + 1 {
                         return Err(RioError::runtime("مكدس VM فارغ عند استدعاء طريقة", line, col));
                     }
                     let target = self.pop(line, col)?;
-                    let start = self.stack.len() - nargs;
-                    let args: Vec<Value> = self.stack.drain(start..).collect();
+                    let start = self.stack.len() - total;
+                    let all: Vec<Value> = self.stack.drain(start..).collect();
+                    let (args, kwarg_values) = Self::split_call_values(all, nargs, &kwargs);
                     match target {
                         Value::Str(_) | Value::List(_) | Value::Tuple(_) | Value::Set(_) => {
+                            crate::interpreter::reject_kwargs(&kwarg_values, line, col)?;
                             let result = self.call_builtin_method_vm(
                                 target,
                                 &name,
@@ -7524,13 +8361,15 @@ impl Vm {
                             let field = data.fields.borrow().get(&name).cloned();
                             if let Some(callee) = field {
                                 let result =
-                                    self.call_value(callee, args, line, col)?;
+                                    self.call_value(callee, args, kwarg_values, &[], line, col)?;
                                 self.stack.push(result);
                             } else if let Some(func) = data.class.lookup_method(&name) {
                                 let result = self.call_method_value(
                                     func,
                                     Rc::clone(&data),
                                     args,
+                                    kwarg_values,
+                                    &[],
                                     line,
                                     col,
                                 )?;
@@ -7557,6 +8396,8 @@ impl Vm {
                                     let result = self.call_value(
                                         callee.clone(),
                                         args,
+                                        kwarg_values,
+                                        &[],
                                         line,
                                         col,
                                     )?;
@@ -7590,7 +8431,7 @@ impl Vm {
                     // Phase ك-1: a Lambda expression — push the
                     // closure value (capturing the current scope
                     // chain) onto the stack.
-                    let v = self.make_closure_value(&def);
+                    let v = self.make_closure_value(&def)?;
                     self.stack.push(v);
                 }
                 Op::DefineClosure(def) => {
@@ -7599,22 +8440,24 @@ impl Vm {
                     // innermost scope, like the interpreter's
                     // define_local. The value is NOT left on the
                     // stack (a definition is a statement).
-                    let v = self.make_closure_value(&def);
+                    let v = self.make_closure_value(&def)?;
                     // الدفعة 4 — المتغيرات (اجتماع 58
                     // §73): إعادة تعريف اسم مجمد مرفوضة.
                     self.check_not_frozen(&def.name, line, col)?;
                     self.define(&def.name, v);
                 }
-                Op::CallValue { nargs: n, callee_line, callee_col } => {
+                Op::CallValue { nargs: n, kwargs, callee_line, callee_col, type_args } => {
                     // Phase ك-1: first-class callee. Stack at
                     // entry: [arg1, ..., argN, callee] (args were
                     // compiled first, matching the interpreter).
-                    if self.stack.len() < n + 1 {
+                    let total = n + kwargs.len();
+                    if self.stack.len() < total + 1 {
                         return Err(RioError::runtime("مكدس VM فارغ عند الاستدعاء", line, col));
                     }
                     let callee = self.pop(line, col)?;
-                    let start = self.stack.len() - n;
-                    let args: Vec<Value> = self.stack.drain(start..).collect();
+                    let start = self.stack.len() - total;
+                    let all: Vec<Value> = self.stack.drain(start..).collect();
+                    let (args, kwarg_values) = Self::split_call_values(all, n, &kwargs);
                     // مهمة 6: المستدعى غير الدالة خطأ بموضع
                     // تعبير المستدعى نفسه، كما في المفسر — قبل
                     // call_value، فهي تبلِّغ بموضع التعليمة.
@@ -7630,7 +8473,7 @@ impl Vm {
                             callee_col,
                         ));
                     }
-                    let result = self.call_value(callee, args, line, col)?;
+                    let result = self.call_value(callee, args, kwarg_values, type_args.as_slice(), line, col)?;
                     self.stack.push(result);
                 }
                 Op::Import { module, alias, names } => {
@@ -7675,37 +8518,71 @@ impl Vm {
                 }
                 Op::ForSetup { var, end_pc } => {
                     let iterable = self.pop(line, col)?;
-                    let items: Vec<Value> = match iterable.iterable_items() {
-                        Some(items) => items,
-                        None => {
-                            return Err(RioError::typ(
-                                format!("لا يمكن التكرار على نوع {}", iterable.type_name()),
-                                line,
-                                col,
-                            ));
-                        }
-                    };
-                    self.loop_states.push(LoopState::For {
-                        items,
-                        index: 0,
-                        var: var.clone(),
-                        end_pc,
-                        continue_pc: idx + 1,
-                    });
+                    // ب6: التكرار على مولد — تُستأنف القيم
+                    // واحدة واحدة؛ والاستنفاد ينهي الحلقة
+                    // بصمت في ForNext (لا خطأ).
+                    if let Value::Generator { .. } = &iterable {
+                        self.loop_states.push(LoopState::Gen {
+                            gen: iterable,
+                            var: var.clone(),
+                            end_pc,
+                            continue_pc: idx + 1,
+                        });
+                    } else {
+                        let items: Vec<Value> = match iterable.iterable_items() {
+                            Some(items) => items,
+                            None => {
+                                return Err(RioError::typ(
+                                    format!("لا يمكن التكرار على نوع {}", iterable.type_name()),
+                                    line,
+                                    col,
+                                ));
+                            }
+                        };
+                        self.loop_states.push(LoopState::For {
+                            items,
+                            index: 0,
+                            var: var.clone(),
+                            end_pc,
+                            continue_pc: idx + 1,
+                        });
+                    }
                 }
                 Op::ForNext(target) => {
-                    let next = match self.loop_states.last_mut() {
-                        Some(LoopState::For { items, index, var, .. }) => {
-                            if *index >= items.len() {
-                                None
-                            } else {
-                                let item = items[*index].clone();
-                                let name = var.clone();
-                                *index += 1;
-                                Some((name, item))
-                            }
+                    // ب6: مولد — خذ نسخته أولا (بلا استعارة
+                    // باقية على الحالات)، ثم استأنفه؛ فـ
+                    // `run()` على آلة المولد قد يستأنف
+                    // مولدا آخر. الاستنفاد ينهي الحلقة بصمت.
+                    let gen_step = match self.loop_states.last() {
+                        Some(LoopState::Gen { gen, var, .. }) => {
+                            Some((gen.clone(), var.clone()))
                         }
                         _ => None,
+                    };
+                    let next = match gen_step {
+                        Some((gen, name)) => {
+                            if generator_exhausted(&gen) {
+                                None
+                            } else {
+                                match resume_generator(self, &gen, line, col)? {
+                                    GenResume::Yielded(v) => Some((name, v)),
+                                    GenResume::Exhausted(_) => None,
+                                }
+                            }
+                        }
+                        None => match self.loop_states.last_mut() {
+                            Some(LoopState::For { items, index, var, .. }) => {
+                                if *index >= items.len() {
+                                    None
+                                } else {
+                                    let item = items[*index].clone();
+                                    let name = var.clone();
+                                    *index += 1;
+                                    Some((name, item))
+                                }
+                            }
+                            _ => None,
+                        },
                     };
                     match next {
                         Some((name, item)) => self.define(&name, item),
@@ -7794,6 +8671,7 @@ impl Vm {
                 Op::Break => {
                     let end_pc = match self.loop_states.last() {
                         Some(LoopState::For { end_pc, .. })
+                        | Some(LoopState::Gen { end_pc, .. })
                         | Some(LoopState::Count { end_pc, .. })
                         | Some(LoopState::While { end_pc, .. }) => *end_pc,
                         None => usize::MAX,
@@ -7813,6 +8691,7 @@ impl Vm {
                 Op::Continue => {
                     let target_pc = match self.loop_states.last() {
                         Some(LoopState::For { continue_pc, .. })
+                        | Some(LoopState::Gen { continue_pc, .. })
                         | Some(LoopState::Count { continue_pc, .. })
                         | Some(LoopState::While { continue_pc, .. }) => *continue_pc,
                         None => usize::MAX,
@@ -7877,6 +8756,11 @@ impl Vm {
                         // البندان 138 و139 — مرآة المفسر.
                         (item, Value::Tuple(items)) => items.iter().any(|x| x == item),
                         (item, Value::Set(items)) => items.iter().any(|x| x == item),
+                        // ج6: العضوية في بت — العدد 0 أو 1 فقط.
+                        (Value::Number(x), Value::Bits(bits)) => {
+                            (*x == 0.0 || *x == 1.0)
+                                && bits.iter().any(|b| *b == (*x == 1.0))
+                        }
                         (Value::Str(needle), Value::Str(hay)) => {
                             hay.contains(needle.as_str())
                         }
@@ -7941,6 +8825,9 @@ impl Vm {
                 // يُضبط قبل جسم ماعدا، فتقرأه
                 // `رمز_الخروج()` داخله.
                 self.last_exit_code = 1;
+                // البند 88: الخطأ الممسوك نفسه — مرآة
+                // المفسر حرفيا.
+                self.caught_error = Some(e.clone());
                 self.handlers.push(Handler {
                     except_pc: None,
                     finally_pc: h.finally_pc,
@@ -7992,7 +8879,7 @@ impl Vm {
                 None => return self.perform_flow(flow, line, col),
             };
             let escapes = match &flow {
-                FlowResume::Return | FlowResume::NoLoop(_) | FlowResume::Exit(_) => true,
+                FlowResume::Return | FlowResume::NoLoop(_) | FlowResume::Exit(_) | FlowResume::Close => true,
                 FlowResume::Break { .. } | FlowResume::Continue { .. } => {
                     handler.loop_depth >= self.loop_states.len()
                 }
@@ -8044,9 +8931,582 @@ impl Vm {
                 self.exit_code = Some(code);
                 Ok(UnwindOutcome::ReturnNow)
             }
+            // ب6: إغلاق مولد — تنتهي آلته المعلقة بلا
+            // قيمة إرجاع بعد تشغيل `أخيرا` كلها.
+            FlowResume::Close => {
+                self.gen_closed = true;
+                Ok(UnwindOutcome::ReturnNow)
+            }
             FlowResume::NoLoop(msg) => Err(RioError::runtime(msg, line, col)),
         }
     }
+}
+
+/// ب6 — المولدات (الاجتماع 85 §100): سجل المولدات
+/// وحالته، والاستئناف والإغلاق والتعبير التوليدي.
+///
+/// النموذج: تعاوني أحادي الخيط — المولد آلة بايت كود
+/// فرعية معلقة (Vm): استدعاء دالة مولد ينشئها بلا
+/// تشغيل؛ و`التالي` يشغّلها حتى `ولد` التالية أو
+/// انتهاء الجسم؛ و`أغلق_المولد` يفكّها عبر `أخيرا`.
+/// القيمة نفسها (Value::Generator) تحمل معرفا واسما
+/// فقط؛ والحالة كلها هنا، فيُنسَخ المعرف كأي قيمة.
+/// لا خيوط من نيفا أبدا.
+///
+/// القيد الموثق: مولد مهمل بلا إغلاق لا تُشغَّل
+/// `أخيرا` فيه (لا جامع نهائي يستدعي الإغلاق).
+/// وقيد آخر: جسم مولد يعدّل حقول كائن مشترك (Rc)
+/// قبل `ولد` — التعديل يبقى (بلا لقطة للحقول)؛ أما
+/// المتغيرات والقوائم ففي نطاقات الآلة المعلقة نفسها
+/// فتبقى صحيحة بين التقدمات.
+
+// ---------- سجل المولدات ----------
+
+/// حالة مولد: جديد (لم يبدأ)، معلق (عند `ولد`)،
+/// مستنفد (انتهى الجسم أو أخطأ)، مغلق (أغلق_المولد).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenStatus {
+    New,
+    Suspended,
+    Exhausted,
+    Closed,
+}
+
+/// ما يعيده تقدم مولد: قيمة مولدة، أو انتهاء مع
+/// قيمة `ارجع` (لاشيء بلا ارجع).
+#[derive(Debug, Clone)]
+pub enum GenResume {
+    Yielded(Value),
+    Exhausted(Value),
+}
+
+struct GenEntry {
+    name: String,
+    status: GenStatus,
+    vm: Option<Box<Vm>>,
+    return_type: Option<String>,
+    running: bool,
+}
+
+static NEXT_GEN_ID: AtomicU64 = AtomicU64::new(1);
+/// عمق الاستئنافات المتداخلة (مولد يستأنف مولدا
+/// آخر من جسمه) — يحرس حد عمق الاستدعاء نفسه، فلا
+/// ينهار مكدس راست بسلسلة تقدمات لا نهائية.
+static GEN_RESUME_DEPTH: AtomicU64 = AtomicU64::new(0);
+
+// ب6 — سجل المولدات محلي للخيط (thread_local)، لا
+// ثابت عام: الإطار المعلق آلة فرعية تحمل `Rc` غير
+// قابلة للإرسال (سلسلة النطاقات وسياسة الملفات
+// والمجلد)، فوضعه في `Mutex` ثابت كان يفرض `Send`
+// على `Vm` كلها. النموذج تعاوني أحادي الخيط، فكل
+// إنشاء واستئناف وإغلاق يجري على خيط المحرك نفسه؛
+// والسجل لا يعبر الخيوط أبدا. والإطار المخزَّن نفسه
+// ليس «الجلسة كلها»: آلة فرعية (pc ومكدس ونطاقات
+// ومعالجات) تشارك مقابض الجلسة بـ`Rc`، لا تنسخها.
+thread_local! {
+    static GEN_REG: RefCell<HashMap<u64, GenEntry>> = RefCell::new(HashMap::new());
+}
+
+/// ب6: نفّذ عملا على سجل المولدات. كل استعارة محصورة
+/// في الاستدعاء — لا استعارة تعبر `run()` (فاستئناف
+/// مولد من جسم مولد آخر يعيد دخول السجل).
+fn with_gen_registry<R>(f: impl FnOnce(&mut HashMap<u64, GenEntry>) -> R) -> R {
+    GEN_REG.with(|r| f(&mut r.borrow_mut()))
+}
+
+/// ب6: سجّل آلة مولد جديدة، وأعد قيمتها.
+pub fn register_generator(name: &str, return_type: Option<String>, vm: Vm) -> Value {
+    let id = NEXT_GEN_ID.fetch_add(1, Ordering::Relaxed);
+    with_gen_registry(|reg| {
+        reg.insert(
+            id,
+            GenEntry { name: name.to_string(), status: GenStatus::New, vm: Some(Box::new(vm)), return_type, running: false },
+        )
+    });
+    Value::Generator { id, name: name.to_string() }
+}
+
+/// ب6: ترجمة جسم دالة (من قيمة مفسر بلا vm_id، أو
+/// لجسم اصطناعي) إلى تعريف بايت كود + إغلاقاته
+/// المتداخلة — بلا تشغيل. المترجم جديد فارغ: قرار
+/// استدعاء/مدمجة وقت الترجمة لا يحتاج جدول دوال
+/// البرنامج (كل اسم غير معروف استدعاء عادي يُحلّ
+/// وقت التشغيل من النطاق أولا).
+pub fn compile_function_body(
+    body: &[Stmt],
+    params: &[String],
+    param_types: &[Option<String>],
+    return_type: &Option<String>,
+) -> RioResult<(FunctionDef, HashMap<u64, FunctionDef>)> {
+    let mut sub = Compiler::new();
+    for s in body {
+        sub.compile_stmt(s)?;
+    }
+    let code = std::mem::take(&mut sub.code);
+    let (global_names, nonlocal_names) = crate::ast::collect_scope_decls(body);
+    let def = FunctionDef {
+        params: params.to_vec(),
+        param_types: param_types.to_vec(),
+        return_type: return_type.clone(),
+        code,
+        is_generator: crate::ast::body_has_yield(body),
+        // الدفعة الأخيرة DEF: مسار الجسر (قيم مفسر بلا
+        // vm_id) — بلا افتراضيات هنا؛ القيمة نفسها تحملها.
+        defaults: vec![None; params.len()],
+        vararg: None,
+        kwarg: None,
+        global_names,
+        nonlocal_names,
+        // البنود 145–147: مسار الجسر بلا معاملات نوع
+        // (القيمة نفسها تحملها).
+        type_params: Vec::new(),
+    };
+    Ok((def, sub.closures))
+}
+
+fn gen_name_of(gen: &Value) -> Option<(u64, String)> {
+    match gen {
+        Value::Generator { id, name } => Some((*id, name.clone())),
+        _ => None,
+    }
+}
+
+/// ب6: قدّم مولدا قيمة واحدة. يرفع خطأ الاستنفاد
+/// («المولد {name} مستنفد») عند النهاية، وخطأ
+/// التداخل («... قيد التنفيذ») عند الاستئناف وهو
+/// يعمل، وخطأ النوع لغير مولد. مخرجات الجسم أثناء
+/// التقدم تُلحَق بمخرجات المتصل بالترتيب؛ وخطأ داخل
+/// الجسم ينتشر ويستنفد المولد؛ و`خروج()` داخله تثبّت
+/// رمزها في المتصل.
+pub fn resume_generator(
+    caller: &mut dyn crate::stdlib::HandlerCaller,
+    gen: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<GenResume> {
+    let (id, name) = match gen_name_of(gen) {
+        Some(p) => p,
+        None => {
+            return Err(RioError::typ(
+                format!("التالي يتطلب مولدا، وليس {}", gen.type_name()),
+                line,
+                col,
+            ));
+        }
+    };
+    let depth = GEN_RESUME_DEPTH.fetch_add(1, Ordering::SeqCst);
+    if depth >= crate::interpreter::MAX_CALL_DEPTH as u64 {
+        GEN_RESUME_DEPTH.fetch_sub(1, Ordering::SeqCst);
+        return Err(RioError::runtime(
+            format!(
+                "تجاوز حد عمق الاستدعاء ({}). أوقف الاستدعاء الذاتي أو قلل عمقه",
+                crate::interpreter::MAX_CALL_DEPTH
+            ),
+            line,
+            col,
+        ));
+    }
+    let out = resume_generator_inner(caller, id, &name, line, col);
+    GEN_RESUME_DEPTH.fetch_sub(1, Ordering::SeqCst);
+    out
+}
+
+fn resume_generator_inner(
+    caller: &mut dyn crate::stdlib::HandlerCaller,
+    id: u64,
+    name: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<GenResume> {
+    let mut vm = with_gen_registry(|reg| -> RioResult<Box<Vm>> {
+        let e = match reg.get_mut(&id) {
+            Some(e) => e,
+            None => {
+                return Err(RioError::runtime(
+                    format!("المولد {} غير موجود", name),
+                    line,
+                    col,
+                ));
+            }
+        };
+        match e.status {
+            GenStatus::Exhausted => {
+                return Err(RioError::runtime(
+                    format!("المولد {} مستنفد — لا قيم بعد", name),
+                    line,
+                    col,
+                ));
+            }
+            GenStatus::Closed => {
+                return Err(RioError::runtime(
+                    format!("المولد {} مغلق — لا قيم بعد", name),
+                    line,
+                    col,
+                ));
+            }
+            _ => {}
+        }
+        if e.running {
+            return Err(RioError::runtime(
+                format!("لا يمكن استئناف المولد {} وهو قيد التنفيذ", name),
+                line,
+                col,
+            ));
+        }
+        e.running = true;
+        match e.vm.take() {
+            Some(v) => Ok(v),
+            None => {
+                e.running = false;
+                Err(RioError::runtime(
+                    format!("المولد {} بلا إطار معلق", name),
+                    line,
+                    col,
+                ))
+            }
+        }
+    })?;
+    let run = vm.run();
+    let output = std::mem::take(&mut vm.output);
+    if !output.is_empty() {
+        caller.append_output(&output);
+    }
+    if let Some(code) = vm.exit_code {
+        caller.set_exit_code(code);
+    }
+    let yielded = vm.yielded.take();
+    let (returned, ret) = Vm::child_return(&vm);
+    let return_type =
+        with_gen_registry(|reg| reg.get(&id).and_then(|e| e.return_type.clone()));
+    match run {
+        Err(e) => {
+            // خطأ داخل الجسم ينتشر، والمولد مستنفد بعده.
+            with_gen_registry(|reg| {
+                if let Some(en) = reg.get_mut(&id) {
+                    en.status = GenStatus::Exhausted;
+                    en.vm = None;
+                    en.running = false;
+                }
+            });
+            Err(e)
+        }
+        Ok(()) => {
+            if let Some(v) = yielded {
+                with_gen_registry(|reg| {
+                    if let Some(en) = reg.get_mut(&id) {
+                        en.status = GenStatus::Suspended;
+                        en.vm = Some(vm);
+                        en.running = false;
+                    }
+                });
+                Ok(GenResume::Yielded(v))
+            } else {
+                // انتهى الجسم: فحص نوع الإرجاع المعلن
+                // (كالدالة العادية) قبل إعلان الاستنفاد.
+                let type_err = check_gen_return(name, &return_type, returned, &ret, line, col);
+                with_gen_registry(|reg| {
+                    if let Some(en) = reg.get_mut(&id) {
+                        en.status = GenStatus::Exhausted;
+                        en.vm = None;
+                        en.running = false;
+                    }
+                });
+                match type_err {
+                    Some(e) => Err(e),
+                    None => Ok(GenResume::Exhausted(ret)),
+                }
+            }
+        }
+    }
+}
+
+/// ب6: فحص نوع إرجاع مولد عند استنفاده — مرآة فحص
+/// الدالة العادية في call_user/call_closure_value.
+fn check_gen_return(
+    name: &str,
+    return_type: &Option<String>,
+    returned: bool,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> Option<RioError> {
+    let rt = return_type.as_ref()?;
+    if rt == "أي" {
+        return None;
+    }
+    if returned {
+        if !v.matches_declared_type(rt) {
+            return Some(RioError::typ(
+                format!(
+                    "نوع غير متطابق: الدالة {} معلنة أن ترجع {}، لكن رجعت {}",
+                    name,
+                    rt,
+                    v.type_name()
+                ),
+                line,
+                col,
+            ));
+        }
+    } else if rt != "لاشيء" {
+        return Some(RioError::typ(
+            format!(
+                "نوع غير متطابق: الدالة {} معلنة أن ترجع {}، لكن لم ترجع شيئا",
+                name, rt
+            ),
+            line,
+            col,
+        ));
+    }
+    None
+}
+
+/// ب6: أغلق مولدا صراحة — يشغّل `أخيرا` المعلقة
+/// (في الفرعي أولا إن كان التفويض نشطا، ثم في
+/// الخارجي)، ثم يتخلص من الإطار. مولد جديد (لم
+/// يبدأ) يُغلق بلا تشغيل لجسمه؛ والمستنفد أو المغلق
+/// لا-عملية؛ ومخرجات `أخيرا` تُلحَق بالمتصل.
+pub fn close_generator(
+    caller: &mut dyn crate::stdlib::HandlerCaller,
+    gen: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    let (id, name) = match gen_name_of(gen) {
+        Some(p) => p,
+        None => {
+            return Err(RioError::typ(
+                format!("أغلق_المولد يتطلب مولدا، وليس {}", gen.type_name()),
+                line,
+                col,
+            ));
+        }
+    };
+    let mut vm = match with_gen_registry(|reg| -> RioResult<Option<Box<Vm>>> {
+        let e = match reg.get_mut(&id) {
+            Some(e) => e,
+            None => return Ok(None),
+        };
+        match e.status {
+            // لم يبدأ: الجسم لم يدخل أصلا، فلا `أخيرا` فيه.
+            GenStatus::New => {
+                e.status = GenStatus::Closed;
+                e.vm = None;
+                return Ok(None);
+            }
+            GenStatus::Exhausted | GenStatus::Closed => return Ok(None),
+            GenStatus::Suspended => {}
+        }
+        if e.running {
+            return Err(RioError::runtime(
+                format!("لا يمكن إغلاق المولد {} وهو قيد التنفيذ", name),
+                line,
+                col,
+            ));
+        }
+        e.running = true;
+        match e.vm.take() {
+            Some(v) => Ok(Some(v)),
+            None => {
+                e.running = false;
+                e.status = GenStatus::Closed;
+                Ok(None)
+            }
+        }
+    })? {
+        Some(v) => v,
+        None => return Ok(()),
+    };
+    // التفويض النشط أولا: الإغلاق ينتقل إلى الفرعي.
+    if let Some(delegate) = vm.delegates.get(&vm.pc).cloned() {
+        vm.delegates.remove(&vm.pc);
+        close_generator(caller, &delegate, line, col)?;
+    }
+    let res = vm.close_run();
+    let output = std::mem::take(&mut vm.output);
+    if !output.is_empty() {
+        caller.append_output(&output);
+    }
+    if let Some(code) = vm.exit_code {
+        caller.set_exit_code(code);
+    }
+    let yielded_during_close = vm.yielded.take().is_some();
+    with_gen_registry(|reg| {
+        if let Some(en) = reg.get_mut(&id) {
+            en.status = GenStatus::Closed;
+            en.vm = None;
+            en.running = false;
+        }
+    });
+    match res {
+        Err(e) => Err(e),
+        Ok(()) => {
+            if yielded_during_close {
+                Err(RioError::runtime(
+                    format!("المولد {} أنتج قيمة أثناء الإغلاق", name),
+                    line,
+                    col,
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+/// ب6: هل المولد مستنفد أو مغلق (بلا استئناف) — لحلقة
+/// `لكل` في المفسر: تنتهي بصمت عند الاستنفاد، لا بخطأ.
+pub fn generator_exhausted(gen: &Value) -> bool {
+    match gen_name_of(gen) {
+        Some((id, _)) => with_gen_registry(|reg| {
+            matches!(
+                reg.get(&id).map(|e| e.status),
+                Some(GenStatus::Exhausted) | Some(GenStatus::Closed)
+            )
+        }),
+        None => false,
+    }
+}
+
+/// ب6: أنشئ مولدا لجسم دالة عرّفها المفسر (قيمة بلا
+/// vm_id) من داخل المفسر: يُترجَم الجسم إلى بايت كود،
+/// وتُبنى آلة فرعية معلقة بسلسلتها الملتقَطة ونطاق
+/// معاملاتها، وتُسجَّل — بلا تنفيذ للجسم. آلة الجذر
+/// مؤقتة (جدول دوال فارغ): جسم المولد يحلّ استدعاءاته
+/// من سلسلته الملتقَطة أولا، ودوال المفسر بلا vm_id
+/// تُترجَم عند الطلب — فلا يحتاج جدول البرنامج.
+/// لقطة الجلسة (سياسة الملفات والمجلد والموثوق
+/// والبث) من المفسر وقت الإنشاء؛ وتغيير `انتقل`
+/// داخل جسم مولد لا يعود إلى جلسة المفسر (قيد موثق —
+/// في مسار الآلة تشارك الجلسة مباشرة).
+#[allow(clippy::too_many_arguments)]
+pub fn register_interp_generator(
+    name: &str,
+    params: &[String],
+    param_types: &[Option<String>],
+    return_type: &Option<String>,
+    body: &[Stmt],
+    args: Vec<Value>,
+    captured: Vec<Rc<RefCell<HashMap<String, Value>>>>,
+    program_dir: std::path::PathBuf,
+    file_policy: crate::permissions::FilePolicy,
+    cwd: std::path::PathBuf,
+    server_allowed: bool,
+    live_output: bool,
+    source_file: Option<String>,
+    extra_defs: &[(String, Value)],
+) -> RioResult<Value> {
+    let (def, extra) = compile_function_body(body, params, param_types, return_type)?;
+    let mut root = Vm::new(
+        CompiledProgram { code: Vec::new(), functions: HashMap::new(), closures: HashMap::new() },
+        program_dir,
+    );
+    root.file_policy = Rc::new(RefCell::new(file_policy));
+    root.cwd = Rc::new(RefCell::new(cwd));
+    root.server_allowed = server_allowed;
+    root.live_output = live_output;
+    root.source_file = source_file;
+    let mut child = root.child_closure(&def, args, captured);
+    for (k, v) in extra_defs {
+        child.define(k, v.clone());
+    }
+    child.closures.borrow_mut().extend(extra);
+    Ok(register_generator(name, return_type.clone(), child))
+}
+
+/// ب6: أنشئ مولد تعبير توليدي من داخل المفسر — كـ
+/// make_genexpr لكن بآلة جذر مؤقتة وسلسلة المتصل.
+pub fn register_interp_genexpr(
+    args: Vec<Value>,
+    captured: Vec<Rc<RefCell<HashMap<String, Value>>>>,
+    program_dir: std::path::PathBuf,
+    file_policy: crate::permissions::FilePolicy,
+    cwd: std::path::PathBuf,
+    server_allowed: bool,
+    live_output: bool,
+) -> RioResult<Value> {
+    let mut root = Vm::new(
+        CompiledProgram { code: Vec::new(), functions: HashMap::new(), closures: HashMap::new() },
+        program_dir,
+    );
+    root.file_policy = Rc::new(RefCell::new(file_policy));
+    root.cwd = Rc::new(RefCell::new(cwd));
+    root.server_allowed = server_allowed;
+    root.live_output = live_output;
+    root.env = captured;
+    root.make_genexpr(args, 1, 1)
+}
+
+/// ب6: جسم دالة التعبير التوليدي الاصطناعية:
+///   دالة __مولد_تعبير(__عنصر، __شرط، __قابل):
+///       لكل __س في __قابل:
+///           اذا __شرط == لاشيء: ولد __عنصر(__س)
+///           وإلا اذا __شرط(__س): ولد __عنصر(__س)
+/// (بلا شرط: الجسم ولد مباشرة بلا فحص.)
+pub fn genexpr_body(has_cond: bool) -> Vec<Stmt> {
+    let (line, col) = (1usize, 1usize);
+    let ident = |n: &str| Expr::new(ExprKind::Ident(n.to_string()), line, col);
+    let yield_elem = || {
+        let elem_call = Expr::new(
+            ExprKind::Call { callee: Box::new(ident("__عنصر")), args: vec![ident("__س")],
+                kwargs: Vec::new(),
+            type_args: Vec::new(),
+            },
+            line,
+            col,
+        );
+        Stmt::new(
+            StmtKind::ExprStmt {
+                expr: Expr::new(
+                    ExprKind::Call {
+                        callee: Box::new(ident(crate::ast::YIELD_CALL)),
+                        args: vec![elem_call],
+                kwargs: Vec::new(),
+            type_args: Vec::new(),
+            },
+                    line,
+                    col,
+                ),
+            },
+            line,
+            col,
+        )
+    };
+    let inner: Vec<Stmt> = if has_cond {
+        let cond_call = Expr::new(
+            ExprKind::Call { callee: Box::new(ident("__شرط")), args: vec![ident("__س")],
+                kwargs: Vec::new(),
+            type_args: Vec::new(),
+            },
+            line,
+            col,
+        );
+        let nil_check = Expr::new(
+            ExprKind::Binary {
+                left: Box::new(ident("__شرط")),
+                op: BinOp::Eq,
+                right: Box::new(Expr::new(ExprKind::Nil, line, col)),
+            },
+            line,
+            col,
+        );
+        vec![Stmt::new(
+            StmtKind::If {
+                cond: nil_check,
+                then_body: vec![yield_elem()],
+                elifs: vec![(cond_call, vec![yield_elem()])],
+                else_body: None,
+            },
+            line,
+            col,
+        )]
+    } else {
+        vec![yield_elem()]
+    };
+    vec![Stmt::new(
+        StmtKind::For { var: "__س".to_string(), iterable: ident("__قابل"), body: inner },
+        line,
+        col,
+    )]
 }
 
 /// ك-2 (مهمة 7): جلسة REPL دائمة على المترجم — نسخة VM
@@ -8284,7 +9744,7 @@ impl crate::stdlib::HandlerCaller for Vm {
         col: usize,
     ) -> (RioResult<Value>, String) {
         let before = self.output.len();
-        let res = self.call_value(func.clone(), vec![arg], line, col);
+        let res = self.call_value(func.clone(), vec![arg], Vec::new(), &[], line, col);
         let produced = self.output[before..].to_string();
         (res, produced)
     }
@@ -8299,6 +9759,25 @@ impl crate::stdlib::HandlerCaller for Vm {
 
     fn server_cwd(&self) -> std::path::PathBuf {
         self.cwd.borrow().clone()
+    }
+
+    /// ب6: مخرجات جسم مولد أثناء تقدمه تُلحَق بمخرجات
+    /// المتصل بالترتيب (لا تُفقَد في الافتراضي الصامت)؛
+    /// والبث الحي يطبعها فورا كـ `اطبع` العادية.
+    fn append_output(&mut self, text: &str) {
+        if self.live_output {
+            use std::io::Write;
+            print!("{}", text);
+            let _ = std::io::stdout().flush();
+        } else {
+            self.output.push_str(text);
+        }
+    }
+
+    /// ب6: `خروج()` داخل جسم مولد تثبّت رمزها في
+    /// المتصل؛ وحلقة التشغيل تفكّها عند حد الخطوة.
+    fn set_exit_code(&mut self, code: u8) {
+        self.exit_code = Some(code);
     }
 
     /// J3-69: تنفيذ نص نيفا كبرنامج معزول في آلة جديدة

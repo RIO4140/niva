@@ -17,7 +17,7 @@
 //! غير مدعوم، أو بايتات مقطوعة/زائدة، أو وسم مجهول.
 //! main.rs يطبع رسالتها وحدها (بلا «السطر 0»).
 
-use crate::ast::{AssignTarget, BinOp, Expr, ExprKind, Stmt, StmtKind, UnOp};
+use crate::ast::{AssignTarget, BinOp, Expr, ExprKind, Stmt, StmtKind, TypeParam, UnOp};
 use crate::error::{ErrorKind, RioError, RioResult};
 use crate::value::Value;
 use crate::vm::{BoolCtx, ClosureDef, CompiledProgram, FunctionDef, Instr, Op, VmClassDef};
@@ -26,7 +26,7 @@ use std::collections::HashMap;
 /// سحر المصنوع: بايتات «نيفا» UTF-8.
 pub const ARTIFACT_MAGIC: &[u8] = "نيفا".as_bytes();
 /// إصدار صيغة المصنوع الحالي.
-pub const ARTIFACT_VERSION: u32 = 1;
+pub const ARTIFACT_VERSION: u32 = 3;
 /// امتداد ملف المصنوع.
 pub const ARTIFACT_EXT: &str = "نيفاب";
 /// سحر ذيل الملف التنفيذي المستقل.
@@ -365,7 +365,26 @@ fn enc_function_def(w: &mut Writer, def: &FunctionDef) -> RioResult<()> {
         w.opt_str(t);
     }
     w.opt_str(&def.return_type);
-    enc_code(w, &def.code)
+    // الدفعة الأخيرة DEF (البنود 109–112 و77 و78، الإصدار 2):
+    // افتراضيات وجامعان وإعلانات نطاق.
+    w.u64(def.defaults.len() as u64);
+    for d in &def.defaults {
+        match d {
+            None => w.u8(0),
+            Some(e) => {
+                w.u8(1);
+                enc_expr(w, e)?;
+            }
+        }
+    }
+    w.opt_str(&def.vararg);
+    w.opt_str(&def.kwarg);
+    w.vec_str(&def.global_names);
+    w.vec_str(&def.nonlocal_names);
+    enc_code(w, &def.code)?;
+    // البنود 145–147 (الإصدار 3): معاملات النوع.
+    enc_type_params(w, &def.type_params);
+    Ok(())
 }
 
 fn dec_function_def(r: &mut Reader) -> RioResult<FunctionDef> {
@@ -376,8 +395,31 @@ fn dec_function_def(r: &mut Reader) -> RioResult<FunctionDef> {
         param_types.push(r.opt_str()?);
     }
     let return_type = r.opt_str()?;
+    // الدفعة الأخيرة DEF (الإصدار 2).
+    let n_defaults = r.u64()? as usize;
+    let mut defaults = Vec::with_capacity(n_defaults.min(1_000_000));
+    for _ in 0..n_defaults {
+        match r.u8()? {
+            0 => defaults.push(None),
+            1 => defaults.push(Some(dec_expr(r)?)),
+            _ => return Err(bad("مصنوع تالف: وسم خيار غير صالح".to_string())),
+        }
+    }
+    let vararg = r.opt_str()?;
+    let kwarg = r.opt_str()?;
+    let global_names = r.vec_str()?;
+    let nonlocal_names = r.vec_str()?;
     let code = dec_code(r)?;
-    Ok(FunctionDef { params, param_types, return_type, code })
+    // البنود 145–147 (الإصدار 3): معاملات النوع.
+    let type_params = dec_type_params(r)?;
+    // ب6: المصنوع القديم بلا حقل مولد — يُستنتج من الكود:
+    // استدعاء `__ولد`/`__ولد_من` في تعليمات الدالة نفسها
+    // (بلا نزول إلى أجسام إغلاقات متداخلة، كـ body_has_yield).
+    let is_generator = code.iter().any(|i| {
+        matches!(&i.op, Op::Call { name, .. } | Op::Builtin { name, .. }
+            if name == crate::ast::YIELD_CALL || name == crate::ast::YIELD_FROM_CALL)
+    });
+    Ok(FunctionDef { params, param_types, return_type, code, is_generator, defaults, vararg, kwarg, global_names, nonlocal_names, type_params })
 }
 
 fn enc_closure_def(w: &mut Writer, def: &ClosureDef) -> RioResult<()> {
@@ -389,7 +431,24 @@ fn enc_closure_def(w: &mut Writer, def: &ClosureDef) -> RioResult<()> {
         w.opt_str(t);
     }
     w.opt_str(&def.return_type);
-    enc_stmts(w, &def.body)
+    // الدفعة الأخيرة DEF (البنود 109–112، الإصدار 2):
+    // افتراضيات وجامعان.
+    w.u64(def.defaults.len() as u64);
+    for d in &def.defaults {
+        match d {
+            None => w.u8(0),
+            Some(e) => {
+                w.u8(1);
+                enc_expr(w, e)?;
+            }
+        }
+    }
+    w.opt_str(&def.vararg);
+    w.opt_str(&def.kwarg);
+    enc_stmts(w, &def.body)?;
+    // البنود 145–147 (الإصدار 3): معاملات النوع.
+    enc_type_params(w, &def.type_params);
+    Ok(())
 }
 
 fn dec_closure_def(r: &mut Reader) -> RioResult<ClosureDef> {
@@ -402,8 +461,25 @@ fn dec_closure_def(r: &mut Reader) -> RioResult<ClosureDef> {
         param_types.push(r.opt_str()?);
     }
     let return_type = r.opt_str()?;
+    // الدفعة الأخيرة DEF (الإصدار 2).
+    let n_defaults = r.u64()? as usize;
+    let mut defaults = Vec::with_capacity(n_defaults.min(1_000_000));
+    for _ in 0..n_defaults {
+        match r.u8()? {
+            0 => defaults.push(None),
+            1 => defaults.push(Some(dec_expr(r)?)),
+            _ => return Err(bad("مصنوع تالف: وسم خيار غير صالح".to_string())),
+        }
+    }
+    let vararg = r.opt_str()?;
+    let kwarg = r.opt_str()?;
     let body = dec_stmts(r)?;
-    Ok(ClosureDef { id, name, params, param_types, return_type, body })
+    // البنود 145–147 (الإصدار 3): معاملات النوع.
+    let type_params = dec_type_params(r)?;
+    // ب6: كـ FunctionDef — من الجسم نفسه، لا من التخزين
+    // (المصنوع القديم بلا حقل مولد).
+    let is_generator = crate::ast::body_has_yield(&body);
+    Ok(ClosureDef { id, name, params, param_types, return_type, body, is_generator, defaults, vararg, kwarg, type_params })
 }
 
 fn enc_class_def(w: &mut Writer, class: &VmClassDef) -> RioResult<()> {
@@ -424,6 +500,8 @@ fn enc_class_def(w: &mut Writer, class: &VmClassDef) -> RioResult<()> {
         w.str(name);
         w.u64(*id);
     }
+    // البنود 145–147 (الإصدار 3): معاملات النوع.
+    enc_type_params(w, &class.type_params);
     Ok(())
 }
 
@@ -445,7 +523,29 @@ fn dec_class_def(r: &mut Reader) -> RioResult<VmClassDef> {
         let id = r.u64()?;
         own_method_ids.insert(mname, id);
     }
-    Ok(VmClassDef { name, base, interfaces, methods, own_method_ids })
+    // البنود 145–147 (الإصدار 3): معاملات النوع.
+    let type_params = dec_type_params(r)?;
+    Ok(VmClassDef { name, base, interfaces, methods, own_method_ids, type_params })
+}
+
+/// البنود 145–147 (الإصدار 3): ترميز معاملات النوع —
+/// لكل معامل: الاسم، ثم الحد (أو لا شيء)، ثم الافتراضي (أو لا شيء).
+fn enc_type_params(w: &mut Writer, params: &[TypeParam]) {
+    w.u64(params.len() as u64);
+    for tp in params {
+        w.str(&tp.name);
+        w.opt_str(&tp.bound);
+        w.opt_str(&tp.default);
+    }
+}
+
+fn dec_type_params(r: &mut Reader) -> RioResult<Vec<TypeParam>> {
+    let n = r.u64()? as usize;
+    let mut out = Vec::with_capacity(n.min(1_000_000));
+    for _ in 0..n {
+        out.push(TypeParam { name: r.str()?, bound: r.opt_str()?, default: r.opt_str()? });
+    }
+    Ok(out)
 }
 
 fn enc_bool_ctx(w: &mut Writer, ctx: &BoolCtx) {
@@ -593,12 +693,15 @@ fn enc_op(w: &mut Writer, op: &Op) -> RioResult<()> {
             w.u8(22);
             w.usize(*n);
         }
-        Op::Call { name, nargs, callee_line, callee_col } => {
+        Op::Call { name, nargs, kwargs, callee_line, callee_col, type_args } => {
             w.u8(23);
             w.str(name);
             w.usize(*nargs);
+            w.vec_str(kwargs);
             w.usize(*callee_line);
             w.usize(*callee_col);
+            // البنود 145–147 (الإصدار 3): معاملات النوع.
+            w.vec_str(type_args);
         }
         Op::Return => w.u8(24),
         Op::BuildList(n) => {
@@ -622,10 +725,11 @@ fn enc_op(w: &mut Writer, op: &Op) -> RioResult<()> {
             w.usize(*tgt_line);
             w.usize(*tgt_col);
         }
-        Op::Builtin { name, nargs, callee_line, callee_col } => {
+        Op::Builtin { name, nargs, kwargs, callee_line, callee_col } => {
             w.u8(29);
             w.str(name);
             w.usize(*nargs);
+            w.vec_str(kwargs);
             w.usize(*callee_line);
             w.usize(*callee_col);
         }
@@ -650,16 +754,20 @@ fn enc_op(w: &mut Writer, op: &Op) -> RioResult<()> {
             w.u8(33);
             w.str(name);
         }
-        Op::Create(name, nargs) => {
+        Op::Create { class, nargs, kwargs, type_args } => {
             w.u8(34);
-            w.str(name);
+            w.str(class);
             w.usize(*nargs);
+            w.vec_str(kwargs);
+            // البنود 145–147 (الإصدار 3): معاملات النوع.
+            w.vec_str(type_args);
         }
-        Op::CallDotMethod { name, var, nargs } => {
+        Op::CallDotMethod { name, var, nargs, kwargs } => {
             w.u8(35);
             w.str(name);
             w.opt_str(var);
             w.usize(*nargs);
+            w.vec_str(kwargs);
         }
         Op::MakeClosure(def) => {
             w.u8(36);
@@ -669,11 +777,14 @@ fn enc_op(w: &mut Writer, op: &Op) -> RioResult<()> {
             w.u8(37);
             enc_closure_def(w, def)?;
         }
-        Op::CallValue { nargs, callee_line, callee_col } => {
+        Op::CallValue { nargs, kwargs, callee_line, callee_col, type_args } => {
             w.u8(38);
             w.usize(*nargs);
+            w.vec_str(kwargs);
             w.usize(*callee_line);
             w.usize(*callee_col);
+            // البنود 145–147 (الإصدار 3): معاملات النوع.
+            w.vec_str(type_args);
         }
         Op::CheckBool(ctx) => {
             w.u8(39);
@@ -768,8 +879,10 @@ fn dec_op(r: &mut Reader) -> RioResult<Op> {
         23 => Op::Call {
             name: r.str()?,
             nargs: r.usize()?,
+            kwargs: r.vec_str()?,
             callee_line: r.usize()?,
             callee_col: r.usize()?,
+            type_args: r.vec_str()?,
         },
         24 => Op::Return,
         25 => Op::BuildList(r.usize()?),
@@ -785,6 +898,7 @@ fn dec_op(r: &mut Reader) -> RioResult<Op> {
         29 => Op::Builtin {
             name: r.str()?,
             nargs: r.usize()?,
+            kwargs: r.vec_str()?,
             callee_line: r.usize()?,
             callee_col: r.usize()?,
         },
@@ -800,14 +914,16 @@ fn dec_op(r: &mut Reader) -> RioResult<Op> {
         }
         32 => Op::Dot(r.str()?),
         33 => Op::StoreDot(r.str()?),
-        34 => Op::Create(r.str()?, r.usize()?),
-        35 => Op::CallDotMethod { name: r.str()?, var: r.opt_str()?, nargs: r.usize()? },
+        34 => Op::Create { class: r.str()?, nargs: r.usize()?, kwargs: r.vec_str()?, type_args: r.vec_str()? },
+        35 => Op::CallDotMethod { name: r.str()?, var: r.opt_str()?, nargs: r.usize()?, kwargs: r.vec_str()? },
         36 => Op::MakeClosure(dec_closure_def(r)?),
         37 => Op::DefineClosure(dec_closure_def(r)?),
         38 => Op::CallValue {
             nargs: r.usize()?,
+            kwargs: r.vec_str()?,
             callee_line: r.usize()?,
             callee_col: r.usize()?,
+            type_args: r.vec_str()?,
         },
         39 => Op::CheckBool(dec_bool_ctx(r)?),
         40 => Op::CheckAssignType { name: r.str()?, expected: r.str()? },
@@ -981,13 +1097,22 @@ fn enc_expr_kind(w: &mut Writer, k: &ExprKind) -> RioResult<()> {
             enc_unop(w, op);
             enc_expr(w, expr)?;
         }
-        ExprKind::Call { callee, args } => {
+        ExprKind::Call { callee, args, kwargs, type_args } => {
             w.u8(9);
             enc_expr(w, callee)?;
             w.u64(args.len() as u64);
             for arg in args {
                 enc_expr(w, arg)?;
             }
+            // الدفعة الأخيرة DEF (البنود 109–112): المعاملات
+            // المفتاحية (الإصدار 2).
+            w.u64(kwargs.len() as u64);
+            for (kname, kval) in kwargs {
+                w.str(kname);
+                enc_expr(w, kval)?;
+            }
+            // البنود 145–147 (الإصدار 3): معاملات النوع.
+            w.vec_str(type_args);
         }
         ExprKind::Index { target, index } => {
             w.u8(10);
@@ -999,13 +1124,22 @@ fn enc_expr_kind(w: &mut Writer, k: &ExprKind) -> RioResult<()> {
             enc_expr(w, target)?;
             w.str(name);
         }
-        ExprKind::Create { class, args } => {
+        ExprKind::Create { class, args, kwargs, type_args } => {
             w.u8(12);
             w.str(class);
             w.u64(args.len() as u64);
             for arg in args {
                 enc_expr(w, arg)?;
             }
+            // الدفعة الأخيرة DEF (البنود 109–112): معاملات
+            // المنشئ المفتاحية (الإصدار 2).
+            w.u64(kwargs.len() as u64);
+            for (kname, kval) in kwargs {
+                w.str(kname);
+                enc_expr(w, kval)?;
+            }
+            // البنود 145–147 (الإصدار 3): معاملات النوع.
+            w.vec_str(type_args);
         }
         ExprKind::Lambda { params, param_types, body } => {
             w.u8(13);
@@ -1015,6 +1149,12 @@ fn enc_expr_kind(w: &mut Writer, k: &ExprKind) -> RioResult<()> {
                 w.opt_str(t);
             }
             enc_expr(w, body)?;
+        }
+        // البند 73 (`:=` — الاجتماع 83 §98): وسم جديد 14.
+        ExprKind::AssignExpr { name, value } => {
+            w.u8(14);
+            w.str(name);
+            enc_expr(w, value)?;
         }
     }
     Ok(())
@@ -1057,7 +1197,15 @@ fn dec_expr_kind(r: &mut Reader) -> RioResult<ExprKind> {
             for _ in 0..n {
                 args.push(dec_expr(r)?);
             }
-            ExprKind::Call { callee, args }
+            // الدفعة الأخيرة DEF (الإصدار 2): معاملات مفتاحية.
+            let nk = r.u64()? as usize;
+            let mut kwargs = Vec::with_capacity(nk.min(1_000_000));
+            for _ in 0..nk {
+                kwargs.push((r.str()?, dec_expr(r)?));
+            }
+            // البنود 145–147 (الإصدار 3): معاملات النوع.
+            let type_args = r.vec_str()?;
+            ExprKind::Call { callee, args, kwargs, type_args }
         }
         10 => ExprKind::Index { target: Box::new(dec_expr(r)?), index: Box::new(dec_expr(r)?) },
         11 => ExprKind::Dot { target: Box::new(dec_expr(r)?), name: r.str()? },
@@ -1068,7 +1216,15 @@ fn dec_expr_kind(r: &mut Reader) -> RioResult<ExprKind> {
             for _ in 0..n {
                 args.push(dec_expr(r)?);
             }
-            ExprKind::Create { class, args }
+            // الدفعة الأخيرة DEF (الإصدار 2): معاملات مفتاحية.
+            let nk = r.u64()? as usize;
+            let mut kwargs = Vec::with_capacity(nk.min(1_000_000));
+            for _ in 0..nk {
+                kwargs.push((r.str()?, dec_expr(r)?));
+            }
+            // البنود 145–147 (الإصدار 3): معاملات النوع.
+            let type_args = r.vec_str()?;
+            ExprKind::Create { class, args, kwargs, type_args }
         }
         13 => {
             let params = r.vec_str()?;
@@ -1080,6 +1236,8 @@ fn dec_expr_kind(r: &mut Reader) -> RioResult<ExprKind> {
             let body = Box::new(dec_expr(r)?);
             ExprKind::Lambda { params, param_types, body }
         }
+        // البند 73 (`:=` — الاجتماع 83 §98): وسم جديد 14.
+        14 => ExprKind::AssignExpr { name: r.str()?, value: Box::new(dec_expr(r)?) },
         t => return Err(bad(format!("مصنوع تالف: وسم تعبير غير معروف {}", t))),
     };
     Ok(kind)
@@ -1162,7 +1320,7 @@ fn enc_stmt_kind(w: &mut Writer, k: &StmtKind) -> RioResult<()> {
             enc_expr(w, cond)?;
             enc_stmts(w, body)?;
         }
-        StmtKind::FuncDef { name, params, param_types, return_type, body } => {
+        StmtKind::FuncDef { name, params, param_types, return_type, defaults, vararg, kwarg, body, type_params } => {
             w.u8(7);
             w.str(name);
             w.vec_str(params);
@@ -1171,7 +1329,24 @@ fn enc_stmt_kind(w: &mut Writer, k: &StmtKind) -> RioResult<()> {
                 w.opt_str(t);
             }
             w.opt_str(return_type);
+            // الدفعة الأخيرة DEF (البنود 109–112، الإصدار 2):
+            // قيم افتراضية (تعبير أو لا شيء لكل معامل)، ثم
+            // اسما الجامعين (أو لا شيء).
+            w.u64(defaults.len() as u64);
+            for d in defaults {
+                match d {
+                    None => w.u8(0),
+                    Some(e) => {
+                        w.u8(1);
+                        enc_expr(w, e)?;
+                    }
+                }
+            }
+            w.opt_str(vararg);
+            w.opt_str(kwarg);
             enc_stmts(w, body)?;
+            // البنود 145–147 (الإصدار 3): معاملات النوع.
+            enc_type_params(w, type_params);
         }
         StmtKind::Return { value } => {
             w.u8(8);
@@ -1186,10 +1361,18 @@ fn enc_stmt_kind(w: &mut Writer, k: &StmtKind) -> RioResult<()> {
         StmtKind::Break => w.u8(9),
         StmtKind::Continue => w.u8(10),
         StmtKind::Pass => w.u8(11),
-        StmtKind::Try { try_body, except_body, finally_body } => {
+        StmtKind::Try { try_body, except_body, else_body, finally_body } => {
             w.u8(12);
             enc_stmts(w, try_body)?;
             match except_body {
+                None => w.u8(0),
+                Some(body) => {
+                    w.u8(1);
+                    enc_stmts(w, body)?;
+                }
+            }
+            // البند 98 (`والا` بعد حاول — الإصدار 2).
+            match else_body {
                 None => w.u8(0),
                 Some(body) => {
                     w.u8(1);
@@ -1218,12 +1401,14 @@ fn enc_stmt_kind(w: &mut Writer, k: &StmtKind) -> RioResult<()> {
             w.u8(15);
             w.vec_str(names);
         }
-        StmtKind::ClassDef { name, base, interfaces, methods } => {
+        StmtKind::ClassDef { name, base, interfaces, methods, type_params } => {
             w.u8(16);
             w.str(name);
             w.opt_str(base);
             w.vec_str(interfaces);
             enc_stmts(w, methods)?;
+            // البنود 145–147 (الإصدار 3): معاملات النوع.
+            enc_type_params(w, type_params);
         }
         StmtKind::InterfaceDef { name, methods } => {
             w.u8(17);
@@ -1243,6 +1428,21 @@ fn enc_stmt_kind(w: &mut Writer, k: &StmtKind) -> RioResult<()> {
                 enc_expr(w, d)?;
             }
             enc_stmts(w, std::slice::from_ref(def))?;
+        }
+        // الدفعة الأخيرة DEF (البنود 77 و78 و104، الإصدار 2):
+        // أوسام جديدة 19–21 — فلا تصادم مع مصنوع قديم.
+        StmtKind::GlobalDecl { names } => {
+            w.u8(19);
+            w.vec_str(names);
+        }
+        StmtKind::NonlocalDecl { names } => {
+            w.u8(20);
+            w.vec_str(names);
+        }
+        StmtKind::TypeAlias { name, target } => {
+            w.u8(21);
+            w.str(name);
+            w.str(target);
         }
     }
     Ok(())
@@ -1298,8 +1498,22 @@ fn dec_stmt_kind(r: &mut Reader) -> RioResult<StmtKind> {
                 param_types.push(r.opt_str()?);
             }
             let return_type = r.opt_str()?;
+            // الدفعة الأخيرة DEF (البنود 109–112، الإصدار 2).
+            let n_defaults = r.u64()? as usize;
+            let mut defaults = Vec::with_capacity(n_defaults.min(1_000_000));
+            for _ in 0..n_defaults {
+                match r.u8()? {
+                    0 => defaults.push(None),
+                    1 => defaults.push(Some(dec_expr(r)?)),
+                    _ => return Err(bad("مصنوع تالف: وسم خيار غير صالح".to_string())),
+                }
+            }
+            let vararg = r.opt_str()?;
+            let kwarg = r.opt_str()?;
             let body = dec_stmts(r)?;
-            StmtKind::FuncDef { name, params, param_types, return_type, body }
+            // البنود 145–147 (الإصدار 3): معاملات النوع.
+            let type_params = dec_type_params(r)?;
+            StmtKind::FuncDef { name, params, param_types, return_type, defaults, vararg, kwarg, body, type_params }
         }
         8 => {
             let value = match r.u8()? {
@@ -1319,21 +1533,30 @@ fn dec_stmt_kind(r: &mut Reader) -> RioResult<StmtKind> {
                 1 => Some(dec_stmts(r)?),
                 _ => return Err(bad("مصنوع تالف: وسم خيار غير صالح".to_string())),
             };
+            // البند 98 (`والا` بعد حاول — الإصدار 2).
+            let else_body = match r.u8()? {
+                0 => None,
+                1 => Some(dec_stmts(r)?),
+                _ => return Err(bad("مصنوع تالف: وسم خيار غير صالح".to_string())),
+            };
             let finally_body = match r.u8()? {
                 0 => None,
                 1 => Some(dec_stmts(r)?),
                 _ => return Err(bad("مصنوع تالف: وسم خيار غير صالح".to_string())),
             };
-            StmtKind::Try { try_body, except_body, finally_body }
+            StmtKind::Try { try_body, except_body, else_body, finally_body }
         }
         13 => StmtKind::ExprStmt { expr: dec_expr(r)? },
         14 => StmtKind::Import { module: r.str()?, alias: r.opt_str()?, names: r.opt_vec_str()? },
         15 => StmtKind::Export { names: r.vec_str()? },
-        16 => StmtKind::ClassDef {
-            name: r.str()?,
-            base: r.opt_str()?,
-            interfaces: r.vec_str()?,
-            methods: dec_stmts(r)?,
+        16 => {
+            let name = r.str()?;
+            let base = r.opt_str()?;
+            let interfaces = r.vec_str()?;
+            let methods = dec_stmts(r)?;
+            // البنود 145–147 (الإصدار 3): معاملات النوع.
+            let type_params = dec_type_params(r)?;
+            StmtKind::ClassDef { name, base, interfaces, methods, type_params }
         },
         17 => {
             let name = r.str()?;
@@ -1359,6 +1582,10 @@ fn dec_stmt_kind(r: &mut Reader) -> RioResult<StmtKind> {
             let def = defs.pop().unwrap();
             StmtKind::Decorated { decorators, def: Box::new(def) }
         }
+        // الدفعة الأخيرة DEF (البنود 77 و78 و104، الإصدار 2).
+        19 => StmtKind::GlobalDecl { names: r.vec_str()? },
+        20 => StmtKind::NonlocalDecl { names: r.vec_str()? },
+        21 => StmtKind::TypeAlias { name: r.str()?, target: r.str()? },
         t => return Err(bad(format!("مصنوع تالف: وسم جملة غير معروف {}", t))),
     };
     Ok(kind)

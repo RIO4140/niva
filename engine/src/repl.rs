@@ -860,7 +860,7 @@ impl Repl {
     /// شرط يُنفَّذ وقت استدعائه لا وقت التقييم.
     fn source_call_path(stmt: &crate::ast::Stmt) -> Option<String> {
         if let crate::ast::StmtKind::ExprStmt { expr } = &stmt.kind {
-            if let crate::ast::ExprKind::Call { callee, args } = &expr.kind {
+            if let crate::ast::ExprKind::Call { callee, args, kwargs: _, .. } = &expr.kind {
                 if let crate::ast::ExprKind::Ident(name) = &callee.kind {
                     if name == "مصدر" && args.len() == 1 {
                         if let crate::ast::ExprKind::Str(path) = &args[0].kind {
