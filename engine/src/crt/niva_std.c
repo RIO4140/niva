@@ -18840,11 +18840,13 @@ static void b3_diff_walk_c(const char *fs_dir, const char *rel_prefix, DiffFileL
             free(child_rel);
             continue;
         }
+#ifdef S_ISLNK
         if (S_ISLNK(st.st_mode)) {
             free(child_fs);
             free(child_rel);
             continue;
         }
+#endif
         if (S_ISDIR(st.st_mode)) {
             b3_diff_walk_c(child_fs, child_rel, out, line, col);
             free(child_fs);
