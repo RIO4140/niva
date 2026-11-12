@@ -20309,7 +20309,7 @@ static NvValue nv_std_tables_group_agg(NvValue *args, int nargs, int line, int c
             }
             g = ngroups++;
             gkeys[g] = *cell;
-            gidx[g] = (size_t)malloc(rows->len * sizeof(size_t));
+            gidx[g] = (size_t *)malloc(rows->len * sizeof(size_t));
             glen[g] = 0;
         }
         gidx[g][glen[g]++] = i;
