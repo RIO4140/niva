@@ -149,6 +149,7 @@ void nv_std_distrib_fill(NvDict *d);
 void nv_std_funcs_fill(NvDict *d);
 void nv_std_exec_fill(NvDict *d);
 void nv_std_flow_fill(NvDict *d);
+void nv_std_diff_fill(NvDict *d);
 void nv_std_tables_fill(NvDict *d);
 // BEGIN J12-GEN c-fill-decls
 
@@ -334,7 +335,7 @@ void nv_std_boxed_fill(NvDict *d);
 // ---------- السجل ----------
 // وحدة أصلية بالاسم أو NULL (مؤشر إلى قيمة ساكنة مخزنة).
 static NvValue nv_std_modules[55]; // ج6: +5 (دقة/كسر/مركب/بت/معلب)؛ ج13: +5 (صفحات/بريد/محادثة/نقل_ملفات/وقت_شبكة)؛ ج15: +1 (لغات)
-static const char *nv_std_names[55] = {
+static const char *nv_std_names[56] = {
     "رياضيات", "عشوائي", "وقت", "شبكة", "عمليات", "ذاكرة",
     "ملفات", "نظام", "تواصل", "تشفير", "أمن", "غير_متزامن", "جهاز",
     "نمط", "جسون", "اكسمل", "يامال", "قوالب", "تحقق",
@@ -348,6 +349,8 @@ static const char *nv_std_names[55] = {
     "صفحات", "بريد", "محادثة", "نقل_ملفات", "وقت_شبكة",
     // ج15.
     "لغات",
+    // لينكس3: وحدة فرق.
+    "فرق",
 };
 static int nv_std_built = 0;
 
@@ -355,7 +358,7 @@ static void nv_std_build(void) {
     if (nv_std_built) return;
     nv_std_built = 1;
     nv_handle_set_finalizer(nv_std_handle_finalize);
-    for (int i = 0; i < 55; i++) {
+    for (int i = 0; i < 56; i++) {
         nv_std_modules[i] = nv_module_new(nv_std_names[i], NULL);
         NvDict *exports = nv_std_modules[i].u.module->exports;
         if (!exports) {
@@ -421,6 +424,8 @@ static void nv_std_build(void) {
             case 53: nv_std_ntp_fill(exports); break;
             // ج15.
             case 54: nv_std_langs_fill(exports); break;
+            // لينكس3: وحدة فرق.
+            case 55: nv_std_diff_fill(exports); break;
         }
         nv_add_global_root(nv_std_modules[i]);
     }
@@ -428,7 +433,7 @@ static void nv_std_build(void) {
 
 NvValue *nv_native_module(const char *name) {
     nv_std_build();
-    for (int i = 0; i < 55; i++) { // ج6: 44 -> 49.
+    for (int i = 0; i < 56; i++) { // ج6: 44 -> 49.
         if (strcmp(name, nv_std_names[i]) == 0) return &nv_std_modules[i];
     }
     return NULL;
@@ -9841,10 +9846,1126 @@ static NvValue nv_std_json_valid(NvValue *args, int nargs, int line, int col) {
     return nv_bool(ok);
 }
 
+/* BEGIN لينكس3-نص مساعدات C */
+/* مساعدات مشتركة لدفعة لينكس 3، موجة النص (مولّدة).
+   تعريفات مسبقة لدالتي استدعاء نيفا (معرّفتان لاحقا). */
+static NvValue j3_call_single(NvValue func, NvValue arg, int line, int col);
+static int j3_call_bool(NvValue func, NvValue arg, const char *display, int line, int col);
+
+/* nv_dict_new/nv_list_new يعيدان NvValue؛ وهذان
+   الغلافان يعيدان المؤشر مباشرة. */
+static NvDict *b3_dict_new_c(void) { return nv_dict_new().u.dict; }
+static NvList *b3_list_new_c(void) { return nv_list_new().u.list; }
+
+/* قائمة نصوص C (تقسيم حقول). */
+typedef struct { char **items; size_t len; } B3StrListC;
+
+static void b3_str_list_free_c(B3StrListC l) {
+    if (l.items) {
+        for (size_t i = 0; i < l.len; i++) free(l.items[i]);
+        free(l.items);
+    }
+}
+
+static void b3_str_list_push_c(B3StrListC *l, const char *s, size_t n) {
+    l->items = realloc(l->items, (l->len + 1) * sizeof(char *));
+    char *c = malloc(n + 1);
+    memcpy(c, s, n);
+    c[n] = '\0';
+    l->items[l->len++] = c;
+}
+
+/* تقسيم سطر إلى حقول: بلا فاصل ← مسافات بيضاء
+   متتابعة (awk الافتراضي)؛ وبفاصل حرفي ← تقسيم
+   به مع حفظ الفارغ. */
+static B3StrListC b3_split_fields_c(const char *line, const char *sep) {
+    B3StrListC out;
+    out.items = NULL;
+    out.len = 0;
+    if (!sep) {
+        const unsigned char *p = (const unsigned char *)line;
+        while (*p) {
+            while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' ||
+                   *p == '\v' || *p == '\f') p++;
+            if (!*p) break;
+            const unsigned char *s = p;
+            while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r' &&
+                   *p != '\v' && *p != '\f') p++;
+            b3_str_list_push_c(&out, (const char *)s, (size_t)(p - s));
+        }
+        return out;
+    }
+    size_t sl = strlen(sep);
+    const char *p = line;
+    if (sl == 0) { b3_str_list_push_c(&out, line, strlen(line)); return out; }
+    const char *hit;
+    while ((hit = strstr(p, sep)) != NULL) {
+        b3_str_list_push_c(&out, p, (size_t)(hit - p));
+        p = hit + sl;
+    }
+    b3_str_list_push_c(&out, p, strlen(p));
+    return out;
+}
+
+/* تحويل awk العددي لحقل: بادئة عددية أولى وإلا 0. */
+static double b3_field_number_c(const char *field) {
+    const char *p = field;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' ||
+           *p == '\v' || *p == '\f') p++;
+    const char *s = p;
+    if (*p == '+' || *p == '-') p++;
+    int digits = 0;
+    while (*p >= '0' && *p <= '9') { p++; digits = 1; }
+    if (*p == '.') {
+        p++;
+        while (*p >= '0' && *p <= '9') { p++; digits = 1; }
+    }
+    const char *end = p;
+    if (digits && (*p == 'e' || *p == 'E')) {
+        const char *q = p + 1;
+        if (*q == '+' || *q == '-') q++;
+        int ed = 0;
+        while (*q >= '0' && *q <= '9') { q++; ed = 1; }
+        if (ed) end = q;
+    }
+    if (!digits || end == s) return 0.0;
+    char *buf = malloc((size_t)(end - s) + 1);
+    memcpy(buf, s, (size_t)(end - s));
+    buf[end - s] = '\0';
+    double v = strtod(buf, NULL);
+    free(buf);
+    return v;
+}
+
+/* خيار فاصل تدفق: قاموس اختياري بمفتاح فاصل فقط
+   (غير فارغ)؛ وبلا قاموس ← بلا فاصل. */
+static const char *b3_flow_sep_c(const char *display, NvValue *opt, int has_opt, int line, int col) {
+    if (!has_opt) return NULL;
+    if (opt->tag != NV_DICT) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع خيارات قاموسا لكن أعطيت %s", display, nv_type_name(*opt));
+    }
+    for (size_t i = 0; i < opt->u.dict->len; i++) {
+        const char *k = opt->u.dict->entries[i].key;
+        if (strcmp(k, "فاصل") == 0) {
+            NvValue v = opt->u.dict->entries[i].val;
+            if (v.tag != NV_STR) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع فاصل الحقول نصا لكن أعطيت %s", display, nv_type_name(v));
+            }
+            if (v.u.str->len == 0) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s فاصل الحقول فارغ", display);
+            }
+            return v.u.str->data;
+        }
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا تقبل الخيار %s", display, k);
+    }
+    return NULL;
+}
+
+/* فهرس محرفي لأول ظهور نصي (0-based) أو -1؛
+   والفرعي الفارغ ← 0. */
+static long b3_str_index_c(const char *hay, const char *needle) {
+    if (needle[0] == '\0') return 0;
+    const char *hit = strstr(hay, needle);
+    if (!hit) return -1;
+    return (long)nv_utf8_chars(hay, (size_t)(hit - hay));
+}
+
+/* ترتيب JSON الكلي (jq): لاشيء < منطقي < عدد <
+   نص < قائمة < قاموس. */
+static int b3_json_rank_c(NvValue v) {
+    switch (v.tag) {
+        case NV_NIL: return 0;
+        case NV_BOOL: return 1;
+        case NV_NUM: return 2;
+        case NV_STR: return 3;
+        case NV_LIST: return 4;
+        case NV_DICT: return 5;
+        default: return 6;
+    }
+}
+
+static int b3_key_cmp_c(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static int b3_json_cmp_c(NvValue a, NvValue b) {
+    int ra = b3_json_rank_c(a), rb = b3_json_rank_c(b);
+    if (ra != rb) return ra < rb ? -1 : 1;
+    switch (a.tag) {
+        case NV_BOOL:
+            if (a.u.boolean == b.u.boolean) return 0;
+            return a.u.boolean ? 1 : -1;
+        case NV_NUM:
+            if (a.u.num < b.u.num) return -1;
+            if (a.u.num > b.u.num) return 1;
+            return 0;
+        case NV_STR: return strcmp(a.u.str->data, b.u.str->data);
+        case NV_LIST: {
+            size_t n = a.u.list->len < b.u.list->len ? a.u.list->len : b.u.list->len;
+            for (size_t i = 0; i < n; i++) {
+                int c = b3_json_cmp_c(a.u.list->items[i], b.u.list->items[i]);
+                if (c) return c;
+            }
+            if (a.u.list->len < b.u.list->len) return -1;
+            if (a.u.list->len > b.u.list->len) return 1;
+            return 0;
+        }
+        case NV_DICT: {
+            size_t na = a.u.dict->len, nb = b.u.dict->len;
+            const char **ka = malloc((na ? na : 1) * sizeof(char *));
+            const char **kb = malloc((nb ? nb : 1) * sizeof(char *));
+            for (size_t i = 0; i < na; i++) ka[i] = a.u.dict->entries[i].key;
+            for (size_t i = 0; i < nb; i++) kb[i] = b.u.dict->entries[i].key;
+            qsort(ka, na, sizeof(char *), b3_key_cmp_c);
+            qsort(kb, nb, sizeof(char *), b3_key_cmp_c);
+            int r = 0;
+            size_t n = na < nb ? na : nb;
+            for (size_t i = 0; i < n && !r; i++) {
+                int kc = strcmp(ka[i], kb[i]);
+                if (kc) { r = kc < 0 ? -1 : 1; break; }
+                int ai = nv_dict_find(a.u.dict, ka[i]);
+                int bi = nv_dict_find(b.u.dict, kb[i]);
+                r = b3_json_cmp_c(a.u.dict->entries[ai].val, b.u.dict->entries[bi].val);
+            }
+            if (!r) {
+                if (na < nb) r = -1;
+                else if (na > nb) r = 1;
+            }
+            free(ka);
+            free(kb);
+            return r;
+        }
+        default: return 0;
+    }
+}
+
+/* نسخة بمفاتيح مرتبة تكراريا في كل مستوى. */
+static NvValue b3_json_sorted_c(NvValue v) {
+    if (v.tag == NV_DICT) {
+        size_t n = v.u.dict->len;
+        const char **keys = malloc((n ? n : 1) * sizeof(char *));
+        for (size_t i = 0; i < n; i++) keys[i] = v.u.dict->entries[i].key;
+        qsort(keys, n, sizeof(char *), b3_key_cmp_c);
+        NvDict *d = b3_dict_new_c();
+        for (size_t i = 0; i < n; i++) {
+            int idx = nv_dict_find(v.u.dict, keys[i]);
+            nv_dict_set_raw(d, keys[i], b3_json_sorted_c(v.u.dict->entries[idx].val));
+        }
+        free(keys);
+        NvValue out; out.tag = NV_DICT; out.u.dict = d;
+        return out;
+    }
+    if (v.tag == NV_LIST) {
+        NvList *l = b3_list_new_c();
+        for (size_t i = 0; i < v.u.list->len; i++) {
+            nv_list_push_raw(l, b3_json_sorted_c(v.u.list->items[i]));
+        }
+        NvValue out; out.tag = NV_LIST; out.u.list = l;
+        return out;
+    }
+    return nv_clone_value(v);
+}
+
+/* قيمة JSON إلى نصها (إلى_نص): النص نفسه، وإلا
+   JSON مضغوط غربي الأرقام. */
+static char *b3_json_to_text_c(NvValue v, int line, int col) {
+    if (v.tag == NV_STR) {
+        char *s = malloc(v.u.str->len + 1);
+        memcpy(s, v.u.str->data, v.u.str->len);
+        s[v.u.str->len] = '\0';
+        return s;
+    }
+    if (v.tag != NV_NIL && v.tag != NV_BOOL && v.tag != NV_NUM &&
+        v.tag != NV_LIST && v.tag != NV_DICT) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "قيمة لا تقبل كتابة JSON: %s", nv_type_name(v));
+    }
+    J14Buf out;
+    j14_buf_init(&out);
+    if (!json_write_value_c(v, &out, 0)) {
+        j14_buf_free(&out);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذرت كتابة JSON");
+    }
+    char *s = malloc(out.len + 1);
+    memcpy(s, out.data, out.len);
+    s[out.len] = '\0';
+    j14_buf_free(&out);
+    return s;
+}
+
+/* سطر بمعنى lines() في Rust: الفاصل `\\n` وحده،
+   وتُقلم `\\r` أخيرة من كل سطر، ولا سطر أخير فارغ
+   بعد `\\n` أخيرة؛ والنص الفارغ بلا أسطر. المشاهدات
+   غير مملوكة (تشير إلى النص الأصلي)؛ والمتصل يحرر
+   المصفوفة وحدها. */
+typedef struct { const char *ptr; size_t len; } B3LineC;
+
+static B3LineC *b3_split_lines_c(const char *text, size_t *n_out) {
+    size_t cap = 8, n = 0;
+    B3LineC *lines = malloc(cap * sizeof(B3LineC));
+    if (!lines) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", 0, 0);
+    const char *p = text;
+    if (*p == '\0') {
+        *n_out = 0;
+        return lines;
+    }
+    for (;;) {
+        const char *e = strchr(p, '\n');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        if (len > 0 && p[len - 1] == '\r') len--;
+        if (n == cap) {
+            cap *= 2;
+            B3LineC *grown = realloc(lines, cap * sizeof(B3LineC));
+            if (!grown) {
+                free(lines);
+                nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", 0, 0);
+            }
+            lines = grown;
+        }
+        lines[n].ptr = p;
+        lines[n].len = len;
+        n++;
+        if (!e) break;
+        p = e + 1;
+        if (*p == '\0') break;
+    }
+    *n_out = n;
+    return lines;
+}
+
+/* القيمة وكل ما تحتها تكراريا (النزول ..) — القيمة
+   نفسها أولا ثم الأبناء بترتيبهم. */
+static void b3_json_recurse_c(NvValue v, NvList *out) {
+    nv_list_push_raw(out, nv_clone_value(v));
+    if (v.tag == NV_LIST) {
+        for (size_t i = 0; i < v.u.list->len; i++) {
+            b3_json_recurse_c(v.u.list->items[i], out);
+        }
+    } else if (v.tag == NV_DICT) {
+        for (size_t i = 0; i < v.u.dict->len; i++) {
+            b3_json_recurse_c(v.u.dict->entries[i].val, out);
+        }
+    }
+}
+
+/* END لينكس3-نص مساعدات C */
+/* BEGIN لينكس3-نص دوال جسون C */
+/* جسون.من_أسطر(قيمة) — البند 204. */
+static NvValue nv_std_json_from_lines(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.من_أسطر";
+    nv_std_need_args(display, args, nargs, 1, line, col);
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    size_t nlines = 0;
+    B3LineC *lines = b3_split_lines_c(text, &nlines);
+    NvList *out = b3_list_new_c();
+    for (size_t i = 0; i < nlines; i++) {
+        nv_list_push_raw(out, nv_str_new(lines[i].ptr, lines[i].len));
+    }
+    free(lines);
+    NvValue v; v.tag = NV_LIST; v.u.list = out;
+    return v;
+}
+
+/* جسون.رتب_المفاتيح(قيمة) — البند 212. */
+static NvValue nv_std_json_sort_keys(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.رتب_المفاتيح";
+    nv_std_need_args(display, args, nargs, 1, line, col);
+    NvValue out = b3_json_sorted_c(args[0]);
+    return out;
+}
+
+/* جسون.حقل_اختياري — البند 232. */
+static NvValue nv_std_json_opt_field(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.حقل_اختياري";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    const char *name = nv_std_need_string(display, args[1], line, col);
+    if (args[0].tag != NV_DICT) return nv_nil();
+    int idx = nv_dict_find(args[0].u.dict, name);
+    if (idx < 0) return nv_nil();
+    return nv_clone_value(args[0].u.dict->entries[idx].val);
+}
+
+/* جسون.عناصر(قيمة) — البند 233. */
+static NvValue nv_std_json_elements(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.عناصر";
+    nv_std_need_args(display, args, nargs, 1, line, col);
+    NvValue v = args[0];
+    if (v.tag == NV_LIST) {
+        NvList *out = b3_list_new_c();
+        for (size_t i = 0; i < v.u.list->len; i++) {
+            nv_list_push_raw(out, nv_clone_value(v.u.list->items[i]));
+        }
+        NvValue r; r.tag = NV_LIST; r.u.list = out;
+        return r;
+    }
+    if (v.tag == NV_DICT) {
+        NvList *out = b3_list_new_c();
+        for (size_t i = 0; i < v.u.dict->len; i++) {
+            nv_list_push_raw(out, nv_clone_value(v.u.dict->entries[i].val));
+        }
+        NvValue r; r.tag = NV_LIST; r.u.list = out;
+        return r;
+    }
+    if (v.tag == NV_NIL) {
+        NvValue r; r.tag = NV_LIST; r.u.list = b3_list_new_c();
+        return r;
+    }
+    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة أو قاموسا أو لاشيء لكن أعطيت %s", display, nv_type_name(v));
+}
+
+/* جسون.عنصر_برقم — البند 234. */
+static NvValue nv_std_json_nth(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.عنصر_برقم";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    if (args[0].tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة لكن أعطيت %s", display, nv_type_name(args[0]));
+    }
+    long long n = nv_std_need_integer(display, args[1], line, col);
+    long long len = (long long)args[0].u.list->len;
+    long long idx = n < 0 ? len + n : n;
+    if (idx < 0 || idx >= len) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s فهرس خارج النطاق: %lld والقائمة طولها %lld", display, n, len);
+    }
+    return nv_clone_value(args[0].u.list->items[idx]);
+}
+
+/* جسون.انتق_حقولا — البند 240. */
+static NvValue nv_std_json_pick_fields(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.انتق_حقولا";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    if (args[0].tag != NV_DICT) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قاموسا لكن أعطيت %s", display, nv_type_name(args[0]));
+    }
+    if (args[1].tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة أسماء لكن أعطيت %s", display, nv_type_name(args[1]));
+    }
+    NvDict *out = b3_dict_new_c();
+    for (size_t i = 0; i < args[1].u.list->len; i++) {
+        NvValue n = args[1].u.list->items[i];
+        if (n.tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع أسماء نصوص لكن أعطيت %s", display, nv_type_name(n));
+        }
+        int idx = nv_dict_find(args[0].u.dict, n.u.str->data);
+        NvValue v = idx < 0 ? nv_nil() : nv_clone_value(args[0].u.dict->entries[idx].val);
+        nv_dict_set_raw(out, n.u.str->data, v);
+    }
+    NvValue r; r.tag = NV_DICT; r.u.dict = out;
+    return r;
+}
+
+/* جسون.كل_ما_تحتها(قيمة) — البند 242. */
+static NvValue nv_std_json_recurse(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.كل_ما_تحتها";
+    nv_std_need_args(display, args, nargs, 1, line, col);
+    NvList *out = b3_list_new_c();
+    b3_json_recurse_c(args[0], out);
+    NvValue v; v.tag = NV_LIST; v.u.list = out;
+    return v;
+}
+
+/* جسون.اطرح — البند 245. */
+static NvValue nv_std_json_sub(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.اطرح";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    if (args[0].tag == NV_NUM && args[1].tag == NV_NUM) {
+        return nv_num(args[0].u.num - args[1].u.num);
+    }
+    if (args[0].tag == NV_LIST && args[1].tag == NV_LIST) {
+        NvList *out = b3_list_new_c();
+        for (size_t i = 0; i < args[0].u.list->len; i++) {
+            NvValue it = args[0].u.list->items[i];
+            int found = 0;
+            for (size_t j = 0; j < args[1].u.list->len; j++) {
+                if (b3_json_cmp_c(it, args[1].u.list->items[j]) == 0) { found = 1; break; }
+            }
+            if (!found) nv_list_push_raw(out, nv_clone_value(it));
+        }
+        NvValue r; r.tag = NV_LIST; r.u.list = out;
+        return r;
+    }
+    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع عددين أو قائمتين لكن أعطيت %s و%s", display, nv_type_name(args[0]), nv_type_name(args[1]));
+}
+
+/* جسون.كرر_نص — البند 246. */
+static NvValue nv_std_json_repeat_text(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.كرر_نص";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    long long n = nv_std_need_integer(display, args[1], line, col);
+    if (n < 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s عدد التكرار %lld غير صالح (الصالح 0 أو أكثر)", display, n);
+    }
+    size_t tlen = strlen(text);
+    size_t chars = nv_utf8_chars(text, tlen);
+    if (n > 0 && chars > 1000000 / (size_t)n) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "النص كبير جدا");
+    }
+    J14Buf buf;
+    j14_buf_init(&buf);
+    for (long long i = 0; i < n; i++) j14_buf_addn(&buf, text, tlen);
+    NvValue out = nv_str_new(buf.data, buf.len);
+    j14_buf_free(&buf);
+    return out;
+}
+
+/* جسون.أو_بديل — البند 249. */
+static NvValue nv_std_json_alt(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.أو_بديل";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    if (args[0].tag == NV_NIL) return args[1];
+    if (args[0].tag == NV_BOOL && !args[0].u.boolean) return args[1];
+    return args[0];
+}
+
+/* جسون.مفاتيح(قيمة) — البند 269. */
+static NvValue nv_std_json_keys(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.مفاتيح";
+    nv_std_need_args(display, args, nargs, 1, line, col);
+    NvValue v = args[0];
+    if (v.tag == NV_DICT) {
+        size_t n = v.u.dict->len;
+        const char **keys = malloc((n ? n : 1) * sizeof(char *));
+        for (size_t i = 0; i < n; i++) keys[i] = v.u.dict->entries[i].key;
+        qsort(keys, n, sizeof(char *), b3_key_cmp_c);
+        NvList *out = b3_list_new_c();
+        for (size_t i = 0; i < n; i++) {
+            nv_list_push_raw(out, nv_str_cstr(keys[i]));
+        }
+        free(keys);
+        NvValue r; r.tag = NV_LIST; r.u.list = out;
+        return r;
+    }
+    if (v.tag == NV_LIST) {
+        NvList *out = b3_list_new_c();
+        for (size_t i = 0; i < v.u.list->len; i++) {
+            nv_list_push_raw(out, nv_num((double)i));
+        }
+        NvValue r; r.tag = NV_LIST; r.u.list = out;
+        return r;
+    }
+    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قاموسا أو قائمة لكن أعطيت %s", display, nv_type_name(v));
+}
+
+/* جسون.اجمع(قيمة) — البند 281. */
+static NvValue nv_std_json_add(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.اجمع";
+    nv_std_need_args(display, args, nargs, 1, line, col);
+    if (args[0].tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة لكن أعطيت %s", display, nv_type_name(args[0]));
+    }
+    NvList *items = args[0].u.list;
+    if (items->len == 0) return nv_nil();
+    NvValue first = items->items[0];
+    if (first.tag == NV_NUM) {
+        double sum = 0.0;
+        for (size_t i = 0; i < items->len; i++) {
+            NvValue it = items->items[i];
+            if (it.tag != NV_NUM) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة أعداد لكن أعطيت %s", display, nv_type_name(it));
+            }
+            sum += it.u.num;
+        }
+        return nv_num(sum);
+    }
+    if (first.tag == NV_STR) {
+        J14Buf buf;
+        j14_buf_init(&buf);
+        for (size_t i = 0; i < items->len; i++) {
+            NvValue it = items->items[i];
+            if (it.tag != NV_STR) {
+                j14_buf_free(&buf);
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة نصوص لكن أعطيت %s", display, nv_type_name(it));
+            }
+            j14_buf_addn(&buf, it.u.str->data, it.u.str->len);
+        }
+        NvValue out = nv_str_new(buf.data, buf.len);
+        j14_buf_free(&buf);
+        return out;
+    }
+    if (first.tag == NV_LIST) {
+        NvList *out = b3_list_new_c();
+        for (size_t i = 0; i < items->len; i++) {
+            NvValue it = items->items[i];
+            if (it.tag != NV_LIST) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة قوائم لكن أعطيت %s", display, nv_type_name(it));
+            }
+            for (size_t j = 0; j < it.u.list->len; j++) {
+                nv_list_push_raw(out, nv_clone_value(it.u.list->items[j]));
+            }
+        }
+        NvValue r; r.tag = NV_LIST; r.u.list = out;
+        return r;
+    }
+    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة أعداد أو نصوص أو قوائم لكن أعطيت %s", display, nv_type_name(first));
+}
+
+/* جسون.أي_عنصر — أي_عنصر(قائمة، دالة_شرط) — البند 282: هل أي عنصر يحقق شرطا (والفارغة خطأ). */
+static NvValue nv_std_json_any(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.أي_عنصر";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    if (args[0].tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة لكن أعطيت %s", display, nv_type_name(args[0]));
+    }
+    for (size_t i = 0; i < args[0].u.list->len; i++) {
+        if (j3_call_bool(args[1], args[0].u.list->items[i], display, line, col)) {
+            return nv_bool(1);
+        }
+    }
+    return nv_bool(0);
+}
+
+/* جسون.كل_العناصر — كل_العناصر(قائمة، دالة_شرط) — البند 283: هل كل العناصر تحقق شرطا (والفارغة صحيح). */
+static NvValue nv_std_json_all(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.كل_العناصر";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    if (args[0].tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة لكن أعطيت %s", display, nv_type_name(args[0]));
+    }
+    for (size_t i = 0; i < args[0].u.list->len; i++) {
+        if (!j3_call_bool(args[1], args[0].u.list->items[i], display, line, col)) {
+            return nv_bool(0);
+        }
+    }
+    return nv_bool(1);
+}
+
+/* جسون.إلى_نص(قيمة) — البند 288. */
+static NvValue nv_std_json_to_text(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.إلى_نص";
+    nv_std_need_args(display, args, nargs, 1, line, col);
+    char *s = b3_json_to_text_c(args[0], line, col);
+    NvValue out = nv_str_cstr(s);
+    free(s);
+    return out;
+}
+
+/* جسون.مواضع — البند 297. */
+static NvValue nv_std_json_indices(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.مواضع";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    if (args[0].tag == NV_LIST) {
+        NvList *out = b3_list_new_c();
+        for (size_t i = 0; i < args[0].u.list->len; i++) {
+            if (b3_json_cmp_c(args[0].u.list->items[i], args[1]) == 0) {
+                nv_list_push_raw(out, nv_num((double)i));
+            }
+        }
+        NvValue r; r.tag = NV_LIST; r.u.list = out;
+        return r;
+    }
+    if (args[0].tag == NV_STR) {
+        if (args[1].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا مطلوبا في نص لكن أعطيت %s", display, nv_type_name(args[1]));
+        }
+        const char *hay = args[0].u.str->data;
+        const char *needle = args[1].u.str->data;
+        if (needle[0] == '\0') {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s النص المطلوب فارغ", display);
+        }
+        NvList *out = b3_list_new_c();
+        size_t nlen = strlen(needle);
+        const char *p = hay;
+        const char *hit;
+        while ((hit = strstr(p, needle)) != NULL) {
+            nv_list_push_raw(out, nv_num((double)nv_utf8_chars(hay, (size_t)(hit - hay))));
+            p = hit + nlen;
+        }
+        NvValue r; r.tag = NV_LIST; r.u.list = out;
+        return r;
+    }
+    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة أو نصا لكن أعطيت %s", display, nv_type_name(args[0]));
+}
+
+/* جسون.فهرس_أول — البند 298. */
+static NvValue nv_std_json_index_first(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.فهرس_أول";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    if (args[0].tag == NV_LIST) {
+        for (size_t i = 0; i < args[0].u.list->len; i++) {
+            if (b3_json_cmp_c(args[0].u.list->items[i], args[1]) == 0) {
+                return nv_num((double)i);
+            }
+        }
+        return nv_nil();
+    }
+    if (args[0].tag == NV_STR) {
+        if (args[1].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا مطلوبا في نص لكن أعطيت %s", display, nv_type_name(args[1]));
+        }
+        long idx = b3_str_index_c(args[0].u.str->data, args[1].u.str->data);
+        if (idx < 0) return nv_nil();
+        return nv_num((double)idx);
+    }
+    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة أو نصا لكن أعطيت %s", display, nv_type_name(args[0]));
+}
+
+/* جسون.فهرس_آخر — البند 298. */
+static NvValue nv_std_json_index_last(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.فهرس_آخر";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    if (args[0].tag == NV_LIST) {
+        long found = -1;
+        for (size_t i = 0; i < args[0].u.list->len; i++) {
+            if (b3_json_cmp_c(args[0].u.list->items[i], args[1]) == 0) found = (long)i;
+        }
+        if (found < 0) return nv_nil();
+        return nv_num((double)found);
+    }
+    if (args[0].tag == NV_STR) {
+        if (args[1].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا مطلوبا في نص لكن أعطيت %s", display, nv_type_name(args[1]));
+        }
+        const char *hay = args[0].u.str->data;
+        const char *needle = args[1].u.str->data;
+        if (needle[0] == '\0') {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s النص المطلوب فارغ", display);
+        }
+        size_t nlen = strlen(needle);
+        const char *p = hay;
+        const char *hit;
+        long found = -1;
+        while ((hit = strstr(p, needle)) != NULL) {
+            found = (long)nv_utf8_chars(hay, (size_t)(hit - hay));
+            p = hit + nlen;
+        }
+        if (found < 0) return nv_nil();
+        return nv_num((double)found);
+    }
+    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة أو نصا لكن أعطيت %s", display, nv_type_name(args[0]));
+}
+
+/* جسون.إلى_إدخالات(قيمة) — البند 304. */
+static NvValue nv_std_json_to_entries(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.إلى_إدخالات";
+    nv_std_need_args(display, args, nargs, 1, line, col);
+    if (args[0].tag != NV_DICT) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قاموسا لكن أعطيت %s", display, nv_type_name(args[0]));
+    }
+    NvList *out = b3_list_new_c();
+    for (size_t i = 0; i < args[0].u.dict->len; i++) {
+        NvDict *d = b3_dict_new_c();
+        nv_dict_set_raw(d, "مفتاح", nv_str_cstr(args[0].u.dict->entries[i].key));
+        nv_dict_set_raw(d, "قيمة", nv_clone_value(args[0].u.dict->entries[i].val));
+        NvValue rec; rec.tag = NV_DICT; rec.u.dict = d;
+        nv_list_push_raw(out, rec);
+    }
+    NvValue r; r.tag = NV_LIST; r.u.list = out;
+    return r;
+}
+
+/* جسون.من_إدخالات(قيمة) — البند 305. */
+static NvValue nv_std_json_from_entries(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.من_إدخالات";
+    nv_std_need_args(display, args, nargs, 1, line, col);
+    if (args[0].tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة لكن أعطيت %s", display, nv_type_name(args[0]));
+    }
+    NvDict *out = b3_dict_new_c();
+    for (size_t i = 0; i < args[0].u.list->len; i++) {
+        NvValue it = args[0].u.list->items[i];
+        if (it.tag != NV_DICT) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع إدخالات قواميس لكن أعطيت %s", display, nv_type_name(it));
+        }
+        int ki = nv_dict_find(it.u.dict, "مفتاح");
+        if (ki < 0) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s إدخال بلا مفتاح", display);
+        }
+        NvValue kv = it.u.dict->entries[ki].val;
+        if (kv.tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع مفتاحا نصيا لكن أعطيت %s", display, nv_type_name(kv));
+        }
+        int vi = nv_dict_find(it.u.dict, "قيمة");
+        NvValue val = vi < 0 ? nv_nil() : nv_clone_value(it.u.dict->entries[vi].val);
+        nv_dict_set_raw(out, kv.u.str->data, val);
+    }
+    NvValue r; r.tag = NV_DICT; r.u.dict = out;
+    return r;
+}
+
+/* جسون.جمع_حسب — جمع_حسب(قائمة، دالة_مفتاح) — البند 307: اجمع عناصر متساوية المفتاح في مجموعات (بترتيب أول ظهور). */
+static NvValue nv_std_json_group_by(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.جمع_حسب";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    if (args[0].tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة لكن أعطيت %s", display, nv_type_name(args[0]));
+    }
+    NvValue func = args[1];
+    /* مجموعات بترتيب أول ظهور: مفاتيح نصية + قوائم. */
+    char **keys = NULL;
+    NvList **groups = NULL;
+    size_t ngroups = 0;
+    for (size_t i = 0; i < args[0].u.list->len; i++) {
+        NvValue item = args[0].u.list->items[i];
+        NvValue kv = j3_call_single(func, item, line, col);
+        char *key = b3_json_to_text_c(kv, line, col);
+        size_t g = ngroups;
+        for (size_t j = 0; j < ngroups; j++) {
+            if (strcmp(keys[j], key) == 0) { g = j; break; }
+        }
+        if (g == ngroups) {
+            keys = realloc(keys, (ngroups + 1) * sizeof(char *));
+            groups = realloc(groups, (ngroups + 1) * sizeof(NvList *));
+            keys[ngroups] = key;
+            groups[ngroups] = b3_list_new_c();
+            ngroups++;
+        } else {
+            free(key);
+        }
+        nv_list_push_raw(groups[g], nv_clone_value(item));
+    }
+    NvList *out = b3_list_new_c();
+    for (size_t i = 0; i < ngroups; i++) {
+        NvValue grp; grp.tag = NV_LIST; grp.u.list = groups[i];
+        nv_list_push_raw(out, grp);
+        free(keys[i]);
+    }
+    free(keys);
+    free(groups);
+    NvValue r; r.tag = NV_LIST; r.u.list = out;
+    return r;
+}
+/* END لينكس3-نص دوال جسون C */
+
+/* BEGIN لينكس3-نص يدوي جسون C */
+/* مرايا C اليدوية لوحدة جسون (§8): لون وابتلع
+   ومرشح_من_ملف — تعكس كود Rust اليدوي حرفيا
+   (stdlib.rs: b3_json_colorize وjson_color
+   وb3_split_top_json وjson_slurp
+   وjson_filter_from_file). */
+
+/* تحقق صحة UTF-8 (صارم: بلا زائد الطول وبلا
+   بدائل وبلا ما فوق U+10FFFF). */
+static int b3_utf8_valid_c(const unsigned char *s, size_t n) {
+    size_t i = 0;
+    while (i < n) {
+        unsigned char c = s[i];
+        if (c < 0x80) {
+            i++;
+            continue;
+        }
+        size_t extra;
+        uint32_t cp;
+        if ((c & 0xE0) == 0xC0) {
+            extra = 1;
+            cp = c & 0x1F;
+            if (cp == 0) return 0;
+        } else if ((c & 0xF0) == 0xE0) {
+            extra = 2;
+            cp = c & 0x0F;
+        } else if ((c & 0xF8) == 0xF0) {
+            extra = 3;
+            cp = c & 0x07;
+        } else {
+            return 0;
+        }
+        if (i + extra >= n) return 0;
+        for (size_t k = 1; k <= extra; k++) {
+            if ((s[i + k] & 0xC0) != 0x80) return 0;
+            cp = (cp << 6) | (s[i + k] & 0x3F);
+        }
+        if (extra == 1 && cp < 0x80) return 0;
+        if (extra == 2 && cp < 0x800) return 0;
+        if (extra == 3 && cp < 0x10000) return 0;
+        if (cp > 0x10FFFF) return 0;
+        if (cp >= 0xD800 && cp <= 0xDFFF) return 0;
+        i += extra + 1;
+    }
+    return 1;
+}
+
+/* اقرأ ملفا كاملا نصا (والفشل أو عدم صلاحية
+   UTF-8 ← خطأ «تعذر قراءة الملف» نفسه). */
+static char *b3_read_text_file_c(const char *display, const char *path_disp, const char *resolved, size_t *len_out, int line, int col) {
+    FILE *f = fopen(resolved, "rb");
+    if (!f) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر قراءة الملف: %s", display, path_disp);
+    }
+    size_t cap = 4096, len = 0;
+    char *buf = malloc(cap + 1);
+    if (!buf) {
+        fclose(f);
+        nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+    }
+    for (;;) {
+        if (len == cap) {
+            cap *= 2;
+            char *grown = realloc(buf, cap + 1);
+            if (!grown) {
+                free(buf);
+                fclose(f);
+                nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+            }
+            buf = grown;
+        }
+        size_t r = fread(buf + len, 1, cap - len, f);
+        len += r;
+        if (r == 0) break;
+    }
+    fclose(f);
+    buf[len] = '\0';
+    if (!b3_utf8_valid_c((unsigned char *)buf, len)) {
+        free(buf);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر قراءة الملف: %s", display, path_disp);
+    }
+    if (len_out) *len_out = len;
+    return buf;
+}
+
+/* لوّن نص JSON بألوان ANSI الثابتة: المفاتيح
+   سماوي 36، والنصوص أخضر 32، والأعداد أصفر 33،
+   وصحيح/خطأ أرجواني 35، وnull أحمر 31. */
+static void b3_json_colorize_c(const char *text, J14Buf *out) {
+    size_t n = strlen(text);
+    size_t i = 0;
+    while (i < n) {
+        unsigned char c = (unsigned char)text[i];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f') {
+            j14_buf_addc(out, (char)c);
+            i++;
+            continue;
+        }
+        if (c == '"') {
+            size_t start = i;
+            i++;
+            while (i < n) {
+                if (text[i] == '\\') {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    i++;
+                    break;
+                }
+                i++;
+            }
+            size_t j = i;
+            while (j < n && (text[j] == ' ' || text[j] == '\t' || text[j] == '\n' ||
+                             text[j] == '\r' || text[j] == '\v' || text[j] == '\f')) {
+                j++;
+            }
+            int is_key = j < n && text[j] == ':';
+            j14_buf_add(out, is_key ? "\x1b[36m" : "\x1b[32m");
+            j14_buf_addn(out, text + start, i - start);
+            j14_buf_add(out, "\x1b[0m");
+            continue;
+        }
+        if (c == '-' || (c >= '0' && c <= '9')) {
+            size_t start = i;
+            while (i < n) {
+                unsigned char d = (unsigned char)text[i];
+                if ((d >= '0' && d <= '9') || (d >= 'a' && d <= 'z') ||
+                    (d >= 'A' && d <= 'Z') || d == '-' || d == '+' || d == '.') {
+                    i++;
+                } else {
+                    break;
+                }
+            }
+            j14_buf_add(out, "\x1b[33m");
+            j14_buf_addn(out, text + start, i - start);
+            j14_buf_add(out, "\x1b[0m");
+            continue;
+        }
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+            size_t start = i;
+            while (i < n) {
+                unsigned char d = (unsigned char)text[i];
+                if ((d >= 'a' && d <= 'z') || (d >= 'A' && d <= 'Z')) {
+                    i++;
+                } else {
+                    break;
+                }
+            }
+            size_t tlen = i - start;
+            int is_null = tlen == 4 && memcmp(text + start, "null", 4) == 0;
+            j14_buf_add(out, is_null ? "\x1b[31m" : "\x1b[35m");
+            j14_buf_addn(out, text + start, tlen);
+            j14_buf_add(out, "\x1b[0m");
+            continue;
+        }
+        j14_buf_addc(out, text[i]);
+        i++;
+    }
+}
+
+/* جسون.لون(نص_جيسون) — البند 213. */
+static NvValue nv_std_json_color(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.لون";
+    nv_std_need_args(display, args, nargs, 1, line, col);
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    if (nv_utf8_chars(text, strlen(text)) > RX_MAX_TEXT) {
+        nv_error(NV_ERR_RUNTIME, "النص كبير جدا", line, col);
+    }
+    NvValue tmp;
+    if (!json_parse_doc(text, &tmp)) {
+        nv_error(NV_ERR_RUNTIME, "نص JSON غير صالح", line, col);
+    }
+    J14Buf out;
+    j14_buf_init(&out);
+    b3_json_colorize_c(text, &out);
+    NvValue r = nv_str_new(out.data, out.len);
+    j14_buf_free(&out);
+    return r;
+}
+
+/* جسون.ابتلع(نص) — البند 205: اجمع كل قيم JSON
+   في النص في مصفوفة واحدة؛ والفارغ ← قائمة
+   فارغة؛ والتالف ← خطأ عربي. */
+static NvValue nv_std_json_slurp(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.ابتلع";
+    nv_std_need_args(display, args, nargs, 1, line, col);
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    if (nv_utf8_chars(text, strlen(text)) > RX_MAX_TEXT) {
+        nv_error(NV_ERR_RUNTIME, "النص كبير جدا", line, col);
+    }
+    NvList *out = b3_list_new_c();
+    size_t n = strlen(text);
+    size_t i = 0;
+    while (i < n) {
+        while (i < n && (text[i] == ' ' || text[i] == '\t' || text[i] == '\n' || text[i] == '\r')) {
+            i++;
+        }
+        if (i >= n) break;
+        size_t start = i;
+        if (text[i] == '{' || text[i] == '[') {
+            long depth = 0;
+            while (i < n) {
+                char c = text[i];
+                if (c == '"') {
+                    i++;
+                    while (i < n) {
+                        if (text[i] == '\\') {
+                            i += 2;
+                            continue;
+                        }
+                        if (text[i] == '"') {
+                            i++;
+                            break;
+                        }
+                        i++;
+                    }
+                    continue;
+                }
+                if (c == '{' || c == '[') {
+                    depth++;
+                } else if (c == '}' || c == ']') {
+                    depth--;
+                    i++;
+                    if (depth == 0) break;
+                    continue;
+                }
+                i++;
+            }
+        } else if (text[i] == '"') {
+            i++;
+            while (i < n) {
+                if (text[i] == '\\') {
+                    i += 2;
+                    continue;
+                }
+                if (text[i] == '"') {
+                    i++;
+                    break;
+                }
+                i++;
+            }
+        } else {
+            while (i < n && text[i] != ' ' && text[i] != '\t' && text[i] != '\n' && text[i] != '\r') {
+                i++;
+            }
+        }
+        char *piece = malloc(i - start + 1);
+        memcpy(piece, text + start, i - start);
+        piece[i - start] = '\0';
+        NvValue v;
+        int ok = json_parse_doc(piece, &v);
+        free(piece);
+        if (!ok) {
+            nv_error(NV_ERR_RUNTIME, "نص JSON غير صالح", line, col);
+        }
+        nv_list_push_raw(out, v);
+    }
+    NvValue r;
+    r.tag = NV_LIST;
+    r.u.list = out;
+    return r;
+}
+
+/* جسون.مرشح_من_ملف(قيمة، مسار) — البند 220. */
+static NvValue nv_std_json_filter_from_file(NvValue *args, int nargs, int line, int col) {
+    const char *display = "جسون.مرشح_من_ملف";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    if (args[0].tag != NV_DICT) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قاموسا لكن أعطيت %s", display, nv_type_name(args[0]));
+    }
+    const char *path = nv_std_need_string(display, args[1], line, col);
+    char *resolved = nv_resolve_path(path, line, col);
+    size_t clen = 0;
+    char *content = b3_read_text_file_c(display, path, resolved, &clen, line, col);
+    free(resolved);
+    if (nv_utf8_chars(content, clen) > RX_MAX_TEXT) {
+        free(content);
+        nv_error(NV_ERR_RUNTIME, "النص كبير جدا", line, col);
+    }
+    size_t nlines = 0;
+    B3LineC *lines = b3_split_lines_c(content, &nlines);
+    NvDict *out = b3_dict_new_c();
+    for (size_t i = 0; i < nlines; i++) {
+        const char *p = lines[i].ptr;
+        size_t len = lines[i].len;
+        while (len > 0 && (*p == ' ' || *p == '\t')) {
+            p++;
+            len--;
+        }
+        while (len > 0 && (p[len - 1] == ' ' || p[len - 1] == '\t')) {
+            len--;
+        }
+        if (len == 0) continue;
+        char *name = malloc(len + 1);
+        memcpy(name, p, len);
+        name[len] = '\0';
+        int idx = nv_dict_find(args[0].u.dict, name);
+        NvValue v = idx < 0 ? nv_nil() : nv_clone_value(args[0].u.dict->entries[idx].val);
+        nv_dict_set_raw(out, name, v);
+        free(name);
+    }
+    free(lines);
+    free(content);
+    NvValue r;
+    r.tag = NV_DICT;
+    r.u.dict = out;
+    return r;
+}
+/* END لينكس3-نص يدوي جسون C */
+
 void nv_std_json_fill(NvDict *d) {
     nv_std_add_fn(d, "اقرأ", nv_std_json_read);
     nv_std_add_fn(d, "اكتب", nv_std_json_write);
-    nv_std_add_fn(d, "صالح", nv_std_json_valid);
+    nv_std_add_fn(d, "صالح", nv_std_json_valid);/* BEGIN لينكس3-نص ملء جسون */
+    nv_std_add_fn(d, "من_أسطر", nv_std_json_from_lines);
+    nv_std_add_fn(d, "ابتلع", nv_std_json_slurp);
+    nv_std_add_fn(d, "رتب_المفاتيح", nv_std_json_sort_keys);
+    nv_std_add_fn(d, "لون", nv_std_json_color);
+    nv_std_add_fn(d, "مرشح_من_ملف", nv_std_json_filter_from_file);
+    nv_std_add_fn(d, "حقل_اختياري", nv_std_json_opt_field);
+    nv_std_add_fn(d, "عناصر", nv_std_json_elements);
+    nv_std_add_fn(d, "عنصر_برقم", nv_std_json_nth);
+    nv_std_add_fn(d, "انتق_حقولا", nv_std_json_pick_fields);
+    nv_std_add_fn(d, "كل_ما_تحتها", nv_std_json_recurse);
+    nv_std_add_fn(d, "اطرح", nv_std_json_sub);
+    nv_std_add_fn(d, "كرر_نص", nv_std_json_repeat_text);
+    nv_std_add_fn(d, "أو_بديل", nv_std_json_alt);
+    nv_std_add_fn(d, "مفاتيح", nv_std_json_keys);
+    nv_std_add_fn(d, "اجمع", nv_std_json_add);
+    nv_std_add_fn(d, "أي_عنصر", nv_std_json_any);
+    nv_std_add_fn(d, "كل_العناصر", nv_std_json_all);
+    nv_std_add_fn(d, "إلى_نص", nv_std_json_to_text);
+    nv_std_add_fn(d, "مواضع", nv_std_json_indices);
+    nv_std_add_fn(d, "فهرس_أول", nv_std_json_index_first);
+    nv_std_add_fn(d, "فهرس_آخر", nv_std_json_index_last);
+    nv_std_add_fn(d, "إلى_إدخالات", nv_std_json_to_entries);
+    nv_std_add_fn(d, "من_إدخالات", nv_std_json_from_entries);
+    nv_std_add_fn(d, "جمع_حسب", nv_std_json_group_by);
+/* END لينكس3-نص ملء جسون */
+
 }
 
 // ---------- 222: XML (مرآة Rust حرفيا) ----------
@@ -12481,6 +13602,324 @@ static NvValue nv_std_text_repr(NvValue *args, int nargs, int line, int col) {
     return out;
 }
 
+/* BEGIN لينكس3-نص دوال نص C */
+/* نص.قلم(نص) — البند 180: أزل المسافات من
+   طرفي نص (تقليم مسافات ASCII في المرآة). */
+static NvValue nv_std_text_trim(NvValue *args, int nargs, int line, int col) {
+    const char *display = "نص.قلم";
+    nv_std_need_args(display, args, nargs, 1, line, col);
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    const char *s = text;
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r' ||
+           *s == '\v' || *s == '\f') s++;
+    const char *e = text + strlen(text);
+    while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\n' || e[-1] == '\r' ||
+                     e[-1] == '\v' || e[-1] == '\f')) e--;
+    return nv_str_new(s, (size_t)(e - s));
+}
+/* END لينكس3-نص دوال نص C */
+
+/* BEGIN لينكس3-نص يدوي نص C */
+/* مرآة C اليدوية لنص.نسق_بصيغة (§6: البندان
+   174 و173) — تعكس كود Rust اليدوي حرفيا
+   (stdlib.rs: b3_printf_int وtext_printf_format). */
+
+/* عدد صحيح بعلامة مع حشو الأصفار والعرض
+   (كما b3_printf_int في Rust حرفيا). */
+static void b3_printf_int_c(J14Buf *out, const char *digits, int neg, int plus, int space, int zero, int minus, size_t width) {
+    const char *sign = neg ? "-" : plus ? "+" : space ? " " : "";
+    size_t slen = strlen(sign);
+    size_t dlen = strlen(digits);
+    size_t total = slen + dlen;
+    size_t zeros = 0;
+    if (zero && !minus && width > total) zeros = width - total;
+    size_t outlen = total + zeros;
+    size_t pad = 0;
+    if (width > outlen) pad = width - outlen;
+    if (!minus) {
+        for (size_t i = 0; i < pad; i++) j14_buf_addc(out, ' ');
+    }
+    j14_buf_add(out, sign);
+    for (size_t i = 0; i < zeros; i++) j14_buf_addc(out, '0');
+    j14_buf_add(out, digits);
+    if (minus) {
+        for (size_t i = 0; i < pad; i++) j14_buf_addc(out, ' ');
+    }
+}
+
+/* حشو نص (بالبايتات مع عدّ محارف) إلى عرض:
+   ناقص ← يمين بمسافات؛ وصفر ← أصفار بادئة
+   (قبل البادئة كما Rust)؛ وإلا مسافات بادئة. */
+static void b3_printf_pad_c(J14Buf *out, const char *s, size_t nbytes, size_t nchars, int minus, int zero, size_t width) {
+    size_t pad = 0;
+    if (width > nchars) pad = width - nchars;
+    if (minus) {
+        j14_buf_addn(out, s, nbytes);
+        for (size_t i = 0; i < pad; i++) j14_buf_addc(out, ' ');
+    } else if (zero) {
+        for (size_t i = 0; i < pad; i++) j14_buf_addc(out, '0');
+        j14_buf_addn(out, s, nbytes);
+    } else {
+        for (size_t i = 0; i < pad; i++) j14_buf_addc(out, ' ');
+        j14_buf_addn(out, s, nbytes);
+    }
+}
+
+/* عدد بصيغة JSON المختصرة (كما json_fmt_number). */
+static char *b3_printf_num_c(double n) {
+    J14Buf buf;
+    j14_buf_init(&buf);
+    json_fmt_num_c(n, &buf);
+    char *s = malloc(buf.len + 1);
+    memcpy(s, buf.data, buf.len);
+    s[buf.len] = '\0';
+    j14_buf_free(&buf);
+    return s;
+}
+
+/* اقطع نص UTF-8 إلى أول p محارف (يعيد طول البايتات). */
+static size_t b3_printf_trunc_c(const char *s, size_t nbytes, size_t p) {
+    size_t i = 0, count = 0;
+    while (i < nbytes && count < p) {
+        unsigned char c = (unsigned char)s[i];
+        size_t adv = 1;
+        if ((c & 0xE0) == 0xC0) adv = 2;
+        else if ((c & 0xF0) == 0xE0) adv = 3;
+        else if ((c & 0xF8) == 0xF0) adv = 4;
+        if (i + adv > nbytes) break;
+        i += adv;
+        count++;
+    }
+    return i;
+}
+
+/* نص.نسق_بصيغة(صيغة، قائمة_قيم) — البندان 174 و173. */
+static NvValue nv_std_text_printf_format(NvValue *args, int nargs, int line, int col) {
+    const char *display = "نص.نسق_بصيغة";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    const char *fmt = nv_std_need_string(display, args[0], line, col);
+    if (nv_utf8_chars(fmt, strlen(fmt)) > 100000) {
+        nv_error(NV_ERR_RUNTIME, "صيغة التنسيق كبيرة جدا", line, col);
+    }
+    if (args[1].tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة قيم لكن أعطيت %s", display, nv_type_name(args[1]));
+    }
+    NvList *vals = args[1].u.list;
+    size_t used = 0;
+    J14Buf out;
+    j14_buf_init(&out);
+    size_t flen = strlen(fmt);
+    size_t i = 0;
+    while (i < flen) {
+        char c = fmt[i];
+        if (c != '%') {
+            j14_buf_addc(&out, c);
+            i++;
+            continue;
+        }
+        i++;
+        if (i < flen && fmt[i] == '%') {
+            j14_buf_addc(&out, '%');
+            i++;
+            continue;
+        }
+        int minus = 0, plus = 0, space = 0, zero = 0, hash = 0;
+        for (;;) {
+            if (i >= flen) break;
+            if (fmt[i] == '-') { minus = 1; i++; }
+            else if (fmt[i] == '+') { plus = 1; i++; }
+            else if (fmt[i] == ' ') { space = 1; i++; }
+            else if (fmt[i] == '0') { zero = 1; i++; }
+            else if (fmt[i] == '#') { hash = 1; i++; }
+            else break;
+        }
+        size_t width = 0;
+        while (i < flen && fmt[i] >= '0' && fmt[i] <= '9') {
+            width = width * 10 + (size_t)(fmt[i] - '0');
+            i++;
+        }
+        int has_prec = 0;
+        size_t prec = 0;
+        if (i < flen && fmt[i] == '.') {
+            i++;
+            int any = 0;
+            while (i < flen && fmt[i] >= '0' && fmt[i] <= '9') {
+                prec = prec * 10 + (size_t)(fmt[i] - '0');
+                any = 1;
+                i++;
+            }
+            if (!any) {
+                j14_buf_free(&out);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s دقة بلا أرقام في مواصفة التنسيق", display);
+            }
+            has_prec = 1;
+        }
+        if (i >= flen) {
+            j14_buf_free(&out);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مواصفة تنسيق ناقصة في نهاية الصيغة", display);
+        }
+        char conv = fmt[i];
+        i++;
+        if (used >= vals->len) {
+            j14_buf_free(&out);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مواصفة التنسيق تتطلب معاملا آخر", display);
+        }
+        NvValue v = vals->items[used];
+        used++;
+        if (conv == 'd' || conv == 'i') {
+            if (v.tag != NV_NUM) {
+                j14_buf_free(&out);
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع عددا لكن أعطيت %s", display, nv_type_name(v));
+            }
+            double n = v.u.num;
+            if (!isfinite(n) || n < -9223372036854775808.0 || n > 9223372036854775808.0) {
+                char *ns = b3_printf_num_c(n);
+                j14_buf_free(&out);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العدد %s لا يصلح لمواصفة %%d", display, ns);
+            }
+            double td = trunc(n);
+            long long iv;
+            if (td >= 9223372036854775808.0) iv = 9223372036854775807LL;
+            else if (td <= -9223372036854775808.0) iv = (-9223372036854775807LL - 1);
+            else iv = (long long)td;
+            unsigned long long mag = iv < 0 ? (unsigned long long)(-(iv + 1)) + 1 : (unsigned long long)iv;
+            char digits[32];
+            snprintf(digits, sizeof(digits), "%llu", mag);
+            b3_printf_int_c(&out, digits, iv < 0, plus, space, zero, minus, width);
+        } else if (conv == 'f') {
+            if (v.tag != NV_NUM) {
+                j14_buf_free(&out);
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع عددا لكن أعطيت %s", display, nv_type_name(v));
+            }
+            double n = v.u.num;
+            if (!isfinite(n)) {
+                j14_buf_free(&out);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العدد غير المنتهي لا يصلح لمواصفة %%f", display);
+            }
+            size_t p = has_prec ? prec : 6;
+            if (p > 100000) {
+                j14_buf_free(&out);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s دقة كبيرة جدا في مواصفة التنسيق", display);
+            }
+            int need = snprintf(NULL, 0, "%.*f", (int)p, n);
+            char *tmp = malloc((size_t)need + 1);
+            snprintf(tmp, (size_t)need + 1, "%.*f", (int)p, n);
+            int neg = tmp[0] == '-';
+            b3_printf_int_c(&out, tmp + (neg ? 1 : 0), neg, plus, space, zero, minus, width);
+            free(tmp);
+        } else if (conv == 'x' || conv == 'X' || conv == 'o') {
+            if (v.tag != NV_NUM) {
+                j14_buf_free(&out);
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع عددا لكن أعطيت %s", display, nv_type_name(v));
+            }
+            double n = v.u.num;
+            if (!isfinite(n) || n < 0.0 || trunc(n) != n || n > 18446744073709551616.0) {
+                char *ns = b3_printf_num_c(n);
+                j14_buf_free(&out);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العدد %s لا يصلح لمواصفة %%%c", display, ns, conv);
+            }
+            unsigned long long u = n >= 18446744073709551616.0 ? 18446744073709551615ULL : (unsigned long long)n;
+            char digits[32];
+            if (conv == 'x') snprintf(digits, sizeof(digits), "%llx", u);
+            else if (conv == 'X') snprintf(digits, sizeof(digits), "%llX", u);
+            else snprintf(digits, sizeof(digits), "%llo", u);
+            char s[40];
+            if (hash) {
+                const char *pre = conv == 'x' ? "0x" : conv == 'X' ? "0X" : "0";
+                if (conv == 'o' && digits[0] == '0') {
+                    snprintf(s, sizeof(s), "%s", digits);
+                } else {
+                    snprintf(s, sizeof(s), "%s%s", pre, digits);
+                }
+            } else {
+                snprintf(s, sizeof(s), "%s", digits);
+            }
+            b3_printf_pad_c(&out, s, strlen(s), strlen(s), minus, zero, width);
+        } else if (conv == 's') {
+            const char *s = NULL;
+            char *owned = NULL;
+            size_t nbytes = 0, nchars = 0;
+            if (v.tag == NV_STR) {
+                s = v.u.str->data;
+                nbytes = v.u.str->len;
+                nchars = nv_utf8_chars(s, nbytes);
+            } else if (v.tag == NV_NUM) {
+                owned = b3_printf_num_c(v.u.num);
+                s = owned;
+                nbytes = strlen(s);
+                nchars = nbytes;
+            } else if (v.tag == NV_BOOL) {
+                s = v.u.boolean ? "صحيح" : "خطأ";
+                nbytes = strlen(s);
+                nchars = nv_utf8_chars(s, nbytes);
+            } else if (v.tag == NV_NIL) {
+                s = "لاشيء";
+                nbytes = strlen(s);
+                nchars = nv_utf8_chars(s, nbytes);
+            } else {
+                j14_buf_free(&out);
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا أو عددا أو منطقيا لمواصفة %%s لكن أعطيت %s", display, nv_type_name(v));
+            }
+            if (has_prec && nchars > prec) {
+                nbytes = b3_printf_trunc_c(s, nbytes, prec);
+                nchars = prec;
+            }
+            b3_printf_pad_c(&out, s, nbytes, nchars, minus, zero, width);
+            free(owned);
+        } else if (conv == 'c') {
+            char tmp[4];
+            size_t tlen = 0;
+            if (v.tag == NV_NUM) {
+                double n = v.u.num;
+                if (n < 0.0 || n > 1114111.0 || trunc(n) != n) {
+                    char *ns = b3_printf_num_c(n);
+                    j14_buf_free(&out);
+                    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العدد %s لا يصلح محرفا لمواصفة %%c", display, ns);
+                }
+                uint32_t cp = (uint32_t)n;
+                if ((cp >= 0xD800 && cp <= 0xDFFF)) {
+                    j14_buf_free(&out);
+                    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العدد %u لا يصلح محرفا لمواصفة %%c", display, cp);
+                }
+                tlen = j14_utf8_encode(cp, tmp);
+            } else if (v.tag == NV_STR) {
+                if (nv_utf8_chars(v.u.str->data, v.u.str->len) != 1) {
+                    j14_buf_free(&out);
+                    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مواصفة %%c تتطلب محرفا واحدا", display);
+                }
+                tlen = v.u.str->len;
+                memcpy(tmp, v.u.str->data, tlen);
+            } else {
+                j14_buf_free(&out);
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع عددا أو محرفا لمواصفة %%c لكن أعطيت %s", display, nv_type_name(v));
+            }
+            if (width > 1) {
+                size_t pad = width - 1;
+                if (minus) {
+                    j14_buf_addn(&out, tmp, tlen);
+                    for (size_t k = 0; k < pad; k++) j14_buf_addc(&out, ' ');
+                } else {
+                    for (size_t k = 0; k < pad; k++) j14_buf_addc(&out, ' ');
+                    j14_buf_addn(&out, tmp, tlen);
+                }
+            } else {
+                j14_buf_addn(&out, tmp, tlen);
+            }
+        } else {
+            j14_buf_free(&out);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مواصفة التنسيق %%%c غير مدعومة (المدعوم: %%d و%%s و%%c و%%f و%%x و%%X و%%o و%%%%)", display, conv);
+        }
+    }
+    if (used < vals->len) {
+        j14_buf_free(&out);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s معاملات زائدة في نسق_بصيغة (استعملت %zu من %zu)", display, used, vals->len);
+    }
+    NvValue r = nv_str_new(out.data, out.len);
+    j14_buf_free(&out);
+    return r;
+}
+/* END لينكس3-نص يدوي نص C */
+
 void nv_std_text_fill(NvDict *d) {
     nv_std_add_fn(d, "نسق", nv_std_text_format);
     nv_std_add_fn(d, "يبدأ_ب", nv_std_text_starts_with);
@@ -12507,7 +13946,11 @@ void nv_std_text_fill(NvDict *d) {
     nv_std_add_fn(d, "طبق_على_جمل", nv_std_text_apply_sentences);
     nv_std_add_fn(d, "رشح_جمل", nv_std_text_filter_sentences);
     nv_std_add_fn(d, "أطول_جملة", nv_std_text_longest_sentence);
-    nv_std_add_fn(d, "أقصر_جملة", nv_std_text_shortest_sentence);
+    nv_std_add_fn(d, "أقصر_جملة", nv_std_text_shortest_sentence);/* BEGIN لينكس3-نص ملء نص */
+    nv_std_add_fn(d, "نسق_بصيغة", nv_std_text_printf_format);
+    nv_std_add_fn(d, "قلم", nv_std_text_trim);
+/* END لينكس3-نص ملء نص */
+
 // END J15-GEN c-fill-text
 
 }
@@ -13749,6 +15192,45 @@ static NvValue nv_std_lists_slice(NvValue *args, int nargs, int line, int col) {
     nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة قوائم.شريحة تتوقع قائمة أو نصا لكن أعطيت %s", nv_type_name(args[0]));
 }
 
+/* BEGIN لينكس3-نص دوال قوائم C */
+/* قوائم.رتب_حسب(قائمة، دالة_مفتاح) — البند 277:
+   رتب مصفوفة حسب قيمة مفتاح لكل عنصر (بترتيب JSON
+   الكلي، وفرز مستقر). */
+typedef struct { NvValue key; size_t idx; NvValue item; } B3KeyedC;
+
+static int b3_keyed_cmp_c(const void *a, const void *b) {
+    const B3KeyedC *x = a;
+    const B3KeyedC *y = b;
+    int c = b3_json_cmp_c(x->key, y->key);
+    if (c) return c;
+    if (x->idx < y->idx) return -1;
+    if (x->idx > y->idx) return 1;
+    return 0;
+}
+
+static NvValue nv_std_lists_sort_by(NvValue *args, int nargs, int line, int col) {
+    const char *display = "قوائم.رتب_حسب";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    if (args[0].tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة لكن أعطيت %s", display, nv_type_name(args[0]));
+    }
+    size_t n = args[0].u.list->len;
+    B3KeyedC *keyed = malloc((n ? n : 1) * sizeof(B3KeyedC));
+    for (size_t i = 0; i < n; i++) {
+        keyed[i].key = j3_call_single(args[1], args[0].u.list->items[i], line, col);
+        keyed[i].idx = i;
+        keyed[i].item = nv_clone_value(args[0].u.list->items[i]);
+    }
+    qsort(keyed, n, sizeof(B3KeyedC), b3_keyed_cmp_c);
+    NvList *out = b3_list_new_c();
+    for (size_t i = 0; i < n; i++) {
+        nv_list_push_raw(out, keyed[i].item);
+    }
+    free(keyed);
+    NvValue r; r.tag = NV_LIST; r.u.list = out;
+    return r;
+}
+/* END لينكس3-نص دوال قوائم C */
 void nv_std_lists_fill(NvDict *d) {
     nv_std_add_fn(d, "اطو_ب", nv_std_lists_fold);
     // J3 — إكمال وحدة قوائم: 56 و57 و58 و59 و60 و73.
@@ -13803,7 +15285,10 @@ void nv_std_lists_fill(NvDict *d) {
 // BEGIN J15-GEN c-fill-lists
 
     nv_std_add_fn(d, "رشح_بقيمة", nv_std_lists_filter_value);
-    nv_std_add_fn(d, "رشح_بدالة", nv_std_lists_filter_fn);
+    nv_std_add_fn(d, "رشح_بدالة", nv_std_lists_filter_fn);/* BEGIN لينكس3-نص ملء قوائم */
+    nv_std_add_fn(d, "رتب_حسب", nv_std_lists_sort_by);
+/* END لينكس3-نص ملء قوائم */
+
 // END J15-GEN c-fill-lists
 
 }
@@ -16398,6 +17883,1130 @@ static NvValue nv_std_flow_change_lines(NvValue *args, int nargs, int line, int 
     return v;
 }
 
+/* BEGIN لينكس3-نص دوال تدفق C */
+/* تدفق.حقل(سطر، رقم، خيارات؟) — البند 154:
+   الحقل رقم ن (1-based)؛ و0 (155) = السطر الكامل؛
+   وخارج النطاق ← نص فارغ؛ والفاصل خيار (159). */
+static NvValue nv_std_flow_field(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.حقل";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    long long n = nv_std_need_integer(display, args[1], line, col);
+    const char *sep = b3_flow_sep_c(display, nargs > 2 ? &args[2] : NULL, nargs > 2, line, col);
+    if (n < 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s رقم الحقل %lld غير صالح (الصالح 0 أو أكثر)", display, n);
+    }
+    if (n == 0) return nv_str_cstr(text);
+    B3StrListC fields = b3_split_fields_c(text, sep);
+    NvValue out;
+    if ((size_t)(n - 1) < fields.len) {
+        out = nv_str_cstr(fields.items[n - 1]);
+    } else {
+        out = nv_str_cstr("");
+    }
+    b3_str_list_free_c(fields);
+    return out;
+}
+
+/* تدفق.عدد_الحقول(سطر، خيارات؟) — البند 156. */
+static NvValue nv_std_flow_field_count(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.عدد_الحقول";
+    if (nargs < 1 || nargs > 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    const char *sep = b3_flow_sep_c(display, nargs > 1 ? &args[1] : NULL, nargs > 1, line, col);
+    B3StrListC fields = b3_split_fields_c(text, sep);
+    double n = (double)fields.len;
+    b3_str_list_free_c(fields);
+    return nv_num(n);
+}
+
+/* تدفق.اربط_حقول(حقول، خيارات؟) — البند 161:
+   اربط قائمة حقول بفاصل الإخراج (الافتراضي مسافة). */
+static NvValue nv_std_flow_join_fields(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.اربط_حقول";
+    if (nargs < 1 || nargs > 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", display, nargs);
+    }
+    if (args[0].tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة لكن أعطيت %s", display, nv_type_name(args[0]));
+    }
+    const char *out_sep = " ";
+    if (nargs > 1) {
+        if (args[1].tag != NV_DICT) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع خيارات قاموسا لكن أعطيت %s", display, nv_type_name(args[1]));
+        }
+        for (size_t i = 0; i < args[1].u.dict->len; i++) {
+            const char *k = args[1].u.dict->entries[i].key;
+            if (strcmp(k, "فاصل_الإخراج") == 0) {
+                NvValue v = args[1].u.dict->entries[i].val;
+                if (v.tag != NV_STR) {
+                    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع فاصل الإخراج نصا لكن أعطيت %s", display, nv_type_name(v));
+                }
+                out_sep = v.u.str->data;
+            } else {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا تقبل الخيار %s", display, k);
+            }
+        }
+    }
+    J14Buf buf;
+    j14_buf_init(&buf);
+    for (size_t i = 0; i < args[0].u.list->len; i++) {
+        NvValue it = args[0].u.list->items[i];
+        if (it.tag != NV_STR) {
+            j14_buf_free(&buf);
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة نصوص لكن أعطيت %s", display, nv_type_name(it));
+        }
+        if (i) j14_buf_addn(&buf, out_sep, strlen(out_sep));
+        j14_buf_addn(&buf, it.u.str->data, it.u.str->len);
+    }
+    NvValue out = nv_str_new(buf.data, buf.len);
+    j14_buf_free(&buf);
+    return out;
+}
+
+/* تدفق.موضع_المطابقة(نمط، نص) — البند 169:
+   قاموس {موضع، طول} لأول مطابقة (محارف 1-based)
+   أو لاشيء عند الغياب. */
+static NvValue nv_std_flow_match_pos(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.موضع_المطابقة";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    const char *pattern = nv_std_need_string(display, args[0], line, col);
+    const char *text = nv_std_need_string(display, args[1], line, col);
+    RxProg prog = rx_compile_c(pattern, 0, line, col);
+    size_t tlen = 0;
+    size_t *offs = NULL;
+    uint32_t *chars = j14_decode_all(text, strlen(text), &tlen, &offs);
+    if ((long)tlen > RX_MAX_TEXT) {
+        free(chars);
+        free(offs);
+        rx_prog_free(&prog);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "النص طويل جدا");
+    }
+    int s = -1, e = -1;
+    int *saved = NULL;
+    int ok = rx_find_from(&prog, chars, (int)tlen, 0, &s, &e, &saved, line, col);
+    free(chars);
+    free(offs);
+    free(saved);
+    rx_prog_free(&prog);
+    if (!ok) return nv_nil();
+    NvDict *d = b3_dict_new_c();
+    nv_dict_set_raw(d, "موضع", nv_num((double)(s + 1)));
+    nv_dict_set_raw(d, "طول", nv_num((double)(e - s)));
+    NvValue out; out.tag = NV_DICT; out.u.dict = d;
+    return out;
+}
+
+/* تدفق.فهرس_نص(نص، نص_فرعي) — البند 170: موضع
+   أول ظهور (محارف 1-based كما awk) أو 0 عند
+   الغياب؛ والفرعي الفارغ ← 1. */
+static NvValue nv_std_flow_text_index(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.فهرس_نص";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    const char *sub = nv_std_need_string(display, args[1], line, col);
+    long idx = b3_str_index_c(text, sub);
+    return nv_num(idx < 0 ? 0.0 : (double)(idx + 1));
+}
+
+/* تدفق.اجمع_عمود(نص، رقم_عمود، خيارات؟) — البند 175:
+   تجميع عددي على عمود (والحقل غير العددي ← 0 كما
+   awk؛ وبلا أسطر ← لاشيء إلا الجمع ← 0). */
+static NvValue nv_std_flow_col_sum(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.اجمع_عمود";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    long long n = nv_std_need_integer(display, args[1], line, col);
+    const char *sep = b3_flow_sep_c(display, nargs > 2 ? &args[2] : NULL, nargs > 2, line, col);
+    if (n < 1) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s رقم العمود %lld غير صالح (الصالح 1 أو أكثر)", display, n);
+    }
+    FlowStrListC lines;
+    int trailing = 0;
+    flow_split_owned_c(text, &lines, &trailing, line, col);
+    size_t nlines = lines.len;
+    double sum = 0.0;
+    for (size_t li = 0; li < nlines; li++) {
+        B3StrListC fields = b3_split_fields_c(lines.items[li], sep);
+        const char *f = (size_t)(n - 1) < fields.len ? fields.items[n - 1] : "";
+        sum += b3_field_number_c(f);
+        b3_str_list_free_c(fields);
+    }
+    flow_str_free_c(&lines);
+    return nv_num(sum);
+}
+
+/* تدفق.عد_المطابق(نص، نمط) — البند 176: عد
+   الأسطر المطابقة لنمط بحث. */
+static NvValue nv_std_flow_count_match(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.عد_المطابق";
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    const char *pattern = nv_std_need_string(display, args[1], line, col);
+    RxProg prog = rx_compile_c(pattern, 0, line, col);
+    FlowStrListC lines;
+    int trailing = 0;
+    flow_split_owned_c(text, &lines, &trailing, line, col);
+    size_t nlines = lines.len;
+    long long count = 0;
+    for (size_t li = 0; li < nlines; li++) {
+        size_t tlen = 0;
+        size_t *offs = NULL;
+        uint32_t *chars = j14_decode_all(lines.items[li], strlen(lines.items[li]), &tlen, &offs);
+        if ((long)tlen > RX_MAX_TEXT) {
+            free(chars);
+            free(offs);
+            rx_prog_free(&prog);
+            flow_str_free_c(&lines);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "النص طويل جدا");
+        }
+        int s = -1, e = -1;
+        int *saved = NULL;
+        int ok = rx_find_from(&prog, chars, (int)tlen, 0, &s, &e, &saved, line, col);
+        free(chars);
+        free(offs);
+        free(saved);
+        if (ok) count++;
+    }
+    rx_prog_free(&prog);
+    flow_str_free_c(&lines);
+    return nv_num((double)count);
+}
+
+/* تدفق.أكبر_عمود(نص، رقم_عمود، خيارات؟) — البند 177:
+   تجميع عددي على عمود (والحقل غير العددي ← 0 كما
+   awk؛ وبلا أسطر ← لاشيء إلا الجمع ← 0). */
+static NvValue nv_std_flow_col_max(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.أكبر_عمود";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    long long n = nv_std_need_integer(display, args[1], line, col);
+    const char *sep = b3_flow_sep_c(display, nargs > 2 ? &args[2] : NULL, nargs > 2, line, col);
+    if (n < 1) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s رقم العمود %lld غير صالح (الصالح 1 أو أكثر)", display, n);
+    }
+    FlowStrListC lines;
+    int trailing = 0;
+    flow_split_owned_c(text, &lines, &trailing, line, col);
+    size_t nlines = lines.len;
+    int any = 0;
+    double best = 0.0;
+    for (size_t li = 0; li < nlines; li++) {
+        B3StrListC fields = b3_split_fields_c(lines.items[li], sep);
+        const char *f = (size_t)(n - 1) < fields.len ? fields.items[n - 1] : "";
+        double num = b3_field_number_c(f);
+        if (!any || num > best) best = num;
+        any = 1;
+        b3_str_list_free_c(fields);
+    }
+    flow_str_free_c(&lines);
+    if (!any) return nv_nil();
+    return nv_num(best);
+}
+
+/* تدفق.أصغر_عمود(نص، رقم_عمود، خيارات؟) — البند 178:
+   تجميع عددي على عمود (والحقل غير العددي ← 0 كما
+   awk؛ وبلا أسطر ← لاشيء إلا الجمع ← 0). */
+static NvValue nv_std_flow_col_min(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.أصغر_عمود";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    long long n = nv_std_need_integer(display, args[1], line, col);
+    const char *sep = b3_flow_sep_c(display, nargs > 2 ? &args[2] : NULL, nargs > 2, line, col);
+    if (n < 1) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s رقم العمود %lld غير صالح (الصالح 1 أو أكثر)", display, n);
+    }
+    FlowStrListC lines;
+    int trailing = 0;
+    flow_split_owned_c(text, &lines, &trailing, line, col);
+    size_t nlines = lines.len;
+    int any = 0;
+    double best = 0.0;
+    for (size_t li = 0; li < nlines; li++) {
+        B3StrListC fields = b3_split_fields_c(lines.items[li], sep);
+        const char *f = (size_t)(n - 1) < fields.len ? fields.items[n - 1] : "";
+        double num = b3_field_number_c(f);
+        if (!any || num < best) best = num;
+        any = 1;
+        b3_str_list_free_c(fields);
+    }
+    flow_str_free_c(&lines);
+    if (!any) return nv_nil();
+    return nv_num(best);
+}
+
+/* تدفق.متوسط_عمود(نص، رقم_عمود، خيارات؟) — البند 179:
+   تجميع عددي على عمود (والحقل غير العددي ← 0 كما
+   awk؛ وبلا أسطر ← لاشيء إلا الجمع ← 0). */
+static NvValue nv_std_flow_col_avg(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.متوسط_عمود";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    long long n = nv_std_need_integer(display, args[1], line, col);
+    const char *sep = b3_flow_sep_c(display, nargs > 2 ? &args[2] : NULL, nargs > 2, line, col);
+    if (n < 1) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s رقم العمود %lld غير صالح (الصالح 1 أو أكثر)", display, n);
+    }
+    FlowStrListC lines;
+    int trailing = 0;
+    flow_split_owned_c(text, &lines, &trailing, line, col);
+    size_t nlines = lines.len;
+    double sum = 0.0;
+    for (size_t li = 0; li < nlines; li++) {
+        B3StrListC fields = b3_split_fields_c(lines.items[li], sep);
+        const char *f = (size_t)(n - 1) < fields.len ? fields.items[n - 1] : "";
+        sum += b3_field_number_c(f);
+        b3_str_list_free_c(fields);
+    }
+    NvValue out;
+    if (nlines == 0) out = nv_nil();
+    else out = nv_num(sum / (double)nlines);
+    flow_str_free_c(&lines);
+    return out;
+}
+/* END لينكس3-نص دوال تدفق C */
+
+
+/* BEGIN لينكس3-نص يدوي تدفق C */
+/* مرآة C اليدوية لتدفق.عالج (§6: البنود 151
+   و152 و153 و154 و157 و163 و164 و169 و170
+   و173 و174 و175 و176 و177 و178 و179 و180 في
+   التطبيق) — تعكس كود Rust اليدوي حرفيا
+   (stdlib.rs: flow_process). */
+
+/* هل القيمة قابلة للاستدعاء كدالة؟ */
+static int b3_is_callable_c(NvValue v) {
+    return v.tag == NV_FUNC || v.tag == NV_NATIVE || v.tag == NV_BOUND;
+}
+
+/* تدفق.عالج(نص، نمط، إجراء، خيارات؟) — البند 151. */
+static NvValue nv_std_flow_process(NvValue *args, int nargs, int line, int col) {
+    const char *display = "تدفق.عالج";
+    if (nargs < 3 || nargs > 4) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع ثلاثة معاملات أو أربعة لكن أعطيت %d", display, nargs);
+    }
+    const char *text = nv_std_need_string(display, args[0], line, col);
+    const char *pattern = nv_std_need_string(display, args[1], line, col);
+    if (!b3_is_callable_c(args[2])) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع دالة لكن أعطيت %s", display, nv_type_name(args[2]));
+    }
+    NvValue before = nv_nil();
+    NvValue after = nv_nil();
+    int has_before = 0, has_after = 0;
+    const char *sep = NULL;
+    if (nargs == 4) {
+        if (args[3].tag != NV_DICT) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع خيارات قاموسا لكن أعطيت %s", display, nv_type_name(args[3]));
+        }
+        for (size_t i = 0; i < args[3].u.dict->len; i++) {
+            const char *k = args[3].u.dict->entries[i].key;
+            NvValue v = args[3].u.dict->entries[i].val;
+            if (strcmp(k, "قبل") == 0) {
+                if (!b3_is_callable_c(v)) {
+                    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع دالة لكن أعطيت %s", display, nv_type_name(v));
+                }
+                before = v;
+                has_before = 1;
+            } else if (strcmp(k, "بعد") == 0) {
+                if (!b3_is_callable_c(v)) {
+                    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع دالة لكن أعطيت %s", display, nv_type_name(v));
+                }
+                after = v;
+                has_after = 1;
+            } else if (strcmp(k, "فاصل") == 0) {
+                if (v.tag != NV_STR) {
+                    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع فاصل الحقول نصا لكن أعطيت %s", display, nv_type_name(v));
+                }
+                if (v.u.str->len == 0) {
+                    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s فاصل الحقول فارغ", display);
+                }
+                sep = v.u.str->data;
+            } else {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا تقبل الخيار %s", display, k);
+            }
+        }
+    }
+    RxProg prog;
+    int has_prog = 0;
+    if (pattern[0] != '\0') {
+        prog = rx_compile_c(pattern, 0, line, col);
+        has_prog = 1;
+    }
+    FlowStrListC lines;
+    int trailing = 0;
+    flow_split_owned_c(text, &lines, &trailing, line, col);
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    long long total = (long long)lines.len;
+    if (has_before) {
+        NvDict *info = b3_dict_new_c();
+        nv_dict_set_raw(info, "عدد_الأسطر", nv_num((double)total));
+        NvValue info_v;
+        info_v.tag = NV_DICT;
+        info_v.u.dict = info;
+        NvValue r = j3_call_single(before, info_v, line, col);
+        if (r.tag != NV_NIL) nv_list_push_raw(out.u.list, r);
+    }
+    long long matched = 0;
+    for (size_t li = 0; li < lines.len; li++) {
+        int m = 1;
+        if (has_prog) {
+            m = flow_line_matches_c(&prog, lines.items[li], strlen(lines.items[li]), line, col);
+        }
+        if (!m) continue;
+        matched++;
+        B3StrListC fields = b3_split_fields_c(lines.items[li], sep);
+        NvDict *rec = b3_dict_new_c();
+        nv_dict_set_raw(rec, "سطر", nv_str_cstr(lines.items[li]));
+        nv_dict_set_raw(rec, "رقم", nv_num((double)(li + 1)));
+        NvList *fl = b3_list_new_c();
+        for (size_t fi = 0; fi < fields.len; fi++) {
+            nv_list_push_raw(fl, nv_str_cstr(fields.items[fi]));
+        }
+        b3_str_list_free_c(fields);
+        NvValue fl_v;
+        fl_v.tag = NV_LIST;
+        fl_v.u.list = fl;
+        nv_dict_set_raw(rec, "حقول", fl_v);
+        NvValue rec_v;
+        rec_v.tag = NV_DICT;
+        rec_v.u.dict = rec;
+        NvValue r = j3_call_single(args[2], rec_v, line, col);
+        if (r.tag != NV_NIL) nv_list_push_raw(out.u.list, r);
+    }
+    if (has_after) {
+        NvDict *info = b3_dict_new_c();
+        nv_dict_set_raw(info, "عدد_الأسطر", nv_num((double)total));
+        nv_dict_set_raw(info, "عدد_المطابق", nv_num((double)matched));
+        NvValue info_v;
+        info_v.tag = NV_DICT;
+        info_v.u.dict = info;
+        NvValue r = j3_call_single(after, info_v, line, col);
+        if (r.tag != NV_NIL) nv_list_push_raw(out.u.list, r);
+    }
+    if (has_prog) rx_prog_free(&prog);
+    flow_str_free_c(&lines);
+    nv_root_pop();
+    return out;
+}
+/* END لينكس3-نص يدوي تدفق C */
+
+/* BEGIN لينكس3-نص يدوي فرق C */
+/* مرآة C اليدوية لوحدة فرق (§7: البنود 186
+   و187 و190 و191 و192 و193 و196 و197 و198
+   و202) — تعكس كود Rust اليدوي حرفيا
+   (stdlib.rs: DiffOpts وdiff_parse_opts
+   وdiff_key وdiff_seq وdiff_compute
+   وdiff_to_records وdiff_to_unified وdiff_diff
+   وdiff_same وdiff_dirs وdiff_entries). */
+
+typedef struct {
+    int unified;
+    int ignore_case;
+    int ignore_space;
+    int ignore_all_space;
+    int ignore_blank;
+    int brief;
+} DiffOptsC;
+
+/* خيارات فرق من قاموس (أو بلا قاموس). */
+static DiffOptsC b3_diff_parse_opts_c(const char *display, NvValue *opt, int has_opt, int allow_format, int allow_brief, int allow_exclude, char **exclude_out, int line, int col) {
+    DiffOptsC o;
+    memset(&o, 0, sizeof(o));
+    if (exclude_out) *exclude_out = NULL;
+    if (!has_opt) return o;
+    if (opt->tag != NV_DICT) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع خيارات قاموسا لكن أعطيت %s", display, nv_type_name(*opt));
+    }
+    for (size_t i = 0; i < opt->u.dict->len; i++) {
+        const char *k = opt->u.dict->entries[i].key;
+        NvValue v = opt->u.dict->entries[i].val;
+        if (strcmp(k, "صيغة") == 0) {
+            if (!allow_format) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا تقبل الخيار %s", display, k);
+            }
+            if (v.tag != NV_STR) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع الصيغة نصا لكن أعطيت %s", display, nv_type_name(v));
+            }
+            if (strcmp(v.u.str->data, "موحد") != 0) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الصيغة %s غير مدعومة (المدعوم: موحد)", display, v.u.str->data);
+            }
+            o.unified = 1;
+        } else if (strcmp(k, "مختصر") == 0) {
+            if (!allow_brief) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا تقبل الخيار %s", display, k);
+            }
+            o.brief = search_need_bool_c(display, k, v, line, col);
+        } else if (strcmp(k, "تجاهل_الحالة") == 0) {
+            o.ignore_case = search_need_bool_c(display, k, v, line, col);
+        } else if (strcmp(k, "تجاهل_الفراغات") == 0) {
+            o.ignore_space = search_need_bool_c(display, k, v, line, col);
+        } else if (strcmp(k, "تجاهل_كل_الفراغات") == 0) {
+            o.ignore_all_space = search_need_bool_c(display, k, v, line, col);
+        } else if (strcmp(k, "تجاهل_الأسطر_الفارغة") == 0) {
+            o.ignore_blank = search_need_bool_c(display, k, v, line, col);
+        } else if (strcmp(k, "استثن_ملفات") == 0) {
+            if (!allow_exclude) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا تقبل الخيار %s", display, k);
+            }
+            if (v.tag != NV_STR) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع الاستثناء نصا لكن أعطيت %s", display, nv_type_name(v));
+            }
+            if (exclude_out) *exclude_out = v.u.str->data;
+        } else {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا تقبل الخيار %s", display, k);
+        }
+    }
+    if (o.brief && o.unified) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا تجمع مختصر مع صيغة", display);
+    }
+    return o;
+}
+
+/* مفتاح مقارنة سطر حسب خيارات التجاهل
+   (طي حالة ASCII فقط؛ والفراغات ASCII فقط). */
+static char *b3_diff_key_c(const char *line, DiffOptsC *opts) {
+    size_t n = strlen(line);
+    char *tmp = malloc(n + 1);
+    size_t m = 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = line[i];
+        if (opts->ignore_case && c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        tmp[m++] = c;
+    }
+    tmp[m] = '\0';
+    char *out = tmp;
+    if (opts->ignore_all_space) {
+        size_t w = 0;
+        for (size_t i = 0; i < m; i++) {
+            if (tmp[i] != ' ' && tmp[i] != '\t') out[w++] = tmp[i];
+        }
+        out[w] = '\0';
+    } else if (opts->ignore_space) {
+        char *res = malloc(m + 1);
+        size_t w = 0;
+        size_t i = 0;
+        int first = 1;
+        while (i < m) {
+            while (i < m && (tmp[i] == ' ' || tmp[i] == '\t' || tmp[i] == '\n' || tmp[i] == '\r' || tmp[i] == '\v' || tmp[i] == '\f')) i++;
+            if (i >= m) break;
+            size_t start = i;
+            while (i < m && !(tmp[i] == ' ' || tmp[i] == '\t' || tmp[i] == '\n' || tmp[i] == '\r' || tmp[i] == '\v' || tmp[i] == '\f')) i++;
+            if (!first) res[w++] = ' ';
+            first = 0;
+            memcpy(res + w, tmp + start, i - start);
+            w += i - start;
+        }
+        res[w] = '\0';
+        free(tmp);
+        out = res;
+    }
+    return out;
+}
+
+typedef struct {
+    size_t orig;
+    char *line;
+    char *key;
+} DiffLineC;
+
+typedef struct {
+    DiffLineC *items;
+    size_t len;
+} DiffSeqC;
+
+static DiffSeqC b3_diff_seq_c(const char *text, DiffOptsC *opts) {
+    size_t n = 0;
+    B3LineC *lines = b3_split_lines_c(text, &n);
+    DiffSeqC out;
+    out.items = malloc((n ? n : 1) * sizeof(DiffLineC));
+    out.len = 0;
+    for (size_t i = 0; i < n; i++) {
+        char *l = malloc(lines[i].len + 1);
+        memcpy(l, lines[i].ptr, lines[i].len);
+        l[lines[i].len] = '\0';
+        if (opts->ignore_blank) {
+            int blank = 1;
+            for (size_t k = 0; k < lines[i].len; k++) {
+                char c = l[k];
+                if (!(c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f')) {
+                    blank = 0;
+                    break;
+                }
+            }
+            if (blank) {
+                free(l);
+                continue;
+            }
+        }
+        char *key = b3_diff_key_c(l, opts);
+        out.items[out.len].orig = i;
+        out.items[out.len].line = l;
+        out.items[out.len].key = key;
+        out.len++;
+    }
+    free(lines);
+    return out;
+}
+
+static void b3_diff_seq_free_c(DiffSeqC *s) {
+    for (size_t i = 0; i < s->len; i++) {
+        free(s->items[i].line);
+        free(s->items[i].key);
+    }
+    free(s->items);
+    s->items = NULL;
+    s->len = 0;
+}
+
+typedef struct {
+    int kind;
+    size_t a;
+    size_t b;
+} DiffOpC;
+
+#define DIFF_OP_EQUAL 0
+#define DIFF_OP_DEL 1
+#define DIFF_OP_INS 2
+
+/* عمليات LCS بين مفتاحي التسلسلين. */
+static DiffOpC *b3_diff_compute_c(DiffSeqC *a, DiffSeqC *b, const char *display, int line, int col, size_t *n_out) {
+    size_t n = a->len, m = b->len;
+    if (n > 0 && m > 4000000 / n) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s النصان كبيران جدا للفرق", display);
+    }
+    size_t w = m + 1;
+    uint32_t *dp = calloc((n + 1) * w, sizeof(uint32_t));
+    if (!dp) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+    for (size_t i = 1; i <= n; i++) {
+        for (size_t j = 1; j <= m; j++) {
+            if (strcmp(a->items[i - 1].key, b->items[j - 1].key) == 0) {
+                dp[i * w + j] = dp[(i - 1) * w + j - 1] + 1;
+            } else {
+                uint32_t x = dp[(i - 1) * w + j];
+                uint32_t y = dp[i * w + j - 1];
+                dp[i * w + j] = x > y ? x : y;
+            }
+        }
+    }
+    size_t cap = n + m + 1;
+    DiffOpC *ops = malloc(cap * sizeof(DiffOpC));
+    if (!ops) {
+        free(dp);
+        nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+    }
+    size_t cnt = 0;
+    size_t i = n, j = m;
+    while (i > 0 || j > 0) {
+        if (i > 0 && j > 0 && strcmp(a->items[i - 1].key, b->items[j - 1].key) == 0) {
+            ops[cnt].kind = DIFF_OP_EQUAL;
+            ops[cnt].a = i - 1;
+            ops[cnt].b = j - 1;
+            cnt++;
+            i--;
+            j--;
+        } else if (j > 0 && (i == 0 || dp[i * w + j - 1] >= dp[(i - 1) * w + j])) {
+            ops[cnt].kind = DIFF_OP_INS;
+            ops[cnt].a = 0;
+            ops[cnt].b = j - 1;
+            cnt++;
+            j--;
+        } else {
+            ops[cnt].kind = DIFF_OP_DEL;
+            ops[cnt].a = i - 1;
+            ops[cnt].b = 0;
+            cnt++;
+            i--;
+        }
+    }
+    for (size_t x = 0; x < cnt / 2; x++) {
+        DiffOpC t = ops[x];
+        ops[x] = ops[cnt - 1 - x];
+        ops[cnt - 1 - x] = t;
+    }
+    free(dp);
+    *n_out = cnt;
+    return ops;
+}
+
+/* سجل فرق واحد موحد الشكل. */
+static NvValue b3_diff_record_c(const char *kind, DiffLineC *old, DiffLineC *nw) {
+    NvDict *d = b3_dict_new_c();
+    nv_dict_set_raw(d, "نوع", nv_str_cstr(kind));
+    nv_dict_set_raw(d, "قديم", old ? nv_str_cstr(old->line) : nv_nil());
+    nv_dict_set_raw(d, "جديد", nw ? nv_str_cstr(nw->line) : nv_nil());
+    nv_dict_set_raw(d, "رقم_قديم", old ? nv_num((double)(old->orig + 1)) : nv_nil());
+    nv_dict_set_raw(d, "رقم_جديد", nw ? nv_num((double)(nw->orig + 1)) : nv_nil());
+    NvValue out;
+    out.tag = NV_DICT;
+    out.u.dict = d;
+    return out;
+}
+
+/* عمليات ← سجلات، مع اقتران الحذف والإضافة
+   المتجاورين في مغير. */
+static NvList *b3_diff_to_records_c(DiffSeqC *a, DiffSeqC *b, DiffOpC *ops, size_t nops) {
+    NvList *out = b3_list_new_c();
+    size_t i = 0;
+    while (i < nops) {
+        if (ops[i].kind == DIFF_OP_EQUAL) {
+            i++;
+            continue;
+        }
+        size_t ndels = 0, ninss = 0;
+        size_t *dels = NULL, *inss = NULL;
+        while (i < nops && ops[i].kind != DIFF_OP_EQUAL) {
+            if (ops[i].kind == DIFF_OP_DEL) {
+                dels = realloc(dels, (ndels + 1) * sizeof(size_t));
+                dels[ndels++] = ops[i].a;
+            } else {
+                inss = realloc(inss, (ninss + 1) * sizeof(size_t));
+                inss[ninss++] = ops[i].b;
+            }
+            i++;
+        }
+        size_t paired = ndels < ninss ? ndels : ninss;
+        for (size_t k = 0; k < paired; k++) {
+            nv_list_push_raw(out, b3_diff_record_c("مغير", &a->items[dels[k]], &b->items[inss[k]]));
+        }
+        for (size_t k = paired; k < ndels; k++) {
+            nv_list_push_raw(out, b3_diff_record_c("محذوف", &a->items[dels[k]], NULL));
+        }
+        for (size_t k = paired; k < ninss; k++) {
+            nv_list_push_raw(out, b3_diff_record_c("مضاف", NULL, &b->items[inss[k]]));
+        }
+        free(dels);
+        free(inss);
+    }
+    return out;
+}
+
+/* رأس مقطع موحد: -بداية[,عدد] +بداية[,عدد]. */
+static void b3_diff_hunk_header_c(J14Buf *out, size_t a_pos, size_t a_count, size_t b_pos, size_t b_count) {
+    char tmp[64];
+    if (a_count == 1) {
+        snprintf(tmp, sizeof(tmp), "@@ -%zu ", a_pos + 1);
+    } else if (a_count == 0) {
+        snprintf(tmp, sizeof(tmp), "@@ -%zu ", a_pos);
+    } else {
+        snprintf(tmp, sizeof(tmp), "@@ -%zu,%zu ", a_pos + 1, a_count);
+    }
+    j14_buf_add(out, tmp);
+    if (b_count == 1) {
+        snprintf(tmp, sizeof(tmp), "+%zu @@", b_pos + 1);
+    } else if (b_count == 0) {
+        snprintf(tmp, sizeof(tmp), "+%zu @@", b_pos);
+    } else {
+        snprintf(tmp, sizeof(tmp), "+%zu,%zu @@", b_pos + 1, b_count);
+    }
+    j14_buf_add(out, tmp);
+    j14_buf_addc(out, '\n');
+}
+
+/* عمليات ← نص موحد (سياق 3، وبلا تغيير ← فارغ). */
+static char *b3_diff_to_unified_c(DiffSeqC *a, DiffSeqC *b, DiffOpC *ops, size_t nops) {
+    size_t nchanged = 0;
+    for (size_t i = 0; i < nops; i++) {
+        if (ops[i].kind != DIFF_OP_EQUAL) nchanged++;
+    }
+    if (nchanged == 0) {
+        char *e = malloc(1);
+        e[0] = '\0';
+        return e;
+    }
+    J14Buf out;
+    j14_buf_init(&out);
+    j14_buf_add(&out, "--- قديم\n+++ جديد\n");
+    size_t first_changed = 0;
+    while (first_changed < nops && ops[first_changed].kind == DIFF_OP_EQUAL) first_changed++;
+    size_t hunk_start = first_changed >= 3 ? first_changed - 3 : 0;
+    size_t hunk_end = first_changed;
+    size_t k = first_changed + 1;
+    for (; k < nops; k++) {
+        if (ops[k].kind == DIFF_OP_EQUAL) continue;
+        if (k - hunk_end > 6) {
+            size_t to = hunk_end + 3;
+            if (to > nops - 1) to = nops - 1;
+            size_t a_pos = 0, b_pos = 0;
+            for (size_t t = 0; t < hunk_start; t++) {
+                if (ops[t].kind == DIFF_OP_EQUAL) { a_pos++; b_pos++; }
+                else if (ops[t].kind == DIFF_OP_DEL) a_pos++;
+                else b_pos++;
+            }
+            size_t a_count = 0, b_count = 0;
+            for (size_t t = hunk_start; t <= to; t++) {
+                if (ops[t].kind == DIFF_OP_EQUAL) { a_count++; b_count++; }
+                else if (ops[t].kind == DIFF_OP_DEL) a_count++;
+                else b_count++;
+            }
+            b3_diff_hunk_header_c(&out, a_pos, a_count, b_pos, b_count);
+            for (size_t t = hunk_start; t <= to; t++) {
+                if (ops[t].kind == DIFF_OP_EQUAL) {
+                    j14_buf_addc(&out, ' ');
+                    j14_buf_add(&out, a->items[ops[t].a].line);
+                    j14_buf_addc(&out, '\n');
+                } else if (ops[t].kind == DIFF_OP_DEL) {
+                    j14_buf_addc(&out, '-');
+                    j14_buf_add(&out, a->items[ops[t].a].line);
+                    j14_buf_addc(&out, '\n');
+                } else {
+                    j14_buf_addc(&out, '+');
+                    j14_buf_add(&out, b->items[ops[t].b].line);
+                    j14_buf_addc(&out, '\n');
+                }
+            }
+            hunk_start = k >= 3 ? k - 3 : 0;
+        }
+        hunk_end = k;
+    }
+    size_t to = hunk_end + 3;
+    if (to > nops - 1) to = nops - 1;
+    size_t a_pos = 0, b_pos = 0;
+    for (size_t t = 0; t < hunk_start; t++) {
+        if (ops[t].kind == DIFF_OP_EQUAL) { a_pos++; b_pos++; }
+        else if (ops[t].kind == DIFF_OP_DEL) a_pos++;
+        else b_pos++;
+    }
+    size_t a_count = 0, b_count = 0;
+    for (size_t t = hunk_start; t <= to; t++) {
+        if (ops[t].kind == DIFF_OP_EQUAL) { a_count++; b_count++; }
+        else if (ops[t].kind == DIFF_OP_DEL) a_count++;
+        else b_count++;
+    }
+    b3_diff_hunk_header_c(&out, a_pos, a_count, b_pos, b_count);
+    for (size_t t = hunk_start; t <= to; t++) {
+        if (ops[t].kind == DIFF_OP_EQUAL) {
+            j14_buf_addc(&out, ' ');
+            j14_buf_add(&out, a->items[ops[t].a].line);
+            j14_buf_addc(&out, '\n');
+        } else if (ops[t].kind == DIFF_OP_DEL) {
+            j14_buf_addc(&out, '-');
+            j14_buf_add(&out, a->items[ops[t].a].line);
+            j14_buf_addc(&out, '\n');
+        } else {
+            j14_buf_addc(&out, '+');
+            j14_buf_add(&out, b->items[ops[t].b].line);
+            j14_buf_addc(&out, '\n');
+        }
+    }
+    char *s = malloc(out.len + 1);
+    memcpy(s, out.data, out.len);
+    s[out.len] = '\0';
+    j14_buf_free(&out);
+    return s;
+}
+
+/* فرق.فرق(نص1، نص2، خيارات؟) — البنود 186 و187
+   و190 و191 و192 و193 و196. */
+static NvValue nv_std_diff_diff(NvValue *args, int nargs, int line, int col) {
+    const char *display = "فرق.فرق";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", display, nargs);
+    }
+    const char *a_text = nv_std_need_string(display, args[0], line, col);
+    const char *b_text = nv_std_need_string(display, args[1], line, col);
+    DiffOptsC opts = b3_diff_parse_opts_c(display, nargs == 3 ? &args[2] : NULL, nargs == 3, 1, 1, 0, NULL, line, col);
+    DiffSeqC a = b3_diff_seq_c(a_text, &opts);
+    DiffSeqC b = b3_diff_seq_c(b_text, &opts);
+    size_t nops = 0;
+    DiffOpC *ops = b3_diff_compute_c(&a, &b, display, line, col, &nops);
+    NvValue out;
+    if (opts.brief) {
+        int different = 0;
+        for (size_t i = 0; i < nops; i++) {
+            if (ops[i].kind != DIFF_OP_EQUAL) { different = 1; break; }
+        }
+        out = nv_bool(different);
+    } else if (opts.unified) {
+        char *s = b3_diff_to_unified_c(&a, &b, ops, nops);
+        out = nv_str_cstr(s);
+        free(s);
+    } else {
+        NvList *recs = b3_diff_to_records_c(&a, &b, ops, nops);
+        out.tag = NV_LIST;
+        out.u.list = recs;
+    }
+    free(ops);
+    b3_diff_seq_free_c(&a);
+    b3_diff_seq_free_c(&b);
+    return out;
+}
+
+/* فرق.متطابقان(نص1، نص2، خيارات؟) — البند 202. */
+static NvValue nv_std_diff_same(NvValue *args, int nargs, int line, int col) {
+    const char *display = "فرق.متطابقان";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", display, nargs);
+    }
+    const char *a_text = nv_std_need_string(display, args[0], line, col);
+    const char *b_text = nv_std_need_string(display, args[1], line, col);
+    DiffOptsC opts = b3_diff_parse_opts_c(display, nargs == 3 ? &args[2] : NULL, nargs == 3, 0, 0, 0, NULL, line, col);
+    DiffSeqC a = b3_diff_seq_c(a_text, &opts);
+    DiffSeqC b = b3_diff_seq_c(b_text, &opts);
+    size_t nops = 0;
+    DiffOpC *ops = b3_diff_compute_c(&a, &b, display, line, col, &nops);
+    int same = 1;
+    for (size_t i = 0; i < nops; i++) {
+        if (ops[i].kind != DIFF_OP_EQUAL) { same = 0; break; }
+    }
+    free(ops);
+    b3_diff_seq_free_c(&a);
+    b3_diff_seq_free_c(&b);
+    return nv_bool(same);
+}
+
+/* قراءة ملف بايتات (والفشل ← فارغ كما Rust). */
+static unsigned char *b3_diff_read_bytes_c(const char *fs, size_t *len_out) {
+    FILE *f = fopen(fs, "rb");
+    if (!f) {
+        *len_out = 0;
+        return NULL;
+    }
+    size_t cap = 4096, len = 0;
+    unsigned char *buf = malloc(cap + 1);
+    if (!buf) {
+        fclose(f);
+        *len_out = 0;
+        return NULL;
+    }
+    for (;;) {
+        if (len == cap) {
+            cap *= 2;
+            unsigned char *grown = realloc(buf, cap + 1);
+            if (!grown) {
+                free(buf);
+                fclose(f);
+                *len_out = 0;
+                return NULL;
+            }
+            buf = grown;
+        }
+        size_t r = fread(buf + len, 1, cap - len, f);
+        len += r;
+        if (r == 0) break;
+    }
+    fclose(f);
+    buf[len] = '\0';
+    *len_out = len;
+    return buf;
+}
+
+typedef struct {
+    char *rel;
+    char *fs;
+} DiffFileC;
+
+typedef struct {
+    DiffFileC *items;
+    size_t len, cap;
+} DiffFileListC;
+
+static void b3_diff_walk_c(const char *fs_dir, const char *rel_prefix, DiffFileListC *out, int line, int col) {
+    DIR *d = opendir(fs_dir);
+    if (!d) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "تعذر قراءة المجلد: %s", fs_dir);
+    }
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        size_t fslen = strlen(fs_dir) + 1 + strlen(e->d_name) + 1;
+        char *child_fs = malloc(fslen);
+        snprintf(child_fs, fslen, "%s/%s", fs_dir, e->d_name);
+        char *child_rel;
+        if (rel_prefix[0] == '\0') {
+            child_rel = malloc(strlen(e->d_name) + 1);
+            strcpy(child_rel, e->d_name);
+        } else {
+            size_t rlen = strlen(rel_prefix) + 1 + strlen(e->d_name) + 1;
+            child_rel = malloc(rlen);
+            snprintf(child_rel, rlen, "%s/%s", rel_prefix, e->d_name);
+        }
+        struct stat st;
+        if (nv_lstat(child_fs, &st) != 0) {
+            free(child_fs);
+            free(child_rel);
+            continue;
+        }
+        if (S_ISLNK(st.st_mode)) {
+            free(child_fs);
+            free(child_rel);
+            continue;
+        }
+        if (S_ISDIR(st.st_mode)) {
+            b3_diff_walk_c(child_fs, child_rel, out, line, col);
+            free(child_fs);
+            free(child_rel);
+        } else if (S_ISREG(st.st_mode)) {
+            if (out->len == out->cap) {
+                out->cap = out->cap ? out->cap * 2 : 16;
+                out->items = realloc(out->items, out->cap * sizeof(DiffFileC));
+            }
+            out->items[out->len].rel = child_rel;
+            out->items[out->len].fs = child_fs;
+            out->len++;
+        } else {
+            free(child_fs);
+            free(child_rel);
+        }
+    }
+    closedir(d);
+}
+
+static int b3_diff_rel_cmp_c(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static const char *b3_diff_find_c(DiffFileListC *list, const char *rel) {
+    for (size_t i = 0; i < list->len; i++) {
+        if (strcmp(list->items[i].rel, rel) == 0) return list->items[i].fs;
+    }
+    return NULL;
+}
+
+/* فرق.فرق_مجلدين(مجلد1، مجلد2، خيارات؟) — البندان 197 و198. */
+static NvValue nv_std_diff_dirs(NvValue *args, int nargs, int line, int col) {
+    const char *display = "فرق.فرق_مجلدين";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", display, nargs);
+    }
+    const char *dir1 = nv_std_need_string(display, args[0], line, col);
+    const char *dir2 = nv_std_need_string(display, args[1], line, col);
+    char *exclude = NULL;
+    DiffOptsC opts = b3_diff_parse_opts_c(display, nargs == 3 ? &args[2] : NULL, nargs == 3, 0, 0, 1, &exclude, line, col);
+    if (exclude) (void)search_glob_match_c(exclude, "", line, col);
+    DiffFileListC list1, list2;
+    memset(&list1, 0, sizeof(list1));
+    memset(&list2, 0, sizeof(list2));
+    const char *dirs[2] = {dir1, dir2};
+    DiffFileListC *lists[2] = {&list1, &list2};
+    for (int k = 0; k < 2; k++) {
+        char *resolved = nv_resolve_path(dirs[k], line, col);
+        struct stat st;
+        if (stat(resolved, &st) != 0) {
+            free(resolved);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "المسار غير موجود: %s", dirs[k]);
+        }
+        if (!S_ISDIR(st.st_mode)) {
+            free(resolved);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "المسار ليس مجلدا: %s", dirs[k]);
+        }
+        b3_diff_walk_c(resolved, "", lists[k], line, col);
+        free(resolved);
+    }
+    size_t total = list1.len + list2.len;
+    const char **rels = malloc((total ? total : 1) * sizeof(char *));
+    size_t nrels = 0;
+    for (size_t i = 0; i < list1.len; i++) rels[nrels++] = list1.items[i].rel;
+    for (size_t i = 0; i < list2.len; i++) rels[nrels++] = list2.items[i].rel;
+    qsort(rels, nrels, sizeof(char *), b3_diff_rel_cmp_c);
+    NvList *out = b3_list_new_c();
+    const char *prev = NULL;
+    for (size_t i = 0; i < nrels; i++) {
+        const char *rel = rels[i];
+        if (prev && strcmp(prev, rel) == 0) continue;
+        prev = rel;
+        if (exclude) {
+            const char *bare = strrchr(rel, '/');
+            bare = bare ? bare + 1 : rel;
+            if (search_glob_match_c(exclude, rel, line, col) ||
+                search_glob_match_c(exclude, bare, line, col)) {
+                continue;
+            }
+        }
+        const char *p1 = b3_diff_find_c(&list1, rel);
+        const char *p2 = b3_diff_find_c(&list2, rel);
+        const char *state;
+        NvList *recs = b3_list_new_c();
+        if (p1 && !p2) {
+            state = "موجود_في_الأول_فقط";
+        } else if (!p1 && p2) {
+            state = "موجود_في_الثاني_فقط";
+        } else {
+            size_t len1 = 0, len2 = 0;
+            unsigned char *b1 = b3_diff_read_bytes_c(p1, &len1);
+            unsigned char *b2 = b3_diff_read_bytes_c(p2, &len2);
+            int same = len1 == len2 && (len1 == 0 || memcmp(b1, b2, len1) == 0);
+            if (same) {
+                state = "متطابق";
+            } else if (b3_utf8_valid_c(b1 ? b1 : (unsigned char *)"", len1) &&
+                       b3_utf8_valid_c(b2 ? b2 : (unsigned char *)"", len2)) {
+                char *t1 = malloc(len1 + 1);
+                char *t2 = malloc(len2 + 1);
+                if (len1) memcpy(t1, b1, len1);
+                if (len2) memcpy(t2, b2, len2);
+                t1[len1] = '\0';
+                t2[len2] = '\0';
+                DiffSeqC a = b3_diff_seq_c(t1, &opts);
+                DiffSeqC b = b3_diff_seq_c(t2, &opts);
+                size_t nops = 0;
+                DiffOpC *ops = b3_diff_compute_c(&a, &b, display, line, col, &nops);
+                NvList *rs = b3_diff_to_records_c(&a, &b, ops, nops);
+                free(ops);
+                b3_diff_seq_free_c(&a);
+                b3_diff_seq_free_c(&b);
+                free(t1);
+                free(t2);
+                if (rs->len == 0) {
+                    state = "متطابق";
+                } else {
+                    state = "مختلف";
+                    recs = rs;
+                }
+            } else {
+                state = "مختلف";
+            }
+            free(b1);
+            free(b2);
+        }
+        NvDict *d = b3_dict_new_c();
+        nv_dict_set_raw(d, "ملف", nv_str_cstr(rel));
+        nv_dict_set_raw(d, "حالة", nv_str_cstr(state));
+        NvValue recs_v;
+        recs_v.tag = NV_LIST;
+        recs_v.u.list = recs;
+        nv_dict_set_raw(d, "فرق", recs_v);
+        NvValue rec;
+        rec.tag = NV_DICT;
+        rec.u.dict = d;
+        nv_list_push_raw(out, rec);
+    }
+    free(rels);
+    for (size_t i = 0; i < list1.len; i++) {
+        free(list1.items[i].rel);
+        free(list1.items[i].fs);
+    }
+    free(list1.items);
+    for (size_t i = 0; i < list2.len; i++) {
+        free(list2.items[i].rel);
+        free(list2.items[i].fs);
+    }
+    free(list2.items);
+    NvValue r;
+    r.tag = NV_LIST;
+    r.u.list = out;
+    return r;
+}
+
+void nv_std_diff_fill(NvDict *d) {
+    nv_std_add_fn(d, "فرق", nv_std_diff_diff);
+    nv_std_add_fn(d, "فرق_مجلدين", nv_std_diff_dirs);
+    nv_std_add_fn(d, "متطابقان", nv_std_diff_same);
+}
+/* END لينكس3-نص يدوي فرق C */
+
 void nv_std_flow_fill(NvDict *d) {
     nv_std_add_fn(d, "عدل_في_مكانه", nv_std_flow_edit_in_place);
     nv_std_add_fn(d, "استبدل_الكل", nv_std_flow_replace_all);
@@ -16408,7 +19017,20 @@ void nv_std_flow_fill(NvDict *d) {
     nv_std_add_fn(d, "أدرج_قبل", nv_std_flow_insert_before);
     nv_std_add_fn(d, "غير_أسطر", nv_std_flow_change_lines);
     nv_std_add_fn(d, "نفذ_أوامر", nv_std_flow_run_commands);
-    nv_std_add_fn(d, "نفذ_من_ملف", nv_std_flow_run_from_file);
+    nv_std_add_fn(d, "نفذ_من_ملف", nv_std_flow_run_from_file);/* BEGIN لينكس3-نص ملء تدفق */
+    nv_std_add_fn(d, "عالج", nv_std_flow_process);
+    nv_std_add_fn(d, "حقل", nv_std_flow_field);
+    nv_std_add_fn(d, "عدد_الحقول", nv_std_flow_field_count);
+    nv_std_add_fn(d, "اربط_حقول", nv_std_flow_join_fields);
+    nv_std_add_fn(d, "موضع_المطابقة", nv_std_flow_match_pos);
+    nv_std_add_fn(d, "فهرس_نص", nv_std_flow_text_index);
+    nv_std_add_fn(d, "اجمع_عمود", nv_std_flow_col_sum);
+    nv_std_add_fn(d, "عد_المطابق", nv_std_flow_count_match);
+    nv_std_add_fn(d, "أكبر_عمود", nv_std_flow_col_max);
+    nv_std_add_fn(d, "أصغر_عمود", nv_std_flow_col_min);
+    nv_std_add_fn(d, "متوسط_عمود", nv_std_flow_col_avg);
+/* END لينكس3-نص ملء تدفق */
+
 }
 
 // BEGIN J2-GEN c-fns
