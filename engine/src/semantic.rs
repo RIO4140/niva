@@ -57,17 +57,27 @@ struct VarInfo {
     // For a known user function only.
     param_types: Vec<Option<String>>,
     return_type: Option<String>,
+    // البنود 109–112: أسماء المعاملات وعدد
+    // الافتراضيات والجامعان — للفحص الستاتيكي
+    // للمفتاحيات حين يكون المستدعى معروفا.
+    params: Vec<String>,
+    n_defaults: usize,
+    has_vararg: bool,
+    has_kwarg: bool,
+    // البنود 145–147: معاملات النوع المعلنة للدالة
+    // (فارغة لغير العامة).
+    type_params: Vec<crate::ast::TypeParam>,
 }
 
 impl VarInfo {
     fn var() -> Self {
-        Self { arity: None, declared_type: None, param_types: vec![], return_type: None }
+        Self { arity: None, declared_type: None, param_types: vec![], return_type: None, params: vec![], n_defaults: 0, has_vararg: false, has_kwarg: false, type_params: vec![] }
     }
     fn var_typed(t: &str) -> Self {
-        Self { arity: None, declared_type: Some(t.to_string()), param_types: vec![], return_type: None }
+        Self { arity: None, declared_type: Some(t.to_string()), param_types: vec![], return_type: None, params: vec![], n_defaults: 0, has_vararg: false, has_kwarg: false, type_params: vec![] }
     }
-    fn func(arity: usize, param_types: Vec<Option<String>>, return_type: Option<String>) -> Self {
-        Self { arity: Some(arity), declared_type: None, param_types, return_type }
+    fn func(arity: usize, param_types: Vec<Option<String>>, return_type: Option<String>, params: Vec<String>, n_defaults: usize, has_vararg: bool, has_kwarg: bool, type_params: Vec<crate::ast::TypeParam>) -> Self {
+        Self { arity: Some(arity), declared_type: None, param_types, return_type, params, n_defaults, has_vararg, has_kwarg, type_params }
     }
 }
 
@@ -83,6 +93,15 @@ pub struct SemanticAnalyzer {
     loop_depth: usize,
     // Stack of declared return types for enclosing functions.
     return_type_stack: Vec<Option<String>>,
+    // الدفعة الأخيرة DEF (البنود 77 و78): إعلانات
+    // النطاق لكل دالة محيطة — (عام، نطاق)؛ موازٍ
+    // لدخول الدوال (فارغ في المستوى الأعلى وداخل لامدا).
+    decl_stack: Vec<(HashSet<String>, HashSet<String>)>,
+    // البنود 145–147 (العموميات — الاجتماع 83 §98):
+    // معاملات النوع في نطاق التعريفات المحيطة —
+    // (الاسم، حده أو لا شيء) لكل مستوى؛ والاستبدال
+    // يأخذ أقرب مستوى أولا (الظل الداخلي يغلب).
+    type_param_stack: Vec<Vec<(String, Option<String>)>>,
 }
 
 fn builtin_arity(name: &str) -> Option<(usize, usize)> {
@@ -107,6 +126,22 @@ fn builtin_arity(name: &str) -> Option<(usize, usize)> {
         // `أنشئ_مجلد` بمعامل وضع اختياري.
         "أنشئ_مجلد" => Some((1, 2)),
         "مدى" => Some((1, 3)),
+        // ب6 — المولدات (الاجتماع 85 §100): التقدم
+        // والإغلاق معامل واحد؛ والاستدعاءات الداخلية
+        // المفككة في المحلل: `ولد` و`ولد من` معامل
+        // واحد، والتعبير التوليدي ثلاثة (دالتا التعبير
+        // والشرط، والقابل).
+        "التالي" | "أغلق_المولد" => Some((1, 1)),
+        "__ولد" | "__ولد_من" => Some((1, 1)),
+        "__مولد_تعبير" => Some((3, 3)),
+        // البند 88 — مدير السياق (الاجتماع 88 §103):
+        // الاستدعاءات الداخلية المفككة في المحلل من
+        // `عند`: الفحص معامل واحد، وقراءة الخطأ الممسوك
+        // بلا معاملات، وإعادة الرفع معامل واحد (قاموس
+        // الخطأ المحفوظ).
+        "__عند_افحص" => Some((1, 1)),
+        "__عند_خطأ" => Some((0, 0)),
+        "__عند_أعد_رفع" => Some((1, 1)),
         "اكتب_ملف" | "انقل" | "أنشئ_رابط" | "ابحث_في_ملف" => Some((2, 2)),
         // المرحلة (د) — الإكمال (اجتماع 69 §84): انسخ
         // بعلم ثالث اختياري «لا_تكتب».
@@ -166,6 +201,12 @@ fn builtin_arity(name: &str) -> Option<(usize, usize)> {
         // المحركات الثلاثة كلها («متغير غير معرف»).
         "مترابطة" | "تشكيلة" => Some((0, usize::MAX)),
         "افهم_قائمة" | "افهم_تشكيلة" | "افهم_فهرس" => Some((3, 3)),
+        // ج6 (الدفعة الأخيرة): مدمجات الصيغ الحرفية
+        // المفككة في المحلل — وبلا هذه الأسطر يرفض
+        // المحلل الدلالي `123x` و`1r2` و`0j1` و`4ت`
+        // («متغير غير معرف») في المحركات الثلاثة.
+        "عدد_كبير" => Some((1, 1)),
+        "كسر" | "مركب" | "كسر_حرفي" | "مركب_حرفي" => Some((1, 2)),
         "اعرض_البداية" | "اعرض_النهاية" => Some((1, 2)),
         _ => None,
     }
@@ -245,6 +286,10 @@ fn builtin_return_type(name: &str) -> Option<&'static str> {
         "تشكيلة" | "افهم_تشكيلة" => Some("تشكيلة"),
         "افهم_قائمة" => Some("قائمة"),
         "افهم_فهرس" => Some("قاموس"),
+        // ج6: أنواع المدمجات المفككة.
+        "عدد_كبير" => Some("كبير"),
+        "كسر" | "كسر_حرفي" => Some("كسر"),
+        "مركب" | "مركب_حرفي" => Some("مركب"),
         // أدنى / أقصى depend on input type: unknown in Step 3.
         _ => None,
     }
@@ -296,6 +341,43 @@ impl SemanticAnalyzer {
             function_depth: 0,
             loop_depth: 0,
             return_type_stack: vec![],
+            decl_stack: Vec::new(),
+            type_param_stack: Vec::new(),
+        }
+    }
+
+    /// البنود 145–147: استبدال أسماء معاملات النوع
+    /// في نوع معلن بحدودها (ستاتيكيا: `ت: عدد` تعني
+    /// أن قيم `ت` أعداد)؛ وبلا حد تصير `أي`؛ وبلا
+    /// معاملات نوع في النطاق يبقى النوع كما هو.
+    fn subst_bound_type(&self, ty: &str) -> String {
+        if self.type_param_stack.is_empty() {
+            return ty.to_string();
+        }
+        let Some(t) = crate::ast::TypeExpr::parse(ty) else {
+            return ty.to_string();
+        };
+        self.subst_bound_expr(&t).display()
+    }
+
+    fn subst_bound_expr(&self, t: &crate::ast::TypeExpr) -> crate::ast::TypeExpr {
+        match t {
+            crate::ast::TypeExpr::Named(n) => {
+                for level in self.type_param_stack.iter().rev() {
+                    if let Some((_, bound)) = level.iter().find(|(k, _)| k == n) {
+                        return match bound {
+                            Some(b) => crate::ast::TypeExpr::parse(b)
+                                .unwrap_or_else(|| crate::ast::TypeExpr::Named(b.clone())),
+                            None => crate::ast::TypeExpr::Named("أي".to_string()),
+                        };
+                    }
+                }
+                crate::ast::TypeExpr::Named(n.clone())
+            }
+            crate::ast::TypeExpr::Generic { name, args } => crate::ast::TypeExpr::Generic {
+                name: name.clone(),
+                args: args.iter().map(|a| self.subst_bound_expr(a)).collect(),
+            },
         }
     }
 
@@ -323,6 +405,75 @@ impl SemanticAnalyzer {
 
     pub(crate) fn is_defined(&self, name: &str) -> bool {
         self.lookup(name).is_some() || is_builtin(name)
+    }
+
+    /// الدفعة الأخيرة DEF (البنود 77 و78): هل الاسم
+    /// معلن عاما / محيطا في الدالة الجارية؟
+    fn is_global(&self, name: &str) -> bool {
+        self.decl_stack
+            .last()
+            .map(|(g, _)| g.contains(name))
+            .unwrap_or(false)
+    }
+
+    fn is_nonlocal(&self, name: &str) -> bool {
+        self.decl_stack
+            .last()
+            .map(|(_, n)| n.contains(name))
+            .unwrap_or(false)
+    }
+
+    /// ربط محيط (لا المحلي ولا العام) — للفحص النوعي
+    /// عند إسناد باسم معلن محيطا.
+    fn lookup_nonlocal(&self, name: &str) -> Option<VarInfo> {
+        let n = self.scopes.len();
+        for scope in self.scopes.iter().take(n.saturating_sub(1)).skip(1).rev() {
+            if let Some(v) = scope.get(name) {
+                return Some(v.clone());
+            }
+        }
+        None
+    }
+
+    /// تحقق من إعلانات دالة ثم ادفعها: لا اسم في
+    /// المجموعتين معا، ولا معامل معلن عاما/محيطا.
+    /// `what` لرسالة الخطأ (الدالة X / الطريقة X).
+    fn push_decls(
+        &mut self,
+        body: &[Stmt],
+        params: &[String],
+        what: &str,
+        line: usize,
+        col: usize,
+    ) -> RioResult<()> {
+        let (gv, nv) = crate::ast::collect_scope_decls(body);
+        let g: HashSet<String> = gv.into_iter().collect();
+        let n: HashSet<String> = nv.into_iter().collect();
+        for name in g.intersection(&n) {
+            return Err(RioError::semantic(
+                format!("المتغير {} معلن عاما ومحيطا معا", name),
+                line,
+                col,
+            ));
+        }
+        for p in params {
+            if g.contains(p) {
+                return Err(RioError::semantic(
+                    format!("المعامل {} لا يمكن إعلانه عاما في {}", p, what),
+                    line,
+                    col,
+                ));
+            }
+            if n.contains(p) {
+                return Err(RioError::semantic(
+                    format!("المعامل {} لا يمكن إعلانه محيطا في {}", p, what),
+                    line,
+                    col,
+                ));
+            }
+        }
+        self.decl_stack.push((g, n));
+        Ok(())
     }
 
     /// Static type of an expression, if known. None = unknown (أي).
@@ -418,6 +569,8 @@ impl SemanticAnalyzer {
             ExprKind::Index { .. } | ExprKind::Dot { .. } => None,
             ExprKind::Create { .. } => Some("كائن".to_string()),
             ExprKind::Lambda { .. } => Some("دالة".to_string()),
+            // البند 73 (`:=`): نوع التعبير نوع قيمته.
+            ExprKind::AssignExpr { value, .. } => self.infer_type(value),
         }
     }
 
@@ -430,6 +583,23 @@ impl SemanticAnalyzer {
 
     fn analyze_stmt(&mut self, stmt: &Stmt) -> RioResult<()> {
         match &stmt.kind {
+            // الدفعة الأخيرة DEF (البنود 77 و78 و104):
+            // `عام` بلا أثر في المستوى الأعلى، وداخل
+            // الدالة جُمعت إعلاناتها عند دخولها؛
+            // و`نطاق` خارج دالة خطأ دلالي؛ وبيان
+            // الاسم المستعار بلا أثر (المرحلة هـ).
+            StmtKind::GlobalDecl { .. } => Ok(()),
+            StmtKind::NonlocalDecl { .. } => {
+                if self.function_depth == 0 {
+                    return Err(RioError::semantic(
+                        "نطاق خارج دالة",
+                        stmt.line,
+                        stmt.col,
+                    ));
+                }
+                Ok(())
+            }
+            StmtKind::TypeAlias { .. } => Ok(()),
             StmtKind::Assign { target, value, annotation, append } => {
                 // Value first, matching runtime evaluation order.
                 self.analyze_expr(value)?;
@@ -443,28 +613,45 @@ impl SemanticAnalyzer {
                 let _ = append;
                 match target {
                     AssignTarget::Var(name) => {
-                        // Step 1 (Meeting 11): lexical assignment,
-                        // matching the interpreter's assign_local.
-                        // An assignment targets the nearest existing
-                        // binding (any enclosing scope), not a fresh
-                        // local; only a name that exists nowhere is
-                        // defined in the current scope. Declared-type
-                        // checks use the found binding's type.
-                        let existing_decl = self
-                            .lookup(name)
-                            .and_then(|info| info.declared_type.clone());
+                        // الدفعة الأخيرة DEF (البنود 77 و78):
+                        // توجيه الإسناد حسب إعلان النطاق —
+                        // عام إلى scopes[0] (نطاق البرنامج)،
+                        // ونطاق إلى أقرب ربط محيط (بلا تعريف
+                        // محلي — غيابه خطأ زمن-تشغيل)، وإلا
+                        // أقرب ربط كالسابق (Step 1، الاجتماع 11):
+                        // إسناد يستهدف أقرب ربط موجود، لا ظلا
+                        // محليا جديدا؛ والغائب وحده يُعرَّف في
+                        // النطاق الجاري. فحص النوع المعلن يستعمل
+                        // نوع الربط المستهدَف.
+                        let is_g = self.is_global(name);
+                        let is_n = self.is_nonlocal(name);
+                        let existing_decl = if is_g {
+                            self.scopes[0]
+                                .get(name)
+                                .and_then(|i| i.declared_type.clone())
+                        } else if is_n {
+                            self.lookup_nonlocal(name)
+                                .and_then(|i| i.declared_type)
+                        } else {
+                            self.lookup(name)
+                                .and_then(|info| info.declared_type.clone())
+                        };
                         if let Some(decl) = &existing_decl {
+                            let decl = self.subst_bound_type(decl);
+                            let value_type = value_type.clone().map(|t| self.subst_bound_type(&t));
                             check_type_match(
-                                decl,
-                                value_type.clone(),
+                                &decl,
+                                value_type,
                                 &format!("المتغير {}", name),
                                 stmt.line,
                                 stmt.col,
                             )?;
                         }
                         if let Some(ann) = annotation {
+                            let ann = self.subst_bound_type(ann);
+                            let value_type = value_type.map(|t| self.subst_bound_type(&t));
                             check_type_match(
-                                ann,
+                                &ann,
                                 value_type,
                                 &format!("المتغير {}", name),
                                 stmt.line,
@@ -473,7 +660,7 @@ impl SemanticAnalyzer {
                             // An annotation on an existing binding
                             // must agree with its declared type.
                             if let Some(decl) = &existing_decl {
-                                if decl != ann {
+                                if decl.as_str() != ann.as_str() {
                                     return Err(RioError::semantic(
                                         format!(
                                             "المتغير {} معلن {} في نطاق خارجي، ولا يمكن إعادة إعلانه {}",
@@ -485,11 +672,20 @@ impl SemanticAnalyzer {
                                 }
                             }
                             // No existing binding: the annotation
-                            // declares a new local.
-                            if self.lookup(name).is_none() {
-                                self.define(name, VarInfo::var_typed(ann));
+                            // declares a new binding in the target scope.
+                            if is_g {
+                                if !self.scopes[0].contains_key(name) {
+                                    self.scopes[0]
+                                        .insert(name.clone(), VarInfo::var_typed(&ann));
+                                }
+                            } else if !is_n && self.lookup(name).is_none() {
+                                self.define(name, VarInfo::var_typed(&ann));
                             }
-                        } else if self.lookup(name).is_none() {
+                        } else if is_g {
+                            if !self.scopes[0].contains_key(name) {
+                                self.scopes[0].insert(name.clone(), VarInfo::var());
+                            }
+                        } else if !is_n && self.lookup(name).is_none() {
                             self.define(name, VarInfo::var());
                         }
                     }
@@ -584,7 +780,15 @@ impl SemanticAnalyzer {
                 self.loop_depth -= 1;
                 r
             }
-            StmtKind::FuncDef { name, params, param_types, return_type, body } => {
+            StmtKind::FuncDef { name, params, param_types, return_type, defaults, vararg, kwarg, type_params, body } => {
+                // البنود 145–147: معاملات النوع في النطاق
+                // طوال الجسم (لأنواع المعاملات والإرجاع
+                // والتعليقات داخله).
+                let tp_level: Vec<(String, Option<String>)> = type_params
+                    .iter()
+                    .map(|tp| (tp.name.clone(), tp.bound.clone()))
+                    .collect();
+                self.type_param_stack.push(tp_level);
                 // Duplicate parameters are a definition error.
                 let mut seen = HashSet::new();
                 for p in params {
@@ -599,16 +803,30 @@ impl SemanticAnalyzer {
                 // Define the function BEFORE its body, so recursion
                 // passes, and so later calls in the enclosing scope
                 // pass. Calls before this definition fail, as at runtime.
+                let n_defaults = defaults.iter().filter(|d| d.is_some()).count();
                 self.define(
                     name,
-                    VarInfo::func(params.len(), param_types.clone(), return_type.clone()),
+                    VarInfo::func(params.len(), param_types.clone(), return_type.clone(), params.clone(), n_defaults, vararg.is_some(), kwarg.is_some(), type_params.clone()),
                 );
+                // البنود 109–112: الافتراضيات تُحلَّل في
+                // نطاق التعريف (لا نطاق الجسم).
+                for d in defaults.iter().flatten() {
+                    self.analyze_expr(d)?;
+                }
+                self.push_decls(body, params, &format!("الدالة {}", name), stmt.line, stmt.col)?;
                 self.scopes.push(HashMap::new());
                 for (p, pt) in params.iter().zip(param_types.iter()) {
                     match pt {
                         Some(t) => self.define(p, VarInfo::var_typed(t)),
                         None => self.define(p, VarInfo::var()),
                     }
+                }
+                // الجامعان اسمان في نطاق الجسم: قائمة وقاموس.
+                if let Some(vn) = vararg {
+                    self.define(vn, VarInfo::var_typed("قائمة"));
+                }
+                if let Some(kn) = kwarg {
+                    self.define(kn, VarInfo::var_typed("قاموس"));
                 }
                 self.function_depth += 1;
                 self.return_type_stack.push(return_type.clone());
@@ -619,6 +837,8 @@ impl SemanticAnalyzer {
                 self.return_type_stack.pop();
                 self.function_depth -= 1;
                 self.scopes.pop();
+                self.decl_stack.pop();
+                self.type_param_stack.pop();
                 r
             }
             StmtKind::Return { value } => {
@@ -632,9 +852,10 @@ impl SemanticAnalyzer {
                 if let Some(v) = value {
                     self.analyze_expr(v)?;
                     if let Some(Some(rt)) = self.return_type_stack.last() {
-                        let vt = self.infer_type(v);
+                        let rt = self.subst_bound_type(rt);
+                        let vt = self.infer_type(v).map(|t| self.subst_bound_type(&t));
                         check_type_match(
-                            rt,
+                            &rt,
                             vt,
                             &format!("قيمة ارجع"),
                             stmt.line,
@@ -644,8 +865,9 @@ impl SemanticAnalyzer {
                 } else {
                     // Return without a value: type لاشيء.
                     if let Some(Some(rt)) = self.return_type_stack.last() {
+                        let rt = self.subst_bound_type(rt);
                         check_type_match(
-                            rt,
+                            &rt,
                             Some("لاشيء".to_string()),
                             &format!("قيمة ارجع"),
                             stmt.line,
@@ -679,9 +901,15 @@ impl SemanticAnalyzer {
             StmtKind::Try {
                 try_body,
                 except_body,
+                else_body,
                 finally_body,
             } => {
                 self.analyze_block(try_body)?;
+                // البند 98 (`والا` بعد حاول): يُحلَّل جسمها
+                // كجسم حاول (بعد نجاحه العادي).
+                if let Some(b) = else_body {
+                    self.analyze_block(b)?;
+                }
                 if let Some(b) = except_body {
                     self.analyze_block(b)?;
                 }
@@ -711,7 +939,14 @@ impl SemanticAnalyzer {
                 }
                 Ok(())
             }
-            StmtKind::ClassDef { name, base, interfaces, methods } => {
+            StmtKind::ClassDef { name, base, interfaces, type_params, methods } => {
+                // البنود 145–147: معاملات نوع الفئة في
+                // النطاق طوال طرائقها.
+                let class_tp: Vec<(String, Option<String>)> = type_params
+                    .iter()
+                    .map(|tp| (tp.name.clone(), tp.bound.clone()))
+                    .collect();
+                self.type_param_stack.push(class_tp);
                 // Base and interfaces must already be defined
                 // (top-down, like functions). Compliance itself
                 // is checked at runtime, where method maps exist.
@@ -738,7 +973,14 @@ impl SemanticAnalyzer {
                 // Its static type is فئة.
                 self.define(name, VarInfo::var_typed("فئة"));
                 for m in methods {
-                    if let StmtKind::FuncDef { name: mn, params, param_types, return_type, body } = &m.kind {
+                    if let StmtKind::FuncDef { name: mn, params, param_types, return_type, defaults, vararg, kwarg, type_params: m_type_params, body } = &m.kind {
+                        // البنود 145–147: معاملات نوع الطريقة
+                        // نفسها فوق معاملات نوع الفئة.
+                        let m_tp: Vec<(String, Option<String>)> = m_type_params
+                            .iter()
+                            .map(|tp| (tp.name.clone(), tp.bound.clone()))
+                            .collect();
+                        self.type_param_stack.push(m_tp);
                         let mut seen = HashSet::new();
                         for p in params {
                             if !seen.insert(p) {
@@ -749,6 +991,11 @@ impl SemanticAnalyzer {
                                 ));
                             }
                         }
+                        // البنود 109–112: الافتراضيات تُحلَّل في
+                        // نطاق التعريف (نطاق الفئة هنا).
+                        for d in defaults.iter().flatten() {
+                            self.analyze_expr(d)?;
+                        }
                         // Method scope: params + نفس (auto-bound to
                         // the instance, type كائن). نفس is NOT a param.
                         self.scopes.push(HashMap::new());
@@ -758,7 +1005,14 @@ impl SemanticAnalyzer {
                                 None => self.define(p, VarInfo::var()),
                             }
                         }
+                        if let Some(vn) = vararg {
+                            self.define(vn, VarInfo::var_typed("قائمة"));
+                        }
+                        if let Some(kn) = kwarg {
+                            self.define(kn, VarInfo::var_typed("قاموس"));
+                        }
                         self.define("نفس", VarInfo::var_typed("كائن"));
+                        self.push_decls(body, params, &format!("الطريقة {}", mn), m.line, m.col)?;
                         self.function_depth += 1;
                         self.return_type_stack.push(return_type.clone());
                         let saved_loop = self.loop_depth;
@@ -768,9 +1022,12 @@ impl SemanticAnalyzer {
                         self.return_type_stack.pop();
                         self.function_depth -= 1;
                         self.scopes.pop();
+                        self.decl_stack.pop();
+                        self.type_param_stack.pop();
                         r?;
                     }
                 }
+                self.type_param_stack.pop();
                 Ok(())
             }
             StmtKind::InterfaceDef { name, .. } => {
@@ -828,6 +1085,34 @@ impl SemanticAnalyzer {
                 }
                 Ok(())
             }
+            // البند 73 (`:=`): تحليل القيمة، ثم تعريف
+            // الاسم بنوعها المستنتج — كإسناد `=` بلا
+            // تعليق: عام إلى scopes[0]، ونطاق بلا
+            // تعريف محلي، وإلا في النطاق الجاري إن
+            // كان الاسم غائبا في كل النطاقات.
+            ExprKind::AssignExpr { name, value } => {
+                self.analyze_expr(value)?;
+                let t = self.infer_type(value);
+                if self.is_global(name) {
+                    if !self.scopes[0].contains_key(name) {
+                        match t {
+                            Some(t) => {
+                                self.scopes[0]
+                                    .insert(name.clone(), VarInfo::var_typed(&t));
+                            }
+                            None => {
+                                self.scopes[0].insert(name.clone(), VarInfo::var());
+                            }
+                        }
+                    }
+                } else if !self.is_nonlocal(name) && self.lookup(name).is_none() {
+                    match t {
+                        Some(t) => self.define(name, VarInfo::var_typed(&t)),
+                        None => self.define(name, VarInfo::var()),
+                    }
+                }
+                Ok(())
+            }
             ExprKind::Binary { left, op, right } => {
                 // `و` / `أو` short-circuit at runtime, but both sides
                 // are still in scope, so both are analyzed.
@@ -837,27 +1122,116 @@ impl SemanticAnalyzer {
                 Ok(())
             }
             ExprKind::Unary { op: _, expr: e } => self.analyze_expr(e),
-            ExprKind::Call { callee, args } => {
-                // Arity check for direct calls to known functions.
-                let mut known_param_types: Option<Vec<Option<String>>> = None;
+            ExprKind::Call { callee, args, kwargs, .. } => {
+                // ب6: `ولد`/`ولد من` خارج أي دالة خطأ
+                // دلالي — المولد دالة تحوي ولدا، فلا
+                // توليد في المستوى الأعلى. (لامدا تحوي
+                // ولدا مولد هي الأخرى: جسمها المخزَّن
+                // `ارجع` يحوي الاستدعاء، فيكشفه فحص
+                // الجسم عند استدعائها.)
+                if let ExprKind::Ident(name) = &callee.kind {
+                    if (name == crate::ast::YIELD_CALL || name == crate::ast::YIELD_FROM_CALL)
+                        && self.function_depth == 0
+                    {
+                        return Err(RioError::semantic(
+                            "ولد خارج دالة — التوليد يكون داخل دالة فقط",
+                            expr.line,
+                            expr.col,
+                        ));
+                    }
+                }
+                // Static matching for direct calls to known
+                // functions (البنود 109–112): same order and
+                // messages as the runtime resolver.
+                let mut known_sig: Option<(Vec<String>, Vec<Option<String>>, bool)> = None;
                 if let ExprKind::Ident(name) = &callee.kind {
                     if let Some(info) = self.lookup(name) {
                         if let Some(n) = info.arity {
-                            if args.len() != n {
-                                return Err(RioError::semantic(
-                                    format!(
-                                        "عدد المعاملات غير صحيح: الدالة {} تتوقع {} لكن أعطيت {}",
-                                        name,
-                                        n,
-                                        args.len()
-                                    ),
-                                    expr.line,
-                                    expr.col,
-                                ));
+                            let plain = info.n_defaults == 0
+                                && !info.has_vararg
+                                && !info.has_kwarg
+                                && kwargs.is_empty();
+                            if plain {
+                                if args.len() != n {
+                                    return Err(RioError::semantic(
+                                        format!(
+                                            "عدد المعاملات غير صحيح: الدالة {} تتوقع {} لكن أعطيت {}",
+                                            name,
+                                            n,
+                                            args.len()
+                                        ),
+                                        expr.line,
+                                        expr.col,
+                                    ));
+                                }
+                            } else {
+                                // (1) فيض موضعي بلا جامع.
+                                if !info.has_vararg && args.len() > n {
+                                    return Err(RioError::semantic(
+                                        format!(
+                                            "عدد المعاملات غير صحيح: الدالة {} تتوقع {} لكن أعطيت {}",
+                                            name,
+                                            n,
+                                            args.len() + kwargs.len()
+                                        ),
+                                        expr.line,
+                                        expr.col,
+                                    ));
+                                }
+                                // (3) ازدواج، ثم (4) مجهول —
+                                // لكل مفتاحي بالترتيب.
+                                for (k, _) in kwargs {
+                                    match info.params.iter().position(|p| p == k) {
+                                        Some(i) => {
+                                            if i < args.len() {
+                                                return Err(RioError::semantic(
+                                                    format!("المعامل {} أعطي موضعيا ومفتاحيا", k),
+                                                    expr.line,
+                                                    expr.col,
+                                                ));
+                                            }
+                                        }
+                                        None => {
+                                            if !info.has_kwarg {
+                                                return Err(RioError::semantic(
+                                                    format!("معامل مفتاحي غير معروف: {}", k),
+                                                    expr.line,
+                                                    expr.col,
+                                                ));
+                                            }
+                                        }
+                                    }
+                                }
+                                // (5) مطلوب مفقود — الافتراضيات
+                                // متتالية من النهاية.
+                                for (i, p) in info.params.iter().enumerate() {
+                                    let has_default = i >= n - info.n_defaults;
+                                    let filled_kw =
+                                        kwargs.iter().any(|(k, _)| k == p);
+                                    if i >= args.len() && !filled_kw && !has_default {
+                                        return Err(RioError::semantic(
+                                            format!("المعامل {} مطلوب في الدالة {}", p, name),
+                                            expr.line,
+                                            expr.col,
+                                        ));
+                                    }
+                                }
                             }
-                            known_param_types = Some(info.param_types.clone());
+                            // البنود 145–147: الدالة العامة يُفحص
+                            // نوع معاملاتها وقت التشغيل بالربط
+                            // المحلول (رسائله الدقيقة) — فالفحص
+                            // الستاتيكي هنا يتخطاها كلها، وإلا
+                            // رفض النوع المعلن `ت` حرفيا كل قيمة.
+                            known_sig = Some((info.params.clone(), info.param_types.clone(), !info.type_params.is_empty()));
                         }
                     } else if let Some((min, max)) = builtin_arity(name) {
+                        if !kwargs.is_empty() {
+                            return Err(RioError::semantic(
+                                format!("معامل مفتاحي غير معروف: {}", kwargs[0].0),
+                                expr.line,
+                                expr.col,
+                            ));
+                        }
                         if args.len() < min || args.len() > max {
                             return Err(RioError::semantic(
                                 format!(
@@ -884,10 +1258,15 @@ impl SemanticAnalyzer {
                 for a in args {
                     self.analyze_expr(a)?;
                 }
+                for (_, v) in kwargs {
+                    self.analyze_expr(v)?;
+                }
                 // Phase 1A Step 3: param type check for known
                 // functions, after args are analyzed. Unknown arg
                 // types pass (gradual); runtime checks them.
-                if let Some(pts) = known_param_types {
+                // المفتاحيات تُفحص بنوع معاملها المسمى.
+                if let Some((params, pts, is_generic)) = known_sig {
+                    if !is_generic {
                     if let ExprKind::Ident(name) = &callee.kind {
                         for (arg, pt) in args.iter().zip(pts.iter()) {
                             if let Some(pt) = pt {
@@ -901,6 +1280,21 @@ impl SemanticAnalyzer {
                                 )?;
                             }
                         }
+                        for (k, v) in kwargs {
+                            if let Some(i) = params.iter().position(|p| p == k) {
+                                if let Some(Some(pt)) = pts.get(i) {
+                                    let at = self.infer_type(v);
+                                    check_type_match(
+                                        pt,
+                                        at,
+                                        &format!("معامل في الدالة {}", name),
+                                        v.line,
+                                        v.col,
+                                    )?;
+                                }
+                            }
+                        }
+                    }
                     }
                 }
                 Ok(())
@@ -910,7 +1304,7 @@ impl SemanticAnalyzer {
                 self.analyze_expr(index)?;
                 Ok(())
             }
-            ExprKind::Create { class, args } => {
+            ExprKind::Create { class, args, kwargs, .. } => {
                 // Class must be defined (top-down, like functions).
                 // Its type is checked at runtime, so a variable
                 // holding a class passes here (gradual).
@@ -923,6 +1317,9 @@ impl SemanticAnalyzer {
                 }
                 for a in args {
                     self.analyze_expr(a)?;
+                }
+                for (_, v) in kwargs {
+                    self.analyze_expr(v)?;
                 }
                 Ok(())
             }
@@ -973,6 +1370,9 @@ impl SemanticAnalyzer {
                         None => self.define(p, VarInfo::var()),
                     }
                 }
+                // الدفعة الأخيرة DEF: لامدا بلا إعلانات —
+                // فإسناد `:=` فيها إسناد عادي.
+                self.decl_stack.push((HashSet::new(), HashSet::new()));
                 self.function_depth += 1;
                 self.return_type_stack.push(None);
                 let saved_loop = self.loop_depth;
@@ -982,6 +1382,7 @@ impl SemanticAnalyzer {
                 self.return_type_stack.pop();
                 self.function_depth -= 1;
                 self.scopes.pop();
+                self.decl_stack.pop();
                 r
             }
         }

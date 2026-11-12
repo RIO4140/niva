@@ -46,13 +46,26 @@ pub enum ExprKind {
     Dict(Vec<(String, Expr)>),
     Binary { left: Box<Expr>, op: BinOp, right: Box<Expr> },
     Unary { op: UnOp, expr: Box<Expr> },
-    Call { callee: Box<Expr>, args: Vec<Expr> },
+    // البند 73 (`:=` — الاجتماع 83 §98): تعبير إسناد —
+    // اسم وحده لا هدف عام؛ يسنِد ثم ينتج القيمة.
+    AssignExpr { name: String, value: Box<Expr> },
+    // البندان 109–112 (الاجتماع 83 §98): الاستدعاء
+    // يكتسب `kwargs` — معاملات مفتاحية `اسم = قيمة`
+    // بترتيب كتابتها؛ والموضعية في `args` كما كانت.
+    // البنود 145–147 (العموميات — الاجتماع 83 §98):
+    // `type_args` معاملات نوع التخصيص (`اسم[نوع، ...]`)
+    // بترتيب كتابتها؛ فارغة = بلا تخصيص صريح.
+    Call { callee: Box<Expr>, args: Vec<Expr>, kwargs: Vec<(String, Expr)>, type_args: Vec<String> },
     Index { target: Box<Expr>, index: Box<Expr> },
     // Phase 1A Step 2: module.member. Step 4: object.member too.
     // Dot on any other value is a runtime type error.
     Dot { target: Box<Expr>, name: String },
     // Phase 1A Step 4: classes. أنشئ فئة(معاملات)
-    Create { class: String, args: Vec<Expr> },
+    // البندان 109–112: المنشئ يقبل معاملات مفتاحية
+    // كالاستدعاء العادي (`أنشئ فئة(س = ١)`).
+    // البنود 145–147: `type_args` معاملات نوع التخصيص
+    // (`أنشئ فئة[نوع](...)`)؛ فارغة = بلا تخصيص صريح.
+    Create { class: String, args: Vec<Expr>, kwargs: Vec<(String, Expr)>, type_args: Vec<String> },
     // Step 1 (Meeting 13): lambda, single expression,
     // implicit return. دالة_مجهولة(س): س + 1 — a first-class
     // Function value that captures lexically like a closure.
@@ -84,8 +97,210 @@ pub const TYPE_NAMES: &[&str] = &[
 pub const STR_METHODS: &[&str] = &["طول", "كبير", "صغير", "قص", "استبدل", "قسم", "يحتوي", "اقطع", "استبدل_أول"];
 pub const LIST_METHODS: &[&str] = &["طول", "أضف", "أزل", "يحتوي"];
 
+// البند 88 — مدير السياق (الاجتماع 88 §103):
+// الاستدعاءات الداخلية التي يفكك إليها المحلل
+// `عند` — بلا عقد AST جديدة وبلا لمس cgen.rs
+// (سابقة `ولد` و`طابق`): `__عند_افحص(مدير)`
+// يفحص الدالتين قبل أي استدعاء؛ و`__عند_خطأ()`
+// يعيد قاموس الخطأ الممسوك أو لاشيء؛ و
+// `__عند_أعد_رفع(خطأ)` يعيد رفع الخطأ نفسه من
+// القاموس المحفوظ. البادئة `__` محجوزة داخليا.
+pub const CTX_CHECK: &str = "__عند_افحص";
+pub const CTX_ERROR: &str = "__عند_خطأ";
+pub const CTX_RERAISE: &str = "__عند_أعد_رفع";
+
+// ب6 — المولدات (الاجتماع 85 §100): أسماء الاستدعاءات
+// الداخلية التي يفكك إليها المحلل `ولد` و`ولد من`
+// والتعبير التوليدي — بلا عقد AST جديدة وبلا لمس
+// cgen.rs (سابقة الصيغ الحرفية المفككة في ج6):
+// `ولد قيمة` → `__ولد(قيمة)`، و`ولد من مولد` →
+// `__ولد_من(مولد)`، و`(تعبير لاجل س في قابل اذا شرط)`
+// → `__مولد_تعبير(دالة التعبير، دالة الشرط أو لاشيء،
+// القابل)`. المفسر والآلة يعترضانها وقت التشغيل؛
+// والمرآة C ترفضها بالرسالة القانونية. البادئة
+// `__` محجوزة داخليا — لا يكتبها المستخدم عادة.
+pub const YIELD_CALL: &str = "__ولد";
+pub const YIELD_FROM_CALL: &str = "__ولد_من";
+pub const GENEXPR_CALL: &str = "__مولد_تعبير";
+
+/// ب6: هل يحوي جسم دالة استدعاء `ولد`/`ولد من`
+/// (بعد التفكيك) — فالدالة مولد. لا ينزل إلى أجسام
+/// دوال متداخلة أو لامدا أو طرق فئات: تلك مولدات
+/// مستقلة بذاتها، لا تجعل الخارجي مولدا.
+pub fn body_has_yield(body: &[Stmt]) -> bool {
+    body.iter().any(stmt_has_yield)
+}
+
+fn stmt_has_yield(stmt: &Stmt) -> bool {
+    match &stmt.kind {
+        StmtKind::Assign { value, .. } => expr_has_yield(value),
+        StmtKind::Print { args } => args.iter().any(expr_has_yield),
+        StmtKind::If { cond, then_body, elifs, else_body } => {
+            expr_has_yield(cond)
+                || then_body.iter().any(stmt_has_yield)
+                || elifs.iter().any(|(c, b)| expr_has_yield(c) || b.iter().any(stmt_has_yield))
+                || else_body.as_ref().map_or(false, |b| b.iter().any(stmt_has_yield))
+        }
+        StmtKind::While { cond, body } | StmtKind::RepeatWhile { cond, body } => {
+            expr_has_yield(cond) || body.iter().any(stmt_has_yield)
+        }
+        StmtKind::For { iterable, body, .. } => {
+            expr_has_yield(iterable) || body.iter().any(stmt_has_yield)
+        }
+        StmtKind::RepeatCount { count, body } => {
+            expr_has_yield(count) || body.iter().any(stmt_has_yield)
+        }
+        StmtKind::Return { value } => value.as_ref().map_or(false, expr_has_yield),
+        StmtKind::Try { try_body, except_body, else_body, finally_body } => {
+            try_body.iter().any(stmt_has_yield)
+                || except_body.as_ref().map_or(false, |b| b.iter().any(stmt_has_yield))
+                || else_body.as_ref().map_or(false, |b| b.iter().any(stmt_has_yield))
+                || finally_body.as_ref().map_or(false, |b| b.iter().any(stmt_has_yield))
+        }
+        StmtKind::ExprStmt { expr } => expr_has_yield(expr),
+        StmtKind::Decorated { def, .. } => stmt_has_yield(def),
+        // دالة/فئة/واجهة متداخلة: لا نزول — جسمها
+        // مستقل، ويُفحص وحده عند تعريفه.
+        StmtKind::FuncDef { .. } | StmtKind::ClassDef { .. } | StmtKind::InterfaceDef { .. } => false,
+        // إعلانات النطاق واسم النوع: بلا جسم ولا تعبير.
+        StmtKind::GlobalDecl { .. } | StmtKind::NonlocalDecl { .. } | StmtKind::TypeAlias { .. } => false,
+        StmtKind::Break | StmtKind::Continue | StmtKind::Pass | StmtKind::Import { .. } | StmtKind::Export { .. } => false,
+    }
+}
+
+/// البنود 77 و78 (الاجتماع 83 §98): اجمع إعلانات
+/// `عام` و`نطاق` في جسم دالة (أسماء عامة، أسماء
+/// محيطة) — نزولا في الكتل المتداخلة (اذا/بينما/
+/// لكل/كرر/حاول/والا) لا في أجسام دوال أو فئات
+/// متداخلة (نطاقات مستقلة). تُحسَم مرة واحدة عند
+/// تعريف الدالة، فيسري الإعلان على الجسم كله ولو
+/// جاء بعد الإسناد — كدلالة بايثون.
+pub fn collect_scope_decls(body: &[Stmt]) -> (Vec<String>, Vec<String>) {
+    let mut globals: Vec<String> = Vec::new();
+    let mut nonlocals: Vec<String> = Vec::new();
+    collect_scope_decls_into(body, &mut globals, &mut nonlocals);
+    (globals, nonlocals)
+}
+
+fn collect_scope_decls_into(
+    body: &[Stmt],
+    globals: &mut Vec<String>,
+    nonlocals: &mut Vec<String>,
+) {
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::GlobalDecl { names } => {
+                for n in names {
+                    if !globals.contains(n) {
+                        globals.push(n.clone());
+                    }
+                }
+            }
+            StmtKind::NonlocalDecl { names } => {
+                for n in names {
+                    if !nonlocals.contains(n) {
+                        nonlocals.push(n.clone());
+                    }
+                }
+            }
+            StmtKind::If { then_body, elifs, else_body, .. } => {
+                collect_scope_decls_into(then_body, globals, nonlocals);
+                for (_, b) in elifs {
+                    collect_scope_decls_into(b, globals, nonlocals);
+                }
+                if let Some(b) = else_body {
+                    collect_scope_decls_into(b, globals, nonlocals);
+                }
+            }
+            StmtKind::While { body, .. } | StmtKind::RepeatWhile { cond: _, body } => {
+                collect_scope_decls_into(body, globals, nonlocals);
+            }
+            StmtKind::For { body, .. } | StmtKind::RepeatCount { body, .. } => {
+                collect_scope_decls_into(body, globals, nonlocals);
+            }
+            StmtKind::Try { try_body, except_body, else_body, finally_body } => {
+                collect_scope_decls_into(try_body, globals, nonlocals);
+                if let Some(b) = except_body {
+                    collect_scope_decls_into(b, globals, nonlocals);
+                }
+                if let Some(b) = else_body {
+                    collect_scope_decls_into(b, globals, nonlocals);
+                }
+                if let Some(b) = finally_body {
+                    collect_scope_decls_into(b, globals, nonlocals);
+                }
+            }
+            // دالة/فئة متداخلة: نطاق مستقل — لا نزول.
+            _ => {}
+        }
+    }
+}
+
+fn expr_has_yield(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Call { callee, args, kwargs, .. } => {
+            if let ExprKind::Ident(name) = &callee.kind {
+                if name == YIELD_CALL || name == YIELD_FROM_CALL {
+                    return true;
+                }
+            }
+            expr_has_yield(callee)
+                || args.iter().any(expr_has_yield)
+                || kwargs.iter().any(|(_, v)| expr_has_yield(v))
+        }
+        ExprKind::Binary { left, right, .. } => expr_has_yield(left) || expr_has_yield(right),
+        ExprKind::Unary { expr: inner, .. } => expr_has_yield(inner),
+        // البند 73: الإسناد داخل تعبير — قيمته قد تحوي ولدا.
+        ExprKind::AssignExpr { value, .. } => expr_has_yield(value),
+        ExprKind::List(elems) => elems.iter().any(expr_has_yield),
+        ExprKind::Dict(entries) => entries.iter().any(|(_, v)| expr_has_yield(v)),
+        ExprKind::Index { target, index } => expr_has_yield(target) || expr_has_yield(index),
+        ExprKind::Dot { target, .. } => expr_has_yield(target),
+        ExprKind::Create { args, kwargs, .. } => {
+            args.iter().any(expr_has_yield)
+                || kwargs.iter().any(|(_, v)| expr_has_yield(v))
+        }
+        // لامدا: جسمها تعبير مستقل — لا يُحسب على الخارجي.
+        ExprKind::Lambda { .. } => false,
+        ExprKind::Number(_) | ExprKind::Str(_) | ExprKind::Bool(_) | ExprKind::Nil | ExprKind::Ident(_) => false,
+    }
+}
+
 pub fn is_known_type(name: &str) -> bool {
     TYPE_NAMES.contains(&name)
+}
+
+/// معامل نوع واحد في تعريف عام (البنود 145–147 —
+/// الاجتماع 83 §98): `ت` وحده، أو `ت: حد`، أو
+/// `ت = افتراضي`، أو `ت: حد = افتراضي`. الحد والافتراضي
+/// عرضان نصيان قانونيان لنوع (كما يعرضهما TypeExpr).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypeParam {
+    pub name: String,
+    pub bound: Option<String>,
+    pub default: Option<String>,
+}
+
+impl TypeParam {
+    pub fn new(name: String, bound: Option<String>, default: Option<String>) -> Self {
+        Self { name, bound, default }
+    }
+
+    /// الترميز النصي لجدول واحد في cgen: `ت` أو `ت:حد`
+    /// أو `ت=افتراضي` أو `ت:حد=افتراضي` — فالعرض القانوني
+    /// للنوع بلا `:` ولا `=` ولا `؛` أبدا.
+    pub fn encode(&self) -> String {
+        let mut s = self.name.clone();
+        if let Some(b) = &self.bound {
+            s.push(':');
+            s.push_str(b);
+        }
+        if let Some(d) = &self.default {
+            s.push('=');
+            s.push_str(d);
+        }
+        s
+    }
 }
 
 /// تمثيل نوعي حقيقي (البند 8 — الاجتماع 72 §87):
@@ -252,22 +467,53 @@ pub enum StmtKind {
     RepeatWhile { cond: Expr, body: Vec<Stmt> },
     // param_types[i]: Some(type) for params[i], None = untyped.
     // return_type: Some(type), None = untyped (أي).
+    // البنود 109–112 (الاجتماع 83 §98): `defaults[i]`
+    // قيمة افتراضية لمعامل params[i] (تُقيَّم وقت التعريف)
+    // أو لا شيء؛ و`vararg` اسم جامع الزائد الموضعي
+    // (`*اسم`) أو لا شيء؛ و`kwarg` اسم جامع الزائد
+    // المفتاحي (`**اسم`) أو لا شيء. الافتراضيات متتالية
+    // من النهاية (يحسمها المحلل).
     FuncDef {
         name: String,
         params: Vec<String>,
         param_types: Vec<Option<String>>,
         return_type: Option<String>,
+        defaults: Vec<Option<Expr>>,
+        vararg: Option<String>,
+        kwarg: Option<String>,
+        // البنود 145–147 (العموميات — الاجتماع 83 §98):
+        // معاملات النوع المعلنة `[ت: حد = افتراضي، ...]`؛
+        // فارغة = دالة غير عامة كما كانت.
+        type_params: Vec<TypeParam>,
         body: Vec<Stmt>,
     },
     Return { value: Option<Expr> },
     Break,
     Continue,
     Pass,
+    // البند 98 (`والا` بعد حاول — الاجتماع 83 §98):
+    // `else_body` كتلة تنفذ عند نجاح المحاولة بلا خطأ،
+    // قبل `finally`؛ وخطأ داخلها يمسكه `ماعدا` نفسه
+    // (موثق — كالمسار الناجح في المولد الأصلي).
     Try {
         try_body: Vec<Stmt>,
         except_body: Option<Vec<Stmt>>,
+        else_body: Option<Vec<Stmt>>,
         finally_body: Option<Vec<Stmt>>,
     },
+    // البند 77 (`عام` — الاجتماع 83 §98): إعلان أسماء
+    // تُكتَب في نطاق البرنامج الجاري وحده (لا نطاق وحدة
+    // أخرى)؛ وبلا إعلان يكتب الإسناد لأقرب ربط كما كان.
+    GlobalDecl { names: Vec<String> },
+    // البند 78 (`نطاق` — الاجتماع 83 §98): إعلان أسماء
+    // تُكتَب في أقرب نطاق محيط يربطها (لا المحلي ولا
+    // العام)؛ وغياب أي ربط محيط خطأ عربي صريح.
+    NonlocalDecl { names: Vec<String> },
+    // البند 104 (`نوع` — الاجتماع 83 §98): اسم مستعار
+    // لنوع — `target` العرض النصي الموسَّع للنوع؛
+    // يُوسَّع في المحلل قبل أن يراه أي محرك، فالجملة
+    // نفسها بلا أثر زمن-تشغيل في المحركات الثلاثة.
+    TypeAlias { name: String, target: String },
     ExprStmt { expr: Expr },
     // Phase 1A Step 2: modules.
     // Import forms:
@@ -301,6 +547,10 @@ pub enum StmtKind {
         name: String,
         base: Option<String>,
         interfaces: Vec<String>,
+        // البنود 145–147 (العموميات — الاجتماع 83 §98):
+        // معاملات النوع المعلنة `[ت: حد = افتراضي، ...]`؛
+        // فارغة = فئة غير عامة كما كانت.
+        type_params: Vec<TypeParam>,
         methods: Vec<Stmt>,
     },
     // Phase 1A Step 5: interfaces. واجهة اسم: + indented block of

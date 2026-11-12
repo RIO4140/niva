@@ -112,7 +112,12 @@ typedef enum {
     NV_OBJ_CELL,
     NV_OBJ_NATIVE,
     NV_OBJ_HANDLE, // مقابض: ملف، عملية، قناة، حلقة، كتلة ذاكرة
-    NV_OBJ_BYTES   // بايتات خام (تشفير.عشوائي_آمن)
+    NV_OBJ_BYTES,   // بايتات خام (تشفير.عشوائي_آمن)
+    // ج6: أنواع الأعداد الجديدة — في آخر التعداد عمدا.
+    NV_OBJ_BIGINT,  // عدد صحيح ممتد (سلسلة عشرية موحدة)
+    NV_OBJ_RATIONAL, // كسر دقيق (بسط/مقام من كبيرين)
+    NV_OBJ_BITS,    // بتات 0/1 (بايتات معبأة، الأهم أولا)
+    NV_OBJ_BOXED    // معلب (قيمة واحدة داخله)
 } NvObjKind;
 
 // ---------- القيم ----------
@@ -135,6 +140,11 @@ typedef struct NvCell NvCell;
 typedef struct NvNative NvNative;
 typedef struct NvHandle NvHandle;
 typedef struct NvBytes NvBytes;
+// ج6: الأنواع الجديدة.
+typedef struct NvBigInt NvBigInt;
+typedef struct NvRational NvRational;
+typedef struct NvBits NvBits;
+typedef struct NvBoxed NvBoxed;
 
 typedef enum {
     NV_NUM = 1,
@@ -158,7 +168,14 @@ typedef enum {
     // نفسه (طول/سعة/عناصر)، والوسم وحده يميز
     // الدلالة (ترتيب وثبات، أو فرادة بلا ترتيب).
     NV_TUPLE,
-    NV_SET
+    NV_SET,
+    // ج6: الأنواع الجديدة — في آخر التعداد عمدا، فلا
+    // تتغير أرقام الوسوم القائمة أبدا.
+    NV_BIGINT,
+    NV_RATIONAL,
+    NV_COMPLEX,
+    NV_BITS,
+    NV_BOXED
 } NvTag;
 
 typedef struct {
@@ -174,6 +191,13 @@ typedef struct {
         // للوضوح في مواضع المترابطة/التشكيلة).
         NvList *tuple;
         NvList *set;
+        // ج6: الأنواع الجديدة — المركب مضمن (حقيقي،
+        // تخيلي) بلا كومة؛ والباقي كائنات جامع قمامة.
+        NvBigInt *bigint;
+        NvRational *rational;
+        struct { double re, im; } complex;
+        NvBits *bits;
+        NvBoxed *boxed;
         NvFunc *func;
         NvNative *native;
         NvModule *module;
@@ -231,6 +255,21 @@ struct NvFunc {
     char **param_types;  // أنواع المعاملات المعلنة أو NULL
     char *return_type;   // نوع الإرجاع المعلن أو NULL
     int nparams;
+    // البنود 109–112 (الاجتماع 83 §98): قيم
+    // افتراضية مقيَّمة وقت التعريف (طولها nparams،
+    // ويُعتدّ بها حيث has_default)، وجامعا الزائد.
+    NvValue *defaults;
+    int *has_default;
+    char *vararg;        // اسم جامع الموضعي أو NULL
+    char *kwarg;         // اسم جامع المفتاحي أو NULL
+    // البنود 145–147 (الاجتماع 83 §98): معاملات النوع
+    // المعلنة (أسماء وحدود وافتراضيات، منسوخة)، والربط
+    // المحلول عند التخصيص (قيم موازية للأسماء أو NULL).
+    char **tp_names;
+    char **tp_bounds;
+    char **tp_defaults;
+    int ntype_params;
+    char **type_binding; // NULL إن لم تُخصَّص بعد
 };
 
 struct NvNative {
@@ -253,6 +292,13 @@ struct NvClass {
     NvClass *base;
     char **interfaces;
     int ninterfaces;
+    // البنود 145–147: معاملات النوع المعلنة والربط
+    // المحلول عند التخصيص (كما في NvFunc).
+    char **tp_names;
+    char **tp_bounds;
+    char **tp_defaults;
+    int ntype_params;
+    char **type_binding; // NULL إن لم تُخصَّص بعد
 };
 
 struct NvIface {
@@ -267,6 +313,9 @@ struct NvInst {
     NvObj hdr;
     NvClass *klass;
     NvDict *fields; // الحقول (قاموس)
+    // البنود 145–147: ربط النوع المحلول وقت الإنشاء
+    // (قيم موازية لـ klass->tp_names أو NULL).
+    char **type_binding;
 };
 
 struct NvBound {
@@ -306,6 +355,36 @@ struct NvBytes {
     NvObj hdr;
     size_t len;
     unsigned char data[];
+};
+
+// ج6: بنى الأنواع الجديدة.
+// كبير: أرقام عشرية موحدة بلا إشارة (الإشارة في neg)،
+// بلا أصفار بادئة، و"0" للصفر.
+// كسر: بسط/مقام موحدان (المقام موجب والقاسم المشترك 1).
+// بت: بايتات معبأة (البت الأهم أولا في كل بايت، ثم
+// البتات التالية)؛ والبتات الزائدة في البايت الأخير صفر.
+// معلب: قيمة واحدة (تُمسح من الجامع كابن).
+struct NvBigInt {
+    NvObj hdr;
+    char *digits; // مملوكة للكائن
+    int neg;      // 0 أو 1 (والصفر بلا إشارة أبدا)
+};
+
+struct NvRational {
+    NvObj hdr;
+    NvBigInt *num;
+    NvBigInt *den;
+};
+
+struct NvBits {
+    NvObj hdr;
+    size_t nbits;
+    unsigned char *bytes; // مملوكة للكائن
+};
+
+struct NvBoxed {
+    NvObj hdr;
+    NvValue inner;
 };
 
 // ---------- تدفق التنفيذ ----------
@@ -410,10 +489,17 @@ NvValue nv_set_new(void);
 NvValue nv_func_new(const char *name, NvCFunc cfunc, NvScope *captured,
                     const char *module, NvScope *module_scope,
                     char **param_names, char **param_types,
-                    const char *return_type, int nparams);
+                    const char *return_type, int nparams,
+                    NvValue *defaults, int *has_default,
+                    const char *vararg, const char *kwarg,
+                    const char *type_params);
 NvValue nv_native_new(const char *name, NvNativeFn fn);
 NvValue nv_module_new(const char *name, NvScope *scope);
-NvValue nv_class_new(const char *name, NvClass *base);
+NvValue nv_class_new(const char *name, NvClass *base, const char *type_params);
+// البنود 145–147: خصّص دالة/فئة بمعاملات نوع
+// (نص مفصول بفاصلة ASCII) — تنسخ القيمة مع ربط
+// محلول مفحوص (أو خطأ نوع عربي عند المخالفة).
+NvValue nv_specialize(NvValue v, const char *type_args, int line, int col);
 NvValue nv_iface_new(const char *name);
 NvValue nv_inst_new(NvClass *klass);
 NvValue nv_bound_new(NvValue func, NvInst *inst);
@@ -434,6 +520,48 @@ char *nv_fmt_value(NvValue v); // تُحرَّر بـ free
 // تنسيق عدد بصيغة عرض Rust (أرقام عربية، ٫ عشرية).
 char *nv_fmt_number(double n); // تُحرَّر بـ free
 // تحويل نص إلى عدد (لـ عدد()) — 1 على النجاح.
+// ---------- ج6: الأنواع والأعداد والدقة ----------
+// منشئات القيم الجديدة (تُخصَّص عبر جامع القمامة).
+// nv_bigint_cstr: يوحّد النص (`[+-]?أرقام`) أو يخطئ
+// «عدد كبير غير صالح: ...»؛ وnv_rational_new يوحّد
+// البسط/المقام أو يخطئ «مقام الكسر لا يمكن أن يكون صفرا».
+NvValue nv_bigint_cstr(const char *s, int line, int col);
+NvValue nv_bigint_from_double(double n, int line, int col);
+NvValue nv_rational_new(NvValue num, NvValue den, int line, int col);
+NvValue nv_complex_new(double re, double im);
+NvValue nv_bits_new(const unsigned char *bytes, size_t nbits);
+NvValue nv_bits_from_u64(unsigned long long n, size_t len);
+NvValue nv_boxed_new(NvValue inner);
+// تحويلات إلى f64 (للرياضيات والتحويل الصريح).
+double nv_bigint_to_double(NvValue v);
+// تحويلات القيم العددية (تُستخدم أيضا في niva_std.c):
+// nv_value_to_rational تعيد 1 مع بسط/مقام موحدين
+// جديدين (يُحرَّران بـ free) أو 0؛ وnv_value_to_complex
+// تعيد 1 مع الجزأين أو 0.
+int nv_value_to_rational(NvValue v, char **num, char **den);
+int nv_value_to_complex(NvValue v, double *re, double *im);
+double nv_rational_to_double(NvValue v);
+double nv_bits_to_double(NvValue v);
+// حساب الكبير الدقيق (سلاسل عشرية موحدة). nv_bigint_divmod
+// تعيد 0 عند القسمة على صفر.
+char *nv_bigint_norm(const char *s); // تُحرَّر بـ free، أو NULL
+int nv_bigint_cmp_str(const char *a, const char *b);
+int nv_bigint_is_zero_str(const char *a);
+char *nv_bigint_add_str(const char *a, const char *b); // تُحرَّر بـ free
+char *nv_bigint_sub_str(const char *a, const char *b); // تُحرَّر بـ free
+char *nv_bigint_mul_str(const char *a, const char *b); // تُحرَّر بـ free
+char *nv_bigint_neg_str(const char *a); // تُحرَّر بـ free
+int nv_bigint_divmod_str(const char *a, const char *b, char **q, char **r);
+char *nv_bigint_gcd_str(const char *a, const char *b); // تُحرَّر بـ free
+// حساب الكسر الدقيق (أزواج موحدة؛ والمقام موجب دائما).
+int nv_rat_norm_str(const char *num, const char *den, char **n, char **d);
+void nv_rat_add_str(const char *a1, const char *a2, const char *b1, const char *b2, char **n, char **d);
+void nv_rat_sub_str(const char *a1, const char *a2, const char *b1, const char *b2, char **n, char **d);
+void nv_rat_mul_str(const char *a1, const char *a2, const char *b1, const char *b2, char **n, char **d);
+int nv_rat_div_str(const char *a1, const char *a2, const char *b1, const char *b2, char **n, char **d);
+int nv_rat_rem_str(const char *a1, const char *a2, const char *b1, const char *b2, char **n, char **d);
+int nv_rat_cmp_str(const char *a1, const char *a2, const char *b1, const char *b2);
+double nv_rat_to_double_str(const char *num, const char *den);
 int nv_parse_number(const char *s, double *out);
 // عدد محارف UTF-8 في نص بايتات.
 size_t nv_utf8_chars(const char *s, size_t len);
@@ -473,6 +601,10 @@ void nv_check_assign_type(NvValue v, const char *type_name, const char *var_name
 // بحث اسم في نطاق أو لاشيء (للبدائل التي لها رسائلها).
 NvValue nv_lookup_or_nil(NvScope *scope, const char *name);
 NvValue nv_lookup_or_error(NvScope *scope, const char *name, int line, int col);
+// الدفعة الأخيرة DEF (البنود 77 و78): قراءة موجَّهة
+// بالإعلان — عام من الجذر وحده، ونطاق من المحيط وحده.
+NvValue nv_lookup_or_error_global(NvScope *scope, const char *name, int line, int col);
+NvValue nv_lookup_or_error_nonlocal(NvScope *scope, const char *name, int line, int col);
 NvValue nv_for_snapshot(NvValue v, int line, int col);
 long nv_repeat_count(NvValue v, int line, int col);
 // فهرس مفتاح في قاموس أو -1.
@@ -483,15 +615,30 @@ void nv_list_push_raw(NvList *l, NvValue val);
 // تصدير وحدة (رسالة «غير مصدر» عند الغياب).
 NvValue nv_module_export(NvValue module, const char *name, int line, int col);
 // أنشئ فئة بالاسم (رسالتا «فئة أب غير معرفة» و«ليست فئة»).
-NvValue nv_class_begin_named(NvScope *scope, const char *name, const char *base_name, int line, int col);
+NvValue nv_class_begin_named(NvScope *scope, const char *name, const char *base_name, int line, int col, const char *type_params);
 // أنشئ فئة من قيمة أب (مساعد داخلي).
-NvValue nv_class_begin(const char *name, NvValue base_val, int line, int col);
+NvValue nv_class_begin(const char *name, NvValue base_val, int line, int col, const char *type_params);
 void nv_class_add_method(NvValue klass, const char *name, NvValue func);
 void nv_class_add_interface(NvValue klass, const char *iname, NvValue iface_val, int line, int col);
 NvValue nv_iface_begin(const char *name);
 void nv_iface_add_method(NvValue iface, const char *name, int arity);
 NvValue nv_call_ident(NvScope *scope, const char *name, NvValue *args, int nargs, int line, int col);
 NvValue nv_call_ident_at(NvScope *scope, const char *name, NvValue *args, int nargs, int line, int col,
+                         int callee_line, int callee_col);
+// الدفعة الأخيرة DEF (البنود 77 و78): استدعاء بالاسم
+// مع بحث موجَّه بالإعلان.
+NvValue nv_call_ident_at_global(NvScope *scope, const char *name, NvValue *args, int nargs, int line, int col,
+                         int callee_line, int callee_col);
+NvValue nv_call_ident_at_nonlocal(NvScope *scope, const char *name, NvValue *args, int nargs, int line, int col,
+                         int callee_line, int callee_col);
+// البنود 109–112 (الاجتماع 83 §98): مسارات
+// الاستدعاء المفتاحية — نفس التوقيعات مع أسماء
+// المفتاحيات وقيمها وعددها.
+NvValue nv_call_ident_at_kw(NvScope *scope, const char *name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col,
+                         int callee_line, int callee_col);
+NvValue nv_call_ident_at_global_kw(NvScope *scope, const char *name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col,
+                         int callee_line, int callee_col);
+NvValue nv_call_ident_at_nonlocal_kw(NvScope *scope, const char *name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col,
                          int callee_line, int callee_col);
 
 // ---------- النطاقات ----------
@@ -506,6 +653,17 @@ NvCell *nv_scope_define(NvScope *scope, const char *name, NvValue v);
 // الدفعة 4 — المتغيرات (اجتماع 58 §73): يحلّ
 // المرجع الاسمي ويرفض الكتابة في مجمد.
 void nv_scope_assign(NvScope *scope, const char *name, NvValue v, int line, int col);
+// الدفعة الأخيرة DEF (البنود 77 و78): مساعدا
+// الإسناد الموجَّه بالإعلان — عام إلى الجذر،
+// ونطاق إلى أقرب ربط محيط (وغيابه خطأ).
+void nv_scope_assign_global(NvScope *scope, const char *name, NvValue v, int line, int col);
+void nv_scope_assign_nonlocal(NvScope *scope, const char *name, NvValue v, int line, int col);
+// بحث موجَّه بالإعلان — عام من الجذر وحده،
+// ونطاق من المحيط وحده.
+NvCell *nv_scope_lookup_cell_global(NvScope *scope, const char *name);
+NvCell *nv_scope_lookup_cell_nonlocal(NvScope *scope, const char *name);
+NvValue *nv_scope_slot_ptr_global(NvScope *scope, const char *name, int line, int col);
+NvValue *nv_scope_slot_ptr_nonlocal(NvScope *scope, const char *name, int line, int col);
 // فحص التجميد لتعريف دالة — إعادة تعريف اسم مجمد
 // مرفوضة كإعادة الإسناد.
 void nv_check_not_frozen(const char *name, int line, int col);
@@ -553,11 +711,24 @@ NvValue nv_call(NvValue callee, NvValue *args, int nargs, int line, int col);
 // دالة»/«استخدم أنشئ» — كما في المفسر والآلة.
 NvValue nv_call_at(NvValue callee, NvValue *args, int nargs, int line, int col,
                    int callee_line, int callee_col);
+// البنود 109–112: استدعاء عام مفتاحي.
+NvValue nv_call_at_kw(NvValue callee, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col,
+                   int callee_line, int callee_col);
+NvValue nv_call_kw(NvValue callee, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col);
 // إنشاء كائن بالاسم: أنشئ فئة(وسائط) — البحث بالاسم
 // أولا برسائل المفسر نفسها.
 NvValue nv_create_by_name(NvScope *scope, const char *class_name, NvValue *args, int nargs, int line, int col);
+NvValue nv_create_by_name_kw(NvScope *scope, const char *class_name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col);
+// الدفعة الأخيرة DEF (البنود 77 و78): إنشاء بالاسم
+// مع بحث موجَّه بالإعلان.
+NvValue nv_create_by_name_global(NvScope *scope, const char *class_name, NvValue *args, int nargs, int line, int col);
+NvValue nv_create_by_name_nonlocal(NvScope *scope, const char *class_name, NvValue *args, int nargs, int line, int col);
+NvValue nv_create_by_name_global_kw(NvScope *scope, const char *class_name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col);
+NvValue nv_create_by_name_nonlocal_kw(NvScope *scope, const char *class_name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col);
 // إنشاء كائن من قيمة فئة (للمسارات الداخلية).
 NvValue nv_create(NvValue class_val, NvValue *args, int nargs, int line, int col);
+// البنود 109–112: إنشاء مفتاحي.
+NvValue nv_create_kw(NvValue class_val, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col);
 // فحص نوع معلن (تعيين/معامل/إرجاع) برسائل المحرك.
 void nv_check_type(NvValue v, const char *type_name, const char *what,
                    const char *func_name, int line, int col);
@@ -579,6 +750,10 @@ NvValue nv_call_list_method(NvValue *slot, const char *name, NvValue *args, int 
 NvValue nv_call_dot(NvValue target, const char *name, NvValue *args, int nargs, int line, int col);
 NvValue nv_call_dot_at(NvValue target, const char *name, NvValue *args, int nargs, int line, int col,
                        int callee_line, int callee_col);
+// البنود 109–112: استدعاء بالنقطة مفتاحي.
+NvValue nv_call_dot_at_kw(NvValue target, const char *name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col,
+                       int callee_line, int callee_col);
+NvValue nv_call_dot_kw(NvValue target, const char *name, NvValue *args, int nargs, const char **kw_names, NvValue *kw_vals, int nkwargs, int line, int col);
 
 // ---------- الوحدات الأصلية ----------
 // وحدة أصلية بالاسم أو NULL.

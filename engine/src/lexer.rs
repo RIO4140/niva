@@ -30,6 +30,7 @@ pub enum Keyword {
     Try,      // حاول
     Except,   // ماعدا
     Finally,  // أخيرا
+    With,     // عند (البند 88 — مدير السياق)
     Assert,   // متوقع (البند 81 — الدفعة 2 من الـ579)
     Match,    // طابق (البند 99 — الدفعة 3 من الـ579)
     Case,     // حال (البند 100 — الدفعة 3 من الـ579)
@@ -54,6 +55,15 @@ pub enum Keyword {
 pub enum TokenKind {
     Ident(String),
     Number(f64),
+    // ج6 (الدفعة الأخيرة — الأنواع والأعداد والدقة):
+    // صيغ حرفية جديدة — تُفكَّك في المحلل إلى مدمجات
+    // مسطحة (سابقة `مترابطة`/`تشكيلة` والنص التنفيذي)،
+    // فلا عقدة AST جديدة ولا لمس لـcgen.rs:
+    // `123x` كبير عشري نصي، و`1r2` كسر (بسط، مقام)،
+    // و`0j1` و`4ت` مركب (حقيقي، تخيلي).
+    BigInt(String),
+    Rational(String, String),
+    Complex(f64, f64),
     Str(String),
     /// نص تنفيذي `ف"..."` (البنود 163–165، الدفعة 2 من
     /// الـ579): المحتوى الخام بين علامتي الاقتباس، يفككه
@@ -89,6 +99,8 @@ pub enum TokenKind {
     Slash,
     Percent,
     Eq,
+    // البند 73 (`:=` — الاجتماع 83 §98): تعبير الإسناد.
+    ColonEq,
     EqEq,
     NotEq,
     Lt,
@@ -186,6 +198,17 @@ fn keyword_for(normalized: &str) -> Option<Keyword> {
         "حاول" => Keyword::Try,
         "ماعدا" => Keyword::Except,
         "اخيرا" => Keyword::Finally,
+        // البندان 77 و78 (الاجتماع 83 §98): `عام` و
+        // `نطاق` ليستا هنا عمدا — كلمتان سياقيتان
+        // (إعلان نطاق في بداية الجملة فقط حين يتبعهما
+        // اسم معرّف؛ وإلا معرّفان عاديان) على نمط `نوع`
+        // و`ولد` — فلا تُسرَقا اسم متغير (مثال 05-functions:
+        // `عام = ١٠٠`؛ والادعاء القديم «بلا تصادم» كان
+        // خاطئا وكشفه السيريال الكامل).
+        // البند 88 — مدير السياق (الاجتماع 88 §103):
+        // `عند` كلمة محجوزة؛ و`زامن عند` خارج النطاق
+        // تماما فلا كلمة `زامن` هنا.
+        "عند" => Keyword::With,
         "متوقع" => Keyword::Assert,
         // البندان 99 و100 (الدفعة 3 من الـ579): طابق/حال.
         // لا تصادم: `نمط.طابق` دالة مكتبية يبقى اسم
@@ -247,6 +270,7 @@ pub(crate) fn keyword_spelling(kw: Keyword) -> &'static str {
         Keyword::Try => "حاول",
         Keyword::Except => "ماعدا",
         Keyword::Finally => "اخيرا",
+        Keyword::With => "عند",
         Keyword::Assert => "متوقع",
         Keyword::Match => "طابق",
         Keyword::Case => "حال",
@@ -387,6 +411,9 @@ pub fn tokenize(source: &str) -> RioResult<Vec<Token>> {
                     }
                     i += 1;
                 }
+                // ج6: الجزء الصحيح وحده (للواحق)، وعلم الكسر.
+                let int_part = num.clone();
+                let mut has_frac = false;
                 // اجتماع 32، السؤال الثالث: الفاصلة
                 // العشرية العربية ٫ (U+066B) داخل عدد
                 // فاصلة عشرية كالنقطة تماما — ١٫٥ عدد
@@ -394,6 +421,7 @@ pub fn tokenize(source: &str) -> RioResult<Vec<Token>> {
                 // الكتابة مع العرض. خارج عدد تبقى حرفا
                 // غير معروف كما كانت.
                 if i + 1 < rest.len() && (rest[i] == '.' || rest[i] == '٫') && is_digit(rest[i + 1]) {
+                    has_frac = true;
                     num.push('.');
                     i += 1;
                     while i < rest.len() && is_digit(rest[i]) {
@@ -408,6 +436,72 @@ pub fn tokenize(source: &str) -> RioResult<Vec<Token>> {
                 let value: f64 = num.parse().map_err(|_| {
                     RioError::lex(format!("رقم غير صالح: {}", num), line_no, start_col)
                 })?;
+                // ج6: لواحق الصيغ الحرفية — ملاصقة بلا فراغ:
+                // `x` بعد صحيح بلا كسر = كبير (`123x`)؛
+                // و`r` + أرقام = كسر (`1r2`)؛ و`j` + أرقام
+                // = مركب (`0j1`)؛ و`ت` = تخيلي خالص (`4ت`).
+                // الكسر بعد فاصلة عشرية مرفوض (صياغة الكسر
+                // صحيحة فقط) فيقع في خطأ المحلل لا هنا.
+                if !has_frac {
+                    if i < rest.len() && rest[i] == 'x' {
+                        let digits = int_part.clone();
+                        i += 1;
+                        tokens.push(Token {
+                            kind: TokenKind::BigInt(digits),
+                            line: line_no,
+                            col: start_col,
+                        });
+                        continue;
+                    }
+                    if i + 1 < rest.len() && rest[i] == 'r' && is_digit(rest[i + 1]) {
+                        i += 1;
+                        let mut den = String::new();
+                        while i < rest.len() && is_digit(rest[i]) {
+                            if let Some(d) = arabic_digit_value(rest[i]) {
+                                den.push(char::from_digit(d, 10).unwrap());
+                            } else {
+                                den.push(rest[i]);
+                            }
+                            i += 1;
+                        }
+                        tokens.push(Token {
+                            kind: TokenKind::Rational(int_part.clone(), den),
+                            line: line_no,
+                            col: start_col,
+                        });
+                        continue;
+                    }
+                    if i + 1 < rest.len() && rest[i] == 'j' && is_digit(rest[i + 1]) {
+                        i += 1;
+                        let mut im = String::new();
+                        while i < rest.len() && is_digit(rest[i]) {
+                            if let Some(d) = arabic_digit_value(rest[i]) {
+                                im.push(char::from_digit(d, 10).unwrap());
+                            } else {
+                                im.push(rest[i]);
+                            }
+                            i += 1;
+                        }
+                        let re: f64 = int_part.parse().unwrap_or(0.0);
+                        let imv: f64 = im.parse().unwrap_or(0.0);
+                        tokens.push(Token {
+                            kind: TokenKind::Complex(re, imv),
+                            line: line_no,
+                            col: start_col,
+                        });
+                        continue;
+                    }
+                    if i < rest.len() && rest[i] == 'ت' {
+                        i += 1;
+                        let imv: f64 = int_part.parse().unwrap_or(0.0);
+                        tokens.push(Token {
+                            kind: TokenKind::Complex(0.0, imv),
+                            line: line_no,
+                            col: start_col,
+                        });
+                        continue;
+                    }
+                }
                 tokens.push(Token { kind: TokenKind::Number(value), line: line_no, col: start_col });
                 continue;
             }
@@ -505,6 +599,8 @@ pub fn tokenize(source: &str) -> RioResult<Vec<Token>> {
                 Some(('&', '=')) => (TokenKind::AmpEq, 2),
                 Some(('|', '=')) => (TokenKind::PipeEq, 2),
                 Some(('^', '=')) => (TokenKind::CaretEq, 2),
+                // البند 73 (`:=` — الاجتماع 83 §98).
+                Some((':', '=')) => (TokenKind::ColonEq, 2),
 // == مولّد-دفعة2-رموز-ثنائية: نهاية ==
                 _ => match c {
                     '+' => (TokenKind::Plus, 1),
@@ -715,6 +811,7 @@ mod tests {
             Keyword::Try,
             Keyword::Except,
             Keyword::Finally,
+            Keyword::With,
             Keyword::Assert,
             Keyword::Match,
             Keyword::Case,
@@ -734,7 +831,7 @@ mod tests {
             Keyword::Equals,
             Keyword::No,
         ];
-        assert_eq!(all.len(), 40);
+        assert_eq!(all.len(), 41);
         for kw in all {
             let spelling = keyword_spelling(kw);
             assert_eq!(keyword_for(spelling), Some(kw), "spelling: {}", spelling);

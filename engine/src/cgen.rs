@@ -15,7 +15,7 @@ use crate::lexer::tokenize;
 use crate::packages;
 use crate::parser::Parser;
 use crate::semantic::SemanticAnalyzer;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 // ---------- أدوات نصية ----------
@@ -98,6 +98,13 @@ struct Ctx {
     // nv_source_files ([0] الملف الرئيسي) — يضبطه
     // الكود المولّد في nv_cur_file_idx عند كل جملة.
     file_idx: usize,
+    // الدفعة الأخيرة DEF (البنود 77 و78): إعلانات
+    // النطاق للدالة الجارية — (عام، نطاق)؛ فارغة
+    // في المستوى الأعلى وداخل لامدا. تُملأ عند
+    // إصدار FuncDef من جسمها، وتُورَّث في نسخ
+    // Ctx الخاصة بـ finally في emit_try.
+    global_names: HashSet<String>,
+    nonlocal_names: HashSet<String>,
 }
 
 impl Ctx {
@@ -112,6 +119,8 @@ impl Ctx {
             module_scope_var: None,
             func_depth: 0,
             file_idx: 0,
+            global_names: HashSet::new(),
+            nonlocal_names: HashSet::new(),
         }
     }
 }
@@ -266,9 +275,13 @@ impl Gen {
             ExprKind::Ident(name) => {
                 let t = self.new_temp();
                 let n = self.root_live(out);
+                // الدفعة الأخيرة DEF (البنود 77 و78):
+                // القراءة موجَّهة بإعلان النطاق.
+                let lfn = format!("nv_lookup_or_error{}", self.scope_suffix(name, ctx));
                 out.push_str(&format!(
-                    "NvValue {} = nv_lookup_or_error({}, {}, {}, {});\n",
+                    "NvValue {} = {}({}, {}, {}, {});\n",
                     t,
+                    lfn,
                     ctx.scope_var,
                     c_str(name),
                     e.line,
@@ -352,7 +365,32 @@ impl Gen {
                 self.live.push(t.clone());
                 t
             }
-            ExprKind::Call { callee, args } => self.emit_call(callee, args, e, ctx, out),
+            ExprKind::Call { callee, args, kwargs, type_args } => {
+                self.emit_call(callee, args, kwargs, type_args, e, ctx, out)
+            }
+            // البند 73 (`:=` — الاجتماع 83 §98): مسار
+            // الإصدار الواحد — يقيّم القيمة، يسنِدها
+            // كإسناد عادي (`nv_scope_assign`: أقرب ربط،
+            // أو تعريف محلي)، ثم ينتج القيمة نفسها في
+            // المؤقت كنتيجة التعبير.
+            ExprKind::AssignExpr { name, value } => {
+                let vt = self.eval_into_temp(value, ctx, out);
+                let n = self.root_live(out);
+                // الدفعة الأخيرة DEF (البنود 77 و78):
+                // يوجَّه الإسناد بإعلان النطاق.
+                let afn = format!("nv_scope_assign{}", self.scope_suffix(name, ctx));
+                out.push_str(&format!(
+                    "{}({}, {}, {}, {}, {});\n",
+                    afn,
+                    ctx.scope_var,
+                    c_str(name),
+                    vt,
+                    e.line,
+                    e.col
+                ));
+                self.unroot(out, n);
+                vt
+            }
             ExprKind::Index { target, index } => {
                 let tt = self.eval_into_temp(target, ctx, out);
                 let it = self.eval_into_temp(index, ctx, out);
@@ -385,19 +423,94 @@ impl Gen {
                 self.live.push(t.clone());
                 t
             }
-            ExprKind::Create { class, args } => {
+            ExprKind::Create { class, args, kwargs, type_args } => {
                 let mut arg_tmps = Vec::new();
                 for a in args {
                     arg_tmps.push(self.eval_into_temp(a, ctx, out));
                 }
+                // البنود 109–112: المفتاحيات بعد الموضعية.
+                let (kw_tmps, kw_names_lit) = self.eval_kwargs(kwargs, ctx, out);
                 let t = self.new_temp();
                 let n = self.root_live(out);
-                if arg_tmps.is_empty() {
+                let kw_arr = self.emit_kw_array(&kw_tmps, out);
+                // الدفعة الأخيرة DEF (البنود 77 و78):
+                // إنشاء الكائن بالاسم موجَّه بإعلانه.
+                let crfn = format!("nv_create_by_name{}", self.scope_suffix(class, ctx));
+                // البنود 145–147: المخصَّص يحمّل قيمة
+                // الفئة ثم يخصّصها ثم ينشئ منها.
+                if !type_args.is_empty() {
+                    let lfn = format!("nv_lookup_or_error{}", self.scope_suffix(class, ctx));
+                    let ct = self.new_temp();
                     out.push_str(&format!(
-                        "NvValue {} = nv_create_by_name({}, {}, NULL, 0, {}, {});\n",
-                        t,
+                        "NvValue {} = {}({}, {}, {}, {});\n",
+                        ct,
+                        lfn,
                         ctx.scope_var,
                         c_str(class),
+                        e.line,
+                        e.col
+                    ));
+                    let st = self.new_temp();
+                    out.push_str(&format!(
+                        "NvValue {} = nv_specialize({}, {}, {}, {});\n",
+                        st,
+                        ct,
+                        c_str(&type_args.join(",")),
+                        e.line,
+                        e.col
+                    ));
+                    self.release(&ct);
+                    if arg_tmps.is_empty() && kwargs.is_empty() {
+                        out.push_str(&format!(
+                            "NvValue {} = nv_create({}, NULL, 0, {}, {});\n",
+                            t, st, e.line, e.col
+                        ));
+                    } else if arg_tmps.is_empty() {
+                        out.push_str(&format!(
+                            "NvValue {} = nv_create_kw({}, NULL, 0, {}, {}, {}, {}, {});\n",
+                            t, st, kw_names_lit, kw_arr, kwargs.len(), e.line, e.col
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "NvValue _args{}[] = {{{}}};\n",
+                            self.tmp,
+                            arg_tmps.join(", ")
+                        ));
+                        self.tmp += 1;
+                        if kwargs.is_empty() {
+                            out.push_str(&format!(
+                                "NvValue {} = nv_create({}, _args{}, {}, {}, {});\n",
+                                t, st, self.tmp - 1, arg_tmps.len(), e.line, e.col
+                            ));
+                        } else {
+                            out.push_str(&format!(
+                                "NvValue {} = nv_create_kw({}, _args{}, {}, {}, {}, {}, {}, {});\n",
+                                t, st, self.tmp - 1, arg_tmps.len(), kw_names_lit, kw_arr,
+                                kwargs.len(), e.line, e.col
+                            ));
+                        }
+                    }
+                    self.release(&st);
+                } else if arg_tmps.is_empty() && kwargs.is_empty() {
+                    out.push_str(&format!(
+                        "NvValue {} = {}({}, {}, NULL, 0, {}, {});\n",
+                        t,
+                        crfn,
+                        ctx.scope_var,
+                        c_str(class),
+                        e.line,
+                        e.col
+                    ));
+                } else if arg_tmps.is_empty() {
+                    out.push_str(&format!(
+                        "NvValue {} = {}_kw({}, {}, NULL, 0, {}, {}, {}, {}, {});\n",
+                        t,
+                        crfn,
+                        ctx.scope_var,
+                        c_str(class),
+                        kw_names_lit,
+                        kw_arr,
+                        kwargs.len(),
                         e.line,
                         e.col
                     ));
@@ -408,20 +521,41 @@ impl Gen {
                         arg_tmps.join(", ")
                     ));
                     self.tmp += 1;
-                    out.push_str(&format!(
-                        "NvValue {} = nv_create_by_name({}, {}, _args{}, {}, {}, {});\n",
-                        t,
-                        ctx.scope_var,
-                        c_str(class),
-                        self.tmp - 1,
-                        arg_tmps.len(),
-                        e.line,
-                        e.col
-                    ));
+                    if kwargs.is_empty() {
+                        out.push_str(&format!(
+                            "NvValue {} = {}({}, {}, _args{}, {}, {}, {});\n",
+                            t,
+                            crfn,
+                            ctx.scope_var,
+                            c_str(class),
+                            self.tmp - 1,
+                            arg_tmps.len(),
+                            e.line,
+                            e.col
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "NvValue {} = {}_kw({}, {}, _args{}, {}, {}, {}, {}, {}, {});\n",
+                            t,
+                            crfn,
+                            ctx.scope_var,
+                            c_str(class),
+                            self.tmp - 1,
+                            arg_tmps.len(),
+                            kw_names_lit,
+                            kw_arr,
+                            kwargs.len(),
+                            e.line,
+                            e.col
+                        ));
+                    }
                 }
                 self.unroot(out, n);
                 for a in arg_tmps {
                     self.release(&a);
+                }
+                for k in kw_tmps {
+                    self.release(&k);
                 }
                 self.live.push(t.clone());
                 t
@@ -542,7 +676,7 @@ impl Gen {
         let (pnames, ptypes) = self.param_tables(params, param_types);
         let (mod_arg, mod_scope) = self.func_module_args(ctx);
         out.push_str(&format!(
-            "NvValue {} = nv_func_new({}, {}, {}, {}, {}, {}, {}, {}, {});\n",
+            "NvValue {} = nv_func_new({}, {}, {}, {}, {}, {}, {}, {}, {}, NULL, NULL, NULL, NULL, NULL);\n",
             t,
             c_str("مجهولة"),
             fname,
@@ -587,6 +721,61 @@ impl Gen {
         (names_lit, types_lit)
     }
 
+    /// البنود 145–147: جدول معاملات النوع كحرفية C
+    /// (مدخلات `اسم[:حد][=افتراضي]` مفصولة بـ `؛`) أو
+    /// NULL بلا معاملات نوع.
+    fn type_params_table(&self, tps: &[crate::ast::TypeParam]) -> String {
+        if tps.is_empty() {
+            return "NULL".to_string();
+        }
+        c_str(
+            &tps.iter()
+                .map(|tp| tp.encode())
+                .collect::<Vec<_>>()
+                .join("؛"),
+        )
+    }
+
+    /// البنود 109–112: جدول القيم الافتراضية
+    /// كحرفيات C (أو NULL) + أعلامها — تُقيَّم
+    /// الافتراضيات وقت التعريف في نطاق التعريف؛
+    /// ويعيد أيضا مؤقتات القيم لتحريرها بعد البناء.
+    fn defaults_tables(
+        &mut self,
+        params: &[String],
+        defaults: &[Option<Expr>],
+        ctx: &mut Ctx,
+        out: &mut String,
+    ) -> (String, String, Vec<String>) {
+        let mut vals: Vec<String> = Vec::new();
+        let mut flags: Vec<String> = Vec::new();
+        let mut temps: Vec<String> = Vec::new();
+        let mut any = false;
+        for (i, _) in params.iter().enumerate() {
+            match defaults.get(i).and_then(|d| d.as_ref()) {
+                Some(e) => {
+                    let dt = self.eval_into_temp(e, ctx, out);
+                    vals.push(dt.clone());
+                    flags.push("1".to_string());
+                    temps.push(dt);
+                    any = true;
+                }
+                None => {
+                    vals.push("nv_nil()".to_string());
+                    flags.push("0".to_string());
+                }
+            }
+        }
+        if !any {
+            return ("NULL".to_string(), "NULL".to_string(), temps);
+        }
+        (
+            format!("(NvValue[]){{{}}}", vals.join(", ")),
+            format!("(int[]){{{}}}", flags.join(", ")),
+            temps,
+        )
+    }
+
     /// وسائط الوحدة لدالة تُعرَّف الآن: (اسم الوحدة أو NULL،
     /// نطاق الوحدة أو NULL). تُعلَّم دوال المستوى الأعلى
     /// للوحدة فقط (سلسلة ملتقَطة طولها 1).
@@ -599,28 +788,98 @@ impl Gen {
         ("NULL".to_string(), "NULL".to_string())
     }
 
+    /// البنود 109–112: قيّم المفتاحيات وأعد
+    /// (مؤقتات قيمها، حرفية أسمائها).
+    fn eval_kwargs(
+        &mut self,
+        kwargs: &[(String, Expr)],
+        ctx: &mut Ctx,
+        out: &mut String,
+    ) -> (Vec<String>, String) {
+        let mut tmps = Vec::new();
+        for (_, v) in kwargs {
+            tmps.push(self.eval_into_temp(v, ctx, out));
+        }
+        let names = if kwargs.is_empty() {
+            "NULL".to_string()
+        } else {
+            format!(
+                "(const char *[]){{{}}}",
+                kwargs.iter().map(|(k, _)| c_str(k)).collect::<Vec<_>>().join(", ")
+            )
+        };
+        (tmps, names)
+    }
+
+    /// يصدر مصفوفة قيم المفتاحيات (أو NULL) ويعيد اسمها.
+    fn emit_kw_array(&mut self, kw_tmps: &[String], out: &mut String) -> String {
+        if kw_tmps.is_empty() {
+            return "NULL".to_string();
+        }
+        let arr = format!("_kw{}", self.tmp);
+        self.tmp += 1;
+        out.push_str(&format!(
+            "NvValue {}[] = {{{}}};\n",
+            arr,
+            kw_tmps.join(", ")
+        ));
+        arr
+    }
+
     fn emit_call(
         &mut self,
         callee: &Expr,
         args: &[Expr],
+        kwargs: &[(String, Expr)],
+        type_args: &[String],
         e: &Expr,
         ctx: &mut Ctx,
         out: &mut String,
     ) -> String {
         // استدعاء باسم معرّف: النطاق أولا ثم المدمجة.
-        if let ExprKind::Ident(name) = &callee.kind {
+        // (بلا معاملات نوع — فالمخصَّص يسلك المسار
+        // العام: تقييم المستدعى ثم nv_specialize).
+        let plain_ident = type_args.is_empty() && matches!(&callee.kind, ExprKind::Ident(_));
+        if plain_ident {
+            let ExprKind::Ident(name) = &callee.kind else {
+                unreachable!()
+            };
             let mut arg_tmps = Vec::new();
             for a in args {
                 arg_tmps.push(self.eval_into_temp(a, ctx, out));
             }
+            // البنود 109–112: المفتاحيات بعد الموضعية.
+            let (kw_tmps, kw_names_lit) = self.eval_kwargs(kwargs, ctx, out);
             let t = self.new_temp();
             let n = self.root_live(out);
-            if arg_tmps.is_empty() {
+            let kw_arr = self.emit_kw_array(&kw_tmps, out);
+            if arg_tmps.is_empty() && kwargs.is_empty() {
+                // الدفعة الأخيرة DEF (البنود 77 و78):
+                // استدعاء الاسم موجَّه بإعلانه.
+                let cfn = format!("nv_call_ident_at{}", self.scope_suffix(name, ctx));
                 out.push_str(&format!(
-                    "NvValue {} = nv_call_ident_at({}, {}, NULL, 0, {}, {}, {}, {});\n",
+                    "NvValue {} = {}({}, {}, NULL, 0, {}, {}, {}, {});\n",
                     t,
+                    cfn,
                     ctx.scope_var,
                     c_str(name),
+                    e.line,
+                    e.col,
+                    callee.line,
+                    callee.col
+                ));
+            } else if arg_tmps.is_empty() {
+                // البنود 109–112: مفتاحيات بلا موضعية.
+                let cfn = format!("nv_call_ident_at{}_kw", self.scope_suffix(name, ctx));
+                out.push_str(&format!(
+                    "NvValue {} = {}({}, {}, NULL, 0, {}, {}, {}, {}, {}, {}, {});\n",
+                    t,
+                    cfn,
+                    ctx.scope_var,
+                    c_str(name),
+                    kw_names_lit,
+                    kw_arr,
+                    kwargs.len(),
                     e.line,
                     e.col,
                     callee.line,
@@ -634,22 +893,47 @@ impl Gen {
                     arr,
                     arg_tmps.join(", ")
                 ));
-                out.push_str(&format!(
-                    "NvValue {} = nv_call_ident_at({}, {}, {}, {}, {}, {}, {}, {});\n",
-                    t,
-                    ctx.scope_var,
-                    c_str(name),
-                    arr,
-                    arg_tmps.len(),
-                    e.line,
-                    e.col,
-                    callee.line,
-                    callee.col
-                ));
+                let cfn = format!("nv_call_ident_at{}", self.scope_suffix(name, ctx));
+                if kwargs.is_empty() {
+                    out.push_str(&format!(
+                        "NvValue {} = {}({}, {}, {}, {}, {}, {}, {}, {});\n",
+                        t,
+                        cfn,
+                        ctx.scope_var,
+                        c_str(name),
+                        arr,
+                        arg_tmps.len(),
+                        e.line,
+                        e.col,
+                        callee.line,
+                        callee.col
+                    ));
+                } else {
+                    // البنود 109–112: مسار مفتاحي.
+                    out.push_str(&format!(
+                        "NvValue {} = {}_kw({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
+                        t,
+                        cfn,
+                        ctx.scope_var,
+                        c_str(name),
+                        arr,
+                        arg_tmps.len(),
+                        kw_names_lit,
+                        kw_arr,
+                        kwargs.len(),
+                        e.line,
+                        e.col,
+                        callee.line,
+                        callee.col
+                    ));
+                }
             }
             self.unroot(out, n);
             for a in arg_tmps {
                 self.release(&a);
+            }
+            for k in kw_tmps {
+                self.release(&k);
             }
             self.live.push(t.clone());
             return t;
@@ -692,12 +976,20 @@ impl Gen {
             for a in args {
                 arg_tmps.push(self.eval_into_temp(a, ctx, out));
             }
+            // البنود 109–112: المفتاحيات بعد الموضعية.
+            let (kw_tmps, kw_names_lit) = self.eval_kwargs(kwargs, ctx, out);
             let t = self.new_temp();
             let n = self.root_live(out);
-            if arg_tmps.is_empty() {
+            let kw_arr = self.emit_kw_array(&kw_tmps, out);
+            if arg_tmps.is_empty() && kwargs.is_empty() {
                 out.push_str(&format!(
                     "NvValue {} = nv_call_dot_at({}, {}, NULL, 0, {}, {}, {}, {});\n",
                     t, tt, c_str(name), e.line, e.col, callee.line, callee.col
+                ));
+            } else if arg_tmps.is_empty() {
+                out.push_str(&format!(
+                    "NvValue {} = nv_call_dot_at_kw({}, {}, NULL, 0, {}, {}, {}, {}, {}, {}, {});\n",
+                    t, tt, c_str(name), kw_names_lit, kw_arr, kwargs.len(), e.line, e.col, callee.line, callee.col
                 ));
             } else {
                 let arr = format!("_args{}", self.tmp);
@@ -707,30 +999,55 @@ impl Gen {
                     arr,
                     arg_tmps.join(", ")
                 ));
-                out.push_str(&format!(
-                    "NvValue {} = nv_call_dot_at({}, {}, {}, {}, {}, {}, {}, {});\n",
-                    t,
-                    tt,
-                    c_str(name),
-                    arr,
-                    arg_tmps.len(),
-                    e.line,
-                    e.col,
-                    callee.line,
-                    callee.col
-                ));
+                if kwargs.is_empty() {
+                    out.push_str(&format!(
+                        "NvValue {} = nv_call_dot_at({}, {}, {}, {}, {}, {}, {}, {});\n",
+                        t,
+                        tt,
+                        c_str(name),
+                        arr,
+                        arg_tmps.len(),
+                        e.line,
+                        e.col,
+                        callee.line,
+                        callee.col
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "NvValue {} = nv_call_dot_at_kw({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
+                        t,
+                        tt,
+                        c_str(name),
+                        arr,
+                        arg_tmps.len(),
+                        kw_names_lit,
+                        kw_arr,
+                        kwargs.len(),
+                        e.line,
+                        e.col,
+                        callee.line,
+                        callee.col
+                    ));
+                }
             }
             self.unroot(out, n);
             for a in arg_tmps {
                 self.release(&a);
+            }
+            for k in kw_tmps {
+                self.release(&k);
             }
             // الكتابة العائدة: طريقة معدِّلة على متغير عادٍ
             // تكتب القائمة (المعدَّلة في مكانها) إلى المتغير.
             if is_mutating {
                 if let Some(vn) = target_name {
                     let n2 = self.root_live(out);
+                    // الدفعة الأخيرة DEF (البنود 77 و78):
+                    // الكتابة العائدة إسناد يوجَّه بالإعلان.
+                    let afn = format!("nv_scope_assign{}", self.scope_suffix(&vn, ctx));
                     out.push_str(&format!(
-                        "nv_scope_assign({}, {}, {}, {}, {});\n",
+                        "{}({}, {}, {}, {}, {});\n",
+                        afn,
                         ctx.scope_var,
                         c_str(&vn),
                         tt,
@@ -745,17 +1062,42 @@ impl Gen {
             return t;
         }
         // استدعاء عام: قيّم المستدعى ثم استدعه.
+        // البنود 145–147: المخصَّص يُخصَّص أولا ثم
+        // يسلك مسار القيمة العام نفسه.
         let ct = self.eval_into_temp(callee, ctx, out);
+        let ct = if type_args.is_empty() {
+            ct
+        } else {
+            let st = self.new_temp();
+            out.push_str(&format!(
+                "NvValue {} = nv_specialize({}, {}, {}, {});\n",
+                st,
+                ct,
+                c_str(&type_args.join(",")),
+                e.line,
+                e.col
+            ));
+            self.release(&ct);
+            st
+        };
         let mut arg_tmps = Vec::new();
         for a in args {
             arg_tmps.push(self.eval_into_temp(a, ctx, out));
         }
+        // البنود 109–112: المفتاحيات بعد الموضعية.
+        let (kw_tmps, kw_names_lit) = self.eval_kwargs(kwargs, ctx, out);
         let t = self.new_temp();
         let n = self.root_live(out);
-        if arg_tmps.is_empty() {
+        let kw_arr = self.emit_kw_array(&kw_tmps, out);
+        if arg_tmps.is_empty() && kwargs.is_empty() {
             out.push_str(&format!(
                 "NvValue {} = nv_call_at({}, NULL, 0, {}, {}, {}, {});\n",
                 t, ct, e.line, e.col, callee.line, callee.col
+            ));
+        } else if arg_tmps.is_empty() {
+            out.push_str(&format!(
+                "NvValue {} = nv_call_at_kw({}, NULL, 0, {}, {}, {}, {}, {}, {}, {});\n",
+                t, ct, kw_names_lit, kw_arr, kwargs.len(), e.line, e.col, callee.line, callee.col
             ));
         } else {
             let arr = format!("_args{}", self.tmp);
@@ -765,21 +1107,41 @@ impl Gen {
                 arr,
                 arg_tmps.join(", ")
             ));
-            out.push_str(&format!(
-                "NvValue {} = nv_call_at({}, {}, {}, {}, {}, {}, {});\n",
-                t,
-                ct,
-                arr,
-                arg_tmps.len(),
-                e.line,
-                e.col,
-                callee.line,
-                callee.col
-            ));
+            if kwargs.is_empty() {
+                out.push_str(&format!(
+                    "NvValue {} = nv_call_at({}, {}, {}, {}, {}, {}, {});\n",
+                    t,
+                    ct,
+                    arr,
+                    arg_tmps.len(),
+                    e.line,
+                    e.col,
+                    callee.line,
+                    callee.col
+                ));
+            } else {
+                out.push_str(&format!(
+                    "NvValue {} = nv_call_at_kw({}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
+                    t,
+                    ct,
+                    arr,
+                    arg_tmps.len(),
+                    kw_names_lit,
+                    kw_arr,
+                    kwargs.len(),
+                    e.line,
+                    e.col,
+                    callee.line,
+                    callee.col
+                ));
+            }
         }
         self.unroot(out, n);
         for a in arg_tmps {
             self.release(&a);
+        }
+        for k in kw_tmps {
+            self.release(&k);
         }
         self.release(&ct);
         self.live.push(t.clone());
@@ -816,6 +1178,11 @@ impl Gen {
             } => {
                 self.emit_assign(target, value, annotation, *append, s, ctx, out);
             }
+            // الدفعة الأخيرة DEF (البنود 77 و78 و104):
+            // إعلان النطاق بلا إصدار في ذاته — أثره في
+            // مسار الإسناد (المرحلة ب)؛ وبيان الاسم
+            // المستعار بلا إصدار (المرحلة هـ).
+            StmtKind::GlobalDecl { .. } | StmtKind::NonlocalDecl { .. } | StmtKind::TypeAlias { .. } => {}
             StmtKind::Print { args } => {
                 let mut arg_tmps = Vec::new();
                 for a in args {
@@ -934,7 +1301,9 @@ impl Gen {
                                 def.line,
                                 def.col,
                             )],
-                        },
+                kwargs: Vec::new(),
+                type_args: Vec::new(),
+            },
                         dec.line,
                         dec.col,
                     );
@@ -955,8 +1324,13 @@ impl Gen {
                 params,
                 param_types,
                 return_type,
+                defaults,
+                vararg,
+                kwarg,
                 body,
+                type_params,
             } => {
+                let (dvals, dflags, dtemps) = self.defaults_tables(params, defaults, ctx, out);
                 let fname = self.fresh_func();
                 let mut fbody = String::new();
                 fbody.push_str(&format!(
@@ -972,6 +1346,11 @@ impl Gen {
                 fctx.module_scope_var = ctx.module_scope_var.clone();
                 fctx.func_depth = ctx.func_depth + 1;
         fctx.file_idx = ctx.file_idx;
+                // الدفعة الأخيرة DEF (البنود 77 و78):
+                // إعلانات النطاق من الجسم كله.
+                let (f_global, f_nonlocal) = crate::ast::collect_scope_decls(body);
+                fctx.global_names = f_global.into_iter().collect();
+                fctx.nonlocal_names = f_nonlocal.into_iter().collect();
                 let saved_live = self.enter_nested_fn();
                 self.emit_stmts(body, &mut fctx, &mut fbody)?;
                 self.exit_nested_fn(saved_live);
@@ -981,8 +1360,10 @@ impl Gen {
                 let n = self.root_live(out);
                 let (pnames, ptypes) = self.param_tables(params, param_types);
                 let (mod_arg, mod_scope) = self.func_module_args(ctx);
+                let varg = vararg.as_deref().map(c_str).unwrap_or_else(|| "NULL".to_string());
+                let kwarg_lit = kwarg.as_deref().map(c_str).unwrap_or_else(|| "NULL".to_string());
                 out.push_str(&format!(
-                    "NvValue {} = nv_func_new({}, {}, {}, {}, {}, {}, {}, {}, {});\n",
+                    "NvValue {} = nv_func_new({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
                     t,
                     c_str(name),
                     fname,
@@ -992,9 +1373,17 @@ impl Gen {
                     pnames,
                     ptypes,
                     return_type.as_deref().map(c_str).unwrap_or_else(|| "NULL".to_string()),
-                    params.len()
+                    params.len(),
+                    dvals,
+                    dflags,
+                    varg,
+                    kwarg_lit,
+                    self.type_params_table(type_params)
                 ));
                 self.unroot(out, n);
+                for dt in dtemps {
+                    self.release(&dt);
+                }
                 let n2 = self.root_live(out);
                 // الدفعة 4 — المتغيرات (اجتماع 58 §73):
                 // إعادة تعريف اسم مجمد مرفوضة.
@@ -1018,8 +1407,9 @@ impl Gen {
                 base,
                 interfaces,
                 methods,
+                type_params,
             } => {
-                self.emit_class(name, base, interfaces, methods, s, ctx, out)?;
+                self.emit_class(name, base, interfaces, methods, type_params, s, ctx, out)?;
             }
             StmtKind::InterfaceDef { name, methods } => {
                 let t = self.new_temp();
@@ -1065,9 +1455,10 @@ impl Gen {
             StmtKind::Try {
                 try_body,
                 except_body,
+                else_body,
                 finally_body,
             } => {
-                self.emit_try(try_body, except_body, finally_body, s, ctx, out)?;
+                self.emit_try(try_body, except_body, else_body, finally_body, s, ctx, out)?;
             }
         }
         self.restore_live(mark);
@@ -1105,6 +1496,10 @@ impl Gen {
                     module_scope_var: ctx.module_scope_var.clone(),
                     func_depth: ctx.func_depth,
                     file_idx: ctx.file_idx,
+                    // الدفعة الأخيرة DEF: إعلانات الدالة
+                    // الجارية تُورَّث في أخيرا.
+                    global_names: ctx.global_names.clone(),
+                    nonlocal_names: ctx.nonlocal_names.clone(),
                 };
                 self.emit_stmts(fin, &mut fctx, out)?;
                 self.restore_live(fmark);
@@ -1239,6 +1634,21 @@ impl Gen {
 
     // ---------- التعيين ----------
 
+    /// الدفعة الأخيرة DEF (البنود 77 و78): لاحقة
+    /// التوجيه بالإعلان — تُلحَق باسم دالة النطاق
+    /// (إسناد/قراءة/استدعاء/إنشاء/فتحة/خلية): عام
+    /// إلى جذر السلسلة، ونطاق إلى أقرب ربط محيط،
+    /// وإلا أقرب ربط (بلا لاحقة).
+    fn scope_suffix(&self, name: &str, ctx: &Ctx) -> &'static str {
+        if ctx.global_names.contains(name) {
+            "_global"
+        } else if ctx.nonlocal_names.contains(name) {
+            "_nonlocal"
+        } else {
+            ""
+        }
+    }
+
     fn emit_assign(
         &mut self,
         target: &AssignTarget,
@@ -1278,9 +1688,13 @@ impl Gen {
                     self.tmp += 1;
                     let joined = format!("_new{}", self.tmp);
                     self.tmp += 1;
+                    // الدفعة الأخيرة DEF (البنود 77 و78):
+                    // القيمة القديمة للإلحاق من الربط الموجَّه.
+                    let cellfn = format!("nv_scope_lookup_cell{}", self.scope_suffix(name, ctx));
                     out.push_str(&format!(
-                        "NvCell *{} = nv_scope_lookup_cell({}, {});\n",
+                        "NvCell *{} = {}({}, {});\n",
                         cell,
+                        cellfn,
                         ctx.scope_var,
                         c_str(name)
                     ));
@@ -1318,8 +1732,11 @@ impl Gen {
                     // التعيين فيجمع — ككل مؤقت حي).
                     self.live.push(joined.clone());
                     let n2 = self.root_live(out);
+                    // الدفعة الأخيرة DEF (البنود 77 و78).
+                    let afn = format!("nv_scope_assign{}", self.scope_suffix(name, ctx));
                     out.push_str(&format!(
-                        "nv_scope_assign({}, {}, {}, {}, {});\n",
+                        "{}({}, {}, {}, {}, {});\n",
+                        afn,
                         ctx.scope_var,
                         c_str(name),
                         joined,
@@ -1329,8 +1746,11 @@ impl Gen {
                     self.unroot(out, n2);
                     self.release(&joined);
                 } else {
+                    // الدفعة الأخيرة DEF (البنود 77 و78).
+                    let afn = format!("nv_scope_assign{}", self.scope_suffix(name, ctx));
                     out.push_str(&format!(
-                        "nv_scope_assign({}, {}, {}, {}, {});\n",
+                        "{}({}, {}, {}, {}, {});\n",
+                        afn,
                         ctx.scope_var,
                         c_str(name),
                         vt,
@@ -1355,8 +1775,12 @@ impl Gen {
                         s.line,
                         s.col
                     ));
+                    // الدفعة الأخيرة DEF (البنود 77 و78):
+                    // فتحة الفهرسة من الربط الموجَّه.
+                    let slotfn = format!("nv_scope_slot_ptr{}", self.scope_suffix(vn, ctx));
                     out.push_str(&format!(
-                        "nv_index_assign(nv_scope_slot_ptr({}, {}, {}, {}), {}, {}, {}, {}, {}, {});\n",
+                        "nv_index_assign({}({}, {}, {}, {}), {}, {}, {}, {}, {}, {});\n",
+                        slotfn,
                         ctx.scope_var, c_str(vn), tgt.line, tgt.col,
                         it, vt, index.line, index.col, tgt.line, tgt.col
                     ));
@@ -1396,6 +1820,7 @@ impl Gen {
         base: &Option<String>,
         interfaces: &[String],
         methods: &[Stmt],
+        type_params: &[crate::ast::TypeParam],
         s: &Stmt,
         ctx: &mut Ctx,
         out: &mut String,
@@ -1405,16 +1830,22 @@ impl Gen {
         let n = self.root_live(out);
         if let Some(b) = base {
             out.push_str(&format!(
-                "NvValue {} = nv_class_begin_named({}, {}, {}, {}, {});\n",
+                "NvValue {} = nv_class_begin_named({}, {}, {}, {}, {}, {});\n",
                 t,
                 ctx.scope_var,
                 c_str(name),
                 c_str(b),
                 s.line,
-                s.col
+                s.col,
+                self.type_params_table(type_params)
             ));
         } else {
-            out.push_str(&format!("NvValue {} = nv_class_new({}, NULL);\n", t, c_str(name)));
+            out.push_str(&format!(
+                "NvValue {} = nv_class_new({}, NULL, {});\n",
+                t,
+                c_str(name),
+                self.type_params_table(type_params)
+            ));
         }
         self.unroot(out, n);
         self.live.push(t.clone());
@@ -1435,11 +1866,15 @@ impl Gen {
                     params,
                     param_types,
                     return_type,
+                    defaults,
+                    vararg,
+                    kwarg,
                     body,
-                } => (name, params, param_types, return_type, body),
+                    type_params,
+                } => (name, params, param_types, return_type, defaults, vararg, kwarg, body, type_params),
                 _ => continue,
             };
-            let (mname, mparams, mparam_types, mreturn_type, mbody) = m;
+            let (mname, mparams, mparam_types, mreturn_type, mdefaults, mvararg, mkwarg, mbody, mtype_params) = m;
             let fname = self.fresh_func();
             let mut fbody = String::new();
             fbody.push_str(&format!(
@@ -1460,11 +1895,14 @@ impl Gen {
             self.exit_nested_fn(saved_live);
             fbody.push_str("_end:;\nreturn _ret;\n}\n");
             self.funcs.push_str(&fbody);
+            let (mdvals, mdflags, mdtemps) = self.defaults_tables(mparams, mdefaults, ctx, out);
             let mt = self.new_temp();
             let n = self.root_live(out);
             let (pnames, ptypes) = self.param_tables(mparams, mparam_types);
+            let mvarg = mvararg.as_deref().map(c_str).unwrap_or_else(|| "NULL".to_string());
+            let mkwarg_lit = mkwarg.as_deref().map(c_str).unwrap_or_else(|| "NULL".to_string());
             out.push_str(&format!(
-                "NvValue {} = nv_func_new({}, {}, {}, NULL, NULL, {}, {}, {}, {});\n",
+                "NvValue {} = nv_func_new({}, {}, {}, NULL, NULL, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
                 mt,
                 c_str(mname),
                 fname,
@@ -1472,9 +1910,17 @@ impl Gen {
                 pnames,
                 ptypes,
                 mreturn_type.as_deref().map(c_str).unwrap_or_else(|| "NULL".to_string()),
-                mparams.len()
+                mparams.len(),
+                mdvals,
+                mdflags,
+                mvarg,
+                mkwarg_lit,
+                self.type_params_table(mtype_params)
             ));
             self.unroot(out, n);
+            for dt in mdtemps {
+                self.release(&dt);
+            }
             let n = self.root_live(out);
             out.push_str(&format!(
                 "nv_class_add_method({}, {}, {});\n",
@@ -1506,10 +1952,19 @@ impl Gen {
 
     // ---------- حاول/ماعدا/أخيرا ----------
 
+    // البند 98 (`والا` بعد حاول — الاجتماع 83 §98):
+    // المعامل الإضافي `else_body` — يُصدَر جسمه في
+    // مسار عدم-الخطأ (setjmp==0) بعد جسم حاول
+    // مباشرة وقبل finally؛ فخطأ فيه يقفز إلى
+    // المعالج نفسه فيمسكه ماعدا، وإكماله العادي
+    // يمر إلى أخيرا/بعد. ولا يُصدَر عند ارجع/اكسر/
+    // تابع داخل حاول، لأن تلك تقفز بعيدا قبل الوصول
+    // إليه. بلا مساس ببنية المعالج.
     fn emit_try(
         &mut self,
         body: &[Stmt],
         except: &Option<Vec<Stmt>>,
+        else_body: &Option<Vec<Stmt>>,
         finally: &Option<Vec<Stmt>>,
         s: &Stmt,
         ctx: &mut Ctx,
@@ -1534,6 +1989,11 @@ impl Gen {
         let has_except = except.is_some();
         out.push_str(&format!("if (setjmp({}.jb) == 0) {{\n", hid));
         self.emit_stmts(body, ctx, out)?;
+        // البند 98 (`والا`): بعد جسم حاول وقبل
+        // نهاية مسار عدم-الخطأ — انظر توثيق emit_try.
+        if let Some(els) = else_body {
+            self.emit_stmts(els, ctx, out)?;
+        }
         out.push_str("} else {\n");
         // مسار الخطأ: استعد النقاط. (nv_error أزال المعالج
         // نفسه قبل القفز، فـ nv_handlers تحته الآن.)
@@ -1553,6 +2013,10 @@ impl Gen {
                 module_scope_var: ctx.module_scope_var.clone(),
                 func_depth: ctx.func_depth,
                 file_idx: ctx.file_idx,
+                // الدفعة الأخيرة DEF: إعلانات الدالة
+                // الجارية تُورَّث في أخيرا.
+                global_names: ctx.global_names.clone(),
+                nonlocal_names: ctx.nonlocal_names.clone(),
             };
             self.emit_stmts(fin, &mut fctx, out)?;
             self.restore_live(fmark);
@@ -1592,6 +2056,10 @@ impl Gen {
                     module_scope_var: ctx.module_scope_var.clone(),
                     func_depth: ctx.func_depth,
                     file_idx: ctx.file_idx,
+                    // الدفعة الأخيرة DEF: إعلانات الدالة
+                    // الجارية تُورَّث في أخيرا.
+                    global_names: ctx.global_names.clone(),
+                    nonlocal_names: ctx.nonlocal_names.clone(),
                 };
                 self.emit_stmts(fin, &mut fctx, out)?;
                 self.restore_live(fmark);
@@ -1615,6 +2083,10 @@ impl Gen {
                     module_scope_var: ctx.module_scope_var.clone(),
                     func_depth: ctx.func_depth,
                     file_idx: ctx.file_idx,
+                    // الدفعة الأخيرة DEF: إعلانات الدالة
+                    // الجارية تُورَّث في أخيرا.
+                    global_names: ctx.global_names.clone(),
+                    nonlocal_names: ctx.nonlocal_names.clone(),
                 };
                 self.emit_stmts(fin, &mut fctx, out)?;
                 self.restore_live(fmark);
@@ -1635,6 +2107,10 @@ impl Gen {
                 module_scope_var: ctx.module_scope_var.clone(),
                 func_depth: ctx.func_depth,
                 file_idx: ctx.file_idx,
+                // الدفعة الأخيرة DEF: إعلانات الدالة
+                // الجارية تُورَّث في أخيرا.
+                global_names: ctx.global_names.clone(),
+                nonlocal_names: ctx.nonlocal_names.clone(),
             };
             self.emit_stmts(fin, &mut fctx, out)?;
             self.restore_live(fmark);

@@ -29,6 +29,20 @@ impl ErrorKind {
             ErrorKind::Semantic => "دلالي",
         }
     }
+
+    /// البند 88 — مدير السياق: عكس `arabic` — من
+    /// الاسم العربي كما يظهر في رسالة الخطأ إلى النوع؛
+    /// وغير المعروف يعود وقت تشغيل (دفاعي، داخلي فقط).
+    pub fn من_العربية(name: &str) -> Self {
+        match name {
+            "لغوي" => ErrorKind::Lex,
+            "نحوي" => ErrorKind::Parse,
+            "نوع" => ErrorKind::Type,
+            "إدخال/إخراج" => ErrorKind::Io,
+            "دلالي" => ErrorKind::Semantic,
+            _ => ErrorKind::Runtime,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
