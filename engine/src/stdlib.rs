@@ -2332,6 +2332,16 @@ pub fn native_module(name: &str) -> Option<Value> {
         "محدد" => fzf_entries(),
         "عرض" => display_entries(),
         "عارض" => less_entries(),
+        // لينكس5 موجة الملفات: 6 وحدات جديدة
+        // (بحث_ملفات وقاعدة_أسماء ومرر_أسماء
+        // وسرد ومزامنة وضغط)؛ وأرشيف امتداد
+        // بلا وحدة جديدة (تار في archive_entries).
+        "بحث_ملفات" => b5_search_files_entries(),
+        "قاعدة_أسماء" => b5_namebase_entries(),
+        "مرر_أسماء" => b5_xargs_entries(),
+        "سرد" => b5_list_entries(),
+        "مزامنة" => b5_sync_entries(),
+        "ضغط" => b5_compress_entries(),
         "جسون" => json_entries(),
         "اكسمل" => xml_entries(),
         "يامال" => yaml_entries(),
@@ -14865,11 +14875,13 @@ fn zip_file_dict(name: &str, content: &[u8]) -> Value {
 }
 
 fn archive_entries() -> Vec<(&'static str, Value)> {
-    vec![
+    let mut v = vec![
         ("اضغط", native("اضغط", archive_compress)),
         ("فك_ضغط", native("فك_ضغط", archive_decompress)),
         ("قائمة", native("قائمة", archive_list)),
-    ]
+    ];
+    v.extend(b5_tar_entries());
+    v
 }
 
 fn archive_compress(
@@ -29187,3 +29199,5940 @@ fn boxed_entries() -> Vec<(&'static str, Value)> {
     ]
 }
 // END J6-GEN entries-boxed
+
+// BEGIN لينكس5-ملفات (دفعة لينكس 5، موجة الملفات — يدوي)
+// نوى الملفات: بحث أسماء (fd/find)، قاعدة أسماء
+// (locate)، تمرير أسماء (xargs)، سرد (eza)، مزامنة
+// (rsync)، أرشيف tar (bsdtar)، ضغط (LZSS خاص بنيفا).
+// كل الأسماء والخيارات والأخطاء عربية بلا تشكيل؛
+// والمعرفات الداخلية لاتينية. المشي يعيد استخدام
+// مساعدات بحث النص (تجاهل وكروي) حيث أمكن.
+
+/// قيمة منطقية لخيار قاموسي (افتراضي عند الغياب).
+fn b5_opt_bool(
+    display: &str,
+    pairs: &[(String, Value)],
+    key: &str,
+    default: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<bool> {
+    match dict_get(pairs, key) {
+        None => Ok(default),
+        Some(v) => match v {
+            Value::Bool(b) => Ok(*b),
+            other => Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع قيمة منطقية للخيار {} لكن أعطيت {}",
+                    display,
+                    key,
+                    other.type_name()
+                ),
+                line,
+                col,
+            )),
+        },
+    }
+}
+
+/// عدد صحيح لخيار قاموسي (لاشيء عند الغياب).
+fn b5_opt_int(
+    display: &str,
+    pairs: &[(String, Value)],
+    key: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<i64>> {
+    match dict_get(pairs, key) {
+        None => Ok(None),
+        Some(Value::Nil) => Ok(None),
+        Some(v) => Ok(Some(need_integer(display, v, line, col)?)),
+    }
+}
+
+/// نص لخيار قاموسي (لاشيء عند الغياب).
+fn b5_opt_str(
+    display: &str,
+    pairs: &[(String, Value)],
+    key: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<String>> {
+    match dict_get(pairs, key) {
+        None => Ok(None),
+        Some(Value::Nil) => Ok(None),
+        Some(v) => Ok(Some(need_string(display, v, line, col)?)),
+    }
+}
+
+/// نص أو قائمة نصوص لخيار قاموسي (فارغة عند الغياب).
+fn b5_opt_strs(
+    display: &str,
+    pairs: &[(String, Value)],
+    key: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<String>> {
+    match dict_get(pairs, key) {
+        None => Ok(Vec::new()),
+        Some(Value::Nil) => Ok(Vec::new()),
+        Some(Value::Str(s)) => Ok(vec![s.clone()]),
+        Some(Value::List(items)) => {
+            let mut out = Vec::new();
+            for it in items {
+                out.push(need_string(display, it, line, col)?);
+            }
+            Ok(out)
+        }
+        Some(other) => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع نصا أو قائمة نصوص للخيار {} لكن أعطيت {}",
+                display,
+                key,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// رفض أي خيار خارج القائمة المسماة.
+fn b5_no_unknown(
+    display: &str,
+    pairs: &[(String, Value)],
+    allowed: &[&str],
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    for (k, _) in pairs {
+        if !allowed.contains(&k.as_str()) {
+            return Err(RioError::runtime(
+                format!("الدالة {} لا تقبل الخيار {}", display, k),
+                line,
+                col,
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// قاموس الخيارات الاختياري (معامل أخير): بلا معامل
+/// أو لاشيء ← فارغ؛ وقاموس ← أزواجه.
+fn b5_opts<'a>(
+    display: &str,
+    args: &'a [Value],
+    at: usize,
+    line: usize,
+    col: usize,
+) -> RioResult<&'a [(String, Value)]> {
+    if args.len() <= at {
+        return Ok(&[]);
+    }
+    match &args[at] {
+        Value::Nil => Ok(&[]),
+        Value::Dict(pairs) => Ok(pairs),
+        other => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع قاموس خيارات لكن أعطيت {}",
+                display,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// هل القيمة قابلة للاستدعاء كدالة نيفا؟
+fn b5_is_callable(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Function { .. } | Value::NativeFunction { .. } | Value::BoundMethod { .. }
+    )
+}
+
+/// الثواني الآن منذ الحقبة.
+fn b5_now() -> i64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        (js_sys::Date::now() / 1000.0) as i64
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0)
+    }
+}
+
+/// تنسيق وقت (ثوانٍ منذ الحقبة) بالصيغة نفسها التي
+/// يستخدمها وقت.نسق (%Y %m %d %H %M %S %e %k %A %B %%)،
+/// بالتوقيت المحلي كما في وقت.نسق.
+fn b5_fmt_time(epoch: i64, fmt: &str, display: &str, line: usize, col: usize) -> RioResult<String> {
+    let dt = crate::time::datetime_from_epoch(epoch, false, display, line, col)?;
+    let mut out = String::new();
+    let mut chars = fmt.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        let tok = chars.next().ok_or_else(|| {
+            RioError::runtime("صيغة تاريخ غير صالحة: % في النهاية".to_string(), line, col)
+        })?;
+        match tok {
+            'Y' => out.push_str(&format!("{:04}", dt.year)),
+            'm' => out.push_str(&format!("{:02}", dt.month)),
+            'd' => out.push_str(&format!("{:02}", dt.day)),
+            'H' => out.push_str(&format!("{:02}", dt.hour)),
+            'M' => out.push_str(&format!("{:02}", dt.minute)),
+            'S' => out.push_str(&format!("{:02}", dt.second)),
+            'e' => out.push_str(&format!("{}", dt.day)),
+            'k' => out.push_str(&format!("{}", dt.hour)),
+            'A' => out.push_str(crate::time::weekday_name(dt.weekday)),
+            'B' => out.push_str(crate::time::month_name(dt.month)),
+            '%' => out.push('%'),
+            _ => {
+                return Err(RioError::runtime(
+                    format!("صيغة تاريخ غير صالحة: %{}", tok),
+                    line,
+                    col,
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// حجم بشري: بايتات بصيغة مفهومة (ب/ك/م/غ/ت).
+fn b5_human_size(n: u64) -> String {
+    const UNITS: [&str; 5] = ["ب", "ك", "م", "غ", "ت"];
+    let mut v = n as f64;
+    let mut u = 0usize;
+    while v >= 1024.0 && u < 4 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{} {}", n, UNITS[0])
+    } else if (v - v.trunc()).abs() < 0.05 {
+        format!("{} {}", v.trunc() as u64, UNITS[u])
+    } else {
+        format!("{:.1} {}", v, UNITS[u])
+    }
+}
+
+/// نوع المدخل.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum B5Kind {
+    File,
+    Dir,
+    Link,
+    Other,
+}
+
+impl B5Kind {
+    fn name(self) -> &'static str {
+        match self {
+            B5Kind::File => "ملف",
+            B5Kind::Dir => "مجلد",
+            B5Kind::Link => "رابط",
+            B5Kind::Other => "آخر",
+        }
+    }
+    fn letter(self) -> char {
+        match self {
+            B5Kind::File => '-',
+            B5Kind::Dir => 'د',
+            B5Kind::Link => 'ل',
+            B5Kind::Other => '?',
+        }
+    }
+}
+
+/// بيانات وصفية موحدة لمدخل (من lstat؛ والهدف إن
+/// اتُبع الرابط). النمط مطبّع: بتات 0o7777 على يونكس،
+/// وعلى ويندوز 0444/0666 من القراءة فقط.
+#[derive(Clone)]
+struct B5Meta {
+    kind: B5Kind,
+    size: u64,
+    mtime: i64,
+    atime: i64,
+    btime: Option<i64>,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    nlink: u64,
+    is_link: bool,
+    target: Option<String>,
+}
+
+fn b5_time_secs(t: std::io::Result<std::time::SystemTime>) -> i64 {
+    t.ok()
+        .and_then(|s| s.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+fn b5_stat(path: &std::path::Path) -> Option<B5Meta> {
+    let md = std::fs::symlink_metadata(path).ok()?;
+    let ft = md.file_type();
+    let is_link = ft.is_symlink();
+    let kind = if is_link {
+        B5Kind::Link
+    } else if ft.is_dir() {
+        B5Kind::Dir
+    } else if ft.is_file() {
+        B5Kind::File
+    } else {
+        B5Kind::Other
+    };
+    let target = if is_link {
+        std::fs::read_link(path)
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+    #[cfg(unix)]
+    let (mode, uid, gid, nlink) = {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        (
+            md.permissions().mode() & 0o7777,
+            md.uid(),
+            md.gid(),
+            md.nlink(),
+        )
+    };
+    #[cfg(not(unix))]
+    let (mode, uid, gid, nlink) = {
+        let base: u32 = if md.permissions().readonly() { 0o444 } else { 0o666 };
+        (base, 0u32, 0u32, 1u64)
+    };
+    Some(B5Meta {
+        kind,
+        size: md.len(),
+        mtime: b5_time_secs(md.modified()),
+        atime: b5_time_secs(md.accessed()),
+        btime: md.created().ok().and_then(|s| {
+            s.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .map(|d| d.as_secs() as i64)
+        }),
+        mode,
+        uid,
+        gid,
+        nlink,
+        is_link,
+        target,
+    })
+}
+
+/// النمط المطبّع نفسه لـstat متبوع (هدف الرابط).
+fn b5_stat_follow(path: &std::path::Path) -> Option<B5Meta> {
+    let md = std::fs::metadata(path).ok()?;
+    let mut m = b5_stat(path)?;
+    let ft = md.file_type();
+    m.kind = if ft.is_dir() {
+        B5Kind::Dir
+    } else if ft.is_file() {
+        B5Kind::File
+    } else {
+        B5Kind::Other
+    };
+    m.size = md.len();
+    m.mtime = b5_time_secs(md.modified());
+    m.atime = b5_time_secs(md.accessed());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        m.mode = md.permissions().mode() & 0o7777;
+        m.uid = md.uid();
+        m.gid = md.gid();
+        m.nlink = md.nlink();
+    }
+    Some(m)
+}
+
+/// هل الملف قابل للتنفيذ؟ يونكس: أي بت تنفيذ؛
+/// ويندوز: اللاحقة التنفيذية.
+fn b5_is_exec(path: &std::path::Path, meta: &B5Meta) -> bool {
+    #[cfg(unix)]
+    {
+        let _ = path;
+        meta.mode & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        match path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .as_deref()
+        {
+            Some("exe") | Some("bat") | Some("cmd") | Some("com") => true,
+            _ => false,
+        }
+    }
+}
+
+/// اسم المالك/المجموعة؛ «غير_معروف» على ويندوز أو
+/// عند غياب الاسم في النظام.
+fn b5_owner_name(uid: u32, is_group: bool) -> String {
+    #[cfg(unix)]
+    {
+        unsafe {
+            if is_group {
+                let g = libc::getgrgid(uid);
+                if !g.is_null() && !(*g).gr_name.is_null() {
+                    if let Ok(s) = std::ffi::CStr::from_ptr((*g).gr_name).to_str() {
+                        if !s.is_empty() {
+                            return s.to_string();
+                        }
+                    }
+                }
+            } else {
+                let p = libc::getpwuid(uid);
+                if !p.is_null() && !(*p).pw_name.is_null() {
+                    if let Ok(s) = std::ffi::CStr::from_ptr((*p).pw_name).to_str() {
+                        if !s.is_empty() {
+                            return s.to_string();
+                        }
+                    }
+                }
+            }
+        }
+        format!("{}", uid)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (uid, is_group);
+        "غير_معروف".to_string()
+    }
+}
+
+/// سلسلة أذونات على نمط ls: نوع + rwxrwxrwx.
+fn b5_mode_str(meta: &B5Meta) -> String {
+    let mut s = String::new();
+    s.push(meta.kind.letter());
+    let bits = [
+        (0o400, 'r'),
+        (0o200, 'w'),
+        (0o100, 'x'),
+        (0o040, 'r'),
+        (0o020, 'w'),
+        (0o010, 'x'),
+        (0o004, 'r'),
+        (0o002, 'w'),
+        (0o001, 'x'),
+    ];
+    for (b, c) in bits {
+        s.push(if meta.mode & b != 0 { c } else { '-' });
+    }
+    s
+}
+
+/// مطابقة تعبير نمطي بحثا (جزئيا) في نص، مع طي الحالة.
+fn b5_rx_search(
+    pattern: &str,
+    text: &str,
+    fold: bool,
+    _display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<bool> {
+    let chars = rx_check_text(text).map_err(|e| RioError::runtime(e, line, col))?;
+    let prog = rx_compile_fold(pattern, false, fold).map_err(|e| RioError::runtime(e, line, col))?;
+    let hit = rx_find_from(&prog, &chars, 0).map_err(|e| RioError::runtime(e, line, col))?;
+    Ok(hit.is_some())
+}
+
+/// مطابقة كروية كاملة (مع طي الحالة).
+fn b5_glob(pat: &str, text: &str, fold: bool, line: usize, col: usize) -> bool {
+    search_glob_match_fold(pat, text, fold, line, col).unwrap_or(false)
+}
+
+/// هل يطابق أي نمط كروي من القائمة الاسم أو المسار؟
+fn b5_glob_any(pats: &[String], name: &str, rel: &str, fold: bool, line: usize, col: usize) -> bool {
+    pats.iter().any(|p| {
+        b5_glob(p, name, fold, line, col)
+            || b5_glob(p, rel, fold, line, col)
+            || b5_glob(p, &format!("/{}", rel), fold, line, col)
+    })
+}
+
+/// مدخل ينتجه المشي.
+struct B5Entry {
+    fs: std::path::PathBuf,
+    display: String,
+    name: String,
+    rel: String,
+    depth: i64,
+    meta: B5Meta,
+    eff: B5Meta,
+}
+
+/// خيارات المشي التكراري.
+struct B5Walk {
+    include_hidden: bool,
+    respect_ignore: bool,
+    follow_links: bool,
+    max_depth: i64,
+    min_depth: i64,
+    exact_depth: Option<i64>,
+    prune: Vec<String>,
+    gitignore_extra: Vec<String>,
+    show_errors: bool,
+    errors: Vec<String>,
+    visited: Vec<std::path::PathBuf>,
+}
+
+impl B5Walk {
+    fn new() -> Self {
+        B5Walk {
+            include_hidden: false,
+            respect_ignore: true,
+            follow_links: false,
+            max_depth: -1,
+            min_depth: 1,
+            exact_depth: None,
+            prune: Vec::new(),
+            gitignore_extra: Vec::new(),
+            show_errors: false,
+            errors: Vec::new(),
+            visited: Vec::new(),
+        }
+    }
+    fn depth_ok(&self, depth: i64) -> bool {
+        if let Some(ex) = self.exact_depth {
+            return depth == ex;
+        }
+        depth >= self.min_depth && (self.max_depth < 0 || depth <= self.max_depth)
+    }
+    fn can_descend(&self, depth: i64) -> bool {
+        if let Some(ex) = self.exact_depth {
+            return depth < ex;
+        }
+        self.max_depth < 0 || depth < self.max_depth
+    }
+}
+
+/// اقرأ أنماطا من ملف نصي (سطر لكل نمط؛ فارغ
+/// وتعليق # يُتخطى)؛ والغائب أو غير المقروء خطأ عربي.
+fn b5_load_patterns(
+    ctx: &mut dyn HandlerCaller,
+    display: &str,
+    path: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<String>> {
+    let fs = search_resolve_path(ctx, path);
+    let text = std::fs::read_to_string(&fs).map_err(|_| {
+        RioError::runtime(format!("الدالة {} الملف غير موجود: {}", display, path), line, col)
+    })?;
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        let pat = raw.trim_end_matches(|c: char| c.is_ascii_whitespace());
+        if pat.is_empty() || pat.starts_with('#') {
+            continue;
+        }
+        out.push(pat.to_string());
+    }
+    Ok(out)
+}
+
+fn b5_walk_dir(
+    dir_fs: &std::path::Path,
+    dir_display: &str,
+    depth: i64,
+    w: &mut B5Walk,
+    ignore: &mut Vec<String>,
+    out: &mut Vec<B5Entry>,
+) {
+    let entries = match std::fs::read_dir(dir_fs) {
+        Ok(e) => e,
+        Err(_) => {
+            if w.show_errors {
+                w.errors.push(format!("تعذر قراءة المجلد: {}", dir_display));
+            }
+            return;
+        }
+    };
+    let mut items: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+    items.sort_by_key(|e| e.file_name());
+    let base_len = ignore.len();
+    if w.respect_ignore {
+        ignore.extend(search_ignore_patterns_flags(dir_fs, true, true));
+    }
+    for entry in items {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !w.include_hidden && name.starts_with('.') {
+            continue;
+        }
+        let child_display = if dir_display.is_empty() {
+            name.clone()
+        } else {
+            format!("{}/{}", dir_display, name)
+        };
+        let meta = match b5_stat(&entry.path()) {
+            Some(m) => m,
+            None => continue,
+        };
+        // الرابط: بلا اتباع يُعرض رابطا؛ وباتباع يُعرض
+        // هدفه (والمنكسر يبقى رابطا).
+        let mut eff_kind = meta.kind;
+        let mut eff_meta = B5Meta {
+            kind: meta.kind,
+            size: meta.size,
+            mtime: meta.mtime,
+            atime: meta.atime,
+            btime: meta.btime,
+            mode: meta.mode,
+            uid: meta.uid,
+            gid: meta.gid,
+            nlink: meta.nlink,
+            is_link: meta.is_link,
+            target: meta.target.clone(),
+        };
+        if meta.is_link {
+            if !w.follow_links {
+                // يبقى رابطا.
+            } else if let Some(fm) = b5_stat_follow(&entry.path()) {
+                eff_kind = fm.kind;
+                eff_meta = fm;
+            }
+        }
+        let is_dir = eff_kind == B5Kind::Dir;
+        let rel = child_display.clone();
+        if is_dir {
+            if !w.prune.is_empty()
+                && b5_glob_any(&w.prune, &name, &rel, false, 0, 0)
+            {
+                continue;
+            }
+            if w.respect_ignore
+                && (search_ignore_match(ignore, &rel)
+                    || search_ignore_match(ignore, &name)
+                    || search_gitignore_ignored(&w.gitignore_extra, &rel, true, false))
+            {
+                continue;
+            }
+            if w.depth_ok(depth + 1) {
+                out.push(B5Entry {
+                    fs: entry.path(),
+                    display: child_display.clone(),
+                    name: name.clone(),
+                    rel: rel.clone(),
+                    depth: depth + 1,
+                    meta: B5Meta {
+                        kind: meta.kind,
+                        size: meta.size,
+                        mtime: meta.mtime,
+                        atime: meta.atime,
+                        btime: meta.btime,
+                        mode: meta.mode,
+                        uid: meta.uid,
+                        gid: meta.gid,
+                        nlink: meta.nlink,
+                        is_link: meta.is_link,
+                        target: meta.target.clone(),
+                    },
+                    eff: B5Meta {
+                        kind: eff_meta.kind,
+                        size: eff_meta.size,
+                        mtime: eff_meta.mtime,
+                        atime: eff_meta.atime,
+                        btime: eff_meta.btime,
+                        mode: eff_meta.mode,
+                        uid: eff_meta.uid,
+                        gid: eff_meta.gid,
+                        nlink: eff_meta.nlink,
+                        is_link: eff_meta.is_link,
+                        target: eff_meta.target.clone(),
+                    },
+                });
+            }
+            if w.can_descend(depth + 1) {
+                let canon = std::fs::canonicalize(entry.path())
+                    .unwrap_or_else(|_| entry.path());
+                if w.follow_links && w.visited.contains(&canon) {
+                    continue;
+                }
+                if w.follow_links {
+                    w.visited.push(canon);
+                }
+                b5_walk_dir(&entry.path(), &child_display, depth + 1, w, ignore, out);
+            }
+        } else {
+            if w.respect_ignore
+                && (search_ignore_match(ignore, &rel)
+                    || search_ignore_match(ignore, &name)
+                    || search_gitignore_ignored(&w.gitignore_extra, &rel, false, false))
+            {
+                continue;
+            }
+            if w.depth_ok(depth + 1) {
+                out.push(B5Entry {
+                    fs: entry.path(),
+                    display: child_display.clone(),
+                    name: name.clone(),
+                    rel: rel.clone(),
+                    depth: depth + 1,
+                    meta: B5Meta {
+                        kind: meta.kind,
+                        size: meta.size,
+                        mtime: meta.mtime,
+                        atime: meta.atime,
+                        btime: meta.btime,
+                        mode: meta.mode,
+                        uid: meta.uid,
+                        gid: meta.gid,
+                        nlink: meta.nlink,
+                        is_link: meta.is_link,
+                        target: meta.target.clone(),
+                    },
+                    eff: B5Meta {
+                        kind: eff_meta.kind,
+                        size: eff_meta.size,
+                        mtime: eff_meta.mtime,
+                        atime: eff_meta.atime,
+                        btime: eff_meta.btime,
+                        mode: eff_meta.mode,
+                        uid: eff_meta.uid,
+                        gid: eff_meta.gid,
+                        nlink: eff_meta.nlink,
+                        is_link: eff_meta.is_link,
+                        target: eff_meta.target.clone(),
+                    },
+                });
+            }
+        }
+    }
+    ignore.truncate(base_len);
+}
+
+/// امشِ جذرا واحدا (ملف أو مجلد)؛ والجذر الملف
+/// يُرجع كما هو بلا ترشيح بالمشي.
+fn b5_walk_root(
+    ctx: &mut dyn HandlerCaller,
+    root_display: &str,
+    w: &mut B5Walk,
+    out: &mut Vec<B5Entry>,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    let display = "بحث_ملفات.ابحث";
+    let root_fs = search_resolve_path(ctx, root_display);
+    let meta = match std::fs::metadata(&root_fs) {
+        Ok(m) => m,
+        Err(_) => {
+            return Err(RioError::runtime(
+                format!("المسار غير موجود: {}", root_display),
+                line,
+                col,
+            ))
+        }
+    };
+    if meta.is_file() {
+        if let Some(m) = b5_stat(&root_fs) {
+            let name = root_fs
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| root_display.to_string());
+            out.push(B5Entry {
+                fs: root_fs,
+                display: root_display.to_string(),
+                name,
+                rel: root_display.to_string(),
+                depth: 0,
+                meta: B5Meta {
+                    kind: m.kind,
+                    size: m.size,
+                    mtime: m.mtime,
+                    atime: m.atime,
+                    btime: m.btime,
+                    mode: m.mode,
+                    uid: m.uid,
+                    gid: m.gid,
+                    nlink: m.nlink,
+                    is_link: m.is_link,
+                    target: m.target.clone(),
+                },
+                eff: B5Meta {
+                    kind: m.kind,
+                    size: m.size,
+                    mtime: m.mtime,
+                    atime: m.atime,
+                    btime: m.btime,
+                    mode: m.mode,
+                    uid: m.uid,
+                    gid: m.gid,
+                    nlink: m.nlink,
+                    is_link: m.is_link,
+                    target: m.target.clone(),
+                },
+            });
+        }
+        return Ok(());
+    }
+    if !meta.is_dir() {
+        return Err(RioError::runtime(
+            format!("المسار غير موجود: {}", root_display),
+            line,
+            col,
+        ));
+    }
+    let base = root_display.trim_end_matches('/');
+    let base = if base == "." { "" } else { base };
+    let mut ignore: Vec<String> = Vec::new();
+    if w.respect_ignore {
+        let cwd = ctx.server_cwd();
+        let mut dir = root_fs.parent().map(|p| p.to_path_buf());
+        while let Some(d) = dir {
+            ignore.extend(search_ignore_patterns_flags(&d, true, true));
+            if d == cwd {
+                break;
+            }
+            dir = d.parent().map(|p| p.to_path_buf());
+        }
+    }
+    let _ = display;
+    let _ = (line, col);
+    b5_walk_dir(&root_fs, base, 0, w, &mut ignore, out);
+    Ok(())
+}
+
+/// لون ANSI لنوع المدخل (بلا لون لغيرها).
+fn b5_colorize(text: &str, kind: B5Kind, is_exec: bool) -> String {
+    let code = match kind {
+        B5Kind::Dir => Some("34"),
+        B5Kind::Link => Some("36"),
+        B5Kind::File if is_exec => Some("32"),
+        _ => None,
+    };
+    match code {
+        Some(c) => format!("\u{1b}[{}m{}\u{1b}[0m", c, text),
+        None => text.to_string(),
+    }
+}
+
+/// سطر طويل على نمط ls -l: أذونات روابط مالك مجموعة
+/// حجم وقت اسم؛ والوقت افتراضيا يوم فقط (%Y-%m-%d)
+/// لتفادي عبور حدود الدقيقة بين وضعي التشغيل.
+#[allow(clippy::too_many_arguments)]
+fn b5_long_line(
+    e: &B5Entry,
+    time_fmt: &str,
+    time_kind: &str,
+    human: bool,
+    show_owner: bool,
+    show_size: bool,
+    show_time: bool,
+    color: bool,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    let m = &e.eff;
+    let epoch = match time_kind {
+        "وصول" => m.atime,
+        "إنشاء" => m.btime.unwrap_or(m.mtime),
+        _ => m.mtime,
+    };
+    let t = b5_fmt_time(epoch, time_fmt, display, line, col)?;
+    let size = if human {
+        b5_human_size(m.size)
+    } else {
+        format!("{}", m.size)
+    };
+    let mut name = e.display.clone();
+    if m.is_link {
+        if let Some(tg) = &m.target {
+            name = format!("{} ← {}", name, tg);
+        }
+    }
+    if color {
+        name = b5_colorize(&name, m.kind, b5_is_exec(&e.fs, m));
+    }
+    let mut parts: Vec<String> = vec![b5_mode_str(m), format!("{}", m.nlink)];
+    if show_owner {
+        parts.push(b5_owner_name(m.uid, false));
+        parts.push(b5_owner_name(m.gid, true));
+    }
+    if show_size {
+        parts.push(size);
+    }
+    if show_time {
+        parts.push(t);
+    }
+    parts.push(name);
+    Ok(parts.join(" "))
+}
+
+/// طبّق قالب نسق: {مسار} {اسم} {حجم} {نوع} {وقت}.
+fn b5_apply_format(
+    e: &B5Entry,
+    fmt: &str,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    let mut out = String::new();
+    let mut rest = fmt;
+    loop {
+        match rest.find('{') {
+            None => {
+                out.push_str(rest);
+                break;
+            }
+            Some(i) => {
+                out.push_str(&rest[..i]);
+                let after = &rest[i + 1..];
+                match after.find('}') {
+                    None => {
+                        return Err(RioError::runtime(
+                            format!("الدالة {} قالب النسق غير مغلق", display),
+                            line,
+                            col,
+                        ))
+                    }
+                    Some(j) => {
+                        let key = &after[..j];
+                        let val = match key {
+                            "مسار" => e.display.clone(),
+                            "اسم" => e.name.clone(),
+                            "حجم" => format!("{}", e.eff.size),
+                            "نوع" => e.eff.kind.name().to_string(),
+                            "وقت" => format!("{}", e.eff.mtime),
+                            _ => {
+                                return Err(RioError::runtime(
+                                    format!("الدالة {} عنصر نسق غير معروف: {}", display, key),
+                                    line,
+                                    col,
+                                ))
+                            }
+                        };
+                        out.push_str(&val);
+                        rest = &after[j + 1..];
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// خيارات بحث_ملفات.ابحث محللة.
+struct B5Search {
+    glob: bool,
+    fold: bool,
+    include_hidden: bool,
+    respect_ignore: bool,
+    kind: Option<String>,
+    exts: Vec<String>,
+    exclude: Vec<String>,
+    ignore_file: Option<String>,
+    min_depth: i64,
+    max_depth: Option<i64>,
+    exact_depth: Option<i64>,
+    max_results: Option<i64>,
+    size_min: Option<u64>,
+    size_max: Option<u64>,
+    size_eq: Option<u64>,
+    newer_ref: Option<String>,
+    older_ref: Option<String>,
+    changed_within: Option<i64>,
+    changed_before: Option<i64>,
+    changed_after: Option<i64>,
+    changed_before_t: Option<i64>,
+    accessed_within: Option<i64>,
+    empty: bool,
+    perms: Option<u32>,
+    follow: bool,
+    prune: Vec<String>,
+    and_pats: Vec<String>,
+    or_pats: Vec<String>,
+    not_pats: Vec<String>,
+    groups: Vec<(Vec<String>, Vec<String>)>,
+    format: Option<String>,
+    write_to: Option<String>,
+    details: bool,
+    long: bool,
+    abs_path: bool,
+    full_path: bool,
+    show_errors: bool,
+    color: bool,
+    quiet: bool,
+    exec_each: Option<Value>,
+    exec_batch: Option<Value>,
+    ask: Option<Value>,
+    first_only: bool,
+    in_content: Option<String>,
+    readable: bool,
+    writable: bool,
+    executable: bool,
+    name_glob: Option<String>,
+    name_fold: bool,
+    path_glob: Option<String>,
+    path_glob_fold: bool,
+    path_regex: Option<String>,
+}
+
+const B5_SEARCH_KEYS: &[&str] = &[
+    "نمط_قشرة",
+    "حالة_ذكية",
+    "حساس_لحالة",
+    "بلا_حالة",
+    "أدرج_المخفية",
+    "احترم_التجاهل",
+    "بلا_تجاهل",
+    "بلا_قيود",
+    "نوع",
+    "امتداد",
+    "استثن",
+    "ملف_تجاهل",
+    "عمق_أدنى",
+    "عمق_أقصى",
+    "عمق_دقيق",
+    "حد_أقصى",
+    "حجم_أدنى",
+    "حجم_أقصى",
+    "حجم",
+    "أحدث_من_مرجع",
+    "أقدم_من_مرجع",
+    "متغير_خلال",
+    "متغير_قبل",
+    "متغير_بعد_وقت",
+    "متغير_قبل_وقت",
+    "وصل_خلال",
+    "فارغ",
+    "أذونات",
+    "اتبع_الروابط",
+    "بلا_اتباع",
+    "اقطع_فرع",
+    "و",
+    "أو",
+    "ليس",
+    "تجميع",
+    "نسق",
+    "اكتب_في",
+    "تفاصيل",
+    "طويل",
+    "مسار_نسبي",
+    "مسار_مطلق",
+    "طابق_المسار",
+    "أظهر_الأخطاء",
+    "لوّن",
+    "صامت",
+    "نفذ_لكل",
+    "نفذ_دفعة",
+    "اسأل",
+    "أول_فقط",
+    "في_المحتوى",
+    "قابل_للقراءة",
+    "قابل_للكتابة",
+    "قابل_للتنفيذ",
+    "اسم",
+    "اسم_بلا_حالة",
+    "مسار_نمط",
+    "مسار_نمط_بلا_حالة",
+    "تعبير",
+];
+
+/// عدد غير سالب لخيار (خطأ عربي للسالب).
+fn b5_opt_count(
+    display: &str,
+    pairs: &[(String, Value)],
+    key: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<i64>> {
+    match b5_opt_int(display, pairs, key, line, col)? {
+        Some(n) if n < 0 => Err(RioError::runtime(
+            format!("الدالة {} الخيار {} لا يقبل عددا سالبا", display, key),
+            line,
+            col,
+        )),
+        other => Ok(other),
+    }
+}
+
+/// أذونات: نص ثماني («644») أو عدد.
+fn b5_parse_perms(display: &str, v: &Value, line: usize, col: usize) -> RioResult<u32> {
+    match v {
+        Value::Str(s) => {
+            let t = s.trim();
+            if t.is_empty() {
+                return Err(RioError::runtime(
+                    format!("الدالة {} أذونات فارغة", display),
+                    line,
+                    col,
+                ));
+            }
+            u32::from_str_radix(t, 8).map_err(|_| {
+                RioError::runtime(
+                    format!("الدالة {} أذونات غير صالحة: {}", display, s),
+                    line,
+                    col,
+                )
+            })
+        }
+        Value::Number(_) => {
+            let n = need_integer(display, v, line, col)?;
+            if !(0..=0o7777).contains(&n) {
+                return Err(RioError::runtime(
+                    format!("الدالة {} أذونات خارج النطاق: {}", display, n),
+                    line,
+                    col,
+                ));
+            }
+            Ok(n as u32)
+        }
+        other => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع أذونات نصا ثمانيا أو عددا لكن أعطيت {}",
+                display,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// هل المجلد فارغ (بلا مدخلات)؟
+fn b5_dir_empty(path: &std::path::Path) -> bool {
+    match std::fs::read_dir(path) {
+        Ok(mut it) => it.next().is_none(),
+        Err(_) => false,
+    }
+}
+
+/// مطابقة نمط واحد (تعبيـر أو كروي) في نص هدف.
+fn b5_pat_hit(
+    pat: &str,
+    target: &str,
+    name: &str,
+    glob: bool,
+    fold: bool,
+    prog: &Option<RxProg>,
+    _display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<bool> {
+    if pat.is_empty() {
+        return Ok(true);
+    }
+    if glob {
+        Ok(b5_glob(pat, name, fold, line, col) || b5_glob(pat, target, fold, line, col))
+    } else {
+        let chars = rx_check_text(target).map_err(|e| RioError::runtime(e, line, col))?;
+        match prog {
+            Some(p) => Ok(rx_find_from(p, &chars, 0)
+                .map_err(|e| RioError::runtime(e, line, col))?
+                .is_some()),
+            None => Ok(false),
+        }
+    }
+}
+
+/// تجميع rx واحد (لنمط رئيسي أو قائمة)؛ والفارغ ← لاشيء.
+fn b5_compile_rx(
+    pat: &str,
+    fold: bool,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<RxProg>> {
+    if pat.is_empty() {
+        return Ok(None);
+    }
+    rx_compile_fold(pat, false, fold).map(Some).map_err(|e| {
+        RioError::runtime(format!("الدالة {} نمط غير صالح: {}", display, e), line, col)
+    })
+}
+
+fn b5_parse_search(
+    display: &str,
+    pairs: &[(String, Value)],
+    pattern: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<B5Search> {
+    b5_no_unknown(display, pairs, B5_SEARCH_KEYS, line, col)?;
+    let has_upper = pattern.chars().any(|c| c.is_uppercase());
+    let smart = b5_opt_bool(display, pairs, "حالة_ذكية", true, line, col)?;
+    let sensitive = b5_opt_bool(display, pairs, "حساس_لحالة", false, line, col)?;
+    let fold_in = b5_opt_bool(display, pairs, "بلا_حالة", false, line, col)?;
+    let fold = if fold_in {
+        true
+    } else if sensitive {
+        false
+    } else if smart {
+        !has_upper
+    } else {
+        false
+    };
+    let no_ignore = b5_opt_bool(display, pairs, "بلا_تجاهل", false, line, col)?;
+    let unrestricted = b5_opt_bool(display, pairs, "بلا_قيود", false, line, col)?;
+    let respect_ignore = if no_ignore || unrestricted {
+        false
+    } else {
+        b5_opt_bool(display, pairs, "احترم_التجاهل", true, line, col)?
+    };
+    let include_hidden = if unrestricted {
+        true
+    } else {
+        b5_opt_bool(display, pairs, "أدرج_المخفية", false, line, col)?
+    };
+    let kind = b5_opt_str(display, pairs, "نوع", line, col)?;
+    if let Some(k) = &kind {
+        if !matches!(
+            k.as_str(),
+            "ملف" | "مجلد" | "رابط" | "قابل_للتنفيذ" | "الكل"
+        ) {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} نوع غير معروف: {} (ملف/مجلد/رابط/قابل_للتنفيذ/الكل)",
+                    display, k
+                ),
+                line,
+                col,
+            ));
+        }
+    }
+    let exts = b5_opt_strs(display, pairs, "امتداد", line, col)?
+        .into_iter()
+        .map(|e| e.trim_start_matches('.').to_lowercase())
+        .collect();
+    let mut groups: Vec<(Vec<String>, Vec<String>)> = Vec::new();
+    if let Some(v) = dict_get(pairs, "تجميع") {
+        match v {
+            Value::List(items) => {
+                for it in items {
+                    let gp = need_dict(display, it, line, col)?;
+                    let a = b5_opt_strs(display, gp, "و", line, col)?;
+                    let o = b5_opt_strs(display, gp, "أو", line, col)?;
+                    for (k, _) in gp {
+                        if k != "و" && k != "أو" {
+                            return Err(RioError::runtime(
+                                format!("الدالة {} تجميع يقبل و/أو فقط لا {}", display, k),
+                                line,
+                                col,
+                            ));
+                        }
+                    }
+                    groups.push((a, o));
+                }
+            }
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع قائمة قواميس للخيار تجميع لكن أعطيت {}",
+                        display,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        }
+    }
+    let exec_each = match dict_get(pairs, "نفذ_لكل") {
+        Some(v) => {
+            if !b5_is_callable(v) {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع دالة للخيار نفذ_لكل لكن أعطيت {}",
+                        display,
+                        v.type_name()
+                    ),
+                    line,
+                    col,
+                ));
+            }
+            Some(v.clone())
+        }
+        None => None,
+    };
+    let exec_batch = match dict_get(pairs, "نفذ_دفعة") {
+        Some(v) => {
+            if !b5_is_callable(v) {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع دالة للخيار نفذ_دفعة لكن أعطيت {}",
+                        display,
+                        v.type_name()
+                    ),
+                    line,
+                    col,
+                ));
+            }
+            Some(v.clone())
+        }
+        None => None,
+    };
+    let ask = match dict_get(pairs, "اسأل") {
+        Some(v) => {
+            if !b5_is_callable(v) {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع دالة للخيار اسأل لكن أعطيت {}",
+                        display,
+                        v.type_name()
+                    ),
+                    line,
+                    col,
+                ));
+            }
+            Some(v.clone())
+        }
+        None => None,
+    };
+    if exec_each.is_some() && exec_batch.is_some() {
+        return Err(RioError::runtime(
+            format!("الدالة {} لا يجمع نفذ_لكل ونفذ_دفعة", display),
+            line,
+            col,
+        ));
+    }
+    if ask.is_some() && exec_each.is_none() && exec_batch.is_none() {
+        return Err(RioError::runtime(
+            format!("الدالة {} اسأل يحتاج نفذ_لكل أو نفذ_دفعة", display),
+            line,
+            col,
+        ));
+    }
+    let details = b5_opt_bool(display, pairs, "تفاصيل", false, line, col)?;
+    let write_to = b5_opt_str(display, pairs, "اكتب_في", line, col)?;
+    if write_to.is_some() && details {
+        return Err(RioError::runtime(
+            format!("الدالة {} اكتب_في لا يعمل مع تفاصيل", display),
+            line,
+            col,
+        ));
+    }
+    if write_to.is_some() && (exec_each.is_some() || exec_batch.is_some()) {
+        return Err(RioError::runtime(
+            format!("الدالة {} اكتب_في لا يجمع التنفيذ", display),
+            line,
+            col,
+        ));
+    }
+    let perms = match dict_get(pairs, "أذونات") {
+        Some(v) => Some(b5_parse_perms(display, v, line, col)?),
+        None => None,
+    };
+    let min_depth = b5_opt_count(display, pairs, "عمق_أدنى", line, col)?.unwrap_or(1);
+    let max_depth = b5_opt_count(display, pairs, "عمق_أقصى", line, col)?;
+    let exact_depth = b5_opt_count(display, pairs, "عمق_دقيق", line, col)?;
+    Ok(B5Search {
+        glob: b5_opt_bool(display, pairs, "نمط_قشرة", false, line, col)?,
+        fold,
+        include_hidden,
+        respect_ignore,
+        kind,
+        exts,
+        exclude: b5_opt_strs(display, pairs, "استثن", line, col)?,
+        ignore_file: b5_opt_str(display, pairs, "ملف_تجاهل", line, col)?,
+        min_depth,
+        max_depth,
+        exact_depth,
+        max_results: b5_opt_count(display, pairs, "حد_أقصى", line, col)?,
+        size_min: b5_opt_count(display, pairs, "حجم_أدنى", line, col)?.map(|n| n as u64),
+        size_max: b5_opt_count(display, pairs, "حجم_أقصى", line, col)?.map(|n| n as u64),
+        size_eq: b5_opt_count(display, pairs, "حجم", line, col)?.map(|n| n as u64),
+        newer_ref: b5_opt_str(display, pairs, "أحدث_من_مرجع", line, col)?,
+        older_ref: b5_opt_str(display, pairs, "أقدم_من_مرجع", line, col)?,
+        changed_within: b5_opt_count(display, pairs, "متغير_خلال", line, col)?,
+        changed_before: b5_opt_count(display, pairs, "متغير_قبل", line, col)?,
+        changed_after: b5_opt_count(display, pairs, "متغير_بعد_وقت", line, col)?,
+        changed_before_t: b5_opt_count(display, pairs, "متغير_قبل_وقت", line, col)?,
+        accessed_within: b5_opt_count(display, pairs, "وصل_خلال", line, col)?,
+        empty: b5_opt_bool(display, pairs, "فارغ", false, line, col)?,
+        perms,
+        follow: b5_opt_bool(display, pairs, "اتبع_الروابط", false, line, col)?,
+        prune: b5_opt_strs(display, pairs, "اقطع_فرع", line, col)?,
+        and_pats: b5_opt_strs(display, pairs, "و", line, col)?,
+        or_pats: b5_opt_strs(display, pairs, "أو", line, col)?,
+        not_pats: b5_opt_strs(display, pairs, "ليس", line, col)?,
+        groups,
+        format: b5_opt_str(display, pairs, "نسق", line, col)?,
+        write_to,
+        details,
+        long: b5_opt_bool(display, pairs, "طويل", false, line, col)?,
+        abs_path: b5_opt_bool(display, pairs, "مسار_مطلق", false, line, col)?,
+        full_path: b5_opt_bool(display, pairs, "طابق_المسار", false, line, col)?,
+        show_errors: b5_opt_bool(display, pairs, "أظهر_الأخطاء", false, line, col)?,
+        color: b5_opt_bool(display, pairs, "لوّن", false, line, col)?,
+        quiet: b5_opt_bool(display, pairs, "صامت", false, line, col)?,
+        exec_each,
+        exec_batch,
+        ask,
+        first_only: b5_opt_bool(display, pairs, "أول_فقط", false, line, col)?,
+        in_content: b5_opt_str(display, pairs, "في_المحتوى", line, col)?,
+        readable: b5_opt_bool(display, pairs, "قابل_للقراءة", false, line, col)?,
+        writable: b5_opt_bool(display, pairs, "قابل_للكتابة", false, line, col)?,
+        executable: b5_opt_bool(display, pairs, "قابل_للتنفيذ", false, line, col)?,
+        name_glob: b5_opt_str(display, pairs, "اسم", line, col)?,
+        name_fold: b5_opt_bool(display, pairs, "اسم_بلا_حالة", false, line, col)?,
+        path_glob: b5_opt_str(display, pairs, "مسار_نمط", line, col)?,
+        path_glob_fold: b5_opt_bool(display, pairs, "مسار_نمط_بلا_حالة", false, line, col)?,
+        path_regex: b5_opt_str(display, pairs, "تعبير", line, col)?,
+    })
+}
+
+/// بحث_ملفات.ابحث(نمط، جذر؟، خيارات؟) — §§1–2.
+fn b5_search_files(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "بحث_ملفات.ابحث";
+    if args.is_empty() || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا أو ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let pattern = need_string(DISPLAY, &args[0], line, col)?;
+    let mut roots: Vec<String> = Vec::new();
+    match args.get(1) {
+        None | Some(Value::Nil) => roots.push(".".to_string()),
+        Some(Value::Str(s)) => roots.push(s.clone()),
+        Some(Value::List(items)) => {
+            for it in items {
+                roots.push(need_string(DISPLAY, it, line, col)?);
+            }
+            if roots.is_empty() {
+                return Err(RioError::runtime(
+                    format!("الدالة {} قائمة الجذور فارغة", DISPLAY),
+                    line,
+                    col,
+                ));
+            }
+        }
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع نصا أو قائمة نصوص للجذر لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    }
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    let o = b5_parse_search(DISPLAY, pairs, &pattern, line, col)?;
+    if o.follow && b5_opt_bool(DISPLAY, pairs, "بلا_اتباع", false, line, col)? {
+        return Err(RioError::runtime(
+            format!("الدالة {} لا يجمع اتبع_الروابط وبلا_اتباع", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    // تحقق الأنماط أولا — قبل أي مشي.
+    let main_rx = if o.glob {
+        None
+    } else {
+        b5_compile_rx(&pattern, o.fold, DISPLAY, line, col)?
+    };
+    let mut and_rx: Vec<Option<RxProg>> = Vec::new();
+    for p in &o.and_pats {
+        and_rx.push(if o.glob {
+            None
+        } else {
+            b5_compile_rx(p, o.fold, DISPLAY, line, col)?
+        });
+    }
+    let mut or_rx: Vec<Option<RxProg>> = Vec::new();
+    for p in &o.or_pats {
+        or_rx.push(if o.glob {
+            None
+        } else {
+            b5_compile_rx(p, o.fold, DISPLAY, line, col)?
+        });
+    }
+    let mut not_rx: Vec<Option<RxProg>> = Vec::new();
+    for p in &o.not_pats {
+        not_rx.push(if o.glob {
+            None
+        } else {
+            b5_compile_rx(p, o.fold, DISPLAY, line, col)?
+        });
+    }
+    let mut group_rx: Vec<(Vec<Option<RxProg>>, Vec<Option<RxProg>>)> = Vec::new();
+    for (a, b) in &o.groups {
+        let mut av = Vec::new();
+        for p in a {
+            av.push(if o.glob {
+                None
+            } else {
+                b5_compile_rx(p, o.fold, DISPLAY, line, col)?
+            });
+        }
+        let mut bv = Vec::new();
+        for p in b {
+            bv.push(if o.glob {
+                None
+            } else {
+                b5_compile_rx(p, o.fold, DISPLAY, line, col)?
+            });
+        }
+        group_rx.push((av, bv));
+    }
+    let content_rx = match &o.in_content {
+        Some(p) => b5_compile_rx(p, o.fold, DISPLAY, line, col)?,
+        None => None,
+    };
+    if let Some(g) = &o.name_glob {
+        let _ = search_glob_to_regex(g).map_err(|e| RioError::runtime(e, line, col))?;
+    }
+    if let Some(g) = &o.path_glob {
+        let _ = search_glob_to_regex(g).map_err(|e| RioError::runtime(e, line, col))?;
+    }
+    if let Some(p) = &o.path_regex {
+        let _ = b5_compile_rx(p, o.fold, DISPLAY, line, col)?;
+    }
+    // مراجع الأوقات.
+    let newer_t = match &o.newer_ref {
+        Some(r) => {
+            let fs = search_resolve_path(ctx, r);
+            match b5_stat(&fs) {
+                Some(m) => Some(m.mtime),
+                None => {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} الملف المرجعي غير موجود: {}", DISPLAY, r),
+                        line,
+                        col,
+                    ))
+                }
+            }
+        }
+        None => None,
+    };
+    let older_t = match &o.older_ref {
+        Some(r) => {
+            let fs = search_resolve_path(ctx, r);
+            match b5_stat(&fs) {
+                Some(m) => Some(m.mtime),
+                None => {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} الملف المرجعي غير موجود: {}", DISPLAY, r),
+                        line,
+                        col,
+                    ))
+                }
+            }
+        }
+        None => None,
+    };
+    let now = b5_now();
+    // المشي.
+    let mut w = B5Walk::new();
+    w.include_hidden = o.include_hidden;
+    w.respect_ignore = o.respect_ignore;
+    w.follow_links = o.follow;
+    w.min_depth = o.min_depth;
+    w.max_depth = o.max_depth.unwrap_or(-1);
+    w.exact_depth = o.exact_depth;
+    w.prune = o.prune.clone();
+    w.show_errors = o.show_errors;
+    if let Some(f) = &o.ignore_file {
+        w.gitignore_extra = b5_load_patterns(ctx, DISPLAY, f, line, col)?;
+    }
+    let mut entries: Vec<B5Entry> = Vec::new();
+    let mut missing_root: Option<String> = None;
+    for r in &roots {
+        match b5_walk_root(ctx, r, &mut w, &mut entries, line, col) {
+            Ok(()) => {}
+            Err(e) => {
+                if o.quiet {
+                    missing_root = Some(r.clone());
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+    let _ = missing_root;
+    if o.show_errors {
+        for e in &w.errors {
+            eprintln!("{}", e);
+        }
+    }
+    // الترشيح.
+    let mut kept: Vec<&B5Entry> = Vec::new();
+    for e in &entries {
+        let target = if o.full_path {
+            let abs = search_resolve_path(ctx, &e.display);
+            abs.to_string_lossy().replace('\\', "/")
+        } else {
+            e.rel.clone()
+        };
+        let hit_main = if o.glob || main_rx.is_some() || pattern.is_empty() {
+            b5_pat_hit(&pattern, &target, &e.name, o.glob, o.fold, &main_rx, DISPLAY, line, col)?
+        } else {
+            true
+        };
+        if !hit_main {
+            continue;
+        }
+        let mut ok = true;
+        for (i, p) in o.and_pats.iter().enumerate() {
+            if !b5_pat_hit(p, &target, &e.name, o.glob, o.fold, &and_rx[i], DISPLAY, line, col)? {
+                ok = false;
+                break;
+            }
+        }
+        if !ok {
+            continue;
+        }
+        if !o.or_pats.is_empty() {
+            let mut any = false;
+            for (i, p) in o.or_pats.iter().enumerate() {
+                if b5_pat_hit(p, &target, &e.name, o.glob, o.fold, &or_rx[i], DISPLAY, line, col)?
+                {
+                    any = true;
+                    break;
+                }
+            }
+            if !any {
+                continue;
+            }
+        }
+        for (i, p) in o.not_pats.iter().enumerate() {
+            if b5_pat_hit(p, &target, &e.name, o.glob, o.fold, &not_rx[i], DISPLAY, line, col)? {
+                ok = false;
+                break;
+            }
+        }
+        if !ok {
+            continue;
+        }
+        if !o.groups.is_empty() {
+            let mut any_group = false;
+            for (gi, (a, b)) in o.groups.iter().enumerate() {
+                let (arx, brx) = &group_rx[gi];
+                let mut gok = true;
+                for (i, p) in a.iter().enumerate() {
+                    if !b5_pat_hit(p, &target, &e.name, o.glob, o.fold, &arx[i], DISPLAY, line, col)?
+                    {
+                        gok = false;
+                        break;
+                    }
+                }
+                if gok && !b.is_empty() {
+                    let mut bany = false;
+                    for (i, p) in b.iter().enumerate() {
+                        if b5_pat_hit(p, &target, &e.name, o.glob, o.fold, &brx[i], DISPLAY, line, col)?
+                        {
+                            bany = true;
+                            break;
+                        }
+                    }
+                    gok = bany;
+                }
+                if gok {
+                    any_group = true;
+                    break;
+                }
+            }
+            if !any_group {
+                continue;
+            }
+        }
+        // اسم ومسار_نمط وتعبير (find).
+        if let Some(g) = &o.name_glob {
+            let f = o.name_fold || o.fold;
+            if !b5_glob(g, &e.name, f, line, col) {
+                continue;
+            }
+        }
+        if let Some(g) = &o.path_glob {
+            let f = o.path_glob_fold || o.fold;
+            if !b5_glob(g, &target, f, line, col) && !b5_glob(g, &e.name, f, line, col) {
+                continue;
+            }
+        }
+        if let Some(p) = &o.path_regex {
+            if !b5_rx_search(p, &target, o.fold, DISPLAY, line, col)? {
+                continue;
+            }
+        }
+        // النوع.
+        if let Some(k) = &o.kind {
+            let good = match k.as_str() {
+                "ملف" => e.eff.kind == B5Kind::File,
+                "مجلد" => e.eff.kind == B5Kind::Dir,
+                "رابط" => e.meta.is_link,
+                "قابل_للتنفيذ" => {
+                    e.eff.kind == B5Kind::File && b5_is_exec(&e.fs, &e.eff)
+                }
+                _ => true,
+            };
+            if !good {
+                continue;
+            }
+        }
+        // الامتداد.
+        if !o.exts.is_empty() {
+            let ext = std::path::Path::new(&e.name)
+                .extension()
+                .map(|x| x.to_string_lossy().to_lowercase());
+            match ext {
+                Some(x) if o.exts.iter().any(|w| *w == x) => {}
+                _ => continue,
+            }
+        }
+        // الاستثناء.
+        if !o.exclude.is_empty() && b5_glob_any(&o.exclude, &e.name, &e.rel, o.fold, line, col) {
+            continue;
+        }
+        // الحجم.
+        if let Some(n) = o.size_min {
+            if e.eff.size < n {
+                continue;
+            }
+        }
+        if let Some(n) = o.size_max {
+            if e.eff.size > n {
+                continue;
+            }
+        }
+        if let Some(n) = o.size_eq {
+            if e.eff.size != n {
+                continue;
+            }
+        }
+        // الأوقات.
+        if let Some(t) = newer_t {
+            if e.eff.mtime <= t {
+                continue;
+            }
+        }
+        if let Some(t) = older_t {
+            if e.eff.mtime >= t {
+                continue;
+            }
+        }
+        if let Some(s) = o.changed_within {
+            if e.eff.mtime < now - s {
+                continue;
+            }
+        }
+        if let Some(s) = o.changed_before {
+            if e.eff.mtime >= now - s {
+                continue;
+            }
+        }
+        if let Some(t) = o.changed_after {
+            if e.eff.mtime <= t {
+                continue;
+            }
+        }
+        if let Some(t) = o.changed_before_t {
+            if e.eff.mtime >= t {
+                continue;
+            }
+        }
+        if let Some(s) = o.accessed_within {
+            if e.eff.atime < now - s {
+                continue;
+            }
+        }
+        // فارغ.
+        if o.empty {
+            let emp = match e.eff.kind {
+                B5Kind::File => e.eff.size == 0,
+                B5Kind::Dir => b5_dir_empty(&e.fs),
+                _ => false,
+            };
+            if !emp {
+                continue;
+            }
+        }
+        // أذونات.
+        if let Some(p) = o.perms {
+            if e.eff.mode & 0o7777 != p {
+                continue;
+            }
+        }
+        // قابلية القراءة والكتابة والتنفيذ.
+        if o.readable && e.eff.mode & 0o444 == 0 {
+            continue;
+        }
+        if o.writable && e.eff.mode & 0o222 == 0 {
+            continue;
+        }
+        if o.executable {
+            let ex = if e.eff.kind == B5Kind::Dir {
+                #[cfg(unix)]
+                {
+                    e.eff.mode & 0o111 != 0
+                }
+                #[cfg(not(unix))]
+                {
+                    true
+                }
+            } else {
+                b5_is_exec(&e.fs, &e.eff)
+            };
+            if !ex {
+                continue;
+            }
+        }
+        // في المحتوى (ملفات نصية فقط).
+        if let Some(p) = &o.in_content {
+            if e.eff.kind != B5Kind::File {
+                continue;
+            }
+            let bytes = match std::fs::read(&e.fs) {
+                Ok(b) if b.len() <= 1024 * 1024 => b,
+                _ => continue,
+            };
+            if bytes.contains(&0) {
+                continue;
+            }
+            let text = match String::from_utf8(bytes) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let hit = match &content_rx {
+                Some(prog) => {
+                    let chars = match rx_check_text(&text) {
+                        Ok(c) => c,
+                        Err(_) => continue,
+                    };
+                    rx_find_from(prog, &chars, 0)
+                        .map_err(|x| RioError::runtime(x, line, col))?
+                        .is_some()
+                }
+                None => text.contains(p),
+            };
+            if !hit {
+                continue;
+            }
+        }
+        kept.push(e);
+    }
+    kept.sort_by(|a, b| a.display.cmp(&b.display));
+    if o.first_only {
+        kept.truncate(1);
+    }
+    if let Some(n) = o.max_results {
+        kept.truncate(n.max(0) as usize);
+    }
+    // العرض.
+    let mut displays: Vec<String> = Vec::new();
+    for e in &kept {
+        let d = if o.abs_path {
+            search_resolve_path(ctx, &e.display)
+                .to_string_lossy()
+                .replace('\\', "/")
+        } else {
+            e.display.clone()
+        };
+        displays.push(d);
+    }
+    // التنفيذ.
+    if let Some(f) = &o.exec_each {
+        let mut results: Vec<Value> = Vec::new();
+        for (i, _) in kept.iter().enumerate() {
+            let path = displays[i].clone();
+            if let Some(ask) = &o.ask {
+                let (res, produced) = ctx.call_handler(ask, Value::Str(path.clone()), line, col);
+                if !produced.is_empty() {
+                    print!("{}", produced);
+                }
+                match res? {
+                    Value::Bool(true) => {}
+                    Value::Bool(false) => continue,
+                    other => {
+                        return Err(RioError::typ(
+                            format!(
+                                "الدالة {} تتوقع أن يرجع اسأل منطقيا لكن أعطيت {}",
+                                DISPLAY,
+                                other.type_name()
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                }
+            }
+            let (res, produced) = ctx.call_handler(f, Value::Str(path), line, col);
+            if !produced.is_empty() {
+                print!("{}", produced);
+            }
+            results.push(res?);
+        }
+        return Ok(Value::List(results));
+    }
+    if let Some(f) = &o.exec_batch {
+        let mut paths: Vec<Value> = Vec::new();
+        for d in &displays {
+            if let Some(ask) = &o.ask {
+                let (res, produced) = ctx.call_handler(ask, Value::Str(d.clone()), line, col);
+                if !produced.is_empty() {
+                    print!("{}", produced);
+                }
+                match res? {
+                    Value::Bool(true) => {}
+                    Value::Bool(false) => continue,
+                    other => {
+                        return Err(RioError::typ(
+                            format!(
+                                "الدالة {} تتوقع أن يرجع اسأل منطقيا لكن أعطيت {}",
+                                DISPLAY,
+                                other.type_name()
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                }
+            }
+            paths.push(Value::Str(d.clone()));
+        }
+        let (res, produced) = ctx.call_handler(f, Value::List(paths), line, col);
+        if !produced.is_empty() {
+            print!("{}", produced);
+        }
+        return res;
+    }
+    // تفاصيل.
+    if o.details {
+        let mut out: Vec<Value> = Vec::new();
+        for (i, e) in kept.iter().enumerate() {
+            let mut pairs: Vec<(String, Value)> = vec![
+                ("مسار".to_string(), Value::Str(displays[i].clone())),
+                ("اسم".to_string(), Value::Str(e.name.clone())),
+                ("نوع".to_string(), Value::Str(e.eff.kind.name().to_string())),
+                ("حجم".to_string(), Value::Number(e.eff.size as f64)),
+                (
+                    "وقت_تعديل".to_string(),
+                    Value::Number(e.eff.mtime as f64),
+                ),
+                (
+                    "وقت_وصول".to_string(),
+                    Value::Number(e.eff.atime as f64),
+                ),
+                (
+                    "أذونات".to_string(),
+                    Value::Str(format!("{:o}", e.eff.mode & 0o7777)),
+                ),
+            ];
+            if e.meta.is_link {
+                pairs.push((
+                    "رابط".to_string(),
+                    Value::Str(e.meta.target.clone().unwrap_or_default()),
+                ));
+            }
+            out.push(Value::Dict(pairs));
+        }
+        return Ok(Value::List(out));
+    }
+    // سطور نصية (طويل أو نسق أو مسارات).
+    let mut lines: Vec<String> = Vec::new();
+    for (i, e) in kept.iter().enumerate() {
+        if o.long {
+            lines.push(b5_long_line(
+                e,
+                "%Y-%m-%d",
+                "تعديل",
+                false,
+                true,
+                true,
+                true,
+                o.color,
+                DISPLAY,
+                line,
+                col,
+            )?);
+        } else if let Some(f) = &o.format {
+            lines.push(b5_apply_format(e, f, DISPLAY, line, col)?);
+        } else if o.color {
+            lines.push(b5_colorize(
+                &displays[i],
+                e.eff.kind,
+                b5_is_exec(&e.fs, &e.eff),
+            ));
+        } else {
+            lines.push(displays[i].clone());
+        }
+    }
+    if let Some(path) = &o.write_to {
+        let fs = search_resolve_path(ctx, path);
+        let text = if lines.is_empty() {
+            String::new()
+        } else {
+            lines.join("\n") + "\n"
+        };
+        std::fs::write(&fs, text).map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر الكتابة في {}", DISPLAY, path), line, col)
+        })?;
+        return Ok(Value::Number(lines.len() as f64));
+    }
+    Ok(Value::List(
+        lines.into_iter().map(Value::Str).collect(),
+    ))
+}
+
+fn b5_search_files_entries() -> Vec<(&'static str, Value)> {
+    vec![("ابحث", native("ابحث", b5_search_files))]
+}
+
+/// --- قاعدة_أسماء (locate) ---
+const B5_DB_DEFAULT: &str = "قاعدة_أسماء.قاعدة";
+
+/// اقرأ قاعدة أسماء (سطر لكل مسار)؛ والغائبة خطأ عربي.
+fn b5_db_read(
+    ctx: &mut dyn HandlerCaller,
+    display: &str,
+    path: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<String>> {
+    let fs = search_resolve_path(ctx, path);
+    let text = std::fs::read_to_string(&fs).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} قاعدة الأسماء غير موجودة: {}", display, path),
+            line,
+            col,
+        )
+    })?;
+    Ok(text
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect())
+}
+
+/// قاعدة_أسماء.ابن(جذور؟، مسار_قاعدة؟، خيارات؟).
+fn b5_namebase_build(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "قاعدة_أسماء.ابن";
+    if args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع ثلاثة معاملات على الأكثر لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let mut roots: Vec<String> = vec![".".to_string()];
+    match args.first() {
+        None | Some(Value::Nil) => {}
+        Some(Value::Str(s)) => roots = vec![s.clone()],
+        Some(Value::List(items)) => {
+            roots = Vec::new();
+            for it in items {
+                roots.push(need_string(DISPLAY, it, line, col)?);
+            }
+            if roots.is_empty() {
+                return Err(RioError::runtime(
+                    format!("الدالة {} قائمة الجذور فارغة", DISPLAY),
+                    line,
+                    col,
+                ));
+            }
+        }
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع نصا أو قائمة نصوص للجذور لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    }
+    let db_path = match args.get(1) {
+        None | Some(Value::Nil) => B5_DB_DEFAULT.to_string(),
+        Some(Value::Str(s)) => s.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع نصا لمسار القاعدة لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["استثن", "مفصل"], line, col)?;
+    let exclude = b5_opt_strs(DISPLAY, pairs, "استثن", line, col)?;
+    let verbose = b5_opt_bool(DISPLAY, pairs, "مفصل", false, line, col)?;
+    let mut w = B5Walk::new();
+    w.include_hidden = true;
+    w.respect_ignore = false;
+    w.follow_links = false;
+    let db_fs = search_resolve_path(ctx, &db_path);
+    let db_canon = std::fs::canonicalize(&db_fs).unwrap_or(db_fs.clone());
+    let mut all: Vec<String> = Vec::new();
+    for r in &roots {
+        let mut entries: Vec<B5Entry> = Vec::new();
+        b5_walk_root(ctx, r, &mut w, &mut entries, line, col)?;
+        for e in entries {
+            if std::fs::canonicalize(&e.fs).unwrap_or_else(|_| e.fs.clone()) == db_canon {
+                continue;
+            }
+            if !exclude.is_empty() && b5_glob_any(&exclude, &e.name, &e.rel, false, line, col) {
+                continue;
+            }
+            all.push(e.display);
+        }
+    }
+    all.sort();
+    all.dedup();
+    let text = if all.is_empty() {
+        String::new()
+    } else {
+        all.join("\n") + "\n"
+    };
+    std::fs::write(&db_fs, &text).map_err(|_| {
+        RioError::runtime(format!("الدالة {} تعذر كتابة القاعدة {}", DISPLAY, db_path), line, col)
+    })?;
+    if verbose {
+        Ok(Value::Dict(vec![
+            ("عدد".to_string(), Value::Number(all.len() as f64)),
+            ("حجم".to_string(), Value::Number(text.len() as f64)),
+        ]))
+    } else {
+        Ok(Value::Number(all.len() as f64))
+    }
+}
+
+/// قاعدة_أسماء.ابحث(نمط، مسار_قاعدة؟، خيارات؟).
+fn b5_namebase_search(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "قاعدة_أسماء.ابحث";
+    if args.is_empty() || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا أو ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let pattern = need_string(DISPLAY, &args[0], line, col)?;
+    let db_path = match args.get(1) {
+        None | Some(Value::Nil) => B5_DB_DEFAULT.to_string(),
+        Some(Value::Str(s)) => s.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع نصا لمسار القاعدة لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    b5_no_unknown(
+        DISPLAY,
+        pairs,
+        &["بالمسار", "تعبير", "بلا_حالة", "عد", "حد", "موجود_فقط"],
+        line,
+        col,
+    )?;
+    let by_path = b5_opt_bool(DISPLAY, pairs, "بالمسار", false, line, col)?;
+    let is_regex = b5_opt_bool(DISPLAY, pairs, "تعبير", false, line, col)?;
+    let fold = b5_opt_bool(DISPLAY, pairs, "بلا_حالة", false, line, col)?;
+    let count_only = b5_opt_bool(DISPLAY, pairs, "عد", false, line, col)?;
+    let limit = b5_opt_count(DISPLAY, pairs, "حد", line, col)?;
+    let existing_only = b5_opt_bool(DISPLAY, pairs, "موجود_فقط", false, line, col)?;
+    let entries = b5_db_read(ctx, DISPLAY, &db_path, line, col)?;
+    let rx = if is_regex {
+        b5_compile_rx(&pattern, fold, DISPLAY, line, col)?
+    } else {
+        None
+    };
+    let glob_pat = if !is_regex && !pattern.is_empty() {
+        let has_magic = pattern.contains('*') || pattern.contains('?') || pattern.contains('[');
+        if has_magic {
+            pattern.clone()
+        } else {
+            format!("*{}*", pattern)
+        }
+    } else {
+        String::new()
+    };
+    let mut out: Vec<String> = Vec::new();
+    for p in &entries {
+        let name = p.rsplit('/').next().unwrap_or(p.as_str());
+        let hit = if pattern.is_empty() {
+            true
+        } else if is_regex {
+            let target = p.as_str();
+            match &rx {
+                Some(prog) => {
+                    let chars = rx_check_text(target).map_err(|e| RioError::runtime(e, line, col))?;
+                    rx_find_from(prog, &chars, 0)
+                        .map_err(|e| RioError::runtime(e, line, col))?
+                        .is_some()
+                }
+                None => false,
+            }
+        } else if by_path {
+            b5_glob(&glob_pat, p, fold, line, col)
+        } else {
+            b5_glob(&glob_pat, name, fold, line, col)
+        };
+        if !hit {
+            continue;
+        }
+        if existing_only {
+            let fs = search_resolve_path(ctx, p);
+            if std::fs::symlink_metadata(&fs).is_err() {
+                continue;
+            }
+        }
+        out.push(p.clone());
+        if let Some(n) = limit {
+            if out.len() >= n.max(0) as usize {
+                break;
+            }
+        }
+    }
+    if count_only {
+        return Ok(Value::Number(out.len() as f64));
+    }
+    Ok(Value::List(out.into_iter().map(Value::Str).collect()))
+}
+
+/// قاعدة_أسماء.إحصاءات(مسار_قاعدة؟).
+fn b5_namebase_stats(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "قاعدة_أسماء.إحصاءات";
+    if args.len() > 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا واحدا على الأكثر لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let db_path = match args.first() {
+        None | Some(Value::Nil) => B5_DB_DEFAULT.to_string(),
+        Some(Value::Str(s)) => s.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع نصا لمسار القاعدة لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let entries = b5_db_read(ctx, DISPLAY, &db_path, line, col)?;
+    let fs = search_resolve_path(ctx, &db_path);
+    let size = std::fs::metadata(&fs).map(|m| m.len()).unwrap_or(0);
+    let first = entries.first().cloned().unwrap_or_default();
+    let last = entries.last().cloned().unwrap_or_default();
+    Ok(Value::Dict(vec![
+        ("عدد".to_string(), Value::Number(entries.len() as f64)),
+        ("حجم".to_string(), Value::Number(size as f64)),
+        ("أول".to_string(), Value::Str(first)),
+        ("آخر".to_string(), Value::Str(last)),
+    ]))
+}
+
+/// قاعدة_أسماء.اسرد(مسار_قاعدة؟، خيارات؟).
+fn b5_namebase_list(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "قاعدة_أسماء.اسرد";
+    if args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملين على الأكثر لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let db_path = match args.first() {
+        None | Some(Value::Nil) => B5_DB_DEFAULT.to_string(),
+        Some(Value::Str(s)) => s.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع نصا لمسار القاعدة لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["حد"], line, col)?;
+    let limit = b5_opt_count(DISPLAY, pairs, "حد", line, col)?;
+    let mut entries = b5_db_read(ctx, DISPLAY, &db_path, line, col)?;
+    if let Some(n) = limit {
+        entries.truncate(n.max(0) as usize);
+    }
+    Ok(Value::List(entries.into_iter().map(Value::Str).collect()))
+}
+
+fn b5_namebase_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("ابن", native("ابن", b5_namebase_build)),
+        ("ابحث", native("ابحث", b5_namebase_search)),
+        ("إحصاءات", native("إحصاءات", b5_namebase_stats)),
+        ("اسرد", native("اسرد", b5_namebase_list)),
+    ]
+}
+
+/// --- مرر_أسماء (xargs) ---
+
+/// اقتباس عنصر يحوي فراغا أو علامة تنصيص.
+fn b5_quote_item(item: &str) -> String {
+    if item.is_empty() {
+        return "\"\"".to_string();
+    }
+    if item
+        .chars()
+        .any(|c| c.is_whitespace() || c == '"' || c == '\\')
+    {
+        format!("\"{}\"", item.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        item.to_string()
+    }
+}
+
+/// خيارات مرر_أسماء المشتركة بين ابن ونفذ.
+struct B5Xargs {
+    from_file: Option<String>,
+    sep: Option<String>,
+    max_args: Option<i64>,
+    max_lines: Option<i64>,
+    ask: Option<Value>,
+    verbose: bool,
+    no_input: bool,
+    placeholder: String,
+}
+
+fn b5_parse_xargs(
+    display: &str,
+    pairs: &[(String, Value)],
+    line: usize,
+    col: usize,
+) -> RioResult<B5Xargs> {
+    b5_no_unknown(
+        display,
+        pairs,
+        &[
+            "من_ملف",
+            "فاصل",
+            "حد_المعاملات",
+            "حد_الأسطر",
+            "اسأل",
+            "مفصل",
+            "بلا_مدخل",
+            "استبدل",
+            "اخرج_عند_الفشل",
+        ],
+        line,
+        col,
+    )?;
+    let ask = match dict_get(pairs, "اسأل") {
+        Some(v) => {
+            if !b5_is_callable(v) {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع دالة للخيار اسأل لكن أعطيت {}",
+                        display,
+                        v.type_name()
+                    ),
+                    line,
+                    col,
+                ));
+            }
+            Some(v.clone())
+        }
+        None => None,
+    };
+    let placeholder = b5_opt_str(display, pairs, "استبدل", line, col)?
+        .unwrap_or_else(|| "{}".to_string());
+    if placeholder.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} العنصر النائب فارغ", display),
+            line,
+            col,
+        ));
+    }
+    Ok(B5Xargs {
+        from_file: b5_opt_str(display, pairs, "من_ملف", line, col)?,
+        sep: b5_opt_str(display, pairs, "فاصل", line, col)?,
+        max_args: b5_opt_count(display, pairs, "حد_المعاملات", line, col)?,
+        max_lines: b5_opt_count(display, pairs, "حد_الأسطر", line, col)?,
+        ask,
+        verbose: b5_opt_bool(display, pairs, "مفصل", false, line, col)?,
+        no_input: b5_opt_bool(display, pairs, "بلا_مدخل", false, line, col)?,
+        placeholder,
+    })
+}
+
+/// جمع عناصر المدخل: نص (يقسم بفاصل أو سطور) أو قائمة.
+fn b5_xargs_items(
+    ctx: &mut dyn HandlerCaller,
+    display: &str,
+    input: &Value,
+    o: &B5Xargs,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<String>> {
+    if let Some(f) = &o.from_file {
+        let pats = b5_load_patterns(ctx, display, f, line, col)?;
+        return Ok(pats);
+    }
+    match input {
+        Value::Nil => Ok(Vec::new()),
+        Value::Str(s) => {
+            let parts: Vec<String> = match &o.sep {
+                Some(sep) => s
+                    .split(sep.as_str())
+                    .map(|x| x.to_string())
+                    .collect(),
+                None => s.lines().map(|x| x.to_string()).collect(),
+            };
+            Ok(parts
+                .into_iter()
+                .filter(|x| !x.trim().is_empty())
+                .collect())
+        }
+        Value::List(items) => {
+            let mut out = Vec::new();
+            for it in items {
+                out.push(need_string(display, it, line, col)?);
+            }
+            Ok(out)
+        }
+        other => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع نصا أو قائمة للمدخل لكن أعطيت {}",
+                display,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// ابنِ سطور الأوامر: (نص الأمر، عناصر التشغيلة).
+fn b5_xargs_build(
+    cmd: &str,
+    items: &[String],
+    o: &B5Xargs,
+) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    if items.is_empty() {
+        if !o.no_input {
+            out.push((cmd.to_string(), Vec::new()));
+        }
+        return out;
+    }
+    let has_place = cmd.contains(o.placeholder.as_str());
+    if has_place {
+        for it in items {
+            out.push((cmd.replace(o.placeholder.as_str(), it), vec![it.clone()]));
+        }
+        return out;
+    }
+    let per_run = match (o.max_args, o.max_lines) {
+        (Some(a), Some(b)) => (a.min(b)).max(1) as usize,
+        (Some(a), None) => a.max(1) as usize,
+        (None, Some(b)) => b.max(1) as usize,
+        (None, None) => items.len(),
+    };
+    for chunk in items.chunks(per_run) {
+        let args = chunk
+            .iter()
+            .map(|x| b5_quote_item(x))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let full = if args.is_empty() {
+            cmd.to_string()
+        } else {
+            format!("{} {}", cmd, args)
+        };
+        out.push((full, chunk.to_vec()));
+    }
+    out
+}
+
+/// مرر_أسماء.ابن(أمر، مدخل، خيارات؟).
+fn b5_xargs_build_fn(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "مرر_أسماء.ابن";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let cmd = need_string(DISPLAY, &args[0], line, col)?;
+    if cmd.trim().is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} الأمر فارغ", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    let o = b5_parse_xargs(DISPLAY, pairs, line, col)?;
+    let items = b5_xargs_items(ctx, DISPLAY, &args[1], &o, line, col)?;
+    let built = b5_xargs_build(&cmd, &items, &o);
+    let mut out: Vec<Value> = Vec::new();
+    for (text, chunk) in built {
+        if let Some(ask) = &o.ask {
+            let (res, produced) = ctx.call_handler(ask, Value::Str(text.clone()), line, col);
+            if !produced.is_empty() {
+                print!("{}", produced);
+            }
+            match res? {
+                Value::Bool(true) => {}
+                Value::Bool(false) => continue,
+                other => {
+                    return Err(RioError::typ(
+                        format!(
+                            "الدالة {} تتوقع أن يرجع اسأل منطقيا لكن أعطيت {}",
+                            DISPLAY,
+                            other.type_name()
+                        ),
+                        line,
+                        col,
+                    ))
+                }
+            }
+        }
+        if o.verbose {
+            out.push(Value::Dict(vec![
+                ("أمر".to_string(), Value::Str(text)),
+                (
+                    "معاملات".to_string(),
+                    Value::List(chunk.into_iter().map(Value::Str).collect()),
+                ),
+            ]));
+        } else {
+            out.push(Value::Str(text));
+        }
+    }
+    Ok(Value::List(out))
+}
+
+/// مرر_أسماء.نفذ(أمر، مدخل، خيارات؟).
+fn b5_xargs_run(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "مرر_أسماء.نفذ";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let cmd = need_string(DISPLAY, &args[0], line, col)?;
+    if cmd.trim().is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} الأمر فارغ", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    let o = b5_parse_xargs(DISPLAY, pairs, line, col)?;
+    let stop_on_fail = b5_opt_bool(DISPLAY, pairs, "اخرج_عند_الفشل", false, line, col)?;
+    let items = b5_xargs_items(ctx, DISPLAY, &args[1], &o, line, col)?;
+    let built = b5_xargs_build(&cmd, &items, &o);
+    let mut codes: Vec<Value> = Vec::new();
+    let mut cmds: Vec<Value> = Vec::new();
+    let mut stopped = false;
+    for (text, _) in built {
+        if let Some(ask) = &o.ask {
+            let (res, produced) = ctx.call_handler(ask, Value::Str(text.clone()), line, col);
+            if !produced.is_empty() {
+                print!("{}", produced);
+            }
+            match res? {
+                Value::Bool(true) => {}
+                Value::Bool(false) => continue,
+                other => {
+                    return Err(RioError::typ(
+                        format!(
+                            "الدالة {} تتوقع أن يرجع اسأل منطقيا لكن أعطيت {}",
+                            DISPLAY,
+                            other.type_name()
+                        ),
+                        line,
+                        col,
+                    ))
+                }
+            }
+        }
+        let id = crate::processes::spawn_process(&text, line, col)?;
+        let code = crate::processes::wait_process(id, line, col)?;
+        codes.push(Value::Number(code as f64));
+        cmds.push(Value::Str(text));
+        if stop_on_fail && code != 0 {
+            stopped = true;
+            break;
+        }
+    }
+    let mut out: Vec<(String, Value)> = vec![
+        (
+            "رموز".to_string(),
+            Value::List(codes),
+        ),
+        ("توقف".to_string(), Value::Bool(stopped)),
+    ];
+    if o.verbose {
+        out.push(("أوامر".to_string(), Value::List(cmds)));
+    }
+    Ok(Value::Dict(out))
+}
+
+fn b5_xargs_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("ابن", native("ابن", b5_xargs_build_fn)),
+        ("نفذ", native("نفذ", b5_xargs_run)),
+    ]
+}
+
+/// --- سرد (eza) ---
+
+/// مجموع أحجام الملفات تحت مجلد تكراريا (بلا اتباع
+/// روابط؛ وبحماية من الحلقات بالمسارات المقننة).
+fn b5_dir_total(fs: &std::path::Path, seen: &mut Vec<std::path::PathBuf>) -> u64 {
+    let canon = std::fs::canonicalize(fs).unwrap_or_else(|_| fs.to_path_buf());
+    if seen.contains(&canon) {
+        return 0;
+    }
+    seen.push(canon);
+    let mut total = 0u64;
+    if let Ok(rd) = std::fs::read_dir(fs) {
+        for en in rd.flatten() {
+            let p = en.path();
+            match std::fs::symlink_metadata(&p) {
+                Ok(m) if m.is_dir() => total += b5_dir_total(&p, seen),
+                Ok(m) if m.is_file() => total += m.len(),
+                _ => {}
+            }
+        }
+    }
+    total
+}
+
+/// لاحقة التصنيف: / مجلد، * تنفيذي، @ رابط، = آخر.
+fn b5_classify(e: &B5Entry) -> &'static str {
+    if e.eff.kind == B5Kind::Dir {
+        "/"
+    } else if e.meta.is_link {
+        "@"
+    } else if b5_is_exec(&e.fs, &e.eff) {
+        "*"
+    } else if e.eff.kind == B5Kind::Other {
+        "="
+    } else {
+        ""
+    }
+}
+
+/// سرد.اسرد(مجلد؟، خيارات؟) → نص.
+fn b5_list(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سرد.اسرد";
+    if args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملين على الأكثر لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let dir = match args.first() {
+        None | Some(Value::Nil) => ".".to_string(),
+        Some(Value::Str(s)) => s.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع نصا للمجلد لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
+    b5_no_unknown(
+        DISPLAY,
+        pairs,
+        &[
+            "طويل",
+            "سطر_واحد",
+            "شجري",
+            "تكرار",
+            "حد_المستوى",
+            "أدرج_المخفية",
+            "مجلدات_فقط",
+            "ملفات_فقط",
+            "رتب_ب",
+            "عكس",
+            "مجلدات_أولا",
+            "مجلدات_أخيرا",
+            "ترويسة",
+            "أذونات",
+            "مالك",
+            "أخف_المالك",
+            "حجم_بشري",
+            "حجم_بايت",
+            "حجم_كلي",
+            "أخف_الحجم",
+            "وقت",
+            "نمط_الوقت",
+            "أخف_الوقت",
+            "تصنيف",
+            "هدف_الرابط",
+            "حل_الروابط",
+            "استثن",
+            "من_قائمة",
+            "مسار_مطلق",
+        ],
+        line,
+        col,
+    )?;
+    let long = b5_opt_bool(DISPLAY, pairs, "طويل", false, line, col)?;
+    let one_line = b5_opt_bool(DISPLAY, pairs, "سطر_واحد", false, line, col)?;
+    let tree = b5_opt_bool(DISPLAY, pairs, "شجري", false, line, col)?;
+    let mut recursive = b5_opt_bool(DISPLAY, pairs, "تكرار", false, line, col)?;
+    if tree {
+        recursive = true;
+    }
+    let max_level = b5_opt_count(DISPLAY, pairs, "حد_المستوى", line, col)?;
+    let include_hidden = b5_opt_bool(DISPLAY, pairs, "أدرج_المخفية", false, line, col)?;
+    let dirs_only = b5_opt_bool(DISPLAY, pairs, "مجلدات_فقط", false, line, col)?;
+    let files_only = b5_opt_bool(DISPLAY, pairs, "ملفات_فقط", false, line, col)?;
+    let sort_by = b5_opt_str(DISPLAY, pairs, "رتب_ب", line, col)?.unwrap_or_else(|| "اسم".to_string());
+    if !matches!(sort_by.as_str(), "اسم" | "حجم" | "وقت" | "امتداد") {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} رتب_ب غير معروف: {} (اسم/حجم/وقت/امتداد)",
+                DISPLAY, sort_by
+            ),
+            line,
+            col,
+        ));
+    }
+    let reverse = b5_opt_bool(DISPLAY, pairs, "عكس", false, line, col)?;
+    let dirs_first = b5_opt_bool(DISPLAY, pairs, "مجلدات_أولا", false, line, col)?;
+    let dirs_last = b5_opt_bool(DISPLAY, pairs, "مجلدات_أخيرا", false, line, col)?;
+    let header = b5_opt_bool(DISPLAY, pairs, "ترويسة", false, line, col)?;
+    let show_perms = b5_opt_bool(DISPLAY, pairs, "أذونات", false, line, col)?;
+    let show_owner_opt = b5_opt_bool(DISPLAY, pairs, "مالك", false, line, col)?;
+    let hide_owner = b5_opt_bool(DISPLAY, pairs, "أخف_المالك", false, line, col)?;
+    let human = b5_opt_bool(DISPLAY, pairs, "حجم_بشري", false, line, col)?;
+    let _bytes_opt = b5_opt_bool(DISPLAY, pairs, "حجم_بايت", false, line, col)?;
+    let dir_total = b5_opt_bool(DISPLAY, pairs, "حجم_كلي", false, line, col)?;
+    let hide_size = b5_opt_bool(DISPLAY, pairs, "أخف_الحجم", false, line, col)?;
+    let time_kind = b5_opt_str(DISPLAY, pairs, "وقت", line, col)?.unwrap_or_else(|| "تعديل".to_string());
+    if !matches!(time_kind.as_str(), "تعديل" | "وصول" | "إنشاء") {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} وقت غير معروف: {} (تعديل/وصول/إنشاء)",
+                DISPLAY, time_kind
+            ),
+            line,
+            col,
+        ));
+    }
+    let time_fmt = b5_opt_str(DISPLAY, pairs, "نمط_الوقت", line, col)?
+        .unwrap_or_else(|| "%Y-%m-%d".to_string());
+    let hide_time = b5_opt_bool(DISPLAY, pairs, "أخف_الوقت", false, line, col)?;
+    let classify = b5_opt_bool(DISPLAY, pairs, "تصنيف", false, line, col)?;
+    let link_target = b5_opt_bool(DISPLAY, pairs, "هدف_الرابط", false, line, col)?;
+    let resolve_links = b5_opt_bool(DISPLAY, pairs, "حل_الروابط", false, line, col)?;
+    let exclude = b5_opt_strs(DISPLAY, pairs, "استثن", line, col)?;
+    let from_list = b5_opt_strs(DISPLAY, pairs, "من_قائمة", line, col)?;
+    let abs_path = b5_opt_bool(DISPLAY, pairs, "مسار_مطلق", false, line, col)?;
+    // جمع المدخلات.
+    let mut entries: Vec<B5Entry> = Vec::new();
+    if !from_list.is_empty() {
+        for p in &from_list {
+            let fs = search_resolve_path(ctx, p);
+            match b5_stat(&fs) {
+                Some(m) => {
+                    let name = fs
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| p.clone());
+                    let eff = if resolve_links && m.is_link {
+                        b5_stat_follow(&fs).unwrap_or_else(|| B5Meta {
+                            kind: m.kind,
+                            size: m.size,
+                            mtime: m.mtime,
+                            atime: m.atime,
+                            btime: m.btime,
+                            mode: m.mode,
+                            uid: m.uid,
+                            gid: m.gid,
+                            nlink: m.nlink,
+                            is_link: m.is_link,
+                            target: m.target.clone(),
+                        })
+                    } else {
+                        B5Meta {
+                            kind: m.kind,
+                            size: m.size,
+                            mtime: m.mtime,
+                            atime: m.atime,
+                            btime: m.btime,
+                            mode: m.mode,
+                            uid: m.uid,
+                            gid: m.gid,
+                            nlink: m.nlink,
+                            is_link: m.is_link,
+                            target: m.target.clone(),
+                        }
+                    };
+                    let disp = if abs_path {
+                        fs.to_string_lossy().replace('\\', "/")
+                    } else {
+                        p.clone()
+                    };
+                    entries.push(B5Entry {
+                        fs,
+                        display: disp,
+                        name,
+                        rel: p.clone(),
+                        depth: 1,
+                        meta: m,
+                        eff,
+                    });
+                }
+                None => {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} المسار غير موجود: {}", DISPLAY, p),
+                        line,
+                        col,
+                    ))
+                }
+            }
+        }
+    } else {
+        let mut w = B5Walk::new();
+        w.include_hidden = include_hidden;
+        w.respect_ignore = false;
+        w.follow_links = resolve_links;
+        w.min_depth = 1;
+        w.max_depth = if recursive {
+            max_level.unwrap_or(-1)
+        } else {
+            1
+        };
+        b5_walk_root(ctx, &dir, &mut w, &mut entries, line, col)?;
+        if abs_path {
+            for e in &mut entries {
+                e.display = search_resolve_path(ctx, &e.display)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+            }
+        }
+    }
+    // ترشيح النوع والاستثناء.
+    let mut kept: Vec<B5Entry> = Vec::new();
+    for e in entries {
+        if dirs_only && e.eff.kind != B5Kind::Dir {
+            continue;
+        }
+        if files_only && e.eff.kind != B5Kind::File {
+            continue;
+        }
+        if !exclude.is_empty() && b5_glob_any(&exclude, &e.name, &e.rel, false, line, col) {
+            continue;
+        }
+        kept.push(e);
+    }
+    // الفرز.
+    let sort_entries = |v: &mut Vec<B5Entry>| {
+        v.sort_by(|a, b| {
+            let ord = match sort_by.as_str() {
+                "حجم" => {
+                    let sa = if dir_total && a.eff.kind == B5Kind::Dir {
+                        b5_dir_total(&a.fs, &mut Vec::new())
+                    } else {
+                        a.eff.size
+                    };
+                    let sb = if dir_total && b.eff.kind == B5Kind::Dir {
+                        b5_dir_total(&b.fs, &mut Vec::new())
+                    } else {
+                        b.eff.size
+                    };
+                    sa.cmp(&sb)
+                }
+                "وقت" => {
+                    let ta = match time_kind.as_str() {
+                        "وصول" => a.eff.atime,
+                        "إنشاء" => a.eff.btime.unwrap_or(a.eff.mtime),
+                        _ => a.eff.mtime,
+                    };
+                    let tb = match time_kind.as_str() {
+                        "وصول" => b.eff.atime,
+                        "إنشاء" => b.eff.btime.unwrap_or(b.eff.mtime),
+                        _ => b.eff.mtime,
+                    };
+                    ta.cmp(&tb)
+                }
+                "امتداد" => {
+                    let ea = std::path::Path::new(&a.name)
+                        .extension()
+                        .map(|x| x.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    let eb = std::path::Path::new(&b.name)
+                        .extension()
+                        .map(|x| x.to_string_lossy().to_lowercase())
+                        .unwrap_or_default();
+                    ea.cmp(&eb).then_with(|| a.name.cmp(&b.name))
+                }
+                _ => a.name.cmp(&b.name),
+            };
+            let ord = if dirs_first {
+                let da = a.eff.kind == B5Kind::Dir;
+                let db = b.eff.kind == B5Kind::Dir;
+                db.cmp(&da).then(ord)
+            } else if dirs_last {
+                let da = a.eff.kind == B5Kind::Dir;
+                let db = b.eff.kind == B5Kind::Dir;
+                da.cmp(&db).then(ord)
+            } else {
+                ord
+            };
+            if reverse {
+                ord.reverse()
+            } else {
+                ord
+            }
+        });
+    };
+    // بناء السطور.
+    let mut lines: Vec<String> = Vec::new();
+    if header {
+        if long {
+            lines.push("أذونات روابط مالك مجموعة حجم وقت اسم".to_string());
+        } else {
+            lines.push("اسم".to_string());
+        }
+    }
+    // سطر واحد لمدخل (بلا شجرة).
+    let line_for = |e: &B5Entry,
+                    out: &mut Vec<String>,
+                    line: usize,
+                    col: usize|
+     -> RioResult<()> {
+        if long {
+            let mut ee = B5Entry {
+                fs: e.fs.clone(),
+                display: e.display.clone(),
+                name: e.name.clone(),
+                rel: e.rel.clone(),
+                depth: e.depth,
+                meta: B5Meta {
+                    kind: e.meta.kind,
+                    size: e.meta.size,
+                    mtime: e.meta.mtime,
+                    atime: e.meta.atime,
+                    btime: e.meta.btime,
+                    mode: e.meta.mode,
+                    uid: e.meta.uid,
+                    gid: e.meta.gid,
+                    nlink: e.meta.nlink,
+                    is_link: e.meta.is_link,
+                    target: e.meta.target.clone(),
+                },
+                eff: B5Meta {
+                    kind: e.eff.kind,
+                    size: if dir_total && e.eff.kind == B5Kind::Dir {
+                        b5_dir_total(&e.fs, &mut Vec::new())
+                    } else {
+                        e.eff.size
+                    },
+                    mtime: e.eff.mtime,
+                    atime: e.eff.atime,
+                    btime: e.eff.btime,
+                    mode: e.eff.mode,
+                    uid: e.eff.uid,
+                    gid: e.eff.gid,
+                    nlink: e.eff.nlink,
+                    is_link: e.eff.is_link,
+                    target: e.eff.target.clone(),
+                },
+            };
+            if link_target {
+                // b5_long_line يلحق الهدف أصلا.
+            }
+            let _ = &mut ee;
+            out.push(b5_long_line(
+                &ee,
+                &time_fmt,
+                &time_kind,
+                human,
+                !hide_owner,
+                !hide_size,
+                !hide_time,
+                false,
+                DISPLAY,
+                line,
+                col,
+            )?);
+            return Ok(());
+        }
+        let mut name = if tree || recursive {
+            e.name.clone()
+        } else {
+            e.display.clone()
+        };
+        if classify {
+            name = format!("{}{}", name, b5_classify(e));
+        }
+        if link_target {
+            if let Some(tg) = &e.meta.target {
+                if e.meta.is_link {
+                    name = format!("{} ← {}", name, tg);
+                }
+            }
+        }
+        let mut parts: Vec<String> = Vec::new();
+        if show_perms {
+            parts.push(b5_mode_str(&e.eff));
+        }
+        if show_owner_opt && !hide_owner {
+            parts.push(b5_owner_name(e.eff.uid, false));
+            parts.push(b5_owner_name(e.eff.gid, true));
+        }
+        if !hide_size {
+            let s = if dir_total && e.eff.kind == B5Kind::Dir {
+                b5_dir_total(&e.fs, &mut Vec::new())
+            } else {
+                e.eff.size
+            };
+            if human {
+                parts.push(b5_human_size(s));
+            } else {
+                parts.push(format!("{}", s));
+            }
+        }
+        if !hide_time {
+            let epoch = match time_kind.as_str() {
+                "وصول" => e.eff.atime,
+                "إنشاء" => e.eff.btime.unwrap_or(e.eff.mtime),
+                _ => e.eff.mtime,
+            };
+            parts.push(b5_fmt_time(epoch, &time_fmt, DISPLAY, line, col)?);
+        }
+        parts.push(name);
+        out.push(parts.join(" "));
+        Ok(())
+    };
+    if tree {
+        // شجرة: تجميع بالمجلد الأب.
+        let root_disp = if from_list.is_empty() {
+            dir.clone()
+        } else {
+            ".".to_string()
+        };
+        let mut by_parent: std::collections::BTreeMap<String, Vec<B5Entry>> =
+            std::collections::BTreeMap::new();
+        let mut roots_here: Vec<B5Entry> = Vec::new();
+        for e in kept {
+            let parent = e
+                .display
+                .rsplit_once('/')
+                .map(|(p, _)| p.to_string())
+                .unwrap_or_else(|| root_disp.clone());
+            if parent == root_disp || (from_list.is_empty() && !e.display.contains('/')) {
+                roots_here.push(e);
+            } else {
+                by_parent.entry(parent).or_default().push(e);
+            }
+        }
+        sort_entries(&mut roots_here);
+        for v in by_parent.values_mut() {
+            sort_entries(v);
+        }
+        lines.push(root_disp.clone());
+        fn tree_walk(
+            parent: &str,
+            kids: &mut Vec<B5Entry>,
+            by_parent: &mut std::collections::BTreeMap<String, Vec<B5Entry>>,
+            prefix: &str,
+            out: &mut Vec<String>,
+            line_for: &dyn Fn(&B5Entry, &mut Vec<String>, usize, usize) -> RioResult<()>,
+            line: usize,
+            col: usize,
+        ) -> RioResult<()> {
+            let n = kids.len();
+            for (i, e) in kids.iter().enumerate() {
+                let last = i + 1 == n;
+                let branch = if last { "└── " } else { "├── " };
+                let mut tmp: Vec<String> = Vec::new();
+                line_for(e, &mut tmp, line, col)?;
+                for (j, l) in tmp.iter().enumerate() {
+                    let _ = j;
+                    out.push(format!("{}{}{}", prefix, branch, l));
+                }
+                if e.eff.kind == B5Kind::Dir {
+                    if let Some(mut sub) = by_parent.remove(&e.display) {
+                        let np = format!("{}{}", prefix, if last { "    " } else { "│   " });
+                        tree_walk(&e.display, &mut sub, by_parent, &np, out, line_for, line, col)?;
+                    }
+                }
+            }
+            let _ = parent;
+            Ok(())
+        }
+        tree_walk(
+            &root_disp,
+            &mut roots_here,
+            &mut by_parent,
+            "",
+            &mut lines,
+            &line_for,
+            line,
+            col,
+        )?;
+    } else if recursive {
+        // تكرار مسطح: مجلدات بعناوينها.
+        let mut by_parent: std::collections::BTreeMap<String, Vec<B5Entry>> =
+            std::collections::BTreeMap::new();
+        for e in kept {
+            let parent = e
+                .display
+                .rsplit_once('/')
+                .map(|(p, _)| p.to_string())
+                .unwrap_or_default();
+            by_parent.entry(parent).or_default().push(e);
+        }
+        let mut parents: Vec<String> = by_parent.keys().cloned().collect();
+        parents.sort();
+        for p in parents {
+            let mut kids = by_parent.remove(&p).unwrap_or_default();
+            sort_entries(&mut kids);
+            if !p.is_empty() {
+                lines.push(format!("{}:", p));
+            }
+            for e in &kids {
+                line_for(e, &mut lines, line, col)?;
+            }
+            lines.push(String::new());
+        }
+        if lines.last().map(|s| s.is_empty()) == Some(true) {
+            lines.pop();
+        }
+    } else {
+        let mut v = kept;
+        sort_entries(&mut v);
+        if one_line {
+            let mut names: Vec<String> = Vec::new();
+            for e in &v {
+                let mut tmp: Vec<String> = Vec::new();
+                line_for(e, &mut tmp, line, col)?;
+                names.extend(tmp);
+            }
+            lines.push(names.join("  "));
+        } else {
+            for e in &v {
+                line_for(e, &mut lines, line, col)?;
+            }
+        }
+    }
+    Ok(Value::Str(lines.join("\n")))
+}
+
+fn b5_list_entries() -> Vec<(&'static str, Value)> {
+    vec![("اسرد", native("اسرد", b5_list))]
+}
+
+/// --- مزامنة (rsync) ---
+
+/// نسخ وقتين (وصول وتعديل) إلى مسار.
+fn b5_set_times(path: &std::path::Path, atime: i64, mtime: i64) {
+    let to_st = |s: i64| {
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(s.max(0) as u64)
+    };
+    let times = std::fs::FileTimes::new()
+        .set_accessed(to_st(atime))
+        .set_modified(to_st(mtime));
+    if let Ok(f) = std::fs::OpenOptions::new().write(true).open(path) {
+        let _ = f.set_times(times);
+    }
+}
+
+/// ضبط أذونات مسار من نمط مصدر (يونكس: البتات؛
+/// ويندوز: القراءة فقط فقط).
+fn b5_set_mode(path: &std::path::Path, mode: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    }
+    #[cfg(not(unix))]
+    {
+        if let Ok(m) = std::fs::metadata(path) {
+            let mut p = m.permissions();
+            p.set_readonly(mode & 0o200 == 0);
+            let _ = std::fs::set_permissions(path, p);
+        }
+    }
+}
+
+/// بصمة CRC32 لمحتوى ملف (بقراءة متدفقة).
+fn b5_file_crc(path: &std::path::Path) -> Option<u32> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut buf = [0u8; 65536];
+    let mut c = crc32(&[]);
+    let mut first = true;
+    loop {
+        match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if first {
+                    c = crc32(&buf[..n]);
+                    first = false;
+                } else {
+                    // دمج تدريجي: أعد الحساب على التراكم
+                    // عبر جدول CRC32 نفسه (انظر b5_crc_update).
+                    c = b5_crc_update(c, &buf[..n]);
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+    if first {
+        Some(crc32(&[]))
+    } else {
+        Some(c)
+    }
+}
+
+/// تحديث CRC32 بقالب جديد (متابعة لقيمة سابقة).
+fn b5_crc_update(prev: u32, data: &[u8]) -> u32 {
+    let table = crc32_table();
+    let mut c = prev ^ 0xFFFFFFFF;
+    for &b in data {
+        c = table[((c ^ b as u32) & 0xFF) as usize] ^ (c >> 8);
+    }
+    c ^ 0xFFFFFFFF
+}
+
+/// نسخ ملف واحد متدفقا (64ك للكتلة) مع حد سرعة
+/// ومهلة؛ ويعيد بايتات المنسوخ.
+fn b5_copy_stream(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    append_from: u64,
+    speed_limit: Option<i64>,
+    deadline: Option<i64>,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<u64> {
+    use std::io::{Read, Write};
+    let mut fin = std::fs::File::open(src).map_err(|_| {
+        RioError::runtime(format!("الدالة {} تعذر قراءة {}", display, src.display()), line, col)
+    })?;
+    if append_from > 0 {
+        use std::io::Seek;
+        fin.seek(std::io::SeekFrom::Start(append_from)).map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر الاستئناف في {}", display, src.display()), line, col)
+        })?;
+    }
+    let mut fout = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(append_from == 0)
+        .append(append_from > 0)
+        .open(dst)
+        .map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر الكتابة في {}", display, dst.display()), line, col)
+        })?;
+    let mut buf = [0u8; 65536];
+    let mut done: u64 = 0;
+    loop {
+        if let Some(d) = deadline {
+            if b5_now() >= d {
+                return Err(RioError::runtime(
+                    format!("الدالة {} انتهت مهلة النقل", display),
+                    line,
+                    col,
+                ));
+            }
+        }
+        let n = fin.read(&mut buf).map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر قراءة {}", display, src.display()), line, col)
+        })?;
+        if n == 0 {
+            break;
+        }
+        fout.write_all(&buf[..n]).map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر الكتابة في {}", display, dst.display()), line, col)
+        })?;
+        done += n as u64;
+        if let Some(limit) = speed_limit {
+            if limit > 0 {
+                let secs = n as f64 / limit as f64;
+                if secs > 0.0 {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    std::thread::sleep(std::time::Duration::from_secs_f64(secs.min(5.0)));
+                }
+            }
+        }
+    }
+    Ok(done)
+}
+
+/// خيارات مزامنة.زامن محللة.
+struct B5Sync {
+    recursive: bool,
+    verbose: bool,
+    quiet: bool,
+    dry_run: bool,
+    keep_perms: bool,
+    keep_times: bool,
+    keep_exec: bool,
+    compress: bool,
+    skip_compress: Vec<String>,
+    by_crc: bool,
+    by_size_only: bool,
+    ignore_times: bool,
+    existing_only: bool,
+    ignore_existing: bool,
+    max_delete: Option<i64>,
+    delete_empty: bool,
+    backup: bool,
+    backup_dir: Option<String>,
+    backup_suffix: String,
+    exclude: Vec<String>,
+    include: Vec<String>,
+    exclude_file: Option<String>,
+    from_file: Option<String>,
+    partial: bool,
+    append: bool,
+    max_size: Option<u64>,
+    min_size: Option<u64>,
+    speed_limit: Option<i64>,
+    timeout: Option<i64>,
+    temp_dir: Option<String>,
+    rel_path: bool,
+    keep_empty: bool,
+    log: Option<String>,
+    log_format: Option<String>,
+    change_details: bool,
+    stats: bool,
+    progress: bool,
+    human: bool,
+}
+
+const B5_SYNC_KEYS: &[&str] = &[
+    "تكراري",
+    "مفصل",
+    "صامت",
+    "تجربة_جافة",
+    "احفظ_الأذونات",
+    "احفظ_الأوقات",
+    "احفظ_التنفيذ",
+    "ضغط_أثناء_النقل",
+    "تخط_ضغط",
+    "بالبصمة",
+    "بالحجم_فقط",
+    "تجاهل_الأوقات",
+    "موجود_فقط",
+    "تجاهل_الموجود",
+    "حد_الحذف",
+    "احذف_الفارغة",
+    "نسخة_احتياطية",
+    "مجلد_النسخ",
+    "لاحقة_النسخ",
+    "استثن",
+    "تضمين",
+    "استثن_من_ملف",
+    "من_ملف",
+    "نقل_جزئي",
+    "إلحاق",
+    "حد_الحجم_الأقصى",
+    "حد_الحجم_الأدنى",
+    "حد_السرعة",
+    "مهلة",
+    "مجلد_مؤقت",
+    "مسار_نسبي",
+    "احفظ_الفارغة",
+    "سجل",
+    "نسق_السجل",
+    "تفصيل_التغييرات",
+    "إحصاءات",
+    "شريط_تقدم",
+    "أحجام_بشرية",
+];
+
+fn b5_parse_sync(
+    display: &str,
+    pairs: &[(String, Value)],
+    line: usize,
+    col: usize,
+) -> RioResult<B5Sync> {
+    b5_no_unknown(display, pairs, B5_SYNC_KEYS, line, col)?;
+    Ok(B5Sync {
+        recursive: b5_opt_bool(display, pairs, "تكراري", true, line, col)?,
+        verbose: b5_opt_bool(display, pairs, "مفصل", false, line, col)?,
+        quiet: b5_opt_bool(display, pairs, "صامت", false, line, col)?,
+        dry_run: b5_opt_bool(display, pairs, "تجربة_جافة", false, line, col)?,
+        keep_perms: b5_opt_bool(display, pairs, "احفظ_الأذونات", false, line, col)?,
+        keep_times: b5_opt_bool(display, pairs, "احفظ_الأوقات", false, line, col)?,
+        keep_exec: b5_opt_bool(display, pairs, "احفظ_التنفيذ", false, line, col)?,
+        compress: b5_opt_bool(display, pairs, "ضغط_أثناء_النقل", false, line, col)?,
+        skip_compress: b5_opt_strs(display, pairs, "تخط_ضغط", line, col)?
+            .into_iter()
+            .map(|e| e.trim_start_matches('.').to_lowercase())
+            .collect(),
+        by_crc: b5_opt_bool(display, pairs, "بالبصمة", false, line, col)?,
+        by_size_only: b5_opt_bool(display, pairs, "بالحجم_فقط", false, line, col)?,
+        ignore_times: b5_opt_bool(display, pairs, "تجاهل_الأوقات", false, line, col)?,
+        existing_only: b5_opt_bool(display, pairs, "موجود_فقط", false, line, col)?,
+        ignore_existing: b5_opt_bool(display, pairs, "تجاهل_الموجود", false, line, col)?,
+        max_delete: b5_opt_count(display, pairs, "حد_الحذف", line, col)?,
+        delete_empty: b5_opt_bool(display, pairs, "احذف_الفارغة", false, line, col)?,
+        backup: b5_opt_bool(display, pairs, "نسخة_احتياطية", false, line, col)?,
+        backup_dir: b5_opt_str(display, pairs, "مجلد_النسخ", line, col)?,
+        backup_suffix: b5_opt_str(display, pairs, "لاحقة_النسخ", line, col)?
+            .unwrap_or_else(|| "~".to_string()),
+        exclude: b5_opt_strs(display, pairs, "استثن", line, col)?,
+        include: b5_opt_strs(display, pairs, "تضمين", line, col)?,
+        exclude_file: b5_opt_str(display, pairs, "استثن_من_ملف", line, col)?,
+        from_file: b5_opt_str(display, pairs, "من_ملف", line, col)?,
+        partial: b5_opt_bool(display, pairs, "نقل_جزئي", false, line, col)?,
+        append: b5_opt_bool(display, pairs, "إلحاق", false, line, col)?,
+        max_size: b5_opt_count(display, pairs, "حد_الحجم_الأقصى", line, col)?.map(|n| n as u64),
+        min_size: b5_opt_count(display, pairs, "حد_الحجم_الأدنى", line, col)?.map(|n| n as u64),
+        speed_limit: b5_opt_count(display, pairs, "حد_السرعة", line, col)?,
+        timeout: b5_opt_count(display, pairs, "مهلة", line, col)?,
+        temp_dir: b5_opt_str(display, pairs, "مجلد_مؤقت", line, col)?,
+        rel_path: b5_opt_bool(display, pairs, "مسار_نسبي", false, line, col)?,
+        keep_empty: b5_opt_bool(display, pairs, "احفظ_الفارغة", false, line, col)?,
+        log: b5_opt_str(display, pairs, "سجل", line, col)?,
+        log_format: b5_opt_str(display, pairs, "نسق_السجل", line, col)?,
+        change_details: b5_opt_bool(display, pairs, "تفصيل_التغييرات", false, line, col)?,
+        stats: b5_opt_bool(display, pairs, "إحصاءات", false, line, col)?,
+        progress: b5_opt_bool(display, pairs, "شريط_تقدم", false, line, col)?,
+        human: b5_opt_bool(display, pairs, "أحجام_بشرية", false, line, col)?,
+    })
+}
+
+/// مزامنة.زامن(مصدر، هدف، خيارات؟) — §6.
+fn b5_sync(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "مزامنة.زامن";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let src_s = need_string(DISPLAY, &args[0], line, col)?;
+    let dst_s = need_string(DISPLAY, &args[1], line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    let o = b5_parse_sync(DISPLAY, pairs, line, col)?;
+    let src_fs = search_resolve_path(ctx, &src_s);
+    let dst_fs = search_resolve_path(ctx, &dst_s);
+    let src_meta = match b5_stat(&src_fs) {
+        Some(m) => m,
+        None => {
+            return Err(RioError::runtime(
+                format!("الدالة {} المصدر غير موجود: {}", DISPLAY, src_s),
+                line,
+                col,
+            ))
+        }
+    };
+    let src_is_dir = src_meta.kind == B5Kind::Dir;
+    let src_is_link = src_meta.is_link;
+    // أنماط استثناء إضافية من ملف.
+    let mut exclude = o.exclude.clone();
+    if let Some(f) = &o.exclude_file {
+        exclude.extend(b5_load_patterns(ctx, DISPLAY, f, line, col)?);
+    }
+    // قائمة ملفات من ملف (مسارات نسبية للمصدر).
+    let from_list: Option<Vec<String>> = match &o.from_file {
+        Some(f) => Some(b5_load_patterns(ctx, DISPLAY, f, line, col)?),
+        None => None,
+    };
+    let deadline = o.timeout.map(|t| b5_now() + t.max(0));
+    // جذر الهدف الفعلي: محتويات المصدر في الهدف، أو
+    // المصدر نفسه فيه مع مسار_نسبي.
+    let (dst_root, src_base) = if src_is_dir {
+        if o.rel_path {
+            let base = src_fs
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| src_s.clone());
+            (dst_fs.join(&base), src_fs.clone())
+        } else {
+            (dst_fs.clone(), src_fs.clone())
+        }
+    } else {
+        (dst_fs.clone(), src_fs.clone())
+    };
+    // مسح المصدر.
+    let mut entries: Vec<B5Entry> = Vec::new();
+    if src_is_dir {
+        let mut w = B5Walk::new();
+        w.include_hidden = true;
+        w.respect_ignore = false;
+        w.follow_links = false;
+        w.min_depth = 1;
+        w.max_depth = if o.recursive { -1 } else { 1 };
+        b5_walk_root(ctx, &src_s, &mut w, &mut entries, line, col)?;
+    } else if let Some(m) = b5_stat(&src_fs) {
+        let name = src_fs
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| src_s.clone());
+        entries.push(B5Entry {
+            fs: src_fs.clone(),
+            display: name.clone(),
+            name,
+            rel: src_s.clone(),
+            depth: 0,
+            meta: B5Meta {
+                kind: m.kind,
+                size: m.size,
+                mtime: m.mtime,
+                atime: m.atime,
+                btime: m.btime,
+                mode: m.mode,
+                uid: m.uid,
+                gid: m.gid,
+                nlink: m.nlink,
+                is_link: m.is_link,
+                target: m.target.clone(),
+            },
+            eff: B5Meta {
+                kind: m.kind,
+                size: m.size,
+                mtime: m.mtime,
+                atime: m.atime,
+                btime: m.btime,
+                mode: m.mode,
+                uid: m.uid,
+                gid: m.gid,
+                nlink: m.nlink,
+                is_link: m.is_link,
+                target: m.target.clone(),
+            },
+        });
+    }
+    // ترشيح من_ملف (نسبي للمصدر).
+    if let Some(list) = &from_list {
+        entries.retain(|e| {
+            let rel = e
+                .fs
+                .strip_prefix(&src_base)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| e.rel.clone());
+            list.iter().any(|w| w == &rel)
+        });
+    }
+    let mut copied = 0i64;
+    let mut updated = 0i64;
+    let mut skipped = 0i64;
+    let mut bytes_total: u64 = 0;
+    let mut deleted = 0i64;
+    let mut timed_out = false;
+    let mut changes: Vec<Value> = Vec::new();
+    let mut log_lines: Vec<String> = Vec::new();
+    let mut progress_lines: Vec<String> = Vec::new();
+    let mut created_dirs: Vec<std::path::PathBuf> = Vec::new();
+    if !o.dry_run && src_is_dir {
+        if let Err(e) = std::fs::create_dir_all(&dst_root) {
+            let _ = e;
+            return Err(RioError::runtime(
+                format!("الدالة {} تعذر إنشاء الهدف {}", DISPLAY, dst_s),
+                line,
+                col,
+            ));
+        }
+    }
+    // إنشاء مجلدات الهدف أولا (للمجلدات غير الفارغة
+    // أو مع احفظ_الفارغة).
+    let mut dir_entries: Vec<&B5Entry> = entries
+        .iter()
+        .filter(|e| e.eff.kind == B5Kind::Dir)
+        .collect();
+    dir_entries.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.display.cmp(&b.display)));
+    let mut src_dir_set: Vec<String> = Vec::new();
+    for e in &dir_entries {
+        let rel = if src_is_dir {
+            e.fs
+                .strip_prefix(&src_base)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| e.rel.clone())
+        } else {
+            String::new()
+        };
+        src_dir_set.push(rel.clone());
+        let is_empty = b5_dir_empty(&e.fs);
+        if is_empty && !o.keep_empty {
+            continue;
+        }
+        let target = dst_root.join(&rel);
+        if !o.dry_run {
+            if std::fs::create_dir_all(&target).is_err() {
+                return Err(RioError::runtime(
+                    format!("الدالة {} تعذر إنشاء المجلد {}", DISPLAY, rel),
+                    line,
+                    col,
+                ));
+            }
+            created_dirs.push(target.clone());
+            if o.keep_times {
+                b5_set_times(&target, e.eff.atime, e.eff.mtime);
+            }
+            if o.keep_perms {
+                b5_set_mode(&target, e.eff.mode);
+            }
+        }
+    }
+    // الملفات والروابط.
+    let mut file_entries: Vec<&B5Entry> = entries
+        .iter()
+        .filter(|e| e.eff.kind != B5Kind::Dir)
+        .collect();
+    file_entries.sort_by(|a, b| a.display.cmp(&b.display));
+    for e in file_entries {
+        if timed_out {
+            break;
+        }
+        if let Some(d) = deadline {
+            if b5_now() >= d {
+                timed_out = true;
+                break;
+            }
+        }
+        let rel = if src_is_dir {
+            e.fs
+                .strip_prefix(&src_base)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| e.rel.clone())
+        } else {
+            // مصدر ملف: الهدف مجلد موجود ← داخله؛
+            // وإلا فالهدف هو مسار الملف نفسه.
+            if dst_fs.is_dir() {
+                e.name.clone()
+            } else {
+                String::new()
+            }
+        };
+        let target = if src_is_dir || dst_fs.is_dir() {
+            dst_root.join(&rel)
+        } else {
+            dst_fs.clone()
+        };
+        // استثناء/تضمين.
+        if !exclude.is_empty() && b5_glob_any(&exclude, &e.name, &rel, false, line, col) {
+            if o.include.is_empty()
+                || !b5_glob_any(&o.include, &e.name, &rel, false, line, col)
+            {
+                skipped += 1;
+                continue;
+            }
+        }
+        // حدود الحجم (ملفات فقط).
+        if e.eff.kind == B5Kind::File {
+            if let Some(n) = o.max_size {
+                if e.eff.size > n {
+                    skipped += 1;
+                    continue;
+                }
+            }
+            if let Some(n) = o.min_size {
+                if e.eff.size < n {
+                    skipped += 1;
+                    continue;
+                }
+            }
+        }
+        // الروابط تُنسخ روابط (بالهدف النصي نفسه).
+        if e.meta.is_link {
+            let dst_exists = std::fs::symlink_metadata(&target).is_ok();
+            if o.existing_only && !dst_exists {
+                skipped += 1;
+                continue;
+            }
+            if o.ignore_existing && dst_exists {
+                skipped += 1;
+                continue;
+            }
+            let tg = e.meta.target.clone().unwrap_or_default();
+            let need = match std::fs::read_link(&target) {
+                Ok(cur) => cur.to_string_lossy() != tg,
+                Err(_) => true,
+            };
+            if !need {
+                skipped += 1;
+                continue;
+            }
+            if !o.dry_run {
+                if let Some(parent) = target.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::remove_file(&target);
+                let _ = std::fs::remove_dir_all(&target);
+                #[cfg(unix)]
+                {
+                    if std::os::unix::fs::symlink(&tg, &target).is_err() {
+                        return Err(RioError::runtime(
+                            format!("الدالة {} تعذر إنشاء الرابط {}", DISPLAY, rel),
+                            line,
+                            col,
+                        ));
+                    }
+                }
+                #[cfg(windows)]
+                {
+                    if std::os::windows::fs::symlink_file(&tg, &target).is_err()
+                        && std::os::windows::fs::symlink_dir(&tg, &target).is_err()
+                    {
+                        return Err(RioError::runtime(
+                            format!("الدالة {} تعذر إنشاء الرابط {}", DISPLAY, rel),
+                            line,
+                            col,
+                        ));
+                    }
+                }
+                #[cfg(not(any(unix, windows)))]
+                {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} تعذر إنشاء الرابط {}", DISPLAY, rel),
+                        line,
+                        col,
+                    ));
+                }
+            }
+            if dst_exists {
+                updated += 1;
+            } else {
+                copied += 1;
+            }
+            let action = if dst_exists { "حدث" } else { "نسخ" };
+            changes.push(Value::Dict(vec![
+                ("ملف".to_string(), Value::Str(rel.clone())),
+                ("فعل".to_string(), Value::Str(action.to_string())),
+                ("حجم".to_string(), Value::Number(0.0)),
+            ]));
+            if !o.quiet && o.verbose {
+                progress_lines.push(format!("{} {}", action, rel));
+            }
+            continue;
+        }
+        if e.eff.kind != B5Kind::File {
+            skipped += 1;
+            continue;
+        }
+        // قرار النسخ.
+        let dst_meta = b5_stat(&target);
+        let dst_exists = dst_meta.is_some();
+        if o.existing_only && !dst_exists {
+            skipped += 1;
+            continue;
+        }
+        if o.ignore_existing && dst_exists {
+            skipped += 1;
+            continue;
+        }
+        let mut do_copy = true;
+        if let Some(dm) = &dst_meta {
+            if o.by_crc {
+                let a = b5_file_crc(&e.fs);
+                let b = b5_file_crc(&target);
+                do_copy = a != b;
+            } else if o.by_size_only {
+                do_copy = dm.size != e.eff.size;
+            } else if o.ignore_times {
+                do_copy = true;
+            } else {
+                do_copy = !(dm.size == e.eff.size && dm.mtime == e.eff.mtime);
+            }
+        }
+        if !do_copy {
+            skipped += 1;
+            continue;
+        }
+        // إلحاق: هدف أصغر وبادئته مطابقة.
+        let mut append_from: u64 = 0;
+        if o.append {
+            if let Some(dm) = &dst_meta {
+                if dm.size < e.eff.size {
+                    use std::io::Read;
+                    let mut a = std::fs::File::open(&e.fs).ok();
+                    let mut b = std::fs::File::open(&target).ok();
+                    let mut prefix_ok = false;
+                    if let (Some(fa), Some(fb)) = (a.as_mut(), b.as_mut()) {
+                        let mut ba = vec![0u8; dm.size as usize];
+                        let mut bb = vec![0u8; dm.size as usize];
+                        if fa.read_exact(&mut ba).is_ok() && fb.read_exact(&mut bb).is_ok() {
+                            prefix_ok = ba == bb;
+                        }
+                    }
+                    if prefix_ok {
+                        append_from = dm.size;
+                    }
+                }
+            }
+        }
+        // نسخة احتياطية قبل الكتابة فوق موجود مختلف.
+        if o.backup && dst_exists && !o.dry_run {
+            let bdir = match &o.backup_dir {
+                Some(d) => dst_root.join(d),
+                None => target
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| dst_root.clone()),
+            };
+            let bpath = bdir.join(format!("{}{}", rel.replace('/', "_"), o.backup_suffix));
+            if let Some(parent) = bpath.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::copy(&target, &bpath);
+        }
+        // النقل (عبر ملف مؤقت ثم إعادة تسمية؛ مع
+        // نقل_جزئي يبقى المرحلي باسم .جزئي ظاهر).
+        let stage = if o.partial {
+            let mut t = target.clone().into_os_string();
+            t.push(".جزئي");
+            std::path::PathBuf::from(t)
+        } else {
+            match &o.temp_dir {
+                Some(d) => search_resolve_path(ctx, d).join(format!(
+                    "{}.مؤقت",
+                    target
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "ملف".to_string())
+                )),
+                None => {
+                    let mut t = target.clone().into_os_string();
+                    t.push(".مؤقت");
+                    std::path::PathBuf::from(t)
+                }
+            }
+        };
+        let mut compressed_size: Option<u64> = None;
+        let mut wrote: u64 = 0;
+        if !o.dry_run {
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if o.compress && e.eff.size <= 16 * 1024 * 1024 {
+                let ext = std::path::Path::new(&e.name)
+                    .extension()
+                    .map(|x| x.to_string_lossy().to_lowercase())
+                    .unwrap_or_default();
+                if !o.skip_compress.iter().any(|x| *x == ext) {
+                    let raw = std::fs::read(&e.fs).map_err(|_| {
+                        RioError::runtime(
+                            format!("الدالة {} تعذر قراءة {}", DISPLAY, e.display),
+                            line,
+                            col,
+                        )
+                    })?;
+                    let comp = b5_compress(&raw, 6, DISPLAY, line, col)?;
+                    compressed_size = Some(comp.len() as u64);
+                    let back = b5_decompress(&comp, DISPLAY, line, col)?;
+                    if back != raw {
+                        return Err(RioError::runtime(
+                            format!("الدالة {} فشل ضغط النقل لـ{}", DISPLAY, e.display),
+                            line,
+                            col,
+                        ));
+                    }
+                    std::fs::write(&stage, &back).map_err(|_| {
+                        RioError::runtime(
+                            format!("الدالة {} تعذر الكتابة في {}", DISPLAY, target.display()),
+                            line,
+                            col,
+                        )
+                    })?;
+                    wrote = back.len() as u64;
+                }
+            }
+            if compressed_size.is_none() {
+                if append_from > 0 {
+                    wrote = b5_copy_stream(
+                        &e.fs,
+                        &target,
+                        append_from,
+                        o.speed_limit,
+                        deadline,
+                        DISPLAY,
+                        line,
+                        col,
+                    )?;
+                    if o.keep_times {
+                        b5_set_times(&target, e.eff.atime, e.eff.mtime);
+                    }
+                    if o.keep_perms {
+                        b5_set_mode(&target, e.eff.mode);
+                    } else if o.keep_exec {
+                        let cur = b5_stat(&target).map(|m| m.mode).unwrap_or(0o644);
+                        b5_set_mode(&target, (cur & !0o111) | (e.eff.mode & 0o111));
+                    }
+                    if dst_exists {
+                        updated += 1;
+                    } else {
+                        copied += 1;
+                    }
+                    bytes_total += wrote;
+                    let action = if dst_exists { "حدث" } else { "نسخ" };
+                    changes.push(Value::Dict(vec![
+                        ("ملف".to_string(), Value::Str(rel.clone())),
+                        ("فعل".to_string(), Value::Str(action.to_string())),
+                        ("حجم".to_string(), Value::Number(wrote as f64)),
+                    ]));
+                    if !o.quiet && (o.verbose || o.progress) {
+                        let sz = if o.human {
+                            b5_human_size(wrote)
+                        } else {
+                            format!("{} بايت", wrote)
+                        };
+                        progress_lines.push(format!("نُقل {} {}", rel, sz));
+                    }
+                    continue;
+                }
+                wrote = b5_copy_stream(
+                    &e.fs,
+                    &stage,
+                    0,
+                    o.speed_limit,
+                    deadline,
+                    DISPLAY,
+                    line,
+                    col,
+                )?;
+                if o.keep_times {
+                    b5_set_times(&stage, e.eff.atime, e.eff.mtime);
+                }
+                if o.keep_perms {
+                    b5_set_mode(&stage, e.eff.mode);
+                } else if o.keep_exec {
+                    let cur = b5_stat(&stage).map(|m| m.mode).unwrap_or(0o644);
+                    b5_set_mode(&stage, (cur & !0o111) | (e.eff.mode & 0o111));
+                }
+                if std::fs::rename(&stage, &target).is_err() {
+                    let _ = std::fs::copy(&stage, &target);
+                    let _ = std::fs::remove_file(&stage);
+                }
+                if o.keep_times {
+                    b5_set_times(&target, e.eff.atime, e.eff.mtime);
+                }
+            } else {
+                // المضغوط كُتب مرحليا: انقله للهدف.
+                if std::fs::rename(&stage, &target).is_err() {
+                    let _ = std::fs::copy(&stage, &target);
+                    let _ = std::fs::remove_file(&stage);
+                }
+                if o.keep_times {
+                    b5_set_times(&target, e.eff.atime, e.eff.mtime);
+                }
+                if o.keep_perms {
+                    b5_set_mode(&target, e.eff.mode);
+                } else if o.keep_exec {
+                    let cur = b5_stat(&target).map(|m| m.mode).unwrap_or(0o644);
+                    b5_set_mode(&target, (cur & !0o111) | (e.eff.mode & 0o111));
+                }
+            }
+        } else {
+            wrote = if append_from > 0 {
+                e.eff.size - append_from
+            } else {
+                e.eff.size
+            };
+        }
+        if dst_exists {
+            updated += 1;
+        } else {
+            copied += 1;
+        }
+        bytes_total += wrote;
+        let mut ch: Vec<(String, Value)> = vec![
+            ("ملف".to_string(), Value::Str(rel.clone())),
+            (
+                "فعل".to_string(),
+                Value::Str(if dst_exists { "حدث".to_string() } else { "نسخ".to_string() }),
+            ),
+            ("حجم".to_string(), Value::Number(wrote as f64)),
+        ];
+        if let Some(c) = compressed_size {
+            ch.push(("مضغوط".to_string(), Value::Number(c as f64)));
+        }
+        changes.push(Value::Dict(ch));
+        if !o.quiet && (o.verbose || o.progress) {
+            let sz = if o.human {
+                b5_human_size(wrote)
+            } else {
+                format!("{} بايت", wrote)
+            };
+            progress_lines.push(format!(
+                "نُقل {} {}",
+                rel,
+                sz
+            ));
+        }
+    }
+    // حذف المجلدات الفارغة الزائدة في الهدف.
+    if o.delete_empty && !o.dry_run {
+        let cap = o.max_delete.unwrap_or(i64::MAX).max(0);
+        let mut removed = 0i64;
+        let mut stack: Vec<std::path::PathBuf> = vec![dst_root.clone()];
+        let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+        while let Some(d) = stack.pop() {
+            if let Ok(rd) = std::fs::read_dir(&d) {
+                for en in rd.flatten() {
+                    let p = en.path();
+                    if p.is_dir() {
+                        dirs.push(p.clone());
+                        stack.push(p);
+                    }
+                }
+            }
+        }
+        dirs.sort_by(|a, b| b.components().count().cmp(&a.components().count()));
+        for d in dirs {
+            if removed >= cap {
+                break;
+            }
+            let rel = d
+                .strip_prefix(&dst_root)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            if src_dir_set.iter().any(|s| *s == rel) {
+                continue;
+            }
+            if b5_dir_empty(&d) && std::fs::remove_dir(&d).is_ok() {
+                deleted += 1;
+                removed += 1;
+            }
+        }
+    } else if o.delete_empty && o.dry_run {
+        let _ = o.max_delete;
+    }
+    // الطباعة.
+    if !o.quiet {
+        for l in &progress_lines {
+            println!("{}", l);
+        }
+        if o.verbose {
+            let sum = if o.human {
+                format!(
+                    "منسوخ: {} محدث: {} متخطى: {} بايتات: {}",
+                    copied,
+                    updated,
+                    skipped,
+                    b5_human_size(bytes_total)
+                )
+            } else {
+                format!(
+                    "منسوخ: {} محدث: {} متخطى: {} بايتات: {}",
+                    copied, updated, skipped, bytes_total
+                )
+            };
+            println!("{}", sum);
+        }
+    }
+    // السجل.
+    if let Some(log) = &o.log {
+        if !o.dry_run {
+            let fmt = o
+                .log_format
+                .clone()
+                .unwrap_or_else(|| "{فعل} {ملف}".to_string());
+            for ch in &changes {
+                if let Value::Dict(ps) = ch {
+                    let f = dict_get(ps, "ملف")
+                        .and_then(|v| match v {
+                            Value::Str(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    let a = dict_get(ps, "فعل")
+                        .and_then(|v| match v {
+                            Value::Str(s) => Some(s.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    let s = dict_get(ps, "حجم")
+                        .and_then(|v| match v {
+                            Value::Number(n) => Some(*n as u64),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let sz = if o.human {
+                        b5_human_size(s)
+                    } else {
+                        format!("{}", s)
+                    };
+                    log_lines.push(
+                        fmt.replace("{ملف}", &f)
+                            .replace("{فعل}", &a)
+                            .replace("{حجم}", &sz),
+                    );
+                }
+            }
+            if !log_lines.is_empty() {
+                let fs = search_resolve_path(ctx, log);
+                if let Some(parent) = fs.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let text = log_lines.join("\n") + "\n";
+                let _ = std::fs::write(&fs, text);
+            }
+        }
+    }
+    let mut out: Vec<(String, Value)> = vec![
+        ("منسوخ".to_string(), Value::Number(copied as f64)),
+        ("محدث".to_string(), Value::Number(updated as f64)),
+        ("متخطى".to_string(), Value::Number(skipped as f64)),
+        ("محذوف".to_string(), Value::Number(deleted as f64)),
+        ("بايتات".to_string(), Value::Number(bytes_total as f64)),
+    ];
+    if timed_out {
+        out.push(("مهلة".to_string(), Value::Bool(true)));
+    }
+    if o.verbose || o.change_details {
+        out.push(("تغييرات".to_string(), Value::List(changes)));
+    }
+    if o.stats {
+        out.push((
+            "إحصاءات".to_string(),
+            Value::Dict(vec![
+                (
+                    "ملفات_منسوخة".to_string(),
+                    Value::Number(copied as f64),
+                ),
+                (
+                    "ملفات_محدثة".to_string(),
+                    Value::Number(updated as f64),
+                ),
+                ("بايتات".to_string(), Value::Number(bytes_total as f64)),
+                (
+                    "ملفات_متخطاة".to_string(),
+                    Value::Number(skipped as f64),
+                ),
+            ]),
+        ));
+    }
+    let _ = (src_is_link, created_dirs);
+    Ok(Value::Dict(out))
+}
+
+fn b5_sync_entries() -> Vec<(&'static str, Value)> {
+    vec![("زامن", native("زامن", b5_sync))]
+}
+
+/// --- ضغط (LZSS بإطار نيفا الخاص) ---
+///
+/// الإطار: سحر «NVZ1» (4 بايت) + إصدار (1) +
+/// حجم أصلي u32be (4) + CRC32 ‏u32be‏ (4) +
+/// تيار رموز: بايت تحكم لكل 8 رموز (بت 1 =
+/// مطابقة، بت 0 = حرفي)؛ المطابقة بايتان:
+/// إزاحة 12 بت + طول-3 (4 بت، 3..18)؛
+/// النافذة 4096؛ المستوى 1 حرفي فقط،
+/// والأعلى يزيد عمق البحث.
+
+fn b5_lzss_compress(raw: &[u8], level: usize) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(b"NVZ1");
+    out.push(1);
+    out.extend_from_slice(&(raw.len() as u32).to_be_bytes());
+    out.extend_from_slice(&crc32(raw).to_be_bytes());
+    let max_cand: usize = if level <= 1 {
+        0
+    } else {
+        (1usize << level.min(12)).min(4096)
+    };
+    let mut i = 0usize;
+    while i < raw.len() {
+        let ctrl_pos = out.len();
+        out.push(0);
+        let mut ctrl: u8 = 0;
+        for bit in 0..8 {
+            if i >= raw.len() {
+                break;
+            }
+            // أطول مطابقة في النافذة.
+            let mut best_len = 0usize;
+            let mut best_off = 0usize;
+            if max_cand > 0 && i + 3 <= raw.len() {
+                let start = i.saturating_sub(4096);
+                let mut checked = 0usize;
+                let mut j = i;
+                while j > start && checked < max_cand {
+                    j -= 1;
+                    checked += 1;
+                    if raw[j] != raw[i] {
+                        continue;
+                    }
+                    let mut l = 1usize;
+                    while l < 18 && i + l < raw.len() && raw[j + l] == raw[i + l] {
+                        l += 1;
+                    }
+                    if l >= 3 && l > best_len {
+                        best_len = l;
+                        best_off = i - j;
+                        if l == 18 {
+                            break;
+                        }
+                    }
+                }
+            }
+            if best_len >= 3 {
+                ctrl |= 1 << bit;
+                let off = best_off as u16;
+                let len = best_len as u16;
+                out.push((off >> 4) as u8);
+                out.push((((off & 0xF) << 4) | (len - 3)) as u8);
+                i += best_len;
+            } else {
+                out.push(raw[i]);
+                i += 1;
+            }
+        }
+        out[ctrl_pos] = ctrl;
+    }
+    out
+}
+
+fn b5_lzss_decompress(data: &[u8]) -> Option<Vec<u8>> {
+    if data.len() < 13 || &data[0..4] != b"NVZ1" || data[4] != 1 {
+        return None;
+    }
+    let orig_len = u32::from_be_bytes([data[5], data[6], data[7], data[8]]) as usize;
+    let want_crc = u32::from_be_bytes([data[9], data[10], data[11], data[12]]);
+    let mut out: Vec<u8> = Vec::with_capacity(orig_len);
+    let mut p = 13usize;
+    while p < data.len() && out.len() < orig_len {
+        let ctrl = data[p];
+        p += 1;
+        for bit in 0..8 {
+            if out.len() >= orig_len || p >= data.len() {
+                break;
+            }
+            if ctrl & (1 << bit) != 0 {
+                if p + 1 >= data.len() {
+                    return None;
+                }
+                let off = (((data[p] as usize) << 4) | ((data[p + 1] as usize) >> 4)) as usize;
+                let len = ((data[p + 1] & 0xF) as usize) + 3;
+                p += 2;
+                if off == 0 || off > out.len() {
+                    return None;
+                }
+                let start = out.len() - off;
+                for k in 0..len {
+                    let b = out[start + k];
+                    out.push(b);
+                }
+            } else {
+                out.push(data[p]);
+                p += 1;
+            }
+        }
+    }
+    if out.len() != orig_len || crc32(&out) != want_crc {
+        return None;
+    }
+    Some(out)
+}
+
+/// اضغط بايتات بإطار نيفا.
+fn b5_compress(
+    raw: &[u8],
+    level: usize,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<u8>> {
+    if raw.len() > u32::MAX as usize {
+        return Err(RioError::runtime(
+            format!("الدالة {} الملف أكبر من 4 غيغابايت", display),
+            line,
+            col,
+        ));
+    }
+    Ok(b5_lzss_compress(raw, level.clamp(1, 19)))
+}
+
+/// فك ضغط بايتات بإطار نيفا.
+fn b5_decompress(
+    data: &[u8],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<u8>> {
+    match b5_lzss_decompress(data) {
+        Some(v) => Ok(v),
+        None => Err(RioError::runtime(
+            format!("الدالة {} بيانات مضغوطة تالفة أو ليست بإطار نيفا", display),
+            line,
+            col,
+        )),
+    }
+}
+
+/// بايتات من قيمة (نص أو قائمة أعداد 0..255).
+fn b5_need_bytes(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<u8>> {
+    match v {
+        Value::Str(s) => Ok(s.as_bytes().to_vec()),
+        Value::List(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for it in items {
+                match it {
+                    Value::Number(n) => {
+                        let b = *n as i64;
+                        if b < 0 || b > 255 {
+                            return Err(RioError::runtime(
+                                format!("الدالة {} بايت خارج النطاق 0..255", display),
+                                line,
+                                col,
+                            ));
+                        }
+                        out.push(b as u8);
+                    }
+                    _ => {
+                        return Err(RioError::runtime(
+                            format!("الدالة {} البايتات قائمة أعداد أو نص", display),
+                            line,
+                            col,
+                        ))
+                    }
+                }
+            }
+            Ok(out)
+        }
+        _ => Err(RioError::runtime(
+            format!("الدالة {} البايتات قائمة أعداد أو نص", display),
+            line,
+            col,
+        )),
+    }
+}
+
+/// قيمة بايتات (قائمة أعداد).
+fn b5_bytes_value(data: &[u8]) -> Value {
+    Value::List(data.iter().map(|b| Value::Number(*b as f64)).collect())
+}
+
+/// مستوى الضغط من الخيارات (عدد 1..19 أو
+/// «أقصى»/«أسرع»)؛ الافتراضي 3.
+fn b5_opt_level(
+    display: &str,
+    pairs: &[(String, Value)],
+    line: usize,
+    col: usize,
+) -> RioResult<usize> {
+    match dict_get(pairs, "مستوى") {
+        None => Ok(3),
+        Some(Value::Number(n)) => Ok((*n as i64).clamp(1, 19) as usize),
+        Some(Value::Str(s)) if s == "أقصى" => Ok(19),
+        Some(Value::Str(s)) if s == "أسرع" => Ok(1),
+        Some(_) => Err(RioError::runtime(
+            format!("الدالة {} مستوى الضغط عدد 1..19 أو أقصى أو أسرع", display),
+            line,
+            col,
+        )),
+    }
+}
+
+/// مفاتيح ملفات الضغط: مستوى/أبق_الأصل/
+/// احذف_الأصل/إلى_المخرج/كتابة_فوق من الجدول،
+/// و«مخرج» (مسار هدف صريح) و«مفصل»/«صامت»
+/// امتدادان عامان.
+const B5_COMPRESS_FILE_KEYS: &[&str] = &[
+    "مستوى",
+    "أبق_الأصل",
+    "احذف_الأصل",
+    "إلى_المخرج",
+    "مخرج",
+    "كتابة_فوق",
+    "مفصل",
+    "صامت",
+];
+
+/// مستوى من قيمة موضعية (عدد أو «أقصى»/«أسرع»).
+fn b5_level_value(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<usize> {
+    match v {
+        Value::Number(n) => Ok((*n as i64).clamp(1, 19) as usize),
+        Value::Str(s) if s == "أقصى" => Ok(19),
+        Value::Str(s) if s == "أسرع" => Ok(1),
+        _ => Err(RioError::runtime(
+            format!("الدالة {} مستوى الضغط عدد 1..19 أو أقصى أو أسرع", display),
+            line,
+            col,
+        )),
+    }
+}
+
+fn b5_compress_bytes(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ضغط.اضغط";
+    let _ = ctx;
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let raw = b5_need_bytes(DISPLAY, &args[0], line, col)?;
+    // مستوى موضعي (عدد أو «أقصى»/«أسرع») أو
+    // قاموس خيارات {مستوى} (صيغة الجدول).
+    let level = if args.len() == 2 {
+        match &args[1] {
+            Value::Dict(ps) => {
+                b5_no_unknown(DISPLAY, ps, &["مستوى"], line, col)?;
+                b5_opt_level(DISPLAY, ps, line, col)?
+            }
+            v => b5_level_value(DISPLAY, v, line, col)?,
+        }
+    } else {
+        3
+    };
+    Ok(b5_bytes_value(&b5_compress(&raw, level, DISPLAY, line, col)?))
+}
+
+fn b5_decompress_bytes(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ضغط.فك_ضغط";
+    let _ = ctx;
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا واحدا لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let data = b5_need_bytes(DISPLAY, &args[0], line, col)?;
+    Ok(b5_bytes_value(&b5_decompress(&data, DISPLAY, line, col)?))
+}
+
+/// هدف افتراضي لضغط ملف (لاحقة .ضغط) أو فكه.
+fn b5_compress_target(src: &std::path::Path, compress: bool) -> std::path::PathBuf {
+    if compress {
+        let mut s = src.as_os_str().to_owned();
+        s.push(".ضغط");
+        std::path::PathBuf::from(s)
+    } else {
+        let s = src.to_string_lossy();
+        if let Some(stripped) = s.strip_suffix(".ضغط") {
+            std::path::PathBuf::from(stripped)
+        } else {
+            let mut t = src.as_os_str().to_owned();
+            t.push(".مفكوك");
+            std::path::PathBuf::from(t)
+        }
+    }
+}
+
+fn b5_compress_file(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ضغط.اضغط_ملف";
+    if args.is_empty() || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا إلى ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let src_s = need_string(DISPLAY, &args[0], line, col)?;
+    let mut target_s: Option<String> = None;
+    let mut opt_idx = 1usize;
+    if args.len() >= 2 {
+        if let Value::Str(s) = &args[1] {
+            target_s = Some(s.clone());
+            opt_idx = 2;
+        }
+    }
+    let pairs = if args.len() > opt_idx {
+        b5_opts(DISPLAY, args, opt_idx, line, col)?
+    } else {
+        &[][..]
+    };
+    b5_no_unknown(DISPLAY, pairs, B5_COMPRESS_FILE_KEYS, line, col)?;
+    let level = b5_opt_level(DISPLAY, pairs, line, col)?;
+    // أبق_الأصل افتراضي صحيح (الجدول 304)؛
+    // والحذف إن طُلب صراحة أو أُلغي الإبقاء.
+    let keep = b5_opt_bool(DISPLAY, pairs, "أبق_الأصل", true, line, col)?;
+    let del = b5_opt_bool(DISPLAY, pairs, "احذف_الأصل", false, line, col)?;
+    let to_out = b5_opt_bool(DISPLAY, pairs, "إلى_المخرج", false, line, col)?;
+    let overwrite = b5_opt_bool(DISPLAY, pairs, "كتابة_فوق", false, line, col)?;
+    let verbose = b5_opt_bool(DISPLAY, pairs, "مفصل", false, line, col)?;
+    let quiet = b5_opt_bool(DISPLAY, pairs, "صامت", false, line, col)?;
+    if target_s.is_none() {
+        target_s = b5_opt_str(DISPLAY, pairs, "مخرج", line, col)?;
+    }
+    let src_fs = search_resolve_path(ctx, &src_s);
+    let raw = std::fs::read(&src_fs).map_err(|_| {
+        RioError::runtime(format!("الدالة {} الملف غير موجود: {}", DISPLAY, src_s), line, col)
+    })?;
+    let comp = b5_compress(&raw, level, DISPLAY, line, col)?;
+    // إلى_المخرج: بايتات بدل ملف، بلا كتابة
+    // وبلا حذف للأصل.
+    if to_out {
+        return Ok(b5_bytes_value(&comp));
+    }
+    let dst_fs = match target_s {
+        Some(t) => search_resolve_path(ctx, &t),
+        None => b5_compress_target(&src_fs, true),
+    };
+    if dst_fs.exists() && !overwrite {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} الهدف موجود: {} (استخدم كتابة_فوق)",
+                DISPLAY,
+                dst_fs.display()
+            ),
+            line,
+            col,
+        ));
+    }
+    if let Some(parent) = dst_fs.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&dst_fs, &comp).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر الكتابة في {}", DISPLAY, dst_fs.display()),
+            line,
+            col,
+        )
+    })?;
+    if del || !keep {
+        let _ = std::fs::remove_file(&src_fs);
+    }
+    let ratio = if raw.is_empty() {
+        0
+    } else {
+        (comp.len() * 100 / raw.len()) as i64
+    };
+    if verbose && !quiet {
+        println!(
+            "ضغط {} ← {} ({}٪)",
+            dst_fs.display(),
+            src_s,
+            ratio
+        );
+    }
+    Ok(Value::Dict(vec![
+        ("مصدر".to_string(), Value::Str(src_s)),
+        (
+            "هدف".to_string(),
+            Value::Str(dst_fs.to_string_lossy().into_owned()),
+        ),
+        ("حجم_أصلي".to_string(), Value::Number(raw.len() as f64)),
+        (
+            "حجم_مضغوط".to_string(),
+            Value::Number(comp.len() as f64),
+        ),
+        ("نسبة".to_string(), Value::Number(ratio as f64)),
+    ]))
+}
+
+fn b5_decompress_file(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ضغط.فك_ضغط_ملف";
+    if args.is_empty() || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا إلى ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let src_s = need_string(DISPLAY, &args[0], line, col)?;
+    let mut target_s: Option<String> = None;
+    let mut opt_idx = 1usize;
+    if args.len() >= 2 {
+        if let Value::Str(s) = &args[1] {
+            target_s = Some(s.clone());
+            opt_idx = 2;
+        }
+    }
+    let pairs = if args.len() > opt_idx {
+        b5_opts(DISPLAY, args, opt_idx, line, col)?
+    } else {
+        &[][..]
+    };
+    b5_no_unknown(DISPLAY, pairs, B5_COMPRESS_FILE_KEYS, line, col)?;
+    let keep = b5_opt_bool(DISPLAY, pairs, "أبق_الأصل", true, line, col)?;
+    let del = b5_opt_bool(DISPLAY, pairs, "احذف_الأصل", false, line, col)?;
+    let to_out = b5_opt_bool(DISPLAY, pairs, "إلى_المخرج", false, line, col)?;
+    let overwrite = b5_opt_bool(DISPLAY, pairs, "كتابة_فوق", false, line, col)?;
+    let verbose = b5_opt_bool(DISPLAY, pairs, "مفصل", false, line, col)?;
+    let quiet = b5_opt_bool(DISPLAY, pairs, "صامت", false, line, col)?;
+    if target_s.is_none() {
+        target_s = b5_opt_str(DISPLAY, pairs, "مخرج", line, col)?;
+    }
+    let src_fs = search_resolve_path(ctx, &src_s);
+    let data = std::fs::read(&src_fs).map_err(|_| {
+        RioError::runtime(format!("الدالة {} الملف غير موجود: {}", DISPLAY, src_s), line, col)
+    })?;
+    let raw = b5_decompress(&data, DISPLAY, line, col)?;
+    // إلى_المخرج: بايتات بدل ملف، بلا كتابة
+    // وبلا حذف للأصل.
+    if to_out {
+        return Ok(b5_bytes_value(&raw));
+    }
+    let dst_fs = match target_s {
+        Some(t) => search_resolve_path(ctx, &t),
+        None => b5_compress_target(&src_fs, false),
+    };
+    if dst_fs.exists() && !overwrite {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} الهدف موجود: {} (استخدم كتابة_فوق)",
+                DISPLAY,
+                dst_fs.display()
+            ),
+            line,
+            col,
+        ));
+    }
+    if let Some(parent) = dst_fs.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&dst_fs, &raw).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر الكتابة في {}", DISPLAY, dst_fs.display()),
+            line,
+            col,
+        )
+    })?;
+    if del || !keep {
+        let _ = std::fs::remove_file(&src_fs);
+    }
+    if verbose && !quiet {
+        println!("فك ضغط {} ← {}", dst_fs.display(), src_s);
+    }
+    Ok(Value::Dict(vec![
+        ("مصدر".to_string(), Value::Str(src_s)),
+        (
+            "هدف".to_string(),
+            Value::Str(dst_fs.to_string_lossy().into_owned()),
+        ),
+        ("حجم_أصلي".to_string(), Value::Number(raw.len() as f64)),
+        (
+            "حجم_مضغوط".to_string(),
+            Value::Number(data.len() as f64),
+        ),
+    ]))
+}
+
+/// ضغط.اختبر(مسار_أو_بايتات) → منطقي.
+fn b5_compress_test(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ضغط.اختبر";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا واحدا لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let data = match &args[0] {
+        Value::List(_) => b5_need_bytes(DISPLAY, &args[0], line, col)?,
+        Value::Str(s) => {
+            let fs = search_resolve_path(ctx, s);
+            std::fs::read(&fs).map_err(|_| {
+                RioError::runtime(format!("الدالة {} الملف غير موجود: {}", DISPLAY, s), line, col)
+            })?
+        }
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} المعامل مسار أو بايتات", DISPLAY),
+                line,
+                col,
+            ))
+        }
+    };
+    Ok(Value::Bool(b5_lzss_decompress(&data).is_some()))
+}
+
+fn b5_compress_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("اضغط", native("اضغط", b5_compress_bytes)),
+        ("فك_ضغط", native("فك_ضغط", b5_decompress_bytes)),
+        ("اضغط_ملف", native("اضغط_ملف", b5_compress_file)),
+        ("فك_ضغط_ملف", native("فك_ضغط_ملف", b5_decompress_file)),
+        ("اختبر", native("اختبر", b5_compress_test)),
+    ]
+}
+
+/// --- أرشيف tar (ustar حقيقي + GNU longname) ---
+///
+/// صيغة حتمية: ترتيب المدخلات كما أُعطيت،
+/// uid/gid حقيقيان على يونكس و0 على ويندوز،
+/// والنمط مطبّع. الأسماء الطويلة (>100 بايت)
+/// بإدخال 'L'/'K'؛ ولا تقسيم بادئة.
+
+struct B5TarEntry {
+    name: String,
+    kind: B5Kind,
+    size: u64,
+    mtime: i64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    uname: String,
+    gname: String,
+    linkname: String,
+    data: Vec<u8>,
+}
+
+fn b5_tar_octal(v: u64, width: usize) -> Vec<u8> {
+    let s = format!("{:0width$o}", v, width = width);
+    let mut b = s.into_bytes();
+    b.push(0);
+    b
+}
+
+fn b5_tar_put(dst: &mut [u8], off: usize, bytes: &[u8]) {
+    let n = bytes.len().min(dst.len().saturating_sub(off));
+    dst[off..off + n].copy_from_slice(&bytes[..n]);
+}
+
+fn b5_tar_header(e: &B5TarEntry, name: &str, linkname: &str) -> [u8; 512] {
+    let mut h = [0u8; 512];
+    b5_tar_put(&mut h, 0, name.as_bytes());
+    b5_tar_put(&mut h, 100, &b5_tar_octal(e.mode as u64 & 0o7777, 7));
+    b5_tar_put(&mut h, 108, &b5_tar_octal(e.uid as u64, 7));
+    b5_tar_put(&mut h, 116, &b5_tar_octal(e.gid as u64, 7));
+    b5_tar_put(&mut h, 124, &b5_tar_octal(e.size, 11));
+    b5_tar_put(&mut h, 136, &b5_tar_octal(e.mtime.max(0) as u64, 11));
+    // حقل المجموع الاختباري فراغات أثناء الحساب.
+    for b in h.iter_mut().skip(148).take(8) {
+        *b = b' ';
+    }
+    let flag: u8 = match e.kind {
+        B5Kind::Dir => b'5',
+        B5Kind::Link => b'2',
+        _ => b'0',
+    };
+    h[156] = flag;
+    b5_tar_put(&mut h, 157, linkname.as_bytes());
+    b5_tar_put(&mut h, 257, b"ustar\0");
+    b5_tar_put(&mut h, 263, b"00");
+    b5_tar_put(&mut h, 265, e.uname.as_bytes());
+    b5_tar_put(&mut h, 297, e.gname.as_bytes());
+    b5_tar_put(&mut h, 329, &b5_tar_octal(0, 7));
+    b5_tar_put(&mut h, 337, &b5_tar_octal(0, 7));
+    let sum: u32 = h.iter().map(|b| *b as u32).sum();
+    let mut chk = format!("{:06o}", sum).into_bytes();
+    chk.push(0);
+    chk.push(b' ');
+    b5_tar_put(&mut h, 148, &chk);
+    h
+}
+
+fn b5_tar_write(entries: &[B5TarEntry]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    for e in entries {
+        if e.name.as_bytes().len() > 100 {
+            let long = B5TarEntry {
+                name: "././@LongLink".to_string(),
+                kind: B5Kind::File,
+                size: (e.name.as_bytes().len() + 1) as u64,
+                mtime: 0,
+                mode: 0o644,
+                uid: 0,
+                gid: 0,
+                uname: String::new(),
+                gname: String::new(),
+                linkname: String::new(),
+                data: {
+                    let mut d = e.name.as_bytes().to_vec();
+                    d.push(0);
+                    d
+                },
+            };
+            let hdr = b5_tar_header(&long, &long.name.clone(), "");
+            out.extend_from_slice(&hdr);
+            out.extend_from_slice(&long.data);
+            let pad = (512 - (long.data.len() % 512)) % 512;
+            out.extend(std::iter::repeat(0u8).take(pad));
+        }
+        if e.linkname.as_bytes().len() > 100 {
+            let long = B5TarEntry {
+                name: "././@LongLink".to_string(),
+                kind: B5Kind::File,
+                size: (e.linkname.as_bytes().len() + 1) as u64,
+                mtime: 0,
+                mode: 0o644,
+                uid: 0,
+                gid: 0,
+                uname: String::new(),
+                gname: String::new(),
+                linkname: String::new(),
+                data: {
+                    let mut d = e.linkname.as_bytes().to_vec();
+                    d.push(0);
+                    d
+                },
+            };
+            let hdr = b5_tar_header(&long, &long.name.clone(), "");
+            // إدخال الرابط الطويل نوعه 'K'.
+            let mut hdr = hdr;
+            hdr[156] = b'K';
+            // أعد حساب المجموع بعد تغيير النوع.
+            for b in hdr.iter_mut().skip(148).take(8) {
+                *b = b' ';
+            }
+            let sum: u32 = hdr.iter().map(|b| *b as u32).sum();
+            let mut chk = format!("{:06o}", sum).into_bytes();
+            chk.push(0);
+            chk.push(b' ');
+            b5_tar_put(&mut hdr, 148, &chk);
+            out.extend_from_slice(&hdr);
+            out.extend_from_slice(&long.data);
+            let pad = (512 - (long.data.len() % 512)) % 512;
+            out.extend(std::iter::repeat(0u8).take(pad));
+        }
+        let hdr = b5_tar_header(e, &e.name.clone(), &e.linkname.clone());
+        out.extend_from_slice(&hdr);
+        if e.kind == B5Kind::File {
+            out.extend_from_slice(&e.data);
+            let pad = (512 - (e.data.len() % 512)) % 512;
+            out.extend(std::iter::repeat(0u8).take(pad));
+        }
+    }
+    out.extend(std::iter::repeat(0u8).take(1024));
+    out
+}
+
+fn b5_tar_parse_octal(field: &[u8]) -> Option<u64> {
+    let mut v: u64 = 0;
+    let mut any = false;
+    for &b in field {
+        if b == 0 || b == b' ' {
+            if any {
+                break;
+            }
+            continue;
+        }
+        if !(b'0'..=b'7').contains(&b) {
+            return None;
+        }
+        any = true;
+        v = v.checked_mul(8)?.checked_add((b - b'0') as u64)?;
+    }
+    if any {
+        Some(v)
+    } else {
+        Some(0)
+    }
+}
+
+fn b5_tar_field_str(field: &[u8]) -> String {
+    let end = field.iter().position(|b| *b == 0).unwrap_or(field.len());
+    String::from_utf8_lossy(&field[..end]).into_owned()
+}
+
+/// تحليل أرشيف tar كاملا (بايتات خام، بلا إطار
+/// ضغط)؛ خطأ نصي عند أول خلل.
+fn b5_tar_parse(data: &[u8]) -> Result<Vec<B5TarEntry>, String> {
+    if data.len() % 512 != 0 {
+        return Err("الأرشيف مقطوع (ليس مضاعف 512)".to_string());
+    }
+    let mut entries: Vec<B5TarEntry> = Vec::new();
+    let mut pos = 0usize;
+    let mut long_name: Option<String> = None;
+    let mut long_link: Option<String> = None;
+    while pos + 512 <= data.len() {
+        let h = &data[pos..pos + 512];
+        pos += 512;
+        if h.iter().all(|b| *b == 0) {
+            break;
+        }
+        // تحقق المجموع (بلا إشارة وموقعة).
+        let stored = b5_tar_parse_octal(&h[148..156]).unwrap_or(u64::MAX);
+        let mut sum_u: u32 = 0;
+        let mut sum_s: i32 = 0;
+        for (i, b) in h.iter().enumerate() {
+            let v = if (148..156).contains(&i) { b' ' } else { *b };
+            sum_u += v as u32;
+            sum_s += v as i8 as i32;
+        }
+        if stored as u32 != sum_u && stored as i32 != sum_s {
+            return Err("مجموع اختباري خاطئ في ترويسة tar".to_string());
+        }
+        let name_field = b5_tar_field_str(&h[0..100]);
+        let prefix = b5_tar_field_str(&h[345..500]);
+        let mut name = if prefix.is_empty() {
+            name_field
+        } else {
+            format!("{}/{}", prefix, name_field)
+        };
+        let mode = b5_tar_parse_octal(&h[100..108])
+            .ok_or("نمط غير ثماني في ترويسة tar")? as u32;
+        let uid = b5_tar_parse_octal(&h[108..116])
+            .ok_or("مالك غير ثماني في ترويسة tar")? as u32;
+        let gid = b5_tar_parse_octal(&h[116..124])
+            .ok_or("مجموعة غير ثمانية في ترويسة tar")? as u32;
+        let size = b5_tar_parse_octal(&h[124..136])
+            .ok_or("حجم غير ثماني في ترويسة tar")?;
+        let mtime = b5_tar_parse_octal(&h[136..148])
+            .ok_or("وقت غير ثماني في ترويسة tar")? as i64;
+        let flag = h[156];
+        let mut linkname = b5_tar_field_str(&h[157..257]);
+        let uname = b5_tar_field_str(&h[265..297]);
+        let gname = b5_tar_field_str(&h[297..329]);
+        if flag == b'L' {
+            let need = size as usize;
+            if pos + need > data.len() {
+                return Err("اسم طويل مقطوع في tar".to_string());
+            }
+            let raw = &data[pos..pos + need];
+            let end = raw.iter().position(|b| *b == 0).unwrap_or(raw.len());
+            long_name = Some(String::from_utf8_lossy(&raw[..end]).into_owned());
+            pos += (need + 511) / 512 * 512;
+            continue;
+        }
+        if flag == b'K' {
+            let need = size as usize;
+            if pos + need > data.len() {
+                return Err("رابط طويل مقطوع في tar".to_string());
+            }
+            let raw = &data[pos..pos + need];
+            let end = raw.iter().position(|b| *b == 0).unwrap_or(raw.len());
+            long_link = Some(String::from_utf8_lossy(&raw[..end]).into_owned());
+            pos += (need + 511) / 512 * 512;
+            continue;
+        }
+        if flag == b'x' || flag == b'g' {
+            // pax ممتد: تُتخطى بياناته.
+            let need = size as usize;
+            if pos + need > data.len() {
+                return Err("بيانات pax مقطوعة في tar".to_string());
+            }
+            pos += (need + 511) / 512 * 512;
+            continue;
+        }
+        if let Some(ln) = long_name.take() {
+            name = ln;
+        }
+        if let Some(ll) = long_link.take() {
+            linkname = ll;
+        }
+        let kind = match flag {
+            b'0' | 0 => B5Kind::File,
+            b'5' => B5Kind::Dir,
+            b'2' => B5Kind::Link,
+            _ => {
+                return Err(format!(
+                    "نوع إدخال tar غير مدعوم: {}",
+                    flag as char
+                ))
+            }
+        };
+        let need = size as usize;
+        if pos + need > data.len() {
+            return Err("بيانات إدخال مقطوعة في tar".to_string());
+        }
+        let entry_data = if kind == B5Kind::File {
+            data[pos..pos + need].to_vec()
+        } else {
+            Vec::new()
+        };
+        pos += (need + 511) / 512 * 512;
+        entries.push(B5TarEntry {
+            name,
+            kind,
+            size,
+            mtime,
+            mode,
+            uid,
+            gid,
+            uname,
+            gname,
+            linkname,
+            data: entry_data,
+        });
+    }
+    Ok(entries)
+}
+
+/// قراءة أرشيف من ملف (يكشف إطار ضغط نيفا
+/// تلقائيا ويفكه)؛ ويعيد (المدخلات، مضغوط؟).
+fn b5_tar_read_file(
+    fs: &std::path::Path,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(Vec<B5TarEntry>, bool)> {
+    let raw = std::fs::read(fs).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} الأرشيف غير موجود: {}", display, fs.display()),
+            line,
+            col,
+        )
+    })?;
+    let compressed = raw.len() >= 4 && &raw[0..4] == b"NVZ1";
+    let data = if compressed {
+        b5_decompress(&raw, display, line, col)?
+    } else {
+        raw
+    };
+    match b5_tar_parse(&data) {
+        Ok(es) => Ok((es, compressed)),
+        Err(m) => Err(RioError::runtime(
+            format!("الدالة {} أرشيف تالف: {}", display, m),
+            line,
+            col,
+        )),
+    }
+}
+
+/// اسم أرشيفي لمسار مدخل: كما أُعطي بفواصل
+/// «/» وبلا «./» بادئة وبلا «/» بادئة.
+fn b5_tar_arc_name(p: &str) -> String {
+    let mut s = p.replace('\\', "/");
+    while let Some(stripped) = s.strip_prefix("./") {
+        s = stripped.to_string();
+    }
+    while let Some(stripped) = s.strip_prefix('/') {
+        s = stripped.to_string();
+    }
+    s
+}
+
+/// جمع مدخلات أرشيف (ملفات/مجلدات تكراريا
+/// مرتبة بالاسم) من قائمة مسارات.
+fn b5_tar_collect(
+    ctx: &mut dyn HandlerCaller,
+    inputs: &[String],
+    exclude: &[String],
+    links_as_links: bool,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<B5TarEntry>> {
+    let mut out: Vec<B5TarEntry> = Vec::new();
+    for inp in inputs {
+        let fs = search_resolve_path(ctx, inp);
+        let meta = match b5_stat(&fs) {
+            Some(m) => m,
+            None => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} المدخل غير موجود: {}", display, inp),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let arc = b5_tar_arc_name(inp);
+        if meta.kind == B5Kind::Dir {
+            let mut w = B5Walk::new();
+            w.include_hidden = true;
+            w.respect_ignore = false;
+            w.follow_links = false;
+            w.min_depth = 0;
+            let mut es: Vec<B5Entry> = Vec::new();
+            let mut ignore: Vec<String> = Vec::new();
+            b5_walk_dir(&fs, "", 0, &mut w, &mut ignore, &mut es);
+            // المدخل نفسه أولا ثم الأبناء مرتبين.
+            let mut items: Vec<(String, B5Meta, bool, std::path::PathBuf)> = Vec::new();
+            items.push((
+                format!("{}/", arc.trim_end_matches('/')),
+                meta.clone(),
+                meta.is_link,
+                fs.clone(),
+            ));
+            let mut children: Vec<&B5Entry> = es.iter().collect();
+            children.sort_by(|a, b| a.display.cmp(&b.display));
+            for c in children {
+                let rel = c
+                    .fs
+                    .strip_prefix(&fs)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| c.rel.clone());
+                let name = if c.eff.kind == B5Kind::Dir {
+                    format!("{}/{}/", arc.trim_end_matches('/'), rel)
+                } else {
+                    format!("{}/{}", arc.trim_end_matches('/'), rel)
+                };
+                items.push((name, c.eff.clone(), c.meta.is_link, c.fs.clone()));
+            }
+            for (name, m, is_link, ifs) in items {
+                if !exclude.is_empty()
+                    && b5_glob_any(exclude, &name, &name, false, line, col)
+                {
+                    continue;
+                }
+                out.push(b5_tar_entry_from_meta(
+                    ctx,
+                    &ifs,
+                    &name,
+                    &m,
+                    is_link,
+                    links_as_links,
+                    display,
+                    line,
+                    col,
+                )?);
+            }
+        } else {
+            if !exclude.is_empty() && b5_glob_any(exclude, &arc, &arc, false, line, col) {
+                continue;
+            }
+            out.push(b5_tar_entry_from_meta(
+                ctx,
+                &fs,
+                &arc,
+                &meta,
+                meta.is_link,
+                links_as_links,
+                display,
+                line,
+                col,
+            )?);
+        }
+    }
+    Ok(out)
+}
+
+/// إدخال tar واحد من ميتا مسار (يقرأ محتوى
+/// الملف؛ والرابط كما هو أو متبوعا).
+fn b5_tar_entry_from_meta(
+    ctx: &mut dyn HandlerCaller,
+    fs: &std::path::Path,
+    name: &str,
+    m: &B5Meta,
+    is_link: bool,
+    links_as_links: bool,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<B5TarEntry> {
+    let _ = ctx;
+    let (uname, gname) = (
+        b5_owner_name(m.uid, false),
+        b5_owner_name(m.gid, true),
+    );
+    if is_link && links_as_links {
+        return Ok(B5TarEntry {
+            name: name.to_string(),
+            kind: B5Kind::Link,
+            size: 0,
+            mtime: m.mtime,
+            mode: m.mode,
+            uid: m.uid,
+            gid: m.gid,
+            uname,
+            gname,
+            linkname: m.target.clone().unwrap_or_default(),
+            data: Vec::new(),
+        });
+    }
+    if m.kind == B5Kind::Dir {
+        return Ok(B5TarEntry {
+            name: if name.ends_with('/') {
+                name.to_string()
+            } else {
+                format!("{}/", name)
+            },
+            kind: B5Kind::Dir,
+            size: 0,
+            mtime: m.mtime,
+            mode: m.mode,
+            uid: m.uid,
+            gid: m.gid,
+            uname,
+            gname,
+            linkname: String::new(),
+            data: Vec::new(),
+        });
+    }
+    if m.kind != B5Kind::File {
+        return Err(RioError::runtime(
+            format!("الدالة {} نوع ملف غير مدعوم في tar: {}", display, name),
+            line,
+            col,
+        ));
+    }
+    if m.size > 0o77777777777 {
+        return Err(RioError::runtime(
+            format!("الدالة {} الملف أكبر من حد tar: {}", display, name),
+            line,
+            col,
+        ));
+    }
+    let data = std::fs::read(fs).map_err(|_| {
+        RioError::runtime(format!("الدالة {} تعذر قراءة {}", display, name), line, col)
+    })?;
+    Ok(B5TarEntry {
+        name: name.to_string(),
+        kind: B5Kind::File,
+        size: data.len() as u64,
+        mtime: m.mtime,
+        mode: m.mode,
+        uid: m.uid,
+        gid: m.gid,
+        uname,
+        gname,
+        linkname: String::new(),
+        data,
+    })
+}
+
+/// مدخلات من قائمة (نص أو قائمة نصوص) أو من
+/// ملف قائمة؛ وتُدمج معا.
+fn b5_tar_inputs(
+    ctx: &mut dyn HandlerCaller,
+    v: &Value,
+    list_file: Option<&str>,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<String>> {
+    let mut out: Vec<String> = match v {
+        Value::List(items) => {
+            let mut v = Vec::new();
+            for it in items {
+                v.push(need_string(display, it, line, col)?);
+            }
+            v
+        }
+        Value::Str(s) => vec![s.clone()],
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} المدخلات قائمة نصوص", display),
+                line,
+                col,
+            ))
+        }
+    };
+    if let Some(f) = list_file {
+        out.extend(b5_load_patterns(ctx, display, f, line, col)?);
+    }
+    Ok(out)
+}
+
+const B5_TAR_CREATE_KEYS: &[&str] = &[
+    "مضغوط",
+    "صيغة",
+    "استثن",
+    "مفصل",
+    "من_قائمة",
+    "روابط_كروابط",
+    "صامت",
+    "كتابة_فوق",
+];
+
+const B5_TAR_EXTRACT_KEYS: &[&str] = &[
+    "ملفات",
+    "احفظ_الأذونات",
+    "اكتب_فوق",
+    "بلا_كتابة_فوق",
+    "احتفظ_بالجديد",
+    "احذف_الأرشيف_بعد_الفك",
+    "مفصل",
+    "صامت",
+];
+
+fn b5_tar_create(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أرشيف.أنشئ_تار";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let target_s = need_string(DISPLAY, &args[0], line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, B5_TAR_CREATE_KEYS, line, col)?;
+    let compressed = b5_opt_bool(DISPLAY, pairs, "مضغوط", false, line, col)?;
+    if let Some(f) = b5_opt_str(DISPLAY, pairs, "صيغة", line, col)? {
+        if f != "تار" {
+            return Err(RioError::runtime(
+                format!("الدالة {} الصيغة الوحيدة في الدفعة: تار", DISPLAY),
+                line,
+                col,
+            ));
+        }
+    }
+    let exclude = b5_opt_strs(DISPLAY, pairs, "استثن", line, col)?;
+    let verbose = b5_opt_bool(DISPLAY, pairs, "مفصل", false, line, col)?;
+    let list_file = b5_opt_str(DISPLAY, pairs, "من_قائمة", line, col)?;
+    let links = b5_opt_bool(DISPLAY, pairs, "روابط_كروابط", true, line, col)?;
+    let quiet = b5_opt_bool(DISPLAY, pairs, "صامت", false, line, col)?;
+    let overwrite = b5_opt_bool(DISPLAY, pairs, "كتابة_فوق", false, line, col)?;
+    let inputs = b5_tar_inputs(ctx, &args[1], list_file.as_deref(), DISPLAY, line, col)?;
+    let entries = b5_tar_collect(ctx, &inputs, &exclude, links, DISPLAY, line, col)?;
+    let mut bytes = b5_tar_write(&entries);
+    if compressed {
+        bytes = b5_compress(&bytes, 6, DISPLAY, line, col)?;
+    }
+    let target_fs = search_resolve_path(ctx, &target_s);
+    if target_fs.exists() && !overwrite {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} الهدف موجود: {} (استخدم كتابة_فوق)",
+                DISPLAY,
+                target_s
+            ),
+            line,
+            col,
+        ));
+    }
+    if let Some(parent) = target_fs.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&target_fs, &bytes).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر الكتابة في {}", DISPLAY, target_s),
+            line,
+            col,
+        )
+    })?;
+    let names: Vec<String> = entries.iter().map(|e| e.name.clone()).collect();
+    if verbose && !quiet {
+        for n in &names {
+            println!("{}", n);
+        }
+    }
+    let mut out: Vec<(String, Value)> = vec![
+        ("هدف".to_string(), Value::Str(target_s)),
+        ("ملفات".to_string(), Value::Number(entries.len() as f64)),
+        ("حجم".to_string(), Value::Number(bytes.len() as f64)),
+    ];
+    if verbose {
+        out.push((
+            "أسماء".to_string(),
+            Value::List(names.into_iter().map(Value::Str).collect()),
+        ));
+    }
+    Ok(Value::Dict(out))
+}
+
+/// اسم أرشيفي آمن للاستخراج (لا مطلق ولا «..»).
+fn b5_tar_safe_name(name: &str) -> bool {
+    if name.starts_with('/') || name.starts_with('\\') {
+        return false;
+    }
+    !name.split('/').any(|p| p == "..")
+}
+
+fn b5_tar_extract(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أرشيف.استخرج_تار";
+    if args.is_empty() || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا إلى ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let src_s = need_string(DISPLAY, &args[0], line, col)?;
+    let mut target_s = ".".to_string();
+    let mut opt_idx = 1usize;
+    if args.len() >= 2 {
+        if let Value::Str(s) = &args[1] {
+            target_s = s.clone();
+            opt_idx = 2;
+        }
+    }
+    let pairs = if args.len() > opt_idx {
+        b5_opts(DISPLAY, args, opt_idx, line, col)?
+    } else {
+        &[][..]
+    };
+    b5_no_unknown(DISPLAY, pairs, B5_TAR_EXTRACT_KEYS, line, col)?;
+    let only = b5_opt_strs(DISPLAY, pairs, "ملفات", line, col)?;
+    let keep_perms = b5_opt_bool(DISPLAY, pairs, "احفظ_الأذونات", true, line, col)?;
+    let overwrite = b5_opt_bool(DISPLAY, pairs, "اكتب_فوق", true, line, col)?;
+    let no_overwrite = b5_opt_bool(DISPLAY, pairs, "بلا_كتابة_فوق", false, line, col)?;
+    let keep_newer = b5_opt_bool(DISPLAY, pairs, "احتفظ_بالجديد", false, line, col)?;
+    let delete_after = b5_opt_bool(DISPLAY, pairs, "احذف_الأرشيف_بعد_الفك", false, line, col)?;
+    let verbose = b5_opt_bool(DISPLAY, pairs, "مفصل", false, line, col)?;
+    let quiet = b5_opt_bool(DISPLAY, pairs, "صامت", false, line, col)?;
+    let src_fs = search_resolve_path(ctx, &src_s);
+    let (entries, _) = b5_tar_read_file(&src_fs, DISPLAY, line, col)?;
+    let dst_root = search_resolve_path(ctx, &target_s);
+    let mut extracted = 0i64;
+    let mut skipped = 0i64;
+    let mut dir_times: Vec<(std::path::PathBuf, i64, i64, u32)> = Vec::new();
+    for e in &entries {
+        if !only.is_empty() && !only.iter().any(|n| n == &e.name) {
+            continue;
+        }
+        if !b5_tar_safe_name(&e.name) {
+            return Err(RioError::runtime(
+                format!("الدالة {} اسم غير آمن في الأرشيف: {}", DISPLAY, e.name),
+                line,
+                col,
+            ));
+        }
+        let dst = dst_root.join(&e.name);
+        let exists = std::fs::symlink_metadata(&dst).is_ok();
+        if e.kind == B5Kind::Dir {
+            if !exists {
+                if std::fs::create_dir_all(&dst).is_err() {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} تعذر إنشاء المجلد {}", DISPLAY, e.name),
+                        line,
+                        col,
+                    ));
+                }
+                extracted += 1;
+            }
+            dir_times.push((dst, e.mtime, e.mtime, e.mode));
+            continue;
+        }
+        if exists && (no_overwrite || !overwrite) {
+            skipped += 1;
+            continue;
+        }
+        if keep_newer {
+            if let Some(dm) = b5_stat(&dst) {
+                if dm.mtime >= e.mtime {
+                    skipped += 1;
+                    continue;
+                }
+            }
+        }
+        if let Some(parent) = dst.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if exists {
+            // نوع مختلف موجود: خطأ لا حذف.
+            let is_dir = std::fs::metadata(&dst).map(|m| m.is_dir()).unwrap_or(false);
+            let want_dir = false;
+            if is_dir != want_dir {
+                return Err(RioError::runtime(
+                    format!("الدالة {} الهدف موجود بنوع مختلف: {}", DISPLAY, e.name),
+                    line,
+                    col,
+                ));
+            }
+            let _ = std::fs::remove_file(&dst);
+            let _ = std::fs::remove_dir_all(&dst);
+        }
+        if e.kind == B5Kind::Link {
+            #[cfg(unix)]
+            {
+                if std::os::unix::fs::symlink(&e.linkname, &dst).is_err() {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} تعذر إنشاء الرابط {}", DISPLAY, e.name),
+                        line,
+                        col,
+                    ));
+                }
+            }
+            #[cfg(windows)]
+            {
+                if std::os::windows::fs::symlink_file(&e.linkname, &dst).is_err()
+                    && std::os::windows::fs::symlink_dir(&e.linkname, &dst).is_err()
+                {
+                    skipped += 1;
+                    continue;
+                }
+            }
+            #[cfg(not(any(unix, windows)))]
+            {
+                skipped += 1;
+                continue;
+            }
+            extracted += 1;
+        } else {
+            std::fs::write(&dst, &e.data).map_err(|_| {
+                RioError::runtime(
+                    format!("الدالة {} تعذر الكتابة في {}", DISPLAY, e.name),
+                    line,
+                    col,
+                )
+            })?;
+            if keep_perms {
+                b5_set_mode(&dst, e.mode);
+            }
+            b5_set_times(&dst, e.mtime, e.mtime);
+            extracted += 1;
+        }
+        if verbose && !quiet {
+            println!("{}", e.name);
+        }
+    }
+    // أوقات المجلدات بعد أبنائها.
+    for (d, at, mt, mode) in dir_times {
+        b5_set_times(&d, at, mt);
+        if keep_perms {
+            b5_set_mode(&d, mode);
+        }
+    }
+    if delete_after {
+        let _ = std::fs::remove_file(&src_fs);
+    }
+    Ok(Value::Dict(vec![
+        ("هدف".to_string(), Value::Str(target_s)),
+        ("ملفات".to_string(), Value::Number(entries.len() as f64)),
+        ("مستخرج".to_string(), Value::Number(extracted as f64)),
+        ("متخطى".to_string(), Value::Number(skipped as f64)),
+    ]))
+}
+
+fn b5_tar_list(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أرشيف.اسرد_تار";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let src_s = need_string(DISPLAY, &args[0], line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["مفصل", "صامت"], line, col)?;
+    let verbose = b5_opt_bool(DISPLAY, pairs, "مفصل", false, line, col)?;
+    let quiet = b5_opt_bool(DISPLAY, pairs, "صامت", false, line, col)?;
+    let src_fs = search_resolve_path(ctx, &src_s);
+    let (entries, _) = b5_tar_read_file(&src_fs, DISPLAY, line, col)?;
+    let mut out: Vec<Value> = Vec::new();
+    for e in &entries {
+        if verbose && !quiet {
+            println!("{}", e.name);
+        }
+        let kind = match e.kind {
+            B5Kind::Dir => "مجلد",
+            B5Kind::Link => "رابط",
+            _ => "ملف",
+        };
+        let tmp_meta = B5Meta {
+            kind: e.kind,
+            size: e.size,
+            mtime: e.mtime,
+            atime: e.mtime,
+            btime: None,
+            mode: e.mode,
+            uid: e.uid,
+            gid: e.gid,
+            nlink: 1,
+            is_link: e.kind == B5Kind::Link,
+            target: None,
+        };
+        let mut d: Vec<(String, Value)> = vec![
+            ("اسم".to_string(), Value::Str(e.name.clone())),
+            ("نوع".to_string(), Value::Str(kind.to_string())),
+            ("حجم".to_string(), Value::Number(e.size as f64)),
+            ("وقت_تعديل".to_string(), Value::Number(e.mtime as f64)),
+            ("أذونات".to_string(), Value::Str(b5_mode_str(&tmp_meta))),
+        ];
+        if e.kind == B5Kind::Link {
+            d.push((
+                "رابط".to_string(),
+                Value::Str(e.linkname.clone()),
+            ));
+        }
+        out.push(Value::Dict(d));
+    }
+    Ok(Value::List(out))
+}
+
+const B5_TAR_APPEND_KEYS: &[&str] = &[
+    "مضغوط",
+    "استثن",
+    "مفصل",
+    "من_قائمة",
+    "روابط_كروابط",
+    "صامت",
+];
+
+/// كتابة أرشيف محدث (إلحاق أو تحديث) مع حفظ
+/// حالة الضغط القديمة إن لم يُطلب غيرها.
+fn b5_tar_write_back(
+    ctx: &mut dyn HandlerCaller,
+    target_fs: &std::path::Path,
+    entries: &[B5TarEntry],
+    pairs: &[(String, Value)],
+    old_compressed: bool,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(bool, usize)> {
+    let compressed = match dict_get(pairs, "مضغوط") {
+        Some(Value::Bool(b)) => *b,
+        _ => old_compressed,
+    };
+    let mut bytes = b5_tar_write(entries);
+    if compressed {
+        bytes = b5_compress(&bytes, 6, display, line, col)?;
+    }
+    std::fs::write(target_fs, &bytes).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر الكتابة في {}", display, target_fs.display()),
+            line,
+            col,
+        )
+    })?;
+    let _ = ctx;
+    Ok((compressed, bytes.len()))
+}
+
+fn b5_tar_append(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أرشيف.ألحق_تار";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let target_s = need_string(DISPLAY, &args[0], line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, B5_TAR_APPEND_KEYS, line, col)?;
+    let exclude = b5_opt_strs(DISPLAY, pairs, "استثن", line, col)?;
+    let verbose = b5_opt_bool(DISPLAY, pairs, "مفصل", false, line, col)?;
+    let list_file = b5_opt_str(DISPLAY, pairs, "من_قائمة", line, col)?;
+    let links = b5_opt_bool(DISPLAY, pairs, "روابط_كروابط", true, line, col)?;
+    let quiet = b5_opt_bool(DISPLAY, pairs, "صامت", false, line, col)?;
+    let inputs = b5_tar_inputs(ctx, &args[1], list_file.as_deref(), DISPLAY, line, col)?;
+    let target_fs = search_resolve_path(ctx, &target_s);
+    let (mut entries, old_compressed) = b5_tar_read_file(&target_fs, DISPLAY, line, col)?;
+    let added = b5_tar_collect(ctx, &inputs, &exclude, links, DISPLAY, line, col)?;
+    let n = added.len();
+    if verbose && !quiet {
+        for e in &added {
+            println!("{}", e.name);
+        }
+    }
+    entries.extend(added);
+    let (_, size) =
+        b5_tar_write_back(ctx, &target_fs, &entries, pairs, old_compressed, DISPLAY, line, col)?;
+    Ok(Value::Dict(vec![
+        ("هدف".to_string(), Value::Str(target_s)),
+        ("ملفات".to_string(), Value::Number(entries.len() as f64)),
+        ("أضيف".to_string(), Value::Number(n as f64)),
+        ("حجم".to_string(), Value::Number(size as f64)),
+    ]))
+}
+
+fn b5_tar_update(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أرشيف.حدث_تار";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let target_s = need_string(DISPLAY, &args[0], line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, B5_TAR_APPEND_KEYS, line, col)?;
+    let exclude = b5_opt_strs(DISPLAY, pairs, "استثن", line, col)?;
+    let verbose = b5_opt_bool(DISPLAY, pairs, "مفصل", false, line, col)?;
+    let list_file = b5_opt_str(DISPLAY, pairs, "من_قائمة", line, col)?;
+    let links = b5_opt_bool(DISPLAY, pairs, "روابط_كروابط", true, line, col)?;
+    let quiet = b5_opt_bool(DISPLAY, pairs, "صامت", false, line, col)?;
+    let inputs = b5_tar_inputs(ctx, &args[1], list_file.as_deref(), DISPLAY, line, col)?;
+    let target_fs = search_resolve_path(ctx, &target_s);
+    let (mut entries, old_compressed) = b5_tar_read_file(&target_fs, DISPLAY, line, col)?;
+    let fresh = b5_tar_collect(ctx, &inputs, &exclude, links, DISPLAY, line, col)?;
+    let mut added = 0i64;
+    let mut updated = 0i64;
+    let mut skipped = 0i64;
+    for ne in fresh {
+        match entries.iter().position(|e| e.name == ne.name) {
+            Some(idx) => {
+                if entries[idx].mtime >= ne.mtime {
+                    skipped += 1;
+                } else {
+                    entries.remove(idx);
+                    if verbose && !quiet {
+                        println!("{}", ne.name);
+                    }
+                    entries.push(ne);
+                    updated += 1;
+                }
+            }
+            None => {
+                if verbose && !quiet {
+                    println!("{}", ne.name);
+                }
+                entries.push(ne);
+                added += 1;
+            }
+        }
+    }
+    let (_, size) =
+        b5_tar_write_back(ctx, &target_fs, &entries, pairs, old_compressed, DISPLAY, line, col)?;
+    Ok(Value::Dict(vec![
+        ("هدف".to_string(), Value::Str(target_s)),
+        ("ملفات".to_string(), Value::Number(entries.len() as f64)),
+        ("أضيف".to_string(), Value::Number(added as f64)),
+        ("حدث".to_string(), Value::Number(updated as f64)),
+        ("متخطى".to_string(), Value::Number(skipped as f64)),
+        ("حجم".to_string(), Value::Number(size as f64)),
+    ]))
+}
+
+fn b5_tar_verify(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أرشيف.تحقق_تار";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا واحدا لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let src_s = need_string(DISPLAY, &args[0], line, col)?;
+    let fs = search_resolve_path(ctx, &src_s);
+    let raw = std::fs::read(&fs).map_err(|_| {
+        RioError::runtime(format!("الدالة {} الأرشيف غير موجود: {}", DISPLAY, src_s), line, col)
+    })?;
+    let data = if raw.len() >= 4 && &raw[0..4] == b"NVZ1" {
+        match b5_decompress(&raw, DISPLAY, line, col) {
+            Ok(d) => d,
+            Err(_) => return Ok(Value::Bool(false)),
+        }
+    } else {
+        raw
+    };
+    Ok(Value::Bool(b5_tar_parse(&data).is_ok()))
+}
+
+fn b5_tar_size(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أرشيف.حجم_تار";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا واحدا لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let src_s = need_string(DISPLAY, &args[0], line, col)?;
+    let fs = search_resolve_path(ctx, &src_s);
+    let (entries, _) = b5_tar_read_file(&fs, DISPLAY, line, col)?;
+    let files = entries.len() as f64;
+    let total: u64 = entries.iter().map(|e| e.size).sum();
+    let arc = std::fs::metadata(&fs).map(|m| m.len()).unwrap_or(0);
+    Ok(Value::Dict(vec![
+        ("ملفات".to_string(), Value::Number(files)),
+        ("حجم_الملفات".to_string(), Value::Number(total as f64)),
+        ("حجم_الأرشيف".to_string(), Value::Number(arc as f64)),
+    ]))
+}
+
+fn b5_tar_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("أنشئ_تار", native("أنشئ_تار", b5_tar_create)),
+        ("استخرج_تار", native("استخرج_تار", b5_tar_extract)),
+        ("اسرد_تار", native("اسرد_تار", b5_tar_list)),
+        ("ألحق_تار", native("ألحق_تار", b5_tar_append)),
+        ("حدث_تار", native("حدث_تار", b5_tar_update)),
+        ("تحقق_تار", native("تحقق_تار", b5_tar_verify)),
+        ("حجم_تار", native("حجم_تار", b5_tar_size)),
+    ]
+}

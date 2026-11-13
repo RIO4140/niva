@@ -135,6 +135,7 @@ void nv_std_text_fill(NvDict *d);
 void nv_std_bases_fill(NvDict *d);
 void nv_std_units_fill(NvDict *d);
 void nv_std_archive_fill(NvDict *d);
+void nv_std_b5tar_fill(NvDict *d);
 void nv_std_password_fill(NvDict *d);
 void nv_std_fake_fill(NvDict *d);
 void nv_std_calendar_fill(NvDict *d);
@@ -153,6 +154,12 @@ void nv_std_diff_fill(NvDict *d);
 void nv_std_fzf_fill(NvDict *d);
 void nv_std_display_fill(NvDict *d);
 void nv_std_less_fill(NvDict *d);
+void nv_std_b5search_fill(NvDict *d);
+void nv_std_b5namebase_fill(NvDict *d);
+void nv_std_b5xargs_fill(NvDict *d);
+void nv_std_b5list_fill(NvDict *d);
+void nv_std_b5sync_fill(NvDict *d);
+void nv_std_b5compress_fill(NvDict *d);
 void nv_std_tables_fill(NvDict *d);
 // BEGIN J12-GEN c-fill-decls
 
@@ -337,8 +344,8 @@ void nv_std_boxed_fill(NvDict *d);
 
 // ---------- السجل ----------
 // وحدة أصلية بالاسم أو NULL (مؤشر إلى قيمة ساكنة مخزنة).
-static NvValue nv_std_modules[59]; // لينكس4: +3 (محدد/عرض/عارض) // ج6: +5 (دقة/كسر/مركب/بت/معلب)؛ ج13: +5 (صفحات/بريد/محادثة/نقل_ملفات/وقت_شبكة)؛ ج15: +1 (لغات)؛ لينكس3: +1 (فرق)
-static const char *nv_std_names[59] = {
+static NvValue nv_std_modules[65]; // لينكس4: +3 (محدد/عرض/عارض) // ج6: +5 (دقة/كسر/مركب/بت/معلب)؛ ج13: +5 (صفحات/بريد/محادثة/نقل_ملفات/وقت_شبكة)؛ ج15: +1 (لغات)؛ لينكس3: +1 (فرق)؛ لينكس5: +6 (بحث_ملفات/قاعدة_أسماء/مرر_أسماء/سرد/مزامنة/ضغط)
+static const char *nv_std_names[65] = {
     "رياضيات", "عشوائي", "وقت", "شبكة", "عمليات", "ذاكرة",
     "ملفات", "نظام", "تواصل", "تشفير", "أمن", "غير_متزامن", "جهاز",
     "نمط", "جسون", "اكسمل", "يامال", "قوالب", "تحقق",
@@ -356,6 +363,8 @@ static const char *nv_std_names[59] = {
     "فرق",
     // لينكس4: وحدات محدد وعرض وعارض.
     "محدد", "عرض", "عارض",
+    // لينكس5: وحدات موجة الملفات.
+    "بحث_ملفات", "قاعدة_أسماء", "مرر_أسماء", "سرد", "مزامنة", "ضغط",
 };
 static int nv_std_built = 0;
 
@@ -363,7 +372,7 @@ static void nv_std_build(void) {
     if (nv_std_built) return;
     nv_std_built = 1;
     nv_handle_set_finalizer(nv_std_handle_finalize);
-    for (int i = 0; i < 59; i++) {
+    for (int i = 0; i < 65; i++) {
         nv_std_modules[i] = nv_module_new(nv_std_names[i], NULL);
         NvDict *exports = nv_std_modules[i].u.module->exports;
         if (!exports) {
@@ -435,6 +444,13 @@ static void nv_std_build(void) {
             case 56: nv_std_fzf_fill(exports); break;
             case 57: nv_std_display_fill(exports); break;
             case 58: nv_std_less_fill(exports); break;
+            // لينكس5: وحدات موجة الملفات.
+            case 59: nv_std_b5search_fill(exports); break;
+            case 60: nv_std_b5namebase_fill(exports); break;
+            case 61: nv_std_b5xargs_fill(exports); break;
+            case 62: nv_std_b5list_fill(exports); break;
+            case 63: nv_std_b5sync_fill(exports); break;
+            case 64: nv_std_b5compress_fill(exports); break;
         }
         nv_add_global_root(nv_std_modules[i]);
     }
@@ -442,7 +458,7 @@ static void nv_std_build(void) {
 
 NvValue *nv_native_module(const char *name) {
     nv_std_build();
-    for (int i = 0; i < 59; i++) { // ج6: 44 -> 49.
+    for (int i = 0; i < 65; i++) { // ج6: 44 -> 49.
         if (strcmp(name, nv_std_names[i]) == 0) return &nv_std_modules[i];
     }
     return NULL;
@@ -18518,6 +18534,8 @@ void nv_std_archive_fill(NvDict *d) {
     nv_std_add_fn(d, "اضغط", nv_std_archive_compress);
     nv_std_add_fn(d, "فك_ضغط", nv_std_archive_decompress);
     nv_std_add_fn(d, "قائمة", nv_std_archive_list);
+    /* لينكس5-ملفات: دوال tar السبع تمدّ الوحدة نفسها. */
+    nv_std_b5tar_fill(d);
 }
 
 // ---------- 211: كلمات المرور (وحدة كلمة_مرور) ----------
@@ -31809,3 +31827,6015 @@ void nv_std_boxed_fill(NvDict *d) {
     nv_std_add_fn(d, "هو_معلب", nv_std_boxed_is);
 // END J6-GEN fill-معلب
 }
+
+/* BEGIN لينكس5-ملفات مساعدات C */
+/* مرآة C اليدوية لموجة الملفات (§§1–8) — تعكس
+   كود Rust اليدوي حرفيا (stdlib.rs: منطقة
+   «لينكس5-ملفات»: b5_*). كل رسائل الأخطاء
+   مطابقة لنصوص Rust حرفيا. */
+#ifndef _WIN32
+#include <pwd.h>
+#include <grp.h>
+#else
+#include <sys/utime.h>
+#endif
+
+/* قاموس خيارات من معامل (لاشيء ← بلا خيارات). */
+static NvDict *b5_opt_dict_c(NvValue *args, int nargs, int at, const char *display, int line, int col) {
+    if (nargs <= at) return NULL;
+    if (args[at].tag == NV_NIL) return NULL;
+    if (args[at].tag != NV_DICT) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قاموس خيارات لكن أعطيت %s", display, nv_type_name(args[at]));
+    }
+    return args[at].u.dict;
+}
+
+static void b5_no_unknown_c(const char *display, NvDict *d, const char **keys, int nkeys, int line, int col) {
+    if (!d) return;
+    for (size_t i = 0; i < d->len; i++) {
+        const char *k = d->entries[i].key;
+        int ok = 0;
+        for (int j = 0; j < nkeys; j++) {
+            if (strcmp(k, keys[j]) == 0) { ok = 1; break; }
+        }
+        if (!ok) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا تقبل الخيار %s", display, k);
+        }
+    }
+}
+
+static int b5_opt_bool_c(NvDict *d, const char *key, int def, const char *display, int line, int col) {
+    if (!d) return def;
+    int i = nv_dict_find(d, key);
+    if (i < 0) return def;
+    NvValue v = d->entries[i].val;
+    if (v.tag != NV_BOOL) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قيمة منطقية للخيار %s لكن أعطيت %s", display, key, nv_type_name(v));
+    }
+    return v.u.boolean ? 1 : 0;
+}
+
+/* خيار عددي: يعيد 1 إن وُجد (بلا لاشيء)، والقيمة في *out. */
+static int b5_opt_int_c(NvDict *d, const char *key, long long *out, const char *display, int line, int col) {
+    if (!d) return 0;
+    int i = nv_dict_find(d, key);
+    if (i < 0) return 0;
+    NvValue v = d->entries[i].val;
+    if (v.tag == NV_NIL) return 0;
+    *out = nv_std_need_integer(display, v, line, col);
+    return 1;
+}
+
+/* خيار عددي غير سالب (لاشيء ← غائب). */
+static int b5_opt_count_c(NvDict *d, const char *key, long long *out, const char *display, int line, int col) {
+    if (!b5_opt_int_c(d, key, out, display, line, col)) return 0;
+    if (*out < 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الخيار %s لا يقبل عددا سالبا", display, key);
+    }
+    return 1;
+}
+
+static const char *b5_opt_str_c(NvDict *d, const char *key, const char *display, int line, int col) {
+    if (!d) return NULL;
+    int i = nv_dict_find(d, key);
+    if (i < 0) return NULL;
+    NvValue v = d->entries[i].val;
+    if (v.tag == NV_NIL) return NULL;
+    return nv_std_need_string(display, v, line, col);
+}
+
+/* خيار نص أو قائمة نصوص: نصوص مملوكة جديدة. */
+static char **b5_opt_strs_c(NvDict *d, const char *key, size_t *n_out, const char *display, int line, int col) {
+    *n_out = 0;
+    if (!d) return NULL;
+    int i = nv_dict_find(d, key);
+    if (i < 0) return NULL;
+    NvValue v = d->entries[i].val;
+    if (v.tag == NV_NIL) return NULL;
+    if (v.tag == NV_STR) {
+        char **out = (char **)malloc(sizeof(char *));
+        if (!out) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+        out[0] = strdup(v.u.str->data);
+        *n_out = 1;
+        return out;
+    }
+    if (v.tag == NV_LIST) {
+        size_t n = v.u.list->len;
+        char **out = (char **)malloc((n ? n : 1) * sizeof(char *));
+        if (!out) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+        for (size_t k = 0; k < n; k++) {
+            out[k] = strdup(nv_std_need_string(display, v.u.list->items[k], line, col));
+        }
+        *n_out = n;
+        return out;
+    }
+    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا أو قائمة نصوص للخيار %s لكن أعطيت %s", display, key, nv_type_name(v));
+    return NULL;
+}
+
+static void b5_strs_free_c(char **items, size_t n) {
+    if (!items) return;
+    for (size_t i = 0; i < n; i++) free(items[i]);
+    free(items);
+}
+
+static long long b5_now_c(void) {
+    return (long long)time(NULL);
+}
+
+/* تنسيق وقت محلي بالرموز نفسها (Y m d H M S e k A B %). */
+static char *b5_fmt_time_c(long long epoch, const char *fmt, const char *display, int line, int col) {
+    NvStdTimeDt dt = nv_std_time_from_epoch(epoch, 0, display, line, col);
+    J14Buf out;
+    j14_buf_init(&out);
+    const char *p = fmt;
+    while (*p) {
+        if (*p != '%') {
+            j14_buf_addc(&out, *p);
+            p++;
+            continue;
+        }
+        p++;
+        if (!*p) {
+            j14_buf_free(&out);
+            nv_error(NV_ERR_RUNTIME, "صيغة تاريخ غير صالحة: % في النهاية", line, col);
+        }
+        char tok = *p++;
+        char tmp[64];
+        switch (tok) {
+            case 'Y': snprintf(tmp, sizeof(tmp), "%04lld", dt.year); j14_buf_add(&out, tmp); break;
+            case 'm': snprintf(tmp, sizeof(tmp), "%02ld", dt.month); j14_buf_add(&out, tmp); break;
+            case 'd': snprintf(tmp, sizeof(tmp), "%02ld", dt.day); j14_buf_add(&out, tmp); break;
+            case 'H': snprintf(tmp, sizeof(tmp), "%02ld", dt.hour); j14_buf_add(&out, tmp); break;
+            case 'M': snprintf(tmp, sizeof(tmp), "%02ld", dt.minute); j14_buf_add(&out, tmp); break;
+            case 'S': snprintf(tmp, sizeof(tmp), "%02ld", dt.second); j14_buf_add(&out, tmp); break;
+            case 'e': snprintf(tmp, sizeof(tmp), "%ld", dt.day); j14_buf_add(&out, tmp); break;
+            case 'k': snprintf(tmp, sizeof(tmp), "%ld", dt.hour); j14_buf_add(&out, tmp); break;
+            case 'A': j14_buf_add(&out, nv_std_time_weekday_name_str(dt.weekday)); break;
+            case 'B': j14_buf_add(&out, nv_std_time_month_name_str(dt.month)); break;
+            case '%': j14_buf_addc(&out, '%'); break;
+            default:
+                j14_buf_free(&out);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "صيغة تاريخ غير صالحة: %%%c", tok);
+                break;
+        }
+    }
+    char *res = strdup(out.data ? out.data : "");
+    j14_buf_free(&out);
+    return res;
+}
+
+/* حجم بشري (مطابق Rust: ب/ك/م/غ/ت، و1.5 ك). */
+static void b5_human_size_c(unsigned long long n, char *buf, size_t cap) {
+    static const char *units[5] = {"ب", "ك", "م", "غ", "ت"};
+    double v = (double)n;
+    int u = 0;
+    while (v >= 1024.0 && u < 4) {
+        v /= 1024.0;
+        u++;
+    }
+    if (u == 0) {
+        snprintf(buf, cap, "%llu %s", n, units[0]);
+    } else {
+        double t = trunc(v);
+        double d = v - t;
+        if (d < 0) d = -d;
+        if (d < 0.05) {
+            snprintf(buf, cap, "%llu %s", (unsigned long long)t, units[u]);
+        } else {
+            snprintf(buf, cap, "%.1f %s", v, units[u]);
+        }
+    }
+}
+
+/* ---------- بيانات وصفية موحدة ---------- */
+#define B5_KIND_FILE 0
+#define B5_KIND_DIR 1
+#define B5_KIND_LINK 2
+#define B5_KIND_OTHER 3
+
+typedef struct {
+    int kind;
+    unsigned long long size;
+    long long mtime;
+    long long atime;
+    long long btime;  /* -1 إن غاب (يُستخدم mtime بدلا منه) */
+    unsigned int mode;
+    unsigned int uid;
+    unsigned int gid;
+    unsigned long long nlink;
+    int is_link;
+    char *target; /* هدف الرابط أو NULL */
+} B5MetaC;
+
+static void b5_meta_free_c(B5MetaC *m) {
+    free(m->target);
+    m->target = NULL;
+}
+
+static const char *b5_kind_name_c(int kind) {
+    switch (kind) {
+        case B5_KIND_DIR: return "مجلد";
+        case B5_KIND_LINK: return "رابط";
+        case B5_KIND_OTHER: return "آخر";
+        default: return "ملف";
+    }
+}
+
+static const char *b5_kind_letter_c(int kind) {
+    switch (kind) {
+        case B5_KIND_DIR: return "د";
+        case B5_KIND_LINK: return "ل";
+        case B5_KIND_OTHER: return "?";
+        default: return "-";
+    }
+}
+
+/* سلسلة أذونات على نمط ls. */
+static void b5_mode_str_c(const B5MetaC *m, char *buf, size_t cap) {
+    const char *letter = b5_kind_letter_c(m->kind);
+    static const struct { unsigned int bit; char c; } bits[9] = {
+        {0400, 'r'}, {0200, 'w'}, {0100, 'x'},
+        {0040, 'r'}, {0020, 'w'}, {0010, 'x'},
+        {0004, 'r'}, {0002, 'w'}, {0001, 'x'},
+    };
+    char s[16];
+    size_t n = 0;
+    for (int i = 0; i < 9; i++) {
+        s[n++] = (m->mode & bits[i].bit) ? bits[i].c : '-';
+    }
+    s[n] = '\0';
+    snprintf(buf, cap, "%s%s", letter, s);
+}
+
+static int b5_stat_c(const char *path, B5MetaC *out) {
+    struct stat st;
+    if (nv_lstat(path, &st) != 0) return 0;
+    memset(out, 0, sizeof(*out));
+    out->is_link = 0;
+#ifdef S_ISLNK
+    out->is_link = S_ISLNK(st.st_mode) ? 1 : 0;
+#endif
+    if (S_ISDIR(st.st_mode)) out->kind = B5_KIND_DIR;
+    else if (S_ISREG(st.st_mode)) out->kind = B5_KIND_FILE;
+    else if (out->is_link) out->kind = B5_KIND_LINK;
+    else out->kind = B5_KIND_OTHER;
+    out->size = (unsigned long long)st.st_size;
+    out->mtime = (long long)st.st_mtime;
+    out->atime = (long long)st.st_atime;
+    out->btime = -1;
+#if defined(__linux__)
+    {
+        struct statx stx;
+        if (statx(AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, STATX_BTIME, &stx) == 0 &&
+            (stx.stx_mask & STATX_BTIME)) {
+            out->btime = (long long)stx.stx_btime.tv_sec;
+        }
+    }
+#elif defined(__APPLE__)
+    {
+        struct stat ast;
+        if (stat(path, &ast) == 0) {
+            out->btime = (long long)ast.st_birthtimespec.tv_sec;
+        }
+    }
+#endif
+#ifdef _WIN32
+    out->mode = (st.st_mode & 0200) ? 0666 : 0444;
+    out->uid = 0;
+    out->gid = 0;
+    out->nlink = 1;
+#else
+    out->mode = (unsigned int)(st.st_mode & 07777);
+    out->uid = (unsigned int)st.st_uid;
+    out->gid = (unsigned int)st.st_gid;
+    out->nlink = (unsigned long long)st.st_nlink;
+#endif
+    if (out->is_link) {
+#ifndef _WIN32
+        char buf[4096];
+        ssize_t n = readlink(path, buf, sizeof(buf) - 1);
+        if (n > 0) {
+            buf[n] = '\0';
+            out->target = strdup(buf);
+        }
+#endif
+    }
+    return 1;
+}
+
+static int b5_stat_follow_c(const char *path, B5MetaC *out) {
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    memset(out, 0, sizeof(*out));
+    out->is_link = 0;
+    if (S_ISDIR(st.st_mode)) out->kind = B5_KIND_DIR;
+    else if (S_ISREG(st.st_mode)) out->kind = B5_KIND_FILE;
+    else out->kind = B5_KIND_OTHER;
+    out->size = (unsigned long long)st.st_size;
+    out->mtime = (long long)st.st_mtime;
+    out->atime = (long long)st.st_atime;
+    out->btime = -1;
+#if defined(__linux__)
+    {
+        struct statx stx;
+        if (statx(AT_FDCWD, path, 0, STATX_BTIME, &stx) == 0 &&
+            (stx.stx_mask & STATX_BTIME)) {
+            out->btime = (long long)stx.stx_btime.tv_sec;
+        }
+    }
+#elif defined(__APPLE__)
+    {
+        struct stat ast;
+        if (stat(path, &ast) == 0) {
+            out->btime = (long long)ast.st_birthtimespec.tv_sec;
+        }
+    }
+#endif
+#ifdef _WIN32
+    out->mode = (st.st_mode & 0200) ? 0666 : 0444;
+    out->uid = 0;
+    out->gid = 0;
+    out->nlink = 1;
+#else
+    out->mode = (unsigned int)(st.st_mode & 07777);
+    out->uid = (unsigned int)st.st_uid;
+    out->gid = (unsigned int)st.st_gid;
+    out->nlink = (unsigned long long)st.st_nlink;
+#endif
+    return 1;
+}
+
+static int b5_is_exec_c(const char *path, const B5MetaC *m) {
+#ifdef _WIN32
+    (void)m;
+    const char *dot = strrchr(path, '.');
+    if (!dot) return 0;
+    char ext[16];
+    size_t n = strlen(dot + 1);
+    if (n >= sizeof(ext)) return 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = dot[1 + i];
+        ext[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+    }
+    ext[n] = '\0';
+    return strcmp(ext, "exe") == 0 || strcmp(ext, "bat") == 0 ||
+           strcmp(ext, "cmd") == 0 || strcmp(ext, "com") == 0;
+#else
+    (void)path;
+    return (m->mode & 0111) != 0;
+#endif
+}
+
+/* اسم مالك/مجموعة (يونكس حقيقي، ويندوز «غير_معروف»). */
+static char *b5_owner_name_c(unsigned int id, int is_group) {
+#ifdef _WIN32
+    (void)id;
+    (void)is_group;
+    return strdup("غير_معروف");
+#else
+    if (is_group) {
+        struct group *g = getgrgid((gid_t)id);
+        if (g && g->gr_name && g->gr_name[0]) return strdup(g->gr_name);
+    } else {
+        struct passwd *p = getpwuid((uid_t)id);
+        if (p && p->pw_name && p->pw_name[0]) return strdup(p->pw_name);
+    }
+    char tmp[32];
+    snprintf(tmp, sizeof(tmp), "%u", id);
+    return strdup(tmp);
+#endif
+}
+
+/* مطابقة تعبير نمطي بحثا (جزئيا) في نص، مع طي الحالة. */
+static int b5_rx_search_c(const char *pattern, const char *text, int fold, int line, int col) {
+    size_t tlen = strlen(text);
+    /* مرآة rx_check_text في Rust: نص أطول من الحد خطأ. */
+    if (nv_utf8_chars(text, tlen) > RX_MAX_TEXT) {
+        nv_error(NV_ERR_RUNTIME, "النص كبير جدا", line, col);
+    }
+    size_t n = 0;
+    size_t *offs = NULL;
+    uint32_t *chars = j14_decode_all(text, tlen, &n, &offs);
+    RxProg prog = rx_compile_fold_c(pattern, 0, fold, line, col);
+    int s = 0, e = 0;
+    int *saved = NULL;
+    int found = rx_find_from(&prog, chars, (int)n, 0, &s, &e, &saved, line, col);
+    free(saved);
+    free(chars);
+    free(offs);
+    rx_prog_free(&prog);
+    return found;
+}
+
+/* مطابقة كروية كاملة (مع طي الحالة). */
+static int b5_glob_c(const char *pat, const char *text, int fold, int line, int col) {
+    /* مرآة b5_glob في Rust حرفيا: .unwrap_or(false) — النمط
+       الكروي غير الصالح يبتلع كعدم مطابقة لا كخطأ. */
+    char *regex = search_glob_to_regex_soft_c(pat, line, col);
+    if (!regex) return 0;
+    int found = rx_full_match_fold_c(regex, text, fold, line, col);
+    free(regex);
+    return found;
+}
+
+/* هل يطابق أي نمط كروي الاسم أو المسار؟ */
+static int b5_glob_any_c(char **pats, size_t npats, const char *name, const char *rel, int fold, int line, int col) {
+    for (size_t i = 0; i < npats; i++) {
+        if (b5_glob_c(pats[i], name, fold, line, col)) return 1;
+        if (b5_glob_c(pats[i], rel, fold, line, col)) return 1;
+    }
+    return 0;
+}
+
+/* ---------- CRC32 (متدفق، مطابق لجدول Rust) ---------- */
+static uint32_t b5_crc_table_c[256];
+static int b5_crc_table_ready_c = 0;
+
+static void b5_crc_table_init_c(void) {
+    if (b5_crc_table_ready_c) return;
+    for (uint32_t i = 0; i < 256; i++) {
+        uint32_t c = i;
+        for (int k = 0; k < 8; k++) {
+            c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+        }
+        b5_crc_table_c[i] = c;
+    }
+    b5_crc_table_ready_c = 1;
+}
+
+static uint32_t b5_crc_update_c(uint32_t prev_final, const unsigned char *data, size_t len) {
+    b5_crc_table_init_c();
+    uint32_t c = prev_final ^ 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; i++) {
+        c = b5_crc_table_c[(c ^ data[i]) & 0xFF] ^ (c >> 8);
+    }
+    return c ^ 0xFFFFFFFFu;
+}
+
+static uint32_t b5_crc32_c(const unsigned char *data, size_t len) {
+    b5_crc_table_init_c();
+    uint32_t c = 0xFFFFFFFFu;
+    for (size_t i = 0; i < len; i++) {
+        c = b5_crc_table_c[(c ^ data[i]) & 0xFF] ^ (c >> 8);
+    }
+    return c ^ 0xFFFFFFFFu;
+}
+
+/* بصمة CRC32 لملف (بقراءة متدفقة)؛ 1 عند النجاح. */
+static int b5_file_crc_c(const char *path, uint32_t *out) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    unsigned char buf[65536];
+    uint32_t crc = b5_crc32_c((const unsigned char *)"", 0);
+    int first = 1;
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+        if (first) {
+            crc = b5_crc32_c(buf, n);
+            first = 0;
+        } else {
+            crc = b5_crc_update_c(crc, buf, n);
+        }
+    }
+    fclose(f);
+    *out = crc;
+    return 1;
+}
+
+/* ---------- مسارات وملفات ---------- */
+static int b5_mkdir_one_c(const char *path) {
+#ifdef _WIN32
+    return mkdir(path);
+#else
+    return mkdir(path, 0777);
+#endif
+}
+
+static int b5_mkdir_all_c(const char *path) {
+    if (!path || !*path) return 0;
+    char *tmp = strdup(path);
+    size_t len = strlen(tmp);
+    for (size_t i = 1; i <= len; i++) {
+        if (tmp[i] == '/' || tmp[i] == '\0') {
+            char save = tmp[i];
+            tmp[i] = '\0';
+            if (tmp[0]) {
+                struct stat st;
+                if (stat(tmp, &st) != 0) {
+                    if (b5_mkdir_one_c(tmp) != 0 && errno != EEXIST) {
+                        free(tmp);
+                        return -1;
+                    }
+                }
+            }
+            tmp[i] = save;
+        }
+    }
+    free(tmp);
+    return 0;
+}
+
+/* ضبط وقتي ملف (ملفات فقط؛ المجلدات لا تُفتح للكتابة
+   في Rust فتبقى بلا ضبط — المرآة نفسها هنا). */
+static void b5_set_times_c(const char *path, long long atime, long long mtime) {
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) return;
+#ifdef _WIN32
+    struct _utimbuf tb;
+    tb.actime = (time_t)atime;
+    tb.modtime = (time_t)mtime;
+    _futime(fd, &tb);
+#else
+    struct timespec ts[2];
+    ts[0].tv_sec = (time_t)(atime < 0 ? 0 : atime);
+    ts[0].tv_nsec = 0;
+    ts[1].tv_sec = (time_t)(mtime < 0 ? 0 : mtime);
+    ts[1].tv_nsec = 0;
+    (void)futimens(fd, ts);
+#endif
+    close(fd);
+}
+
+/* ضبط أذونات (يونكس: البتات؛ ويندوز: القراءة فقط). */
+static void b5_set_mode_c(const char *path, unsigned int mode) {
+#ifdef _WIN32
+    _chmod(path, (mode & 0200) ? (_S_IREAD | _S_IWRITE) : _S_IREAD);
+#else
+    (void)chmod(path, (mode_t)(mode & 07777));
+#endif
+}
+
+static int b5_dir_empty_c(const char *path) {
+    DIR *d = opendir(path);
+    if (!d) return 1;
+    struct dirent *e;
+    int empty = 1;
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") != 0 && strcmp(e->d_name, "..") != 0) {
+            empty = 0;
+            break;
+        }
+    }
+    closedir(d);
+    return empty;
+}
+
+/* قراءة ملف كاملا (NULL عند التعذر). */
+static char *b5_read_file_c(const char *path, size_t *len_out) {
+    return search_read_file_c(path, len_out);
+}
+
+/* أنماط من ملف (سطر لكل نمط؛ بلا فراغات وتعليقات #). */
+static char **b5_load_patterns_c(const char *display, const char *file, size_t *n_out, int line, int col) {
+    *n_out = 0;
+    char *resolved = nv_resolve_path(file, line, col);
+    size_t len = 0;
+    char *content = b5_read_file_c(resolved, &len);
+    free(resolved);
+    if (!content) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر قراءة ملف الأنماط: %s", display, file);
+    }
+    char **out = NULL;
+    size_t n = 0, cap = 0;
+    size_t pos = 0;
+    while (pos < len) {
+        size_t start = pos;
+        while (pos < len && content[pos] != '\n') pos++;
+        size_t end = pos;
+        if (pos < len) pos++;
+        while (end > start && (content[end - 1] == '\r' || content[end - 1] == ' ' || content[end - 1] == '\t')) end--;
+        while (start < end && (content[start] == ' ' || content[start] == '\t')) start++;
+        if (start >= end) continue;
+        if (content[start] == '#') continue;
+        if (n >= cap) {
+            size_t ncap = cap == 0 ? 8 : cap * 2;
+            char **grown = (char **)realloc(out, ncap * sizeof(char *));
+            if (!grown) {
+                free(content);
+                nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+            }
+            out = grown;
+            cap = ncap;
+        }
+        out[n] = j14_strndup(content + start, end - start);
+        n++;
+    }
+    free(content);
+    *n_out = n;
+    return out;
+}
+
+/* بايتات من قيمة (نص أو قائمة أعداد 0..255). */
+static unsigned char *b5_need_bytes_c(const char *display, NvValue v, size_t *len_out, int line, int col) {
+    if (v.tag == NV_STR) {
+        unsigned char *out = (unsigned char *)malloc(v.u.str->len ? v.u.str->len : 1);
+        if (!out) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+        memcpy(out, v.u.str->data, v.u.str->len);
+        *len_out = v.u.str->len;
+        return out;
+    }
+    if (v.tag == NV_LIST) {
+        size_t n = v.u.list->len;
+        unsigned char *out = (unsigned char *)malloc(n ? n : 1);
+        if (!out) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+        for (size_t i = 0; i < n; i++) {
+            NvValue it = v.u.list->items[i];
+            if (it.tag != NV_NUM) {
+                free(out);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s البايتات قائمة أعداد أو نص", display);
+            }
+            long long b = (long long)it.u.num;
+            if (b < 0 || b > 255) {
+                free(out);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s بايت خارج النطاق 0..255", display);
+            }
+            out[i] = (unsigned char)b;
+        }
+        *len_out = n;
+        return out;
+    }
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s البايتات قائمة أعداد أو نص", display);
+    return NULL;
+}
+
+/* قيمة بايتات (قائمة أعداد). */
+static NvValue b5_bytes_value_c(const unsigned char *data, size_t len) {
+    NvList *out = b3_list_new_c();
+    for (size_t i = 0; i < len; i++) {
+        nv_list_push_raw(out, nv_num((double)data[i]));
+    }
+    NvValue r;
+    r.tag = NV_LIST;
+    r.u.list = out;
+    return r;
+}
+
+/* وصل مسارين بفاصل «/». */
+static char *b5_join_c(const char *a, const char *b) {
+    size_t la = strlen(a), lb = strlen(b);
+    int slash = la > 0 && a[la - 1] == '/';
+    char *out = (char *)malloc(la + lb + 2);
+    if (!out) return NULL;
+    memcpy(out, a, la);
+    size_t p = la;
+    if (!slash) out[p++] = '/';
+    memcpy(out + p, b, lb);
+    out[p + lb] = '\0';
+    return out;
+}
+
+/* END لينكس5-ملفات مساعدات C */
+
+/* BEGIN لينكس5-ملفات مشي C */
+typedef struct {
+    char *fs;
+    char *display;
+    char *name;
+    char *rel;
+    long long depth;
+    B5MetaC meta;
+    B5MetaC eff;
+} B5EntryC;
+
+typedef struct {
+    B5EntryC *items;
+    size_t len, cap;
+} B5EntryListC;
+
+/* دفع بنسخ عميق (المدخل الممرر يبقى ملك المتصل). */
+static void b5_entry_list_push_c(B5EntryListC *l, B5EntryC *e, int line, int col) {
+    if (l->len >= l->cap) {
+        size_t ncap = l->cap == 0 ? 16 : l->cap * 2;
+        B5EntryC *grown = (B5EntryC *)realloc(l->items, ncap * sizeof(B5EntryC));
+        if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+        l->items = grown;
+        l->cap = ncap;
+    }
+    B5EntryC copy = *e;
+    copy.fs = strdup(e->fs);
+    copy.display = strdup(e->display);
+    copy.name = strdup(e->name);
+    copy.rel = strdup(e->rel);
+    copy.meta.target = e->meta.target ? strdup(e->meta.target) : NULL;
+    copy.eff.target = e->eff.target ? strdup(e->eff.target) : NULL;
+    l->items[l->len++] = copy;
+}
+
+static void b5_entry_list_free_c(B5EntryListC *l) {
+    for (size_t i = 0; i < l->len; i++) {
+        free(l->items[i].fs);
+        free(l->items[i].display);
+        free(l->items[i].name);
+        free(l->items[i].rel);
+        b5_meta_free_c(&l->items[i].meta);
+        b5_meta_free_c(&l->items[i].eff);
+    }
+    free(l->items);
+    l->items = NULL;
+    l->len = l->cap = 0;
+}
+
+typedef struct {
+    int include_hidden;
+    int respect_ignore;
+    int follow_links;
+    long long min_depth;
+    long long max_depth;   /* -1 بلا حد */
+    long long exact_depth; /* -1 بلا تحديد */
+    char **prune;
+    size_t nprune;
+    char **gitignore_extra;
+    size_t ngitignore;
+    int show_errors;
+    char **errors;
+    size_t nerrors, caperrors;
+    char **visited;
+    size_t nvisited, capvisited;
+} B5WalkC;
+
+static void b5_walk_new_c(B5WalkC *w) {
+    memset(w, 0, sizeof(*w));
+    w->include_hidden = 0;
+    w->respect_ignore = 1;
+    w->follow_links = 0;
+    w->min_depth = 1;
+    w->max_depth = -1;
+    w->exact_depth = -1;
+}
+
+static int b5_walk_depth_ok_c(B5WalkC *w, long long depth) {
+    if (w->exact_depth >= 0) return depth == w->exact_depth;
+    return depth >= w->min_depth && (w->max_depth < 0 || depth <= w->max_depth);
+}
+
+static int b5_walk_can_descend_c(B5WalkC *w, long long depth) {
+    if (w->exact_depth >= 0) return depth < w->exact_depth;
+    return w->max_depth < 0 || depth < w->max_depth;
+}
+
+static int b5_gitignore_ignored_c(B5WalkC *w, const char *rel, int is_dir, int line, int col) {
+    if (w->ngitignore == 0) return 0;
+    SearchOptsC o;
+    memset(&o, 0, sizeof(o));
+    o.ignore_patterns.items = w->gitignore_extra;
+    o.ignore_patterns.len = w->ngitignore;
+    o.ignore_patterns.cap = w->ngitignore;
+    o.patterns_fold = 0;
+    return search_gitignore_ignored_c(&o, rel, is_dir, line, col);
+}
+
+static char *b5_canonical_c(const char *path) {
+#ifdef _WIN32
+    return _fullpath(NULL, path, 0);
+#else
+    return realpath(path, NULL);
+#endif
+}
+
+static void b5_walk_dir_c(const char *dir_fs, const char *dir_display, long long depth, B5WalkC *w, SearchIgnoreC *ignore, B5EntryListC *out, int line, int col) {
+    DIR *d = opendir(dir_fs);
+    if (!d) {
+        if (w->show_errors) {
+            if (w->nerrors >= w->caperrors) {
+                size_t ncap = w->caperrors == 0 ? 8 : w->caperrors * 2;
+                char **grown = (char **)realloc(w->errors, ncap * sizeof(char *));
+                if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                w->errors = grown;
+                w->caperrors = ncap;
+            }
+            char *msg = (char *)malloc(strlen(dir_display) + 64);
+            snprintf(msg, strlen(dir_display) + 64, "تعذر قراءة المجلد: %s", dir_display);
+            w->errors[w->nerrors++] = msg;
+        }
+        return;
+    }
+    char **names = NULL;
+    size_t n = 0, cap = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        if (n >= cap) {
+            size_t ncap = cap == 0 ? 16 : cap * 2;
+            char **grown = (char **)realloc(names, ncap * sizeof(char *));
+            if (!grown) {
+                for (size_t i = 0; i < n; i++) free(names[i]);
+                free(names);
+                closedir(d);
+                nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+            }
+            names = grown;
+            cap = ncap;
+        }
+        names[n] = strdup(e->d_name);
+        if (!names[n]) {
+            for (size_t i = 0; i < n; i++) free(names[i]);
+            free(names);
+            closedir(d);
+            nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+        }
+        n++;
+    }
+    closedir(d);
+    qsort(names, n, sizeof(char *), search_name_cmp_c);
+    size_t base_len = search_ignore_len_c(ignore);
+    if (w->respect_ignore) {
+        search_ignore_read_flags_c(dir_fs, ignore, 1, 1, line, col);
+    }
+    for (size_t i = 0; i < n; i++) {
+        const char *name = names[i];
+        if (!w->include_hidden && name[0] == '.') {
+            free(names[i]);
+            continue;
+        }
+        char *child_fs = b5_join_c(dir_fs, name);
+        char *child_disp;
+        if (dir_display[0]) {
+            child_disp = b5_join_c(dir_display, name);
+        } else {
+            child_disp = strdup(name);
+        }
+        B5MetaC meta;
+        if (!b5_stat_c(child_fs, &meta)) {
+            free(child_fs);
+            free(child_disp);
+            free(names[i]);
+            continue;
+        }
+        B5MetaC eff = meta;
+        eff.target = meta.target ? strdup(meta.target) : NULL;
+        if (meta.is_link) {
+            if (w->follow_links) {
+                B5MetaC fm;
+                if (b5_stat_follow_c(child_fs, &fm)) {
+                    b5_meta_free_c(&eff);
+                    eff = fm;
+                }
+            }
+        }
+        const char *rel = child_disp;
+        if (eff.kind == B5_KIND_DIR) {
+            int skip = 0;
+            if (!skip && w->nprune > 0 && b5_glob_any_c(w->prune, w->nprune, name, rel, 0, line, col)) skip = 1;
+            if (!skip && w->respect_ignore &&
+                (search_ignore_match_c(ignore, rel, line, col) ||
+                 search_ignore_match_c(ignore, name, line, col) ||
+                 b5_gitignore_ignored_c(w, rel, 1, line, col))) skip = 1;
+            if (!skip && b5_walk_depth_ok_c(w, depth + 1)) {
+                B5EntryC en;
+                en.fs = child_fs;
+                en.display = child_disp;
+                en.name = (char *)name;
+                en.rel = (char *)rel;
+                en.depth = depth + 1;
+                en.meta = meta;
+                en.eff = eff;
+                b5_entry_list_push_c(out, &en, line, col);
+            }
+            if (!skip && b5_walk_can_descend_c(w, depth + 1)) {
+                char *canon = b5_canonical_c(child_fs);
+                int seen = 0;
+                if (w->follow_links && canon) {
+                    for (size_t vi = 0; vi < w->nvisited; vi++) {
+                        if (strcmp(w->visited[vi], canon) == 0) { seen = 1; break; }
+                    }
+                }
+                if (!seen) {
+                    if (w->follow_links && canon) {
+                        if (w->nvisited >= w->capvisited) {
+                            size_t ncap = w->capvisited == 0 ? 8 : w->capvisited * 2;
+                            char **grown = (char **)realloc(w->visited, ncap * sizeof(char *));
+                            if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                            w->visited = grown;
+                            w->capvisited = ncap;
+                        }
+                        w->visited[w->nvisited++] = strdup(canon);
+                    }
+                    b5_walk_dir_c(child_fs, child_disp, depth + 1, w, ignore, out, line, col);
+                }
+                free(canon);
+            }
+        } else {
+            int skip = 0;
+            if (w->respect_ignore &&
+                (search_ignore_match_c(ignore, rel, line, col) ||
+                 search_ignore_match_c(ignore, name, line, col) ||
+                 b5_gitignore_ignored_c(w, rel, 0, line, col))) skip = 1;
+            if (!skip && b5_walk_depth_ok_c(w, depth + 1)) {
+                B5EntryC en;
+                en.fs = child_fs;
+                en.display = child_disp;
+                en.name = (char *)name;
+                en.rel = (char *)rel;
+                en.depth = depth + 1;
+                en.meta = meta;
+                en.eff = eff;
+                b5_entry_list_push_c(out, &en, line, col);
+            }
+        }
+        free(child_fs);
+        free(child_disp);
+        b5_meta_free_c(&meta);
+        b5_meta_free_c(&eff);
+        free(names[i]);
+    }
+    free(names);
+    search_ignore_truncate_c(ignore, base_len);
+}
+
+/* أب مسار (NULL إن بلا أب — و«/» بلا أب فلا حلقة). */
+static char *b5_parent_c(const char *path) {
+    const char *slash = strrchr(path, '/');
+    if (!slash) return NULL;
+    if (slash == path) {
+        if (path[1] == '\0') return NULL;
+        return strdup("/");
+    }
+    return j14_strndup(path, (size_t)(slash - path));
+}
+
+/* امشِ جذرا واحدا (ملف أو مجلد). */
+static void b5_walk_root_c(const char *root_display, B5WalkC *w, B5EntryListC *out, int line, int col) {
+    const char *display = "بحث_ملفات.ابحث";
+    char *root_fs = nv_resolve_path(root_display, line, col);
+    struct stat st;
+    if (stat(root_fs, &st) != 0) {
+        free(root_fs);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "المسار غير موجود: %s", root_display);
+    }
+    if (S_ISREG(st.st_mode)) {
+        B5MetaC m;
+        if (b5_stat_c(root_fs, &m)) {
+            const char *base = strrchr(root_fs, '/');
+            const char *nm = base ? base + 1 : root_fs;
+            if (!*nm) nm = root_display;
+            B5EntryC en;
+            en.fs = strdup(root_fs);
+            en.display = strdup(root_display);
+            en.name = strdup(nm);
+            en.rel = strdup(root_display);
+            en.depth = 0;
+            en.meta = m;
+            en.eff = m;
+            en.eff.target = m.target ? strdup(m.target) : NULL;
+            b5_entry_list_push_c(out, &en, line, col);
+        }
+        free(root_fs);
+        return;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        free(root_fs);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "المسار غير موجود: %s", root_display);
+    }
+    const char *base = root_display;
+    char *base_buf = NULL;
+    size_t blen = strlen(base);
+    while (blen > 0 && base[blen - 1] == '/') blen--;
+    if (strcmp(base, ".") == 0) {
+        base_buf = strdup("");
+    } else {
+        base_buf = j14_strndup(base, blen);
+    }
+    SearchIgnoreC ignore;
+    memset(&ignore, 0, sizeof(ignore));
+    if (w->respect_ignore) {
+        char *dir = b5_parent_c(root_fs);
+        while (dir) {
+            search_ignore_read_flags_c(dir, &ignore, 1, 1, line, col);
+            if (nv_cwd && strcmp(dir, nv_cwd) == 0) {
+                free(dir);
+                break;
+            }
+            char *up = b5_parent_c(dir);
+            free(dir);
+            dir = up;
+        }
+    }
+    (void)display;
+    b5_walk_dir_c(root_fs, base_buf, 0, w, &ignore, out, line, col);
+    search_ignore_free_c(&ignore);
+    free(base_buf);
+    free(root_fs);
+}
+
+/* END لينكس5-ملفات مشي C */
+
+/* BEGIN لينكس5-ملفات بحث C */
+
+/* لون ANSI لنوع المدخل (مرآة b5_colorize في Rust). */
+static char *b5_colorize_c(const char *text, int kind, int is_exec) {
+    const char *code = NULL;
+    if (kind == B5_KIND_DIR) code = "34";
+    else if (kind == B5_KIND_LINK) code = "36";
+    else if (kind == B5_KIND_FILE && is_exec) code = "32";
+    if (!code) return strdup(text);
+    size_t n = strlen(code) + strlen(text) + 16;
+    char *out = (char *)malloc(n);
+    snprintf(out, n, "\x1b[%sm%s\x1b[0m", code, text);
+    return out;
+}
+
+/* سطر طويل (مرآة b5_long_line في Rust حرفيا). */
+static char *b5_long_line_c(const B5EntryC *e, const char *time_fmt, const char *time_kind, int human, int show_owner, int show_size, int show_time, int color, const char *display, int line, int col) {
+    const B5MetaC *m = &e->eff;
+    long long epoch = m->mtime;
+    if (strcmp(time_kind, "وصول") == 0) epoch = m->atime;
+    else if (strcmp(time_kind, "إنشاء") == 0) epoch = m->btime >= 0 ? m->btime : m->mtime;
+    char *t = b5_fmt_time_c(epoch, time_fmt, display, line, col);
+    char sizebuf[64];
+    if (human) b5_human_size_c(m->size, sizebuf, sizeof(sizebuf));
+    else snprintf(sizebuf, sizeof(sizebuf), "%llu", m->size);
+    char *name = strdup(e->display);
+    if (m->is_link && m->target) {
+        size_t n = strlen(name) + strlen(m->target) + 8;
+        char *tmp = (char *)malloc(n);
+        snprintf(tmp, n, "%s \xe2\x86\x90 %s", name, m->target);
+        free(name);
+        name = tmp;
+    }
+    if (color) {
+        char *c = b5_colorize_c(name, m->kind, b5_is_exec_c(e->fs, m));
+        free(name);
+        name = c;
+    }
+    char modebuf[16];
+    b5_mode_str_c(m, modebuf, sizeof(modebuf));
+    char *owner = show_owner ? b5_owner_name_c(m->uid, 0) : NULL;
+    char *group = show_owner ? b5_owner_name_c(m->gid, 1) : NULL;
+    J14Buf out;
+    j14_buf_init(&out);
+    j14_buf_add(&out, modebuf);
+    j14_buf_addc(&out, ' ');
+    char nb[32];
+    snprintf(nb, sizeof(nb), "%llu", m->nlink);
+    j14_buf_add(&out, nb);
+    if (show_owner) {
+        j14_buf_addc(&out, ' ');
+        j14_buf_add(&out, owner);
+        j14_buf_addc(&out, ' ');
+        j14_buf_add(&out, group);
+    }
+    if (show_size) {
+        j14_buf_addc(&out, ' ');
+        j14_buf_add(&out, sizebuf);
+    }
+    if (show_time) {
+        j14_buf_addc(&out, ' ');
+        j14_buf_add(&out, t);
+    }
+    j14_buf_addc(&out, ' ');
+    j14_buf_add(&out, name);
+    free(t);
+    free(name);
+    free(owner);
+    free(group);
+    j14_buf_reserve(&out, 1);
+    out.data[out.len] = '\0';
+    return out.data;
+}
+
+/* تطبيق قالب نسق {مسار} {اسم} {حجم} {نوع} {وقت} (مرآة b5_apply_format). */
+static char *b5_apply_format_c(const B5EntryC *e, const char *fmt, const char *display, int line, int col) {
+    J14Buf out;
+    j14_buf_init(&out);
+    const char *rest = fmt;
+    for (;;) {
+        const char *open = strchr(rest, '{');
+        if (!open) {
+            j14_buf_add(&out, rest);
+            break;
+        }
+        j14_buf_addn(&out, rest, (size_t)(open - rest));
+        const char *after = open + 1;
+        const char *close = strchr(after, '}');
+        if (!close) {
+            j14_buf_free(&out);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s قالب النسق غير مغلق", display);
+        }
+        size_t klen = (size_t)(close - after);
+        char *key = j14_strndup(after, klen);
+        char valbuf[64];
+        const char *val = NULL;
+        char *owned = NULL;
+        if (strcmp(key, "مسار") == 0) val = e->display;
+        else if (strcmp(key, "اسم") == 0) val = e->name;
+        else if (strcmp(key, "حجم") == 0) { snprintf(valbuf, sizeof(valbuf), "%llu", e->eff.size); val = valbuf; }
+        else if (strcmp(key, "نوع") == 0) val = b5_kind_name_c(e->eff.kind);
+        else if (strcmp(key, "وقت") == 0) { snprintf(valbuf, sizeof(valbuf), "%lld", e->eff.mtime); val = valbuf; }
+        else {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s عنصر نسق غير معروف: %s", display, key);
+        }
+        j14_buf_add(&out, val);
+        free(key);
+        free(owned);
+        rest = close + 1;
+    }
+    j14_buf_reserve(&out, 1);
+    out.data[out.len] = '\0';
+    return out.data;
+}
+
+/* مفاتيح بحث_ملفات.ابحث (63 — مرآة B5_SEARCH_KEYS في Rust). */
+static const char *B5_SEARCH_KEYS_C[] = {
+    "نمط_قشرة", "حالة_ذكية", "حساس_لحالة", "بلا_حالة", "أدرج_المخفية",
+    "احترم_التجاهل", "بلا_تجاهل", "بلا_قيود", "نوع", "امتداد", "استثن",
+    "ملف_تجاهل", "عمق_أدنى", "عمق_أقصى", "عمق_دقيق", "حد_أقصى",
+    "حجم_أدنى", "حجم_أقصى", "حجم", "أحدث_من_مرجع", "أقدم_من_مرجع",
+    "متغير_خلال", "متغير_قبل", "متغير_بعد_وقت", "متغير_قبل_وقت",
+    "وصل_خلال", "فارغ", "أذونات", "اتبع_الروابط", "بلا_اتباع",
+    "اقطع_فرع", "و", "أو", "ليس", "تجميع", "نسق", "اكتب_في",
+    "تفاصيل", "طويل", "مسار_نسبي", "مسار_مطلق", "طابق_المسار",
+    "أظهر_الأخطاء", "لوّن", "صامت", "نفذ_لكل", "نفذ_دفعة", "اسأل",
+    "أول_فقط", "في_المحتوى", "قابل_للقراءة", "قابل_للكتابة",
+    "قابل_للتنفيذ", "اسم", "اسم_بلا_حالة", "مسار_نمط",
+    "مسار_نمط_بلا_حالة", "تعبير",
+};
+#define B5_SEARCH_NKEYS_C 58
+
+typedef struct {
+    char **a; size_t na;
+    char **b; size_t nb;
+} B5GroupC;
+
+typedef struct {
+    int glob, fold, include_hidden, respect_ignore;
+    char *kind;
+    char **exts; size_t nexts;
+    char **exclude; size_t nexclude;
+    char *ignore_file;
+    long long min_depth;
+    long long max_depth; int has_max_depth;
+    long long exact_depth; int has_exact_depth;
+    long long max_results; int has_max_results;
+    unsigned long long size_min; int has_size_min;
+    unsigned long long size_max; int has_size_max;
+    unsigned long long size_eq; int has_size_eq;
+    char *newer_ref;
+    char *older_ref;
+    long long changed_within; int has_changed_within;
+    long long changed_before; int has_changed_before;
+    long long changed_after; int has_changed_after;
+    long long changed_before_t; int has_changed_before_t;
+    long long accessed_within; int has_accessed_within;
+    int empty;
+    unsigned int perms; int has_perms;
+    int follow;
+    char **prune; size_t nprune;
+    char **and_pats; size_t nand;
+    char **or_pats; size_t nor;
+    char **not_pats; size_t nnot;
+    B5GroupC *groups; size_t ngroups;
+    char *format;
+    char *write_to;
+    int details, long_fmt, abs_path, full_path, show_errors, color, quiet;
+    int has_exec_each; NvValue exec_each;
+    int has_exec_batch; NvValue exec_batch;
+    int has_ask; NvValue ask;
+    int first_only;
+    char *in_content;
+    int readable, writable, executable;
+    char *name_glob; int name_fold;
+    char *path_glob; int path_glob_fold;
+    char *path_regex;
+} B5SearchC;
+
+static void b5_search_free_c(B5SearchC *o) {
+    free(o->kind);
+    b5_strs_free_c(o->exts, o->nexts);
+    b5_strs_free_c(o->exclude, o->nexclude);
+    free(o->ignore_file);
+    free(o->newer_ref);
+    free(o->older_ref);
+    b5_strs_free_c(o->prune, o->nprune);
+    b5_strs_free_c(o->and_pats, o->nand);
+    b5_strs_free_c(o->or_pats, o->nor);
+    b5_strs_free_c(o->not_pats, o->nnot);
+    for (size_t i = 0; i < o->ngroups; i++) {
+        b5_strs_free_c(o->groups[i].a, o->groups[i].na);
+        b5_strs_free_c(o->groups[i].b, o->groups[i].nb);
+    }
+    free(o->groups);
+    free(o->format);
+    free(o->write_to);
+    free(o->in_content);
+    free(o->name_glob);
+    free(o->path_glob);
+    free(o->path_regex);
+}
+
+/* أذونات: نص ثماني أو عدد (مرآة b5_parse_perms في Rust حرفيا). */
+static unsigned int b5_parse_perms_c(const char *display, NvValue v, int line, int col) {
+    if (v.tag == NV_STR) {
+        const char *s = v.u.str->data;
+        while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
+        const char *e = s + strlen(s);
+        while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\n' || e[-1] == '\r')) e--;
+        if (e == s) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s أذونات فارغة", display);
+        }
+        char *tmp = j14_strndup(s, (size_t)(e - s));
+        char *end = NULL;
+        errno = 0;
+        unsigned long n = strtoul(tmp, &end, 8);
+        if (errno == ERANGE || !end || *end != '\0') {
+            free(tmp);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s أذونات غير صالحة: %s", display, v.u.str->data);
+        }
+        free(tmp);
+        return (unsigned int)n;
+    }
+    if (v.tag == NV_NUM) {
+        long long n = nv_std_need_integer(display, v, line, col);
+        if (n < 0 || n > 07777) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s أذونات خارج النطاق: %lld", display, n);
+        }
+        return (unsigned int)n;
+    }
+    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع أذونات نصا ثمانيا أو عددا لكن أعطيت %s", display, nv_type_name(v));
+    return 0;
+}
+
+/* امتداد اسم (بعد آخر نقطة؛ NULL إن بلا امتداد) — مخفض الحالة ASCII. */
+static char *b5_ext_c(const char *name) {
+    const char *dot = strrchr(name, '.');
+    if (!dot || dot == name) return NULL;
+    char *ext = strdup(dot + 1);
+    for (char *p = ext; *p; p++) {
+        if (*p >= 'A' && *p <= 'Z') *p = (char)(*p + 32);
+    }
+    return ext;
+}
+
+/* تجميع rx واحد (مرآة b5_compile_rx — الفارغ ← NULL). */
+static RxProg *b5_compile_rx_c(const char *pat, int fold, const char *display, int line, int col) {
+    (void)display;
+    if (!pat[0]) return NULL;
+    RxProg *p = (RxProg *)malloc(sizeof(RxProg));
+    *p = rx_compile_fold_c(pat, 0, fold, line, col);
+    return p;
+}
+
+static void b5_rx_free_c(RxProg *p) {
+    if (!p) return;
+    rx_prog_free(p);
+    free(p);
+}
+
+/* مطابقة نمط واحد (مرآة b5_pat_hit في Rust). */
+static int b5_pat_hit_c(const char *pat, const char *target, const char *name, int glob, int fold, RxProg *prog, int line, int col) {
+    if (!pat[0]) return 1;
+    if (glob) {
+        return b5_glob_c(pat, name, fold, line, col) || b5_glob_c(pat, target, fold, line, col);
+    }
+    if (!prog) return 0;
+    size_t tlen = strlen(target);
+    if (nv_utf8_chars(target, tlen) > RX_MAX_TEXT) {
+        nv_error(NV_ERR_RUNTIME, "النص كبير جدا", line, col);
+    }
+    size_t n = 0;
+    size_t *offs = NULL;
+    uint32_t *chars = j14_decode_all(target, tlen, &n, &offs);
+    int s = 0, e = 0;
+    int *saved = NULL;
+    int found = rx_find_from(prog, chars, (int)n, 0, &s, &e, &saved, line, col);
+    free(saved);
+    free(chars);
+    free(offs);
+    return found;
+}
+
+/* هل في النمط حرف كبير (مرآة chars().any(is_uppercase) — نطاقات لاتينية/يونانية/سيريلية). */
+static int b5_has_upper_c(const char *pat) {
+    size_t n = 0;
+    size_t *offs = NULL;
+    uint32_t *cps = j14_decode_all(pat, strlen(pat), &n, &offs);
+    int hit = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint32_t c = cps[i];
+        if ((c >= 'A' && c <= 'Z') ||
+            (c >= 0xC0 && c <= 0xDE && c != 0xD7) ||
+            (c >= 0x391 && c <= 0x3A1) || (c >= 0x3A3 && c <= 0x3AB) ||
+            (c >= 0x410 && c <= 0x42F)) { hit = 1; break; }
+    }
+    free(cps);
+    free(offs);
+    return hit;
+}
+
+/* تحليل خيارات بحث_ملفات.ابحث (مرآة b5_parse_search في Rust — الترتيب نفسه). */
+static void b5_parse_search_c(const char *display, NvDict *pairs, const char *pattern, B5SearchC *o, int line, int col) {
+    memset(o, 0, sizeof(*o));
+    b5_no_unknown_c(display, pairs, B5_SEARCH_KEYS_C, B5_SEARCH_NKEYS_C, line, col);
+    int has_upper = b5_has_upper_c(pattern);
+    int smart = b5_opt_bool_c(pairs, "حالة_ذكية", 1, display, line, col);
+    int sensitive = b5_opt_bool_c(pairs, "حساس_لحالة", 0, display, line, col);
+    int fold_in = b5_opt_bool_c(pairs, "بلا_حالة", 0, display, line, col);
+    int fold;
+    if (fold_in) fold = 1;
+    else if (sensitive) fold = 0;
+    else if (smart) fold = !has_upper;
+    else fold = 0;
+    int no_ignore = b5_opt_bool_c(pairs, "بلا_تجاهل", 0, display, line, col);
+    int unrestricted = b5_opt_bool_c(pairs, "بلا_قيود", 0, display, line, col);
+    int respect_ignore;
+    if (no_ignore || unrestricted) respect_ignore = 0;
+    else respect_ignore = b5_opt_bool_c(pairs, "احترم_التجاهل", 1, display, line, col);
+    int include_hidden;
+    if (unrestricted) include_hidden = 1;
+    else include_hidden = b5_opt_bool_c(pairs, "أدرج_المخفية", 0, display, line, col);
+    const char *kind = b5_opt_str_c(pairs, "نوع", display, line, col);
+    if (kind) {
+        if (strcmp(kind, "ملف") != 0 && strcmp(kind, "مجلد") != 0 &&
+            strcmp(kind, "رابط") != 0 && strcmp(kind, "قابل_للتنفيذ") != 0 &&
+            strcmp(kind, "الكل") != 0) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s نوع غير معروف: %s (ملف/مجلد/رابط/قابل_للتنفيذ/الكل)", display, kind);
+        }
+    }
+    char **exts = b5_opt_strs_c(pairs, "امتداد", &o->nexts, display, line, col);
+    o->exts = exts;
+    for (size_t i = 0; i < o->nexts; i++) {
+        char *e = o->exts[i];
+        while (*e == '.') e++;
+        if (e != o->exts[i]) memmove(o->exts[i], e, strlen(e) + 1);
+        for (char *p = o->exts[i]; *p; p++) {
+            if (*p >= 'A' && *p <= 'Z') *p = (char)(*p + 32);
+        }
+    }
+    /* تجميع. */
+    if (pairs) {
+        int gi = nv_dict_find(pairs, "تجميع");
+        if (gi >= 0) {
+            NvValue gv = pairs->entries[gi].val;
+            if (gv.tag == NV_NIL) {
+                /* لا شيء. */
+            } else if (gv.tag != NV_LIST) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة قواميس للخيار تجميع لكن أعطيت %s", display, nv_type_name(gv));
+            } else {
+                for (size_t it = 0; it < gv.u.list->len; it++) {
+                    NvDict *gp = search_need_dict_c(display, gv.u.list->items[it], line, col);
+                    size_t na = 0, nb = 0;
+                    char **a = b5_opt_strs_c(gp, "و", &na, display, line, col);
+                    char **b = b5_opt_strs_c(gp, "أو", &nb, display, line, col);
+                    for (int k = 0; k < (int)gp->len; k++) {
+                        const char *key = gp->entries[k].key;
+                        if (strcmp(key, "و") != 0 && strcmp(key, "أو") != 0) {
+                            b5_strs_free_c(a, na);
+                            b5_strs_free_c(b, nb);
+                            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تجميع يقبل و/أو فقط لا %s", display, key);
+                        }
+                    }
+                    o->groups = (B5GroupC *)realloc(o->groups, (o->ngroups + 1) * sizeof(B5GroupC));
+                    o->groups[o->ngroups].a = a;
+                    o->groups[o->ngroups].na = na;
+                    o->groups[o->ngroups].b = b;
+                    o->groups[o->ngroups].nb = nb;
+                    o->ngroups++;
+                }
+            }
+        }
+    }
+    /* نفذ_لكل / نفذ_دفعة / اسأل. */
+    if (pairs) {
+        int ei = nv_dict_find(pairs, "نفذ_لكل");
+        if (ei >= 0 && pairs->entries[ei].val.tag != NV_NIL) {
+            NvValue v = pairs->entries[ei].val;
+            if (!j3_is_func(v)) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع دالة للخيار نفذ_لكل لكن أعطيت %s", display, nv_type_name(v));
+            }
+            o->has_exec_each = 1;
+            o->exec_each = v;
+        }
+        int bi = nv_dict_find(pairs, "نفذ_دفعة");
+        if (bi >= 0 && pairs->entries[bi].val.tag != NV_NIL) {
+            NvValue v = pairs->entries[bi].val;
+            if (!j3_is_func(v)) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع دالة للخيار نفذ_دفعة لكن أعطيت %s", display, nv_type_name(v));
+            }
+            o->has_exec_batch = 1;
+            o->exec_batch = v;
+        }
+        int ai = nv_dict_find(pairs, "اسأل");
+        if (ai >= 0 && pairs->entries[ai].val.tag != NV_NIL) {
+            NvValue v = pairs->entries[ai].val;
+            if (!j3_is_func(v)) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع دالة للخيار اسأل لكن أعطيت %s", display, nv_type_name(v));
+            }
+            o->has_ask = 1;
+            o->ask = v;
+        }
+    }
+    if (o->has_exec_each && o->has_exec_batch) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا يجمع نفذ_لكل ونفذ_دفعة", display);
+    }
+    if (o->has_ask && !o->has_exec_each && !o->has_exec_batch) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s اسأل يحتاج نفذ_لكل أو نفذ_دفعة", display);
+    }
+    o->details = b5_opt_bool_c(pairs, "تفاصيل", 0, display, line, col);
+    const char *wt = b5_opt_str_c(pairs, "اكتب_في", display, line, col);
+    if (wt) o->write_to = strdup(wt);
+    if (o->write_to && o->details) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s اكتب_في لا يعمل مع تفاصيل", display);
+    }
+    if (o->write_to && (o->has_exec_each || o->has_exec_batch)) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s اكتب_في لا يجمع التنفيذ", display);
+    }
+    if (pairs) {
+        int pi = nv_dict_find(pairs, "أذونات");
+        if (pi >= 0 && pairs->entries[pi].val.tag != NV_NIL) {
+            o->perms = b5_parse_perms_c(display, pairs->entries[pi].val, line, col);
+            o->has_perms = 1;
+        }
+    }
+    long long tmp;
+    o->min_depth = 1;
+    if (b5_opt_count_c(pairs, "عمق_أدنى", &tmp, display, line, col)) o->min_depth = tmp;
+    if (b5_opt_count_c(pairs, "عمق_أقصى", &tmp, display, line, col)) { o->max_depth = tmp; o->has_max_depth = 1; }
+    if (b5_opt_count_c(pairs, "عمق_دقيق", &tmp, display, line, col)) { o->exact_depth = tmp; o->has_exact_depth = 1; }
+    /* باقي الحقول بترتيب بنية Rust نفسها. */
+    o->glob = b5_opt_bool_c(pairs, "نمط_قشرة", 0, display, line, col);
+    o->fold = fold;
+    o->include_hidden = include_hidden;
+    o->respect_ignore = respect_ignore;
+    if (kind) o->kind = strdup(kind);
+    o->exclude = b5_opt_strs_c(pairs, "استثن", &o->nexclude, display, line, col);
+    const char *igf = b5_opt_str_c(pairs, "ملف_تجاهل", display, line, col);
+    if (igf) o->ignore_file = strdup(igf);
+    if (b5_opt_count_c(pairs, "حد_أقصى", &tmp, display, line, col)) { o->max_results = tmp; o->has_max_results = 1; }
+    if (b5_opt_count_c(pairs, "حجم_أدنى", &tmp, display, line, col)) { o->size_min = (unsigned long long)tmp; o->has_size_min = 1; }
+    if (b5_opt_count_c(pairs, "حجم_أقصى", &tmp, display, line, col)) { o->size_max = (unsigned long long)tmp; o->has_size_max = 1; }
+    if (b5_opt_count_c(pairs, "حجم", &tmp, display, line, col)) { o->size_eq = (unsigned long long)tmp; o->has_size_eq = 1; }
+    const char *nr = b5_opt_str_c(pairs, "أحدث_من_مرجع", display, line, col);
+    if (nr) o->newer_ref = strdup(nr);
+    const char *orr = b5_opt_str_c(pairs, "أقدم_من_مرجع", display, line, col);
+    if (orr) o->older_ref = strdup(orr);
+    if (b5_opt_count_c(pairs, "متغير_خلال", &tmp, display, line, col)) { o->changed_within = tmp; o->has_changed_within = 1; }
+    if (b5_opt_count_c(pairs, "متغير_قبل", &tmp, display, line, col)) { o->changed_before = tmp; o->has_changed_before = 1; }
+    if (b5_opt_count_c(pairs, "متغير_بعد_وقت", &tmp, display, line, col)) { o->changed_after = tmp; o->has_changed_after = 1; }
+    if (b5_opt_count_c(pairs, "متغير_قبل_وقت", &tmp, display, line, col)) { o->changed_before_t = tmp; o->has_changed_before_t = 1; }
+    if (b5_opt_count_c(pairs, "وصل_خلال", &tmp, display, line, col)) { o->accessed_within = tmp; o->has_accessed_within = 1; }
+    o->empty = b5_opt_bool_c(pairs, "فارغ", 0, display, line, col);
+    o->follow = b5_opt_bool_c(pairs, "اتبع_الروابط", 0, display, line, col);
+    o->prune = b5_opt_strs_c(pairs, "اقطع_فرع", &o->nprune, display, line, col);
+    o->and_pats = b5_opt_strs_c(pairs, "و", &o->nand, display, line, col);
+    o->or_pats = b5_opt_strs_c(pairs, "أو", &o->nor, display, line, col);
+    o->not_pats = b5_opt_strs_c(pairs, "ليس", &o->nnot, display, line, col);
+    const char *fm = b5_opt_str_c(pairs, "نسق", display, line, col);
+    if (fm) o->format = strdup(fm);
+    o->long_fmt = b5_opt_bool_c(pairs, "طويل", 0, display, line, col);
+    o->abs_path = b5_opt_bool_c(pairs, "مسار_مطلق", 0, display, line, col);
+    o->full_path = b5_opt_bool_c(pairs, "طابق_المسار", 0, display, line, col);
+    o->show_errors = b5_opt_bool_c(pairs, "أظهر_الأخطاء", 0, display, line, col);
+    o->color = b5_opt_bool_c(pairs, "لوّن", 0, display, line, col);
+    o->quiet = b5_opt_bool_c(pairs, "صامت", 0, display, line, col);
+    o->first_only = b5_opt_bool_c(pairs, "أول_فقط", 0, display, line, col);
+    const char *ic = b5_opt_str_c(pairs, "في_المحتوى", display, line, col);
+    if (ic) o->in_content = strdup(ic);
+    o->readable = b5_opt_bool_c(pairs, "قابل_للقراءة", 0, display, line, col);
+    o->writable = b5_opt_bool_c(pairs, "قابل_للكتابة", 0, display, line, col);
+    o->executable = b5_opt_bool_c(pairs, "قابل_للتنفيذ", 0, display, line, col);
+    const char *ng = b5_opt_str_c(pairs, "اسم", display, line, col);
+    if (ng) o->name_glob = strdup(ng);
+    o->name_fold = b5_opt_bool_c(pairs, "اسم_بلا_حالة", 0, display, line, col);
+    const char *pg = b5_opt_str_c(pairs, "مسار_نمط", display, line, col);
+    if (pg) o->path_glob = strdup(pg);
+    o->path_glob_fold = b5_opt_bool_c(pairs, "مسار_نمط_بلا_حالة", 0, display, line, col);
+    const char *pr = b5_opt_str_c(pairs, "تعبير", display, line, col);
+    if (pr) o->path_regex = strdup(pr);
+}
+
+/* مقارنة مدخلين بالعرض (لفرز نتائج البحث). */
+static int b5_display_cmp_c(const void *a, const void *b) {
+    const B5EntryC *ea = *(B5EntryC *const *)a;
+    const B5EntryC *eb = *(B5EntryC *const *)b;
+    return strcmp(ea->display, eb->display);
+}
+
+typedef struct { RxProg **a; RxProg **b; } B5GroupRxC;
+static void b5_search_rx_free_c(RxProg *main_rx, RxProg **and_rx, size_t nand, RxProg **or_rx, size_t nor, RxProg **not_rx, size_t nnot, B5GroupRxC *group_rx, B5GroupC *groups, size_t ngroups, RxProg *content_rx, RxProg *path_rx);
+
+/* بحث_ملفات.ابحث(نمط، جذر؟، خيارات؟) — §§1–2 (مرآة Rust حرفيا). */
+static NvValue b5_search_files_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "بحث_ملفات.ابحث";
+    if (nargs < 1 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *pattern = nv_std_need_string(DISPLAY, args[0], line, col);
+    char **roots = NULL;
+    size_t nroots = 0;
+    if (nargs < 2 || args[1].tag == NV_NIL) {
+        roots = (char **)malloc(sizeof(char *));
+        roots[0] = strdup(".");
+        nroots = 1;
+    } else if (args[1].tag == NV_STR) {
+        roots = (char **)malloc(sizeof(char *));
+        roots[0] = strdup(args[1].u.str->data);
+        nroots = 1;
+    } else if (args[1].tag == NV_LIST) {
+        nroots = args[1].u.list->len;
+        if (nroots == 0) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s قائمة الجذور فارغة", DISPLAY);
+        }
+        roots = (char **)malloc(nroots * sizeof(char *));
+        for (size_t i = 0; i < nroots; i++) {
+            roots[i] = strdup(nv_std_need_string(DISPLAY, args[1].u.list->items[i], line, col));
+        }
+    } else {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا أو قائمة نصوص للجذر لكن أعطيت %s", DISPLAY, nv_type_name(args[1]));
+    }
+    NvDict *pairs = b5_opt_dict_c(args, nargs, 2, DISPLAY, line, col);
+    B5SearchC o;
+    b5_parse_search_c(DISPLAY, pairs, pattern, &o, line, col);
+    if (o.follow && pairs && b5_opt_bool_c(pairs, "بلا_اتباع", 0, DISPLAY, line, col)) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا يجمع اتبع_الروابط وبلا_اتباع", DISPLAY);
+    }
+    /* تحقق الأنماط أولا — قبل أي مشي. */
+    RxProg *main_rx = o.glob ? NULL : b5_compile_rx_c(pattern, o.fold, DISPLAY, line, col);
+    RxProg **and_rx = NULL, **or_rx = NULL, **not_rx = NULL;
+    if (o.nand) {
+        and_rx = (RxProg **)calloc(o.nand, sizeof(RxProg *));
+        for (size_t i = 0; i < o.nand; i++) and_rx[i] = o.glob ? NULL : b5_compile_rx_c(o.and_pats[i], o.fold, DISPLAY, line, col);
+    }
+    if (o.nor) {
+        or_rx = (RxProg **)calloc(o.nor, sizeof(RxProg *));
+        for (size_t i = 0; i < o.nor; i++) or_rx[i] = o.glob ? NULL : b5_compile_rx_c(o.or_pats[i], o.fold, DISPLAY, line, col);
+    }
+    if (o.nnot) {
+        not_rx = (RxProg **)calloc(o.nnot, sizeof(RxProg *));
+        for (size_t i = 0; i < o.nnot; i++) not_rx[i] = o.glob ? NULL : b5_compile_rx_c(o.not_pats[i], o.fold, DISPLAY, line, col);
+    }
+    B5GroupRxC *group_rx = NULL;
+    if (o.ngroups) {
+        group_rx = (B5GroupRxC *)calloc(o.ngroups, sizeof(B5GroupRxC));
+        for (size_t g = 0; g < o.ngroups; g++) {
+            group_rx[g].a = (RxProg **)calloc(o.groups[g].na ? o.groups[g].na : 1, sizeof(RxProg *));
+            group_rx[g].b = (RxProg **)calloc(o.groups[g].nb ? o.groups[g].nb : 1, sizeof(RxProg *));
+            for (size_t i = 0; i < o.groups[g].na; i++) group_rx[g].a[i] = o.glob ? NULL : b5_compile_rx_c(o.groups[g].a[i], o.fold, DISPLAY, line, col);
+            for (size_t i = 0; i < o.groups[g].nb; i++) group_rx[g].b[i] = o.glob ? NULL : b5_compile_rx_c(o.groups[g].b[i], o.fold, DISPLAY, line, col);
+        }
+    }
+    RxProg *content_rx = o.in_content ? b5_compile_rx_c(o.in_content, o.fold, DISPLAY, line, col) : NULL;
+    if (o.name_glob) {
+        (void)search_glob_match_fold_c(o.name_glob, "", 0, line, col);
+    }
+    if (o.path_glob) {
+        (void)search_glob_match_fold_c(o.path_glob, "", 0, line, col);
+    }
+    RxProg *path_rx = o.path_regex ? b5_compile_rx_c(o.path_regex, o.fold, DISPLAY, line, col) : NULL;
+    /* مراجع الأوقات. */
+    long long newer_t = 0, older_t = 0;
+    int has_newer = 0, has_older = 0;
+    if (o.newer_ref) {
+        char *fs = nv_resolve_path(o.newer_ref, line, col);
+        B5MetaC m;
+        if (!b5_stat_c(fs, &m)) {
+            free(fs);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف المرجعي غير موجود: %s", DISPLAY, o.newer_ref);
+        }
+        newer_t = m.mtime;
+        has_newer = 1;
+        b5_meta_free_c(&m);
+        free(fs);
+    }
+    if (o.older_ref) {
+        char *fs = nv_resolve_path(o.older_ref, line, col);
+        B5MetaC m;
+        if (!b5_stat_c(fs, &m)) {
+            free(fs);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف المرجعي غير موجود: %s", DISPLAY, o.older_ref);
+        }
+        older_t = m.mtime;
+        has_older = 1;
+        b5_meta_free_c(&m);
+        free(fs);
+    }
+    long long now = b5_now_c();
+    /* المشي. */
+    B5WalkC w;
+    b5_walk_new_c(&w);
+    w.include_hidden = o.include_hidden;
+    w.respect_ignore = o.respect_ignore;
+    w.follow_links = o.follow;
+    w.min_depth = o.min_depth;
+    w.max_depth = o.has_max_depth ? o.max_depth : -1;
+    w.exact_depth = o.has_exact_depth ? o.exact_depth : -1;
+    w.prune = o.prune;
+    w.nprune = o.nprune;
+    w.show_errors = o.show_errors;
+    if (o.ignore_file) {
+        w.gitignore_extra = b5_load_patterns_c(DISPLAY, o.ignore_file, &w.ngitignore, line, col);
+    }
+    B5EntryListC entries;
+    memset(&entries, 0, sizeof(entries));
+    for (size_t ri = 0; ri < nroots; ri++) {
+        /* صامت يبتلع الجذر الغائب (مثل Rust) — والفحص المسبق
+           يمنع قفزة الخطأ من b5_walk_root_c. */
+        if (o.quiet) {
+            char *fs = nv_resolve_path(roots[ri], line, col);
+            struct stat st;
+            int ok = stat(fs, &st) == 0 && (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode));
+            free(fs);
+            if (!ok) continue;
+        }
+        b5_walk_root_c(roots[ri], &w, &entries, line, col);
+    }
+    if (o.show_errors) {
+        for (size_t i = 0; i < w.nerrors; i++) fprintf(stderr, "%s\n", w.errors[i]);
+    }
+    /* الترشيح. */
+    B5EntryC **kept = NULL;
+    size_t nkept = 0, capkept = 0;
+    for (size_t ei = 0; ei < entries.len; ei++) {
+        B5EntryC *e = &entries.items[ei];
+        char *target;
+        if (o.full_path) {
+            char *abs = nv_resolve_path(e->display, line, col);
+            for (char *p = abs; *p; p++) if (*p == '\\') *p = '/';
+            target = abs;
+        } else {
+            target = strdup(e->rel);
+        }
+        int hit_main;
+        if (o.glob || main_rx || !pattern[0]) {
+            hit_main = b5_pat_hit_c(pattern, target, e->name, o.glob, o.fold, main_rx, line, col);
+        } else {
+            hit_main = 1;
+        }
+        if (!hit_main) { free(target); continue; }
+        int ok = 1;
+        for (size_t i = 0; i < o.nand && ok; i++) {
+            if (!b5_pat_hit_c(o.and_pats[i], target, e->name, o.glob, o.fold, and_rx[i], line, col)) ok = 0;
+        }
+        if (!ok) { free(target); continue; }
+        if (o.nor) {
+            int any = 0;
+            for (size_t i = 0; i < o.nor; i++) {
+                if (b5_pat_hit_c(o.or_pats[i], target, e->name, o.glob, o.fold, or_rx[i], line, col)) { any = 1; break; }
+            }
+            if (!any) { free(target); continue; }
+        }
+        for (size_t i = 0; i < o.nnot && ok; i++) {
+            if (b5_pat_hit_c(o.not_pats[i], target, e->name, o.glob, o.fold, not_rx[i], line, col)) ok = 0;
+        }
+        if (!ok) { free(target); continue; }
+        if (o.ngroups) {
+            int any_group = 0;
+            for (size_t gi = 0; gi < o.ngroups && !any_group; gi++) {
+                int gok = 1;
+                for (size_t i = 0; i < o.groups[gi].na && gok; i++) {
+                    if (!b5_pat_hit_c(o.groups[gi].a[i], target, e->name, o.glob, o.fold, group_rx[gi].a[i], line, col)) gok = 0;
+                }
+                if (gok && o.groups[gi].nb) {
+                    int bany = 0;
+                    for (size_t i = 0; i < o.groups[gi].nb; i++) {
+                        if (b5_pat_hit_c(o.groups[gi].b[i], target, e->name, o.glob, o.fold, group_rx[gi].b[i], line, col)) { bany = 1; break; }
+                    }
+                    gok = bany;
+                }
+                if (gok) any_group = 1;
+            }
+            if (!any_group) { free(target); continue; }
+        }
+        if (o.name_glob) {
+            int f = o.name_fold || o.fold;
+            if (!b5_glob_c(o.name_glob, e->name, f, line, col)) { free(target); continue; }
+        }
+        if (o.path_glob) {
+            int f = o.path_glob_fold || o.fold;
+            if (!b5_glob_c(o.path_glob, target, f, line, col) && !b5_glob_c(o.path_glob, e->name, f, line, col)) { free(target); continue; }
+        }
+        if (o.path_regex) {
+            if (!b5_rx_search_c(o.path_regex, target, o.fold, line, col)) { free(target); continue; }
+        }
+        if (o.kind) {
+            int good = 1;
+            if (strcmp(o.kind, "ملف") == 0) good = e->eff.kind == B5_KIND_FILE;
+            else if (strcmp(o.kind, "مجلد") == 0) good = e->eff.kind == B5_KIND_DIR;
+            else if (strcmp(o.kind, "رابط") == 0) good = e->meta.is_link;
+            else if (strcmp(o.kind, "قابل_للتنفيذ") == 0) good = e->eff.kind == B5_KIND_FILE && b5_is_exec_c(e->fs, &e->eff);
+            if (!good) { free(target); continue; }
+        }
+        if (o.nexts) {
+            char *ext = b5_ext_c(e->name);
+            int match = 0;
+            if (ext) {
+                for (size_t i = 0; i < o.nexts; i++) {
+                    if (strcmp(ext, o.exts[i]) == 0) { match = 1; break; }
+                }
+            }
+            free(ext);
+            if (!match) { free(target); continue; }
+        }
+        if (o.nexclude && b5_glob_any_c(o.exclude, o.nexclude, e->name, e->rel, o.fold, line, col)) { free(target); continue; }
+        if (o.has_size_min && e->eff.size < o.size_min) { free(target); continue; }
+        if (o.has_size_max && e->eff.size > o.size_max) { free(target); continue; }
+        if (o.has_size_eq && e->eff.size != o.size_eq) { free(target); continue; }
+        if (has_newer && e->eff.mtime <= newer_t) { free(target); continue; }
+        if (has_older && e->eff.mtime >= older_t) { free(target); continue; }
+        if (o.has_changed_within && e->eff.mtime < now - o.changed_within) { free(target); continue; }
+        if (o.has_changed_before && e->eff.mtime >= now - o.changed_before) { free(target); continue; }
+        if (o.has_changed_after && e->eff.mtime <= o.changed_after) { free(target); continue; }
+        if (o.has_changed_before_t && e->eff.mtime >= o.changed_before_t) { free(target); continue; }
+        if (o.has_accessed_within && e->eff.atime < now - o.accessed_within) { free(target); continue; }
+        if (o.empty) {
+            int emp = 0;
+            if (e->eff.kind == B5_KIND_FILE) emp = e->eff.size == 0;
+            else if (e->eff.kind == B5_KIND_DIR) emp = b5_dir_empty_c(e->fs);
+            if (!emp) { free(target); continue; }
+        }
+        if (o.has_perms && (e->eff.mode & 07777) != o.perms) { free(target); continue; }
+        if (o.readable && (e->eff.mode & 0444) == 0) { free(target); continue; }
+        if (o.writable && (e->eff.mode & 0222) == 0) { free(target); continue; }
+        if (o.executable) {
+            int ex;
+            if (e->eff.kind == B5_KIND_DIR) {
+#ifdef _WIN32
+                ex = 1;
+#else
+                ex = (e->eff.mode & 0111) != 0;
+#endif
+            } else {
+                ex = b5_is_exec_c(e->fs, &e->eff);
+            }
+            if (!ex) { free(target); continue; }
+        }
+        if (o.in_content) {
+            if (e->eff.kind != B5_KIND_FILE) { free(target); continue; }
+            size_t blen = 0;
+            char *bytes = b5_read_file_c(e->fs, &blen);
+            if (!bytes || blen > 1024 * 1024) { free(bytes); free(target); continue; }
+            if (memchr(bytes, 0, blen)) { free(bytes); free(target); continue; }
+            if (!nv_std_file_valid_utf8((const unsigned char *)bytes, blen)) { free(bytes); free(target); continue; }
+            int hit;
+            if (content_rx) {
+                char *text = j14_strndup(bytes, blen);
+                hit = b5_rx_search_c(o.in_content, text, o.fold, line, col);
+                free(text);
+            } else {
+                char *text = j14_strndup(bytes, blen);
+                hit = strstr(text, o.in_content) != NULL;
+                free(text);
+            }
+            free(bytes);
+            if (!hit) { free(target); continue; }
+        }
+        free(target);
+        if (nkept >= capkept) {
+            size_t ncap = capkept == 0 ? 16 : capkept * 2;
+            B5EntryC **grown = (B5EntryC **)realloc(kept, ncap * sizeof(B5EntryC *));
+            if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+            kept = grown;
+            capkept = ncap;
+        }
+        kept[nkept++] = e;
+    }
+    qsort(kept, nkept, sizeof(B5EntryC *), b5_display_cmp_c);
+    if (o.first_only && nkept > 1) nkept = 1;
+    if (o.has_max_results) {
+        long long m = o.max_results < 0 ? 0 : o.max_results;
+        if ((long long)nkept > m) nkept = (size_t)m;
+    }
+    /* العرض. */
+    char **displays = NULL;
+    if (nkept) {
+        displays = (char **)malloc(nkept * sizeof(char *));
+        for (size_t i = 0; i < nkept; i++) {
+            if (o.abs_path) {
+                char *abs = nv_resolve_path(kept[i]->display, line, col);
+                for (char *p = abs; *p; p++) if (*p == '\\') *p = '/';
+                displays[i] = abs;
+            } else {
+                displays[i] = strdup(kept[i]->display);
+            }
+        }
+    }
+    /* التنفيذ. */
+    if (o.has_exec_each) {
+        NvValue out = nv_list_new();
+        for (size_t i = 0; i < nkept; i++) {
+            if (o.has_ask) {
+                NvValue r = j3_call_single(o.ask, nv_str_new(displays[i], strlen(displays[i])), line, col);
+                if (r.tag != NV_BOOL) {
+                    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع أن يرجع اسأل منطقيا لكن أعطيت %s", DISPLAY, nv_type_name(r));
+                }
+                if (!r.u.boolean) continue;
+            }
+            NvValue r = j3_call_single(o.exec_each, nv_str_new(displays[i], strlen(displays[i])), line, col);
+            nv_list_push_raw(out.u.list, r);
+        }
+        b5_search_rx_free_c(main_rx, and_rx, o.nand, or_rx, o.nor, not_rx, o.nnot, group_rx, o.groups, o.ngroups, content_rx, path_rx);
+        for (size_t i = 0; i < nkept; i++) free(displays[i]);
+        free(displays);
+        free(kept);
+        b5_entry_list_free_c(&entries);
+        for (size_t i = 0; i < nroots; i++) free(roots[i]);
+        free(roots);
+        b5_search_free_c(&o);
+        return out;
+    }
+    if (o.has_exec_batch) {
+        NvValue paths = nv_list_new();
+        for (size_t i = 0; i < nkept; i++) {
+            if (o.has_ask) {
+                NvValue r = j3_call_single(o.ask, nv_str_new(displays[i], strlen(displays[i])), line, col);
+                if (r.tag != NV_BOOL) {
+                    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع أن يرجع اسأل منطقيا لكن أعطيت %s", DISPLAY, nv_type_name(r));
+                }
+                if (!r.u.boolean) continue;
+            }
+            nv_list_push_raw(paths.u.list, nv_str_new(displays[i], strlen(displays[i])));
+        }
+        NvValue res = j3_call_single(o.exec_batch, paths, line, col);
+        {
+            NvValue out = res;
+            b5_search_rx_free_c(main_rx, and_rx, o.nand, or_rx, o.nor, not_rx, o.nnot, group_rx, o.groups, o.ngroups, content_rx, path_rx);
+            for (size_t i = 0; i < nkept; i++) free(displays[i]);
+            free(displays);
+            free(kept);
+            b5_entry_list_free_c(&entries);
+            for (size_t i = 0; i < nroots; i++) free(roots[i]);
+            free(roots);
+            b5_search_free_c(&o);
+            return out;
+        }
+    }
+    /* تفاصيل. */
+    if (o.details) {
+        NvValue out = nv_list_new();
+        for (size_t i = 0; i < nkept; i++) {
+            B5EntryC *e = kept[i];
+            NvValue dv = nv_dict_new();
+            nv_dict_set_raw(dv.u.dict, "مسار", nv_str_new(displays[i], strlen(displays[i])));
+            nv_dict_set_raw(dv.u.dict, "اسم", nv_str_new(e->name, strlen(e->name)));
+            nv_dict_set_raw(dv.u.dict, "نوع", nv_str_new(b5_kind_name_c(e->eff.kind), strlen(b5_kind_name_c(e->eff.kind))));
+            nv_dict_set_raw(dv.u.dict, "حجم", nv_num((double)e->eff.size));
+            nv_dict_set_raw(dv.u.dict, "وقت_تعديل", nv_num((double)e->eff.mtime));
+            nv_dict_set_raw(dv.u.dict, "وقت_وصول", nv_num((double)e->eff.atime));
+            char permbuf[16];
+            snprintf(permbuf, sizeof(permbuf), "%o", e->eff.mode & 07777);
+            nv_dict_set_raw(dv.u.dict, "أذونات", nv_str_new(permbuf, strlen(permbuf)));
+            if (e->meta.is_link) {
+                nv_dict_set_raw(dv.u.dict, "رابط", nv_str_new(e->meta.target ? e->meta.target : "", e->meta.target ? strlen(e->meta.target) : 0));
+            }
+            nv_list_push_raw(out.u.list, dv);
+        }
+        b5_search_rx_free_c(main_rx, and_rx, o.nand, or_rx, o.nor, not_rx, o.nnot, group_rx, o.groups, o.ngroups, content_rx, path_rx);
+        for (size_t i = 0; i < nkept; i++) free(displays[i]);
+        free(displays);
+        free(kept);
+        b5_entry_list_free_c(&entries);
+        for (size_t i = 0; i < nroots; i++) free(roots[i]);
+        free(roots);
+        b5_search_free_c(&o);
+        return out;
+    }
+    /* سطور نصية (طويل أو نسق أو مسارات). */
+    {
+        char **lines = NULL;
+        if (nkept) {
+            lines = (char **)malloc(nkept * sizeof(char *));
+            for (size_t i = 0; i < nkept; i++) {
+                if (o.long_fmt) {
+                    lines[i] = b5_long_line_c(kept[i], "%Y-%m-%d", "تعديل", 0, 1, 1, 1, o.color, DISPLAY, line, col);
+                } else if (o.format) {
+                    lines[i] = b5_apply_format_c(kept[i], o.format, DISPLAY, line, col);
+                } else if (o.color) {
+                    lines[i] = b5_colorize_c(displays[i], kept[i]->eff.kind, b5_is_exec_c(kept[i]->fs, &kept[i]->eff));
+                } else {
+                    lines[i] = strdup(displays[i]);
+                }
+            }
+        }
+        if (o.write_to) {
+            char *fs = nv_resolve_path(o.write_to, line, col);
+            FILE *f = fopen(fs, "wb");
+            if (!f) {
+                free(fs);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر الكتابة في %s", DISPLAY, o.write_to);
+            }
+            for (size_t i = 0; i < nkept; i++) {
+                fwrite(lines[i], 1, strlen(lines[i]), f);
+                fputc('\n', f);
+            }
+            fclose(f);
+            free(fs);
+            NvValue out = nv_num((double)nkept);
+            b5_search_rx_free_c(main_rx, and_rx, o.nand, or_rx, o.nor, not_rx, o.nnot, group_rx, o.groups, o.ngroups, content_rx, path_rx);
+            for (size_t i = 0; i < nkept; i++) { free(lines[i]); free(displays[i]); }
+            free(lines);
+            free(displays);
+            free(kept);
+            b5_entry_list_free_c(&entries);
+            for (size_t i = 0; i < nroots; i++) free(roots[i]);
+            free(roots);
+            b5_search_free_c(&o);
+            return out;
+        }
+        NvValue out = nv_list_new();
+        for (size_t i = 0; i < nkept; i++) {
+            nv_list_push_raw(out.u.list, nv_str_new(lines[i], strlen(lines[i])));
+            free(lines[i]);
+            free(displays[i]);
+        }
+        b5_search_rx_free_c(main_rx, and_rx, o.nand, or_rx, o.nor, not_rx, o.nnot, group_rx, o.groups, o.ngroups, content_rx, path_rx);
+        free(lines);
+        free(displays);
+        free(kept);
+        b5_entry_list_free_c(&entries);
+        for (size_t i = 0; i < nroots; i++) free(roots[i]);
+        free(roots);
+        b5_search_free_c(&o);
+        return out;
+    }
+}
+
+/* تحرير كل برامج regex المجمّعة في بحث واحد. */
+static void b5_search_rx_free_c(RxProg *main_rx, RxProg **and_rx, size_t nand, RxProg **or_rx, size_t nor, RxProg **not_rx, size_t nnot, B5GroupRxC *group_rx, B5GroupC *groups, size_t ngroups, RxProg *content_rx, RxProg *path_rx) {
+    b5_rx_free_c(main_rx);
+    if (and_rx) { for (size_t i = 0; i < nand; i++) b5_rx_free_c(and_rx[i]); free(and_rx); }
+    if (or_rx) { for (size_t i = 0; i < nor; i++) b5_rx_free_c(or_rx[i]); free(or_rx); }
+    if (not_rx) { for (size_t i = 0; i < nnot; i++) b5_rx_free_c(not_rx[i]); free(not_rx); }
+    if (group_rx) {
+        for (size_t g = 0; g < ngroups; g++) {
+            for (size_t i = 0; i < groups[g].na; i++) b5_rx_free_c(group_rx[g].a[i]);
+            for (size_t i = 0; i < groups[g].nb; i++) b5_rx_free_c(group_rx[g].b[i]);
+            free(group_rx[g].a);
+            free(group_rx[g].b);
+        }
+        free(group_rx);
+    }
+    b5_rx_free_c(content_rx);
+    b5_rx_free_c(path_rx);
+}
+
+void nv_std_b5search_fill(NvDict *d) {
+    nv_std_add_fn(d, "ابحث", b5_search_files_fn);
+}
+
+/* END لينكس5-ملفات بحث C */
+
+/* BEGIN لينكس5-ملفات قاعدة_أسماء C */
+
+#define B5_DB_DEFAULT_C "قاعدة_أسماء.قاعدة"
+
+/* اقرأ قاعدة أسماء (سطر لكل مسار)؛ والغائبة خطأ عربي (مرآة b5_db_read). */
+static char **b5_db_read_c(const char *display, const char *path, size_t *n_out, int line, int col) {
+    *n_out = 0;
+    char *fs = nv_resolve_path(path, line, col);
+    size_t len = 0;
+    char *content = b5_read_file_c(fs, &len);
+    free(fs);
+    if (!content || !nv_std_file_valid_utf8((const unsigned char *)content, len)) {
+        free(content);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s قاعدة الأسماء غير موجودة: %s", display, path);
+    }
+    char **out = NULL;
+    size_t n = 0, cap = 0;
+    size_t pos = 0;
+    while (pos < len) {
+        size_t start = pos;
+        while (pos < len && content[pos] != '\n') pos++;
+        size_t end = pos;
+        if (pos < len) pos++;
+        if (end > start && content[end - 1] == '\r') end--;
+        if (end == start) continue;
+        if (n >= cap) {
+            size_t ncap = cap == 0 ? 16 : cap * 2;
+            char **grown = (char **)realloc(out, ncap * sizeof(char *));
+            if (!grown) {
+                free(content);
+                nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+            }
+            out = grown;
+            cap = ncap;
+        }
+        out[n++] = j14_strndup(content + start, end - start);
+    }
+    free(content);
+    *n_out = n;
+    return out;
+}
+
+/* مقارنة نصين للفرز (بايتات). */
+static int b5_str_cmp_c(const void *a, const void *b) {
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+/* قاعدة_أسماء.ابن(جذور؟، مسار_قاعدة؟، خيارات؟). */
+static NvValue b5_namebase_build_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "قاعدة_أسماء.ابن";
+    if (nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع ثلاثة معاملات على الأكثر لكن أعطيت %d", DISPLAY, nargs);
+    }
+    char **roots = NULL;
+    size_t nroots = 0;
+    if (nargs < 1 || args[0].tag == NV_NIL) {
+        roots = (char **)malloc(sizeof(char *));
+        roots[0] = strdup(".");
+        nroots = 1;
+    } else if (args[0].tag == NV_STR) {
+        roots = (char **)malloc(sizeof(char *));
+        roots[0] = strdup(args[0].u.str->data);
+        nroots = 1;
+    } else if (args[0].tag == NV_LIST) {
+        nroots = args[0].u.list->len;
+        if (nroots == 0) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s قائمة الجذور فارغة", DISPLAY);
+        }
+        roots = (char **)malloc(nroots * sizeof(char *));
+        for (size_t i = 0; i < nroots; i++) {
+            roots[i] = strdup(nv_std_need_string(DISPLAY, args[0].u.list->items[i], line, col));
+        }
+    } else {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا أو قائمة نصوص للجذور لكن أعطيت %s", DISPLAY, nv_type_name(args[0]));
+    }
+    const char *db_path = B5_DB_DEFAULT_C;
+    char *db_path_owned = NULL;
+    if (nargs >= 2 && args[1].tag != NV_NIL) {
+        if (args[1].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا لمسار القاعدة لكن أعطيت %s", DISPLAY, nv_type_name(args[1]));
+        }
+        db_path_owned = strdup(args[1].u.str->data);
+        db_path = db_path_owned;
+    }
+    NvDict *pairs = b5_opt_dict_c(args, nargs, 2, DISPLAY, line, col);
+    static const char *KEYS[] = {"استثن", "مفصل"};
+    b5_no_unknown_c(DISPLAY, pairs, KEYS, 2, line, col);
+    size_t nexclude = 0;
+    char **exclude = b5_opt_strs_c(pairs, "استثن", &nexclude, DISPLAY, line, col);
+    int verbose = b5_opt_bool_c(pairs, "مفصل", 0, DISPLAY, line, col);
+    B5WalkC w;
+    b5_walk_new_c(&w);
+    w.include_hidden = 1;
+    w.respect_ignore = 0;
+    w.follow_links = 0;
+    char *db_fs = nv_resolve_path(db_path, line, col);
+    char *db_canon = b5_canonical_c(db_fs);
+    if (!db_canon) db_canon = strdup(db_fs);
+    char **all = NULL;
+    size_t nall = 0, capall = 0;
+    for (size_t ri = 0; ri < nroots; ri++) {
+        B5EntryListC entries;
+        memset(&entries, 0, sizeof(entries));
+        b5_walk_root_c(roots[ri], &w, &entries, line, col);
+        for (size_t ei = 0; ei < entries.len; ei++) {
+            B5EntryC *e = &entries.items[ei];
+            char *canon = b5_canonical_c(e->fs);
+            int is_db = canon ? strcmp(canon, db_canon) == 0 : strcmp(e->fs, db_canon) == 0;
+            free(canon);
+            if (is_db) continue;
+            if (nexclude && b5_glob_any_c(exclude, nexclude, e->name, e->rel, 0, line, col)) continue;
+            if (nall >= capall) {
+                size_t ncap = capall == 0 ? 32 : capall * 2;
+                char **grown = (char **)realloc(all, ncap * sizeof(char *));
+                if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                all = grown;
+                capall = ncap;
+            }
+            all[nall++] = strdup(e->display);
+        }
+        b5_entry_list_free_c(&entries);
+    }
+    qsort(all, nall, sizeof(char *), b5_str_cmp_c);
+    size_t nun = 0;
+    for (size_t i = 0; i < nall; i++) {
+        if (nun > 0 && strcmp(all[i], all[nun - 1]) == 0) {
+            free(all[i]);
+            continue;
+        }
+        all[nun++] = all[i];
+    }
+    nall = nun;
+    J14Buf text;
+    j14_buf_init(&text);
+    for (size_t i = 0; i < nall; i++) {
+        j14_buf_add(&text, all[i]);
+        j14_buf_addc(&text, '\n');
+    }
+    j14_buf_reserve(&text, 1);
+    text.data[text.len] = '\0';
+    FILE *f = fopen(db_fs, "wb");
+    if (!f) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر كتابة القاعدة %s", DISPLAY, db_path);
+    }
+    if (text.len) fwrite(text.data, 1, text.len, f);
+    fclose(f);
+    NvValue out;
+    if (verbose) {
+        out = nv_dict_new();
+        nv_dict_set_raw(out.u.dict, "عدد", nv_num((double)nall));
+        nv_dict_set_raw(out.u.dict, "حجم", nv_num((double)text.len));
+    } else {
+        out = nv_num((double)nall);
+    }
+    j14_buf_free(&text);
+    free(db_fs);
+    free(db_canon);
+    for (size_t i = 0; i < nall; i++) free(all[i]);
+    free(all);
+    b5_strs_free_c(exclude, nexclude);
+    for (size_t i = 0; i < nroots; i++) free(roots[i]);
+    free(roots);
+    free(db_path_owned);
+    return out;
+}
+
+/* قاعدة_أسماء.ابحث(نمط، مسار_قاعدة؟، خيارات؟). */
+static NvValue b5_namebase_search_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "قاعدة_أسماء.ابحث";
+    if (nargs < 1 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *pattern = nv_std_need_string(DISPLAY, args[0], line, col);
+    const char *db_path = B5_DB_DEFAULT_C;
+    char *db_path_owned = NULL;
+    if (nargs >= 2 && args[1].tag != NV_NIL) {
+        if (args[1].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا لمسار القاعدة لكن أعطيت %s", DISPLAY, nv_type_name(args[1]));
+        }
+        db_path_owned = strdup(args[1].u.str->data);
+        db_path = db_path_owned;
+    }
+    NvDict *pairs = b5_opt_dict_c(args, nargs, 2, DISPLAY, line, col);
+    static const char *KEYS[] = {"بالمسار", "تعبير", "بلا_حالة", "عد", "حد", "موجود_فقط"};
+    b5_no_unknown_c(DISPLAY, pairs, KEYS, 6, line, col);
+    int by_path = b5_opt_bool_c(pairs, "بالمسار", 0, DISPLAY, line, col);
+    int is_regex = b5_opt_bool_c(pairs, "تعبير", 0, DISPLAY, line, col);
+    int fold = b5_opt_bool_c(pairs, "بلا_حالة", 0, DISPLAY, line, col);
+    int count_only = b5_opt_bool_c(pairs, "عد", 0, DISPLAY, line, col);
+    long long limit = 0;
+    int has_limit = b5_opt_count_c(pairs, "حد", &limit, DISPLAY, line, col);
+    int existing_only = b5_opt_bool_c(pairs, "موجود_فقط", 0, DISPLAY, line, col);
+    size_t nentries = 0;
+    char **entries = b5_db_read_c(DISPLAY, db_path, &nentries, line, col);
+    RxProg *rx = is_regex ? b5_compile_rx_c(pattern, fold, DISPLAY, line, col) : NULL;
+    char *glob_pat = NULL;
+    if (!is_regex && pattern[0]) {
+        int magic = strchr(pattern, '*') || strchr(pattern, '?') || strchr(pattern, '[');
+        if (magic) glob_pat = strdup(pattern);
+        else {
+            size_t n = strlen(pattern) + 3;
+            glob_pat = (char *)malloc(n);
+            snprintf(glob_pat, n, "*%s*", pattern);
+        }
+    }
+    NvValue out = nv_list_new();
+    size_t nout = 0;
+    for (size_t i = 0; i < nentries; i++) {
+        const char *p = entries[i];
+        const char *slash = strrchr(p, '/');
+        const char *name = slash ? slash + 1 : p;
+        int hit;
+        if (!pattern[0]) hit = 1;
+        else if (is_regex) {
+            hit = b5_pat_hit_c(pattern, p, p, 0, fold, rx, line, col);
+        } else if (by_path) hit = b5_glob_c(glob_pat, p, fold, line, col);
+        else hit = b5_glob_c(glob_pat, name, fold, line, col);
+        if (!hit) continue;
+        if (existing_only) {
+            char *fs = nv_resolve_path(p, line, col);
+            struct stat st;
+            int ok = nv_lstat(fs, &st) == 0;
+            free(fs);
+            if (!ok) continue;
+        }
+        nv_list_push_raw(out.u.list, nv_str_new(p, strlen(p)));
+        nout++;
+        if (has_limit && (long long)nout >= (limit < 0 ? 0 : limit)) break;
+    }
+    b5_rx_free_c(rx);
+    free(glob_pat);
+    b5_strs_free_c(entries, nentries);
+    free(db_path_owned);
+    if (count_only) {
+        return nv_num((double)nout);
+    }
+    return out;
+}
+
+/* قاعدة_أسماء.إحصاءات(مسار_قاعدة؟). */
+static NvValue b5_namebase_stats_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "قاعدة_أسماء.إحصاءات";
+    if (nargs > 1) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا على الأكثر لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *db_path = B5_DB_DEFAULT_C;
+    char *db_path_owned = NULL;
+    if (nargs >= 1 && args[0].tag != NV_NIL) {
+        if (args[0].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا لمسار القاعدة لكن أعطيت %s", DISPLAY, nv_type_name(args[0]));
+        }
+        db_path_owned = strdup(args[0].u.str->data);
+        db_path = db_path_owned;
+    }
+    size_t nentries = 0;
+    char **entries = b5_db_read_c(DISPLAY, db_path, &nentries, line, col);
+    char *fs = nv_resolve_path(db_path, line, col);
+    struct stat st;
+    unsigned long long size = 0;
+    if (stat(fs, &st) == 0) size = (unsigned long long)st.st_size;
+    free(fs);
+    NvValue out = nv_dict_new();
+    nv_dict_set_raw(out.u.dict, "عدد", nv_num((double)nentries));
+    nv_dict_set_raw(out.u.dict, "حجم", nv_num((double)size));
+    nv_dict_set_raw(out.u.dict, "أول", nv_str_new(nentries ? entries[0] : "", nentries ? strlen(entries[0]) : 0));
+    nv_dict_set_raw(out.u.dict, "آخر", nv_str_new(nentries ? entries[nentries - 1] : "", nentries ? strlen(entries[nentries - 1]) : 0));
+    b5_strs_free_c(entries, nentries);
+    free(db_path_owned);
+    return out;
+}
+
+/* قاعدة_أسماء.اسرد(مسار_قاعدة؟، خيارات؟). */
+static NvValue b5_namebase_list_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "قاعدة_أسماء.اسرد";
+    if (nargs > 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين على الأكثر لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *db_path = B5_DB_DEFAULT_C;
+    char *db_path_owned = NULL;
+    if (nargs >= 1 && args[0].tag != NV_NIL) {
+        if (args[0].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا لمسار القاعدة لكن أعطيت %s", DISPLAY, nv_type_name(args[0]));
+        }
+        db_path_owned = strdup(args[0].u.str->data);
+        db_path = db_path_owned;
+    }
+    NvDict *pairs = b5_opt_dict_c(args, nargs, 1, DISPLAY, line, col);
+    static const char *KEYS[] = {"حد"};
+    b5_no_unknown_c(DISPLAY, pairs, KEYS, 1, line, col);
+    long long limit = 0;
+    int has_limit = b5_opt_count_c(pairs, "حد", &limit, DISPLAY, line, col);
+    size_t nentries = 0;
+    char **entries = b5_db_read_c(DISPLAY, db_path, &nentries, line, col);
+    if (has_limit) {
+        long long m = limit < 0 ? 0 : limit;
+        if ((long long)nentries > m) nentries = (size_t)m;
+    }
+    NvValue out = nv_list_new();
+    for (size_t i = 0; i < nentries; i++) {
+        nv_list_push_raw(out.u.list, nv_str_new(entries[i], strlen(entries[i])));
+    }
+    b5_strs_free_c(entries, nentries);
+    free(db_path_owned);
+    return out;
+}
+
+void nv_std_b5namebase_fill(NvDict *d) {
+    nv_std_add_fn(d, "ابن", b5_namebase_build_fn);
+    nv_std_add_fn(d, "ابحث", b5_namebase_search_fn);
+    nv_std_add_fn(d, "إحصاءات", b5_namebase_stats_fn);
+    nv_std_add_fn(d, "اسرد", b5_namebase_list_fn);
+}
+
+/* END لينكس5-ملفات قاعدة_أسماء C */
+
+/* BEGIN لينكس5-ملفات مرر_أسماء C */
+
+/* اقتباس عنصر يحوي فراغا أو علامة تنصيص (مرآة b5_quote_item). */
+static char *b5_quote_item_c(const char *item) {
+    if (!item[0]) return strdup("\"\"");
+    int need = 0;
+    for (const unsigned char *p = (const unsigned char *)item; *p; p++) {
+        if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '"' || *p == '\\') { need = 1; break; }
+    }
+    if (!need) return strdup(item);
+    J14Buf out;
+    j14_buf_init(&out);
+    j14_buf_addc(&out, '"');
+    for (const char *p = item; *p; p++) {
+        if (*p == '\\') j14_buf_add(&out, "\\\\");
+        else if (*p == '"') j14_buf_add(&out, "\\\"");
+        else j14_buf_addc(&out, *p);
+    }
+    j14_buf_addc(&out, '"');
+    j14_buf_reserve(&out, 1);
+    out.data[out.len] = '\0';
+    return out.data;
+}
+
+typedef struct {
+    char *from_file;
+    char *sep;
+    long long max_args; int has_max_args;
+    long long max_lines; int has_max_lines;
+    int has_ask; NvValue ask;
+    int verbose;
+    int no_input;
+    char *placeholder;
+} B5XargsC;
+
+static void b5_xargs_free_c(B5XargsC *o) {
+    free(o->from_file);
+    free(o->sep);
+    free(o->placeholder);
+}
+
+static void b5_parse_xargs_c(const char *display, NvDict *pairs, B5XargsC *o, int line, int col) {
+    memset(o, 0, sizeof(*o));
+    static const char *KEYS[] = {"من_ملف", "فاصل", "حد_المعاملات", "حد_الأسطر", "اسأل", "مفصل", "بلا_مدخل", "استبدل", "اخرج_عند_الفشل"};
+    b5_no_unknown_c(display, pairs, KEYS, 9, line, col);
+    if (pairs) {
+        int ai = nv_dict_find(pairs, "اسأل");
+        if (ai >= 0 && pairs->entries[ai].val.tag != NV_NIL) {
+            NvValue v = pairs->entries[ai].val;
+            if (!j3_is_func(v)) {
+                nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع دالة للخيار اسأل لكن أعطيت %s", display, nv_type_name(v));
+            }
+            o->has_ask = 1;
+            o->ask = v;
+        }
+    }
+    const char *ph = b5_opt_str_c(pairs, "استبدل", display, line, col);
+    o->placeholder = strdup(ph ? ph : "{}");
+    if (!o->placeholder[0]) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العنصر النائب فارغ", display);
+    }
+    const char *ff = b5_opt_str_c(pairs, "من_ملف", display, line, col);
+    if (ff) o->from_file = strdup(ff);
+    const char *sp = b5_opt_str_c(pairs, "فاصل", display, line, col);
+    if (sp) o->sep = strdup(sp);
+    long long tmp;
+    if (b5_opt_count_c(pairs, "حد_المعاملات", &tmp, display, line, col)) { o->max_args = tmp; o->has_max_args = 1; }
+    if (b5_opt_count_c(pairs, "حد_الأسطر", &tmp, display, line, col)) { o->max_lines = tmp; o->has_max_lines = 1; }
+    o->verbose = b5_opt_bool_c(pairs, "مفصل", 0, display, line, col);
+    o->no_input = b5_opt_bool_c(pairs, "بلا_مدخل", 0, display, line, col);
+}
+
+/* هل النص فارغ بعد تقليم الفراغات؟ */
+static int b5_blank_c(const char *s, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c != ' ' && c != '\t' && c != '\n' && c != '\r') return 0;
+    }
+    return 1;
+}
+
+/* جمع عناصر المدخل (مرآة b5_xargs_items). */
+static char **b5_xargs_items_c(const char *display, NvValue input, B5XargsC *o, size_t *n_out, int line, int col) {
+    *n_out = 0;
+    if (o->from_file) {
+        size_t n = 0;
+        char **pats = b5_load_patterns_c(display, o->from_file, &n, line, col);
+        *n_out = n;
+        return pats;
+    }
+    if (input.tag == NV_NIL) return NULL;
+    if (input.tag == NV_STR) {
+        const char *s = input.u.str->data;
+        char **out = NULL;
+        size_t n = 0, cap = 0;
+        if (o->sep) {
+            if (!o->sep[0]) {
+                /* فاصل فارغ: تقسيم إلى محارف (مثل split("") في Rust). */
+                size_t nchars = 0;
+                size_t *offs = NULL;
+                uint32_t *cps = j14_decode_all(s, strlen(s), &nchars, &offs);
+                for (size_t i = 0; i < nchars; i++) {
+                    size_t bl = offs[i + 1] - offs[i];
+                    /* ترشيح المحرف الفارغ (مثل filter في Rust). */
+                    if (bl == 1 && (s[offs[i]] == ' ' || s[offs[i]] == '\t' || s[offs[i]] == '\n' || s[offs[i]] == '\r')) continue;
+                    if (n >= cap) {
+                        size_t ncap = cap == 0 ? 8 : cap * 2;
+                        char **grown = (char **)realloc(out, ncap * sizeof(char *));
+                        if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                        out = grown;
+                        cap = ncap;
+                    }
+                    out[n++] = j14_strndup(s + offs[i], bl);
+                }
+                free(cps);
+                free(offs);
+            } else {
+                size_t slen = strlen(o->sep);
+                const char *cur = s;
+                for (;;) {
+                    const char *hit = strstr(cur, o->sep);
+                    size_t bl = hit ? (size_t)(hit - cur) : strlen(cur);
+                    if (!b5_blank_c(cur, bl)) {
+                        if (n >= cap) {
+                            size_t ncap = cap == 0 ? 8 : cap * 2;
+                            char **grown = (char **)realloc(out, ncap * sizeof(char *));
+                            if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                            out = grown;
+                            cap = ncap;
+                        }
+                        out[n++] = j14_strndup(cur, bl);
+                    }
+                    if (!hit) break;
+                    cur = hit + slen;
+                }
+            }
+        } else {
+            size_t len = strlen(s);
+            size_t pos = 0;
+            while (pos < len) {
+                size_t start = pos;
+                while (pos < len && s[pos] != '\n') pos++;
+                size_t end = pos;
+                if (pos < len) pos++;
+                if (end > start && s[end - 1] == '\r') end--;
+                if (!b5_blank_c(s + start, end - start)) {
+                    if (n >= cap) {
+                        size_t ncap = cap == 0 ? 8 : cap * 2;
+                        char **grown = (char **)realloc(out, ncap * sizeof(char *));
+                        if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                        out = grown;
+                        cap = ncap;
+                    }
+                    out[n++] = j14_strndup(s + start, end - start);
+                }
+            }
+        }
+        *n_out = n;
+        return out;
+    }
+    if (input.tag == NV_LIST) {
+        size_t n = input.u.list->len;
+        char **out = NULL;
+        if (n) {
+            out = (char **)malloc(n * sizeof(char *));
+            for (size_t i = 0; i < n; i++) {
+                out[i] = strdup(nv_std_need_string(display, input.u.list->items[i], line, col));
+            }
+        }
+        *n_out = n;
+        return out;
+    }
+    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا أو قائمة للمدخل لكن أعطيت %s", display, nv_type_name(input));
+    return NULL;
+}
+
+/* استبدال كل وقوعات نائب بعنصر (مثل str::replace في Rust). */
+static char *b5_replace_all_c(const char *text, const char *from, const char *to) {
+    size_t flen = strlen(from);
+    size_t tlen = strlen(to);
+    J14Buf out;
+    j14_buf_init(&out);
+    const char *cur = text;
+    for (;;) {
+        const char *hit = strstr(cur, from);
+        if (!hit) {
+            j14_buf_add(&out, cur);
+            break;
+        }
+        j14_buf_addn(&out, cur, (size_t)(hit - cur));
+        j14_buf_addn(&out, to, tlen);
+        cur = hit + flen;
+    }
+    j14_buf_reserve(&out, 1);
+    out.data[out.len] = '\0';
+    return out.data;
+}
+
+typedef struct {
+    char *text;
+    char **chunk;
+    size_t nchunk;
+} B5RunC;
+
+static void b5_runs_free_c(B5RunC *runs, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        free(runs[i].text);
+        b5_strs_free_c(runs[i].chunk, runs[i].nchunk);
+    }
+    free(runs);
+}
+
+/* ابنِ سطور الأوامر (مرآة b5_xargs_build). */
+static B5RunC *b5_xargs_build_c(const char *cmd, char **items, size_t nitems, B5XargsC *o, size_t *n_out, int line, int col) {
+    *n_out = 0;
+    B5RunC *out = NULL;
+    size_t n = 0, cap = 0;
+    if (nitems == 0) {
+        if (!o->no_input) {
+            out = (B5RunC *)malloc(sizeof(B5RunC));
+            out[0].text = strdup(cmd);
+            out[0].chunk = NULL;
+            out[0].nchunk = 0;
+            *n_out = 1;
+        }
+        return out;
+    }
+    if (strstr(cmd, o->placeholder)) {
+        out = (B5RunC *)malloc(nitems * sizeof(B5RunC));
+        for (size_t i = 0; i < nitems; i++) {
+            out[i].text = b5_replace_all_c(cmd, o->placeholder, items[i]);
+            out[i].chunk = (char **)malloc(sizeof(char *));
+            out[i].chunk[0] = strdup(items[i]);
+            out[i].nchunk = 1;
+        }
+        *n_out = nitems;
+        return out;
+    }
+    long long per_run;
+    if (o->has_max_args && o->has_max_lines) {
+        long long m = o->max_args < o->max_lines ? o->max_args : o->max_lines;
+        per_run = m < 1 ? 1 : m;
+    } else if (o->has_max_args) {
+        per_run = o->max_args < 1 ? 1 : o->max_args;
+    } else if (o->has_max_lines) {
+        per_run = o->max_lines < 1 ? 1 : o->max_lines;
+    } else {
+        per_run = (long long)nitems;
+    }
+    for (size_t base = 0; base < nitems; base += (size_t)per_run) {
+        size_t cnt = nitems - base < (size_t)per_run ? nitems - base : (size_t)per_run;
+        J14Buf args;
+        j14_buf_init(&args);
+        for (size_t i = 0; i < cnt; i++) {
+            if (i) j14_buf_addc(&args, ' ');
+            char *q = b5_quote_item_c(items[base + i]);
+            j14_buf_add(&args, q);
+            free(q);
+        }
+        j14_buf_reserve(&args, 1);
+        args.data[args.len] = '\0';
+        char *full;
+        if (!args.len) {
+            full = strdup(cmd);
+        } else {
+            size_t n = strlen(cmd) + 1 + args.len + 1;
+            full = (char *)malloc(n);
+            snprintf(full, n, "%s %s", cmd, args.data);
+        }
+        j14_buf_free(&args);
+        if (n >= cap) {
+            size_t ncap = cap == 0 ? 8 : cap * 2;
+            B5RunC *grown = (B5RunC *)realloc(out, ncap * sizeof(B5RunC));
+            if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+            out = grown;
+            cap = ncap;
+        }
+        out[n].text = full;
+        out[n].chunk = (char **)malloc(cnt * sizeof(char *));
+        for (size_t i = 0; i < cnt; i++) out[n].chunk[i] = strdup(items[base + i]);
+        out[n].nchunk = cnt;
+        n++;
+    }
+    *n_out = n;
+    return out;
+}
+
+/* اسأل: صحيح يواصل، خطأ يتخطى، غير منطقي خطأ نوع. */
+static int b5_xargs_ask_c(const char *display, B5XargsC *o, const char *text, int line, int col) {
+    if (!o->has_ask) return 1;
+    NvValue r = j3_call_single(o->ask, nv_str_new(text, strlen(text)), line, col);
+    if (r.tag != NV_BOOL) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع أن يرجع اسأل منطقيا لكن أعطيت %s", display, nv_type_name(r));
+    }
+    return r.u.boolean;
+}
+
+static int b5_cmd_blank_c(const char *s) {
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
+    return *s == '\0';
+}
+
+/* مرر_أسماء.ابن(أمر، مدخل، خيارات؟). */
+static NvValue b5_xargs_build_fn_c(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "مرر_أسماء.ابن";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *cmd = nv_std_need_string(DISPLAY, args[0], line, col);
+    if (b5_cmd_blank_c(cmd)) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الأمر فارغ", DISPLAY);
+    }
+    NvDict *pairs = b5_opt_dict_c(args, nargs, 2, DISPLAY, line, col);
+    B5XargsC o;
+    b5_parse_xargs_c(DISPLAY, pairs, &o, line, col);
+    size_t nitems = 0;
+    char **items = b5_xargs_items_c(DISPLAY, args[1], &o, &nitems, line, col);
+    size_t nruns = 0;
+    B5RunC *runs = b5_xargs_build_c(cmd, items, nitems, &o, &nruns, line, col);
+    NvValue out = nv_list_new();
+    for (size_t i = 0; i < nruns; i++) {
+        if (!b5_xargs_ask_c(DISPLAY, &o, runs[i].text, line, col)) continue;
+        if (o.verbose) {
+            NvValue dv = nv_dict_new();
+            nv_dict_set_raw(dv.u.dict, "أمر", nv_str_new(runs[i].text, strlen(runs[i].text)));
+            NvValue lv = nv_list_new();
+            for (size_t j = 0; j < runs[i].nchunk; j++) {
+                nv_list_push_raw(lv.u.list, nv_str_new(runs[i].chunk[j], strlen(runs[i].chunk[j])));
+            }
+            nv_dict_set_raw(dv.u.dict, "معاملات", lv);
+            nv_list_push_raw(out.u.list, dv);
+        } else {
+            nv_list_push_raw(out.u.list, nv_str_new(runs[i].text, strlen(runs[i].text)));
+        }
+    }
+    b5_runs_free_c(runs, nruns);
+    b5_strs_free_c(items, nitems);
+    b5_xargs_free_c(&o);
+    return out;
+}
+
+/* مرر_أسماء.نفذ(أمر، مدخل، خيارات؟). */
+static NvValue b5_xargs_run_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "مرر_أسماء.نفذ";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *cmd = nv_std_need_string(DISPLAY, args[0], line, col);
+    if (b5_cmd_blank_c(cmd)) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الأمر فارغ", DISPLAY);
+    }
+    NvDict *pairs = b5_opt_dict_c(args, nargs, 2, DISPLAY, line, col);
+    B5XargsC o;
+    b5_parse_xargs_c(DISPLAY, pairs, &o, line, col);
+    int stop_on_fail = b5_opt_bool_c(pairs, "اخرج_عند_الفشل", 0, DISPLAY, line, col);
+    size_t nitems = 0;
+    char **items = b5_xargs_items_c(DISPLAY, args[1], &o, &nitems, line, col);
+    size_t nruns = 0;
+    B5RunC *runs = b5_xargs_build_c(cmd, items, nitems, &o, &nruns, line, col);
+    NvValue codes = nv_list_new();
+    NvValue cmds = nv_list_new();
+    int stopped = 0;
+    for (size_t i = 0; i < nruns; i++) {
+        if (!b5_xargs_ask_c(DISPLAY, &o, runs[i].text, line, col)) continue;
+        NvValue spawn_arg = nv_str_new(runs[i].text, strlen(runs[i].text));
+        /* المفتاح المخزن «انشي» بلا همزة (كلمة محجوزة). */
+        NvValue id = nv_call_native("عمليات", "انشي", &spawn_arg, 1, line, col);
+        NvValue code_v = nv_call_native("عمليات", "انتظر", &id, 1, line, col);
+        long long code = (long long)code_v.u.num;
+        nv_list_push_raw(codes.u.list, nv_num((double)code));
+        nv_list_push_raw(cmds.u.list, nv_str_new(runs[i].text, strlen(runs[i].text)));
+        if (stop_on_fail && code != 0) {
+            stopped = 1;
+            break;
+        }
+    }
+    NvValue out = nv_dict_new();
+    nv_dict_set_raw(out.u.dict, "رموز", codes);
+    nv_dict_set_raw(out.u.dict, "توقف", nv_bool(stopped));
+    if (o.verbose) {
+        nv_dict_set_raw(out.u.dict, "أوامر", cmds);
+    }
+    b5_runs_free_c(runs, nruns);
+    b5_strs_free_c(items, nitems);
+    b5_xargs_free_c(&o);
+    return out;
+}
+
+void nv_std_b5xargs_fill(NvDict *d) {
+    nv_std_add_fn(d, "ابن", b5_xargs_build_fn_c);
+    nv_std_add_fn(d, "نفذ", b5_xargs_run_fn);
+}
+
+/* END لينكس5-ملفات مرر_أسماء C */
+
+/* BEGIN لينكس5-ملفات سرد C */
+
+/* الحجم الكلي لمجلد تكراريا (مرآة b5_dir_total — seen جديدة كل استدعاء). */
+static unsigned long long b5_dir_total_c(const char *fs, char ***seen, size_t *nseen, size_t *capseen, int line, int col) {
+    char *canon = b5_canonical_c(fs);
+    if (!canon) canon = strdup(fs);
+    for (size_t i = 0; i < *nseen; i++) {
+        if (strcmp((*seen)[i], canon) == 0) {
+            free(canon);
+            return 0;
+        }
+    }
+    if (*nseen >= *capseen) {
+        size_t ncap = *capseen == 0 ? 8 : *capseen * 2;
+        char **grown = (char **)realloc(*seen, ncap * sizeof(char *));
+        if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+        *seen = grown;
+        *capseen = ncap;
+    }
+    (*seen)[(*nseen)++] = canon;
+    unsigned long long total = 0;
+    DIR *d = opendir(fs);
+    if (!d) return total;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        char *child = b5_join_c(fs, e->d_name);
+        struct stat st;
+        if (nv_lstat(child, &st) == 0) {
+            if (S_ISDIR(st.st_mode)) total += b5_dir_total_c(child, seen, nseen, capseen, line, col);
+            else if (S_ISREG(st.st_mode)) total += (unsigned long long)st.st_size;
+        }
+        free(child);
+    }
+    closedir(d);
+    return total;
+}
+
+static unsigned long long b5_dir_total_top_c(const char *fs, int line, int col) {
+    char **seen = NULL;
+    size_t nseen = 0, capseen = 0;
+    unsigned long long total = b5_dir_total_c(fs, &seen, &nseen, &capseen, line, col);
+    b5_strs_free_c(seen, nseen);
+    return total;
+}
+
+/* لاحقة التصنيف (مرآة b5_classify). */
+static const char *b5_classify_c(const B5EntryC *e) {
+    if (e->eff.kind == B5_KIND_DIR) return "/";
+    if (e->meta.is_link) return "@";
+    if (b5_is_exec_c(e->fs, &e->eff)) return "*";
+    if (e->eff.kind == B5_KIND_OTHER) return "=";
+    return "";
+}
+
+/* سياق فرز سرد (يمرر عبر متغير ثابت — المفسر أحادي الخيط). */
+typedef struct {
+    const char *sort_by;
+    const char *time_kind;
+    int dir_total;
+    int dirs_first;
+    int dirs_last;
+    int reverse;
+    int line;
+    int col;
+} B5SortCtxC;
+
+static B5SortCtxC b5_sort_ctx_c;
+
+typedef struct {
+    B5EntryC *e;
+    size_t idx;
+} B5SortItemC;
+
+static long long b5_sort_time_c(const B5EntryC *e, const char *time_kind) {
+    if (strcmp(time_kind, "وصول") == 0) return e->eff.atime;
+    if (strcmp(time_kind, "إنشاء") == 0) return e->eff.btime >= 0 ? e->eff.btime : e->eff.mtime;
+    return e->eff.mtime;
+}
+
+static int b5_sort_cmp_c(const void *a, const void *b) {
+    const B5SortItemC *ia = (const B5SortItemC *)a;
+    const B5SortItemC *ib = (const B5SortItemC *)b;
+    const B5EntryC *x = ia->e;
+    const B5EntryC *y = ib->e;
+    B5SortCtxC *c = &b5_sort_ctx_c;
+    int ord = 0;
+    if (strcmp(c->sort_by, "حجم") == 0) {
+        unsigned long long sx = (c->dir_total && x->eff.kind == B5_KIND_DIR) ? b5_dir_total_top_c(x->fs, c->line, c->col) : x->eff.size;
+        unsigned long long sy = (c->dir_total && y->eff.kind == B5_KIND_DIR) ? b5_dir_total_top_c(y->fs, c->line, c->col) : y->eff.size;
+        ord = sx < sy ? -1 : (sx > sy ? 1 : 0);
+    } else if (strcmp(c->sort_by, "وقت") == 0) {
+        long long tx = b5_sort_time_c(x, c->time_kind);
+        long long ty = b5_sort_time_c(y, c->time_kind);
+        ord = tx < ty ? -1 : (tx > ty ? 1 : 0);
+    } else if (strcmp(c->sort_by, "امتداد") == 0) {
+        char *ex = b5_ext_c(x->name);
+        char *ey = b5_ext_c(y->name);
+        ord = strcmp(ex ? ex : "", ey ? ey : "");
+        if (ord == 0) ord = strcmp(x->name, y->name);
+        free(ex);
+        free(ey);
+    } else {
+        ord = strcmp(x->name, y->name);
+    }
+    if (c->dirs_first) {
+        int dx = x->eff.kind == B5_KIND_DIR;
+        int dy = y->eff.kind == B5_KIND_DIR;
+        int d = dy < dx ? -1 : (dy > dx ? 1 : 0);
+        ord = d != 0 ? d : ord;
+    } else if (c->dirs_last) {
+        int da = x->eff.kind == B5_KIND_DIR;
+        int db = y->eff.kind == B5_KIND_DIR;
+        int d = da < db ? -1 : (da > db ? 1 : 0);
+        ord = d != 0 ? d : ord;
+    }
+    if (c->reverse) ord = -ord;
+    if (ord == 0) {
+        /* فرز Rust مستقر: المتساوي يبقى بترتيب الدخول. */
+        if (ia->idx < ib->idx) return -1;
+        if (ia->idx > ib->idx) return 1;
+        return 0;
+    }
+    return ord;
+}
+
+/* فرز قائمة مؤشرات مدخلات (مستقر عبر فهرس الدخول). */
+static void b5_sort_items_c(B5EntryC **items, size_t n, B5SortCtxC *ctx) {
+    if (n < 2) return;
+    b5_sort_ctx_c = *ctx;
+    B5SortItemC *arr = (B5SortItemC *)malloc(n * sizeof(B5SortItemC));
+    for (size_t i = 0; i < n; i++) {
+        arr[i].e = items[i];
+        arr[i].idx = i;
+    }
+    qsort(arr, n, sizeof(B5SortItemC), b5_sort_cmp_c);
+    for (size_t i = 0; i < n; i++) items[i] = arr[i].e;
+    free(arr);
+}
+
+typedef struct {
+    int long_fmt, one_line, tree, recursive;
+    long long max_level; int has_max_level;
+    int include_hidden, dirs_only, files_only;
+    char *sort_by;
+    int reverse, dirs_first, dirs_last, header;
+    int show_perms, show_owner_opt, hide_owner;
+    int human, dir_total, hide_size;
+    char *time_kind;
+    char *time_fmt;
+    int hide_time, classify, link_target, resolve_links;
+    char **exclude; size_t nexclude;
+    char **from_list; size_t nfrom_list;
+    int abs_path;
+} B5ListOptsC;
+
+static void b5_list_opts_free_c(B5ListOptsC *o) {
+    free(o->sort_by);
+    free(o->time_kind);
+    free(o->time_fmt);
+    b5_strs_free_c(o->exclude, o->nexclude);
+    b5_strs_free_c(o->from_list, o->nfrom_list);
+}
+
+/* سطر واحد لمدخل (مرآة line_for في Rust). */
+static char *b5_line_for_c(const B5EntryC *e, B5ListOptsC *o, const char *display, int line, int col) {
+    if (o->long_fmt) {
+        B5EntryC ee = *e;
+        if (o->dir_total && e->eff.kind == B5_KIND_DIR) {
+            ee.eff.size = b5_dir_total_top_c(e->fs, line, col);
+        }
+        return b5_long_line_c(&ee, o->time_fmt, o->time_kind, o->human, !o->hide_owner, !o->hide_size, !o->hide_time, 0, display, line, col);
+    }
+    const char *base = (o->tree || o->recursive) ? e->name : e->display;
+    J14Buf name;
+    j14_buf_init(&name);
+    j14_buf_add(&name, base);
+    if (o->classify) j14_buf_add(&name, b5_classify_c(e));
+    if (o->link_target && e->meta.is_link && e->meta.target) {
+        j14_buf_add(&name, " \xe2\x86\x90 ");
+        j14_buf_add(&name, e->meta.target);
+    }
+    j14_buf_reserve(&name, 1);
+    name.data[name.len] = '\0';
+    J14Buf out;
+    j14_buf_init(&out);
+    int first = 1;
+    if (o->show_perms) {
+        char modebuf[16];
+        b5_mode_str_c(&e->eff, modebuf, sizeof(modebuf));
+        if (!first) j14_buf_addc(&out, ' ');
+        j14_buf_add(&out, modebuf);
+        first = 0;
+    }
+    if (o->show_owner_opt && !o->hide_owner) {
+        char *owner = b5_owner_name_c(e->eff.uid, 0);
+        char *group = b5_owner_name_c(e->eff.gid, 1);
+        if (!first) j14_buf_addc(&out, ' ');
+        j14_buf_add(&out, owner);
+        j14_buf_addc(&out, ' ');
+        j14_buf_add(&out, group);
+        free(owner);
+        free(group);
+        first = 0;
+    }
+    if (!o->hide_size) {
+        unsigned long long s = (o->dir_total && e->eff.kind == B5_KIND_DIR) ? b5_dir_total_top_c(e->fs, line, col) : e->eff.size;
+        char sizebuf[64];
+        if (o->human) b5_human_size_c(s, sizebuf, sizeof(sizebuf));
+        else snprintf(sizebuf, sizeof(sizebuf), "%llu", s);
+        if (!first) j14_buf_addc(&out, ' ');
+        j14_buf_add(&out, sizebuf);
+        first = 0;
+    }
+    if (!o->hide_time) {
+        long long epoch = b5_sort_time_c(e, o->time_kind);
+        char *t = b5_fmt_time_c(epoch, o->time_fmt, display, line, col);
+        if (!first) j14_buf_addc(&out, ' ');
+        j14_buf_add(&out, t);
+        free(t);
+        first = 0;
+    }
+    if (!first) j14_buf_addc(&out, ' ');
+    j14_buf_add(&out, name.data);
+    j14_buf_free(&name);
+    j14_buf_reserve(&out, 1);
+    out.data[out.len] = '\0';
+    return out.data;
+}
+
+/* مجموعة أبناء لمجلد أب (للشجرة والتكرار المسطح). */
+typedef struct {
+    char *parent;
+    B5EntryC **kids;
+    size_t nkids, capkids;
+    int taken;
+} B5GroupListC;
+
+static B5GroupListC *b5_group_find_c(B5GroupListC *groups, size_t ngroups, const char *parent) {
+    for (size_t i = 0; i < ngroups; i++) {
+        if (strcmp(groups[i].parent, parent) == 0) return &groups[i];
+    }
+    return NULL;
+}
+
+static B5GroupListC *b5_group_get_c(B5GroupListC **groups, size_t *ngroups, size_t *capgroups, const char *parent, int line, int col) {
+    B5GroupListC *g = b5_group_find_c(*groups, *ngroups, parent);
+    if (g) return g;
+    if (*ngroups >= *capgroups) {
+        size_t ncap = *capgroups == 0 ? 8 : *capgroups * 2;
+        B5GroupListC *grown = (B5GroupListC *)realloc(*groups, ncap * sizeof(B5GroupListC));
+        if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+        *groups = grown;
+        *capgroups = ncap;
+    }
+    g = &(*groups)[(*ngroups)++];
+    g->parent = strdup(parent);
+    g->kids = NULL;
+    g->nkids = 0;
+    g->capkids = 0;
+    g->taken = 0;
+    return g;
+}
+
+static void b5_group_push_c(B5GroupListC *g, B5EntryC *e, int line, int col) {
+    if (g->nkids >= g->capkids) {
+        size_t ncap = g->capkids == 0 ? 8 : g->capkids * 2;
+        B5EntryC **grown = (B5EntryC **)realloc(g->kids, ncap * sizeof(B5EntryC *));
+        if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+        g->kids = grown;
+        g->capkids = ncap;
+    }
+    g->kids[g->nkids++] = e;
+}
+
+/* ترتيب المجموعات بالأب (مثل BTreeMap في Rust). */
+static int b5_group_parent_cmp_c(const void *a, const void *b) {
+    const B5GroupListC *ga = (const B5GroupListC *)a;
+    const B5GroupListC *gb = (const B5GroupListC *)b;
+    return strcmp(ga->parent, gb->parent);
+}
+
+static void b5_tree_walk_c(B5EntryC **kids, size_t nkids, B5GroupListC *groups, size_t ngroups, const char *prefix, char ***lines, size_t *nlines, size_t *caplines, B5ListOptsC *o, B5SortCtxC *sctx, const char *display, int line, int col) {
+    for (size_t i = 0; i < nkids; i++) {
+        B5EntryC *e = kids[i];
+        int last = (i + 1 == nkids);
+        const char *branch = last ? "└── " : "├── ";
+        char *l = b5_line_for_c(e, o, display, line, col);
+        size_t n = strlen(prefix) + strlen(branch) + strlen(l) + 1;
+        char *full = (char *)malloc(n);
+        snprintf(full, n, "%s%s%s", prefix, branch, l);
+        free(l);
+        if (*nlines >= *caplines) {
+            size_t ncap = *caplines == 0 ? 16 : *caplines * 2;
+            char **grown = (char **)realloc(*lines, ncap * sizeof(char *));
+            if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+            *lines = grown;
+            *caplines = ncap;
+        }
+        (*lines)[(*nlines)++] = full;
+        if (e->eff.kind == B5_KIND_DIR) {
+            B5GroupListC *g = b5_group_find_c(groups, ngroups, e->display);
+            if (g && !g->taken) {
+                g->taken = 1;
+                b5_sort_items_c(g->kids, g->nkids, sctx);
+                size_t nplen = strlen(prefix) + 5;
+                char *np = (char *)malloc(nplen);
+                snprintf(np, nplen, "%s%s", prefix, last ? "    " : "│   ");
+                b5_tree_walk_c(g->kids, g->nkids, groups, ngroups, np, lines, nlines, caplines, o, sctx, display, line, col);
+                free(np);
+            }
+        }
+    }
+}
+
+/* سرد.اسرد(مجلد؟، خيارات؟). */
+static NvValue b5_list_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "سرد.اسرد";
+    if (nargs > 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين على الأكثر لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *dir = ".";
+    char *dir_owned = NULL;
+    if (nargs >= 1 && args[0].tag != NV_NIL) {
+        if (args[0].tag != NV_STR) {
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا للمجلد لكن أعطيت %s", DISPLAY, nv_type_name(args[0]));
+        }
+        dir_owned = strdup(args[0].u.str->data);
+        dir = dir_owned;
+    }
+    NvDict *pairs = b5_opt_dict_c(args, nargs, 1, DISPLAY, line, col);
+    static const char *KEYS[] = {
+        "طويل", "سطر_واحد", "شجري", "تكرار", "حد_المستوى", "أدرج_المخفية",
+        "مجلدات_فقط", "ملفات_فقط", "رتب_ب", "عكس", "مجلدات_أولا",
+        "مجلدات_أخيرا", "ترويسة", "أذونات", "مالك", "أخف_المالك",
+        "حجم_بشري", "حجم_بايت", "حجم_كلي", "أخف_الحجم", "وقت",
+        "نمط_الوقت", "أخف_الوقت", "تصنيف", "هدف_الرابط", "حل_الروابط",
+        "استثن", "من_قائمة", "مسار_مطلق",
+    };
+    b5_no_unknown_c(DISPLAY, pairs, KEYS, 29, line, col);
+    B5ListOptsC o;
+    memset(&o, 0, sizeof(o));
+    o.long_fmt = b5_opt_bool_c(pairs, "طويل", 0, DISPLAY, line, col);
+    o.one_line = b5_opt_bool_c(pairs, "سطر_واحد", 0, DISPLAY, line, col);
+    o.tree = b5_opt_bool_c(pairs, "شجري", 0, DISPLAY, line, col);
+    o.recursive = b5_opt_bool_c(pairs, "تكرار", 0, DISPLAY, line, col);
+    if (o.tree) o.recursive = 1;
+    long long tmp;
+    if (b5_opt_count_c(pairs, "حد_المستوى", &tmp, DISPLAY, line, col)) { o.max_level = tmp; o.has_max_level = 1; }
+    o.include_hidden = b5_opt_bool_c(pairs, "أدرج_المخفية", 0, DISPLAY, line, col);
+    o.dirs_only = b5_opt_bool_c(pairs, "مجلدات_فقط", 0, DISPLAY, line, col);
+    o.files_only = b5_opt_bool_c(pairs, "ملفات_فقط", 0, DISPLAY, line, col);
+    const char *sb = b5_opt_str_c(pairs, "رتب_ب", DISPLAY, line, col);
+    o.sort_by = strdup(sb ? sb : "اسم");
+    if (strcmp(o.sort_by, "اسم") != 0 && strcmp(o.sort_by, "حجم") != 0 &&
+        strcmp(o.sort_by, "وقت") != 0 && strcmp(o.sort_by, "امتداد") != 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s رتب_ب غير معروف: %s (اسم/حجم/وقت/امتداد)", DISPLAY, o.sort_by);
+    }
+    o.reverse = b5_opt_bool_c(pairs, "عكس", 0, DISPLAY, line, col);
+    o.dirs_first = b5_opt_bool_c(pairs, "مجلدات_أولا", 0, DISPLAY, line, col);
+    o.dirs_last = b5_opt_bool_c(pairs, "مجلدات_أخيرا", 0, DISPLAY, line, col);
+    o.header = b5_opt_bool_c(pairs, "ترويسة", 0, DISPLAY, line, col);
+    o.show_perms = b5_opt_bool_c(pairs, "أذونات", 0, DISPLAY, line, col);
+    o.show_owner_opt = b5_opt_bool_c(pairs, "مالك", 0, DISPLAY, line, col);
+    o.hide_owner = b5_opt_bool_c(pairs, "أخف_المالك", 0, DISPLAY, line, col);
+    o.human = b5_opt_bool_c(pairs, "حجم_بشري", 0, DISPLAY, line, col);
+    (void)b5_opt_bool_c(pairs, "حجم_بايت", 0, DISPLAY, line, col);
+    o.dir_total = b5_opt_bool_c(pairs, "حجم_كلي", 0, DISPLAY, line, col);
+    o.hide_size = b5_opt_bool_c(pairs, "أخف_الحجم", 0, DISPLAY, line, col);
+    const char *tk = b5_opt_str_c(pairs, "وقت", DISPLAY, line, col);
+    o.time_kind = strdup(tk ? tk : "تعديل");
+    if (strcmp(o.time_kind, "تعديل") != 0 && strcmp(o.time_kind, "وصول") != 0 &&
+        strcmp(o.time_kind, "إنشاء") != 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s وقت غير معروف: %s (تعديل/وصول/إنشاء)", DISPLAY, o.time_kind);
+    }
+    const char *tf = b5_opt_str_c(pairs, "نمط_الوقت", DISPLAY, line, col);
+    o.time_fmt = strdup(tf ? tf : "%Y-%m-%d");
+    o.hide_time = b5_opt_bool_c(pairs, "أخف_الوقت", 0, DISPLAY, line, col);
+    o.classify = b5_opt_bool_c(pairs, "تصنيف", 0, DISPLAY, line, col);
+    o.link_target = b5_opt_bool_c(pairs, "هدف_الرابط", 0, DISPLAY, line, col);
+    o.resolve_links = b5_opt_bool_c(pairs, "حل_الروابط", 0, DISPLAY, line, col);
+    o.exclude = b5_opt_strs_c(pairs, "استثن", &o.nexclude, DISPLAY, line, col);
+    o.from_list = b5_opt_strs_c(pairs, "من_قائمة", &o.nfrom_list, DISPLAY, line, col);
+    o.abs_path = b5_opt_bool_c(pairs, "مسار_مطلق", 0, DISPLAY, line, col);
+    /* جمع المدخلات. */
+    B5EntryListC entries;
+    memset(&entries, 0, sizeof(entries));
+    if (o.nfrom_list) {
+        for (size_t i = 0; i < o.nfrom_list; i++) {
+            const char *p = o.from_list[i];
+            char *fs = nv_resolve_path(p, line, col);
+            B5MetaC m;
+            if (!b5_stat_c(fs, &m)) {
+                free(fs);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s المسار غير موجود: %s", DISPLAY, p);
+            }
+            const char *base = strrchr(fs, '/');
+            const char *nm = base ? base + 1 : fs;
+            if (!*nm) nm = p;
+            B5EntryC en;
+            en.fs = strdup(fs);
+            if (o.abs_path) {
+                char *abs = strdup(fs);
+                for (char *q = abs; *q; q++) if (*q == '\\') *q = '/';
+                en.display = abs;
+            } else {
+                en.display = strdup(p);
+            }
+            en.name = strdup(nm);
+            en.rel = strdup(p);
+            en.depth = 1;
+            en.meta = m;
+            en.eff = m;
+            en.eff.target = m.target ? strdup(m.target) : NULL;
+            if (o.resolve_links && m.is_link) {
+                B5MetaC fm;
+                if (b5_stat_follow_c(fs, &fm)) {
+                    b5_meta_free_c(&en.eff);
+                    en.eff = fm;
+                }
+            }
+            b5_entry_list_push_c(&entries, &en, line, col);
+            free(fs);
+        }
+    } else {
+        B5WalkC w;
+        b5_walk_new_c(&w);
+        w.include_hidden = o.include_hidden;
+        w.respect_ignore = 0;
+        w.follow_links = o.resolve_links;
+        w.min_depth = 1;
+        if (o.recursive) {
+            w.max_depth = o.has_max_level ? o.max_level : -1;
+        } else {
+            w.max_depth = 1;
+        }
+        b5_walk_root_c(dir, &w, &entries, line, col);
+        if (o.abs_path) {
+            for (size_t i = 0; i < entries.len; i++) {
+                char *abs = nv_resolve_path(entries.items[i].display, line, col);
+                for (char *q = abs; *q; q++) if (*q == '\\') *q = '/';
+                free(entries.items[i].display);
+                entries.items[i].display = abs;
+            }
+        }
+    }
+    /* ترشيح النوع والاستثناء. */
+    B5EntryC **kept = NULL;
+    size_t nkept = 0, capkept = 0;
+    for (size_t i = 0; i < entries.len; i++) {
+        B5EntryC *e = &entries.items[i];
+        if (o.dirs_only && e->eff.kind != B5_KIND_DIR) continue;
+        if (o.files_only && e->eff.kind != B5_KIND_FILE) continue;
+        if (o.nexclude && b5_glob_any_c(o.exclude, o.nexclude, e->name, e->rel, 0, line, col)) continue;
+        if (nkept >= capkept) {
+            size_t ncap = capkept == 0 ? 16 : capkept * 2;
+            B5EntryC **grown = (B5EntryC **)realloc(kept, ncap * sizeof(B5EntryC *));
+            if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+            kept = grown;
+            capkept = ncap;
+        }
+        kept[nkept++] = e;
+    }
+    B5SortCtxC sctx;
+    sctx.sort_by = o.sort_by;
+    sctx.time_kind = o.time_kind;
+    sctx.dir_total = o.dir_total;
+    sctx.dirs_first = o.dirs_first;
+    sctx.dirs_last = o.dirs_last;
+    sctx.reverse = o.reverse;
+    sctx.line = line;
+    sctx.col = col;
+    /* بناء السطور. */
+    char **lines = NULL;
+    size_t nlines = 0, caplines = 0;
+    if (o.header) {
+        const char *h = o.long_fmt ? "أذونات روابط مالك مجموعة حجم وقت اسم" : "اسم";
+        lines = (char **)malloc(sizeof(char *));
+        lines[0] = strdup(h);
+        nlines = 1;
+        caplines = 1;
+    }
+    if (o.tree) {
+        const char *root_disp = o.nfrom_list ? "." : dir;
+        B5GroupListC *groups = NULL;
+        size_t ngroups = 0, capgroups = 0;
+        B5EntryC **roots_here = NULL;
+        size_t nroots = 0, caproots = 0;
+        for (size_t i = 0; i < nkept; i++) {
+            B5EntryC *e = kept[i];
+            const char *slash = strrchr(e->display, '/');
+            char *parent;
+            if (slash) parent = j14_strndup(e->display, (size_t)(slash - e->display));
+            else parent = strdup(root_disp);
+            if (strcmp(parent, root_disp) == 0 || (!o.nfrom_list && !strchr(e->display, '/'))) {
+                if (nroots >= caproots) {
+                    size_t ncap = caproots == 0 ? 8 : caproots * 2;
+                    B5EntryC **grown = (B5EntryC **)realloc(roots_here, ncap * sizeof(B5EntryC *));
+                    if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                    roots_here = grown;
+                    caproots = ncap;
+                }
+                roots_here[nroots++] = e;
+            } else {
+                B5GroupListC *g = b5_group_get_c(&groups, &ngroups, &capgroups, parent, line, col);
+                b5_group_push_c(g, e, line, col);
+            }
+            free(parent);
+        }
+        b5_sort_items_c(roots_here, nroots, &sctx);
+        b5_tree_walk_c(roots_here, nroots, groups, ngroups, "", &lines, &nlines, &caplines, &o, &sctx, DISPLAY, line, col);
+        free(roots_here);
+        for (size_t i = 0; i < ngroups; i++) {
+            free(groups[i].parent);
+            free(groups[i].kids);
+        }
+        free(groups);
+        /* الجذر يُدفع بعد الترويسة في Rust — ندرجه هنا في موضعه. */
+        {
+            size_t at = o.header ? 1 : 0;
+            if (nlines >= caplines) {
+                size_t ncap = caplines == 0 ? 16 : caplines * 2;
+                char **grown = (char **)realloc(lines, ncap * sizeof(char *));
+                if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                lines = grown;
+                caplines = ncap;
+            }
+            memmove(&lines[at + 1], &lines[at], (nlines - at) * sizeof(char *));
+            lines[at] = strdup(root_disp);
+            nlines++;
+        }
+    } else if (o.recursive) {
+        B5GroupListC *groups = NULL;
+        size_t ngroups = 0, capgroups = 0;
+        for (size_t i = 0; i < nkept; i++) {
+            B5EntryC *e = kept[i];
+            const char *slash = strrchr(e->display, '/');
+            char *parent;
+            if (slash) parent = j14_strndup(e->display, (size_t)(slash - e->display));
+            else parent = strdup("");
+            B5GroupListC *g = b5_group_get_c(&groups, &ngroups, &capgroups, parent, line, col);
+            b5_group_push_c(g, e, line, col);
+            free(parent);
+        }
+        /* ترتيب الآباء (مثل BTreeMap في Rust). */
+        qsort(groups, ngroups, sizeof(B5GroupListC), b5_group_parent_cmp_c);
+        for (size_t gi = 0; gi < ngroups; gi++) {
+            B5GroupListC *g = &groups[gi];
+            b5_sort_items_c(g->kids, g->nkids, &sctx);
+            if (g->parent[0]) {
+                if (nlines >= caplines) {
+                    size_t ncap = caplines == 0 ? 16 : caplines * 2;
+                    char **grown = (char **)realloc(lines, ncap * sizeof(char *));
+                    if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                    lines = grown;
+                    caplines = ncap;
+                }
+                size_t n = strlen(g->parent) + 2;
+                char *h = (char *)malloc(n);
+                snprintf(h, n, "%s:", g->parent);
+                lines[nlines++] = h;
+            }
+            for (size_t i = 0; i < g->nkids; i++) {
+                char *l = b5_line_for_c(g->kids[i], &o, DISPLAY, line, col);
+                if (nlines >= caplines) {
+                    size_t ncap = caplines == 0 ? 16 : caplines * 2;
+                    char **grown = (char **)realloc(lines, ncap * sizeof(char *));
+                    if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                    lines = grown;
+                    caplines = ncap;
+                }
+                lines[nlines++] = l;
+            }
+            if (nlines >= caplines) {
+                size_t ncap = caplines == 0 ? 16 : caplines * 2;
+                char **grown = (char **)realloc(lines, ncap * sizeof(char *));
+                if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                lines = grown;
+                caplines = ncap;
+            }
+            lines[nlines++] = strdup("");
+        }
+        if (nlines && !lines[nlines - 1][0]) {
+            free(lines[nlines - 1]);
+            nlines--;
+        }
+        for (size_t i = 0; i < ngroups; i++) {
+            free(groups[i].parent);
+            free(groups[i].kids);
+        }
+        free(groups);
+    } else {
+        b5_sort_items_c(kept, nkept, &sctx);
+        if (o.one_line) {
+            J14Buf joined;
+            j14_buf_init(&joined);
+            for (size_t i = 0; i < nkept; i++) {
+                char *l = b5_line_for_c(kept[i], &o, DISPLAY, line, col);
+                if (i) j14_buf_add(&joined, "  ");
+                j14_buf_add(&joined, l);
+                free(l);
+            }
+            j14_buf_reserve(&joined, 1);
+            joined.data[joined.len] = '\0';
+            if (nlines >= caplines) {
+                size_t ncap = caplines == 0 ? 16 : caplines * 2;
+                char **grown = (char **)realloc(lines, ncap * sizeof(char *));
+                if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                lines = grown;
+                caplines = ncap;
+            }
+            lines[nlines++] = joined.data;
+        } else {
+            for (size_t i = 0; i < nkept; i++) {
+                char *l = b5_line_for_c(kept[i], &o, DISPLAY, line, col);
+                if (nlines >= caplines) {
+                    size_t ncap = caplines == 0 ? 16 : caplines * 2;
+                    char **grown = (char **)realloc(lines, ncap * sizeof(char *));
+                    if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                    lines = grown;
+                    caplines = ncap;
+                }
+                lines[nlines++] = l;
+            }
+        }
+    }
+    J14Buf out;
+    j14_buf_init(&out);
+    for (size_t i = 0; i < nlines; i++) {
+        if (i) j14_buf_addc(&out, '\n');
+        j14_buf_add(&out, lines[i]);
+        free(lines[i]);
+    }
+    free(lines);
+    j14_buf_reserve(&out, 1);
+    out.data[out.len] = '\0';
+    NvValue res = nv_str_new(out.data, out.len);
+    j14_buf_free(&out);
+    free(kept);
+    b5_entry_list_free_c(&entries);
+    b5_list_opts_free_c(&o);
+    free(dir_owned);
+    return res;
+}
+
+void nv_std_b5list_fill(NvDict *d) {
+    nv_std_add_fn(d, "اسرد", b5_list_fn);
+}
+
+/* END لينكس5-ملفات سرد C */
+
+/* BEGIN لينكس5-ملفات مزامنة C */
+
+#ifdef _WIN32
+/* MinGW يوفرهما لكن unistd.h غير مضمن هنا. */
+extern ssize_t readlink(const char *path, char *buf, size_t bufsiz);
+extern int symlink(const char *target, const char *linkpath);
+#endif
+
+/* إعلانات مسبقة لضغط C8 (يُستخدم في النقل المضغوط). */
+static unsigned char *b5_compress_bytes_c(const unsigned char *data, size_t len, int level, size_t *out_len, int line, int col);
+static unsigned char *b5_decompress_bytes_c(const unsigned char *data, size_t len, size_t *out_len, int line, int col);
+
+/* نسخ ملف واحد متدفقا (64ك للكتلة) مع حد سرعة ومهلة (مرآة b5_copy_stream). */
+static unsigned long long b5_copy_stream_c(const char *src, const char *dst, unsigned long long append_from, long long speed_limit, int has_speed, long long deadline, int has_deadline, const char *display, int line, int col) {
+    FILE *fin = fopen(src, "rb");
+    if (!fin) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر قراءة %s", display, src);
+    }
+    if (append_from > 0) {
+        if (fseeko(fin, (off_t)append_from, SEEK_SET) != 0) {
+            fclose(fin);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر الاستئناف في %s", display, src);
+        }
+    }
+    FILE *fout = fopen(dst, append_from > 0 ? "ab" : "wb");
+    if (!fout) {
+        fclose(fin);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر الكتابة في %s", display, dst);
+    }
+    unsigned char buf[65536];
+    unsigned long long done = 0;
+    for (;;) {
+        if (has_deadline && b5_now_c() >= deadline) {
+            fclose(fin);
+            fclose(fout);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s انتهت مهلة النقل", display);
+        }
+        size_t n = fread(buf, 1, sizeof(buf), fin);
+        if (n == 0) {
+            if (ferror(fin)) {
+                fclose(fin);
+                fclose(fout);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر قراءة %s", display, src);
+            }
+            break;
+        }
+        if (fwrite(buf, 1, n, fout) != n) {
+            fclose(fin);
+            fclose(fout);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر الكتابة في %s", display, dst);
+        }
+        done += (unsigned long long)n;
+        if (has_speed && speed_limit > 0) {
+            double secs = (double)n / (double)speed_limit;
+            if (secs > 0.0) {
+                if (secs > 5.0) secs = 5.0;
+                struct timespec ts;
+                ts.tv_sec = (time_t)secs;
+                ts.tv_nsec = (long)((secs - (double)ts.tv_sec) * 1000000000.0);
+                nanosleep(&ts, NULL);
+            }
+        }
+    }
+    fclose(fin);
+    fclose(fout);
+    return done;
+}
+
+static const char *B5_SYNC_KEYS_C[] = {
+    "تكراري", "مفصل", "صامت", "تجربة_جافة", "احفظ_الأذونات", "احفظ_الأوقات",
+    "احفظ_التنفيذ", "ضغط_أثناء_النقل", "تخط_ضغط", "بالبصمة", "بالحجم_فقط",
+    "تجاهل_الأوقات", "موجود_فقط", "تجاهل_الموجود", "حد_الحذف", "احذف_الفارغة",
+    "نسخة_احتياطية", "مجلد_النسخ", "لاحقة_النسخ", "استثن", "تضمين",
+    "استثن_من_ملف", "من_ملف", "نقل_جزئي", "إلحاق", "حد_الحجم_الأقصى",
+    "حد_الحجم_الأدنى", "حد_السرعة", "مهلة", "مجلد_مؤقت", "مسار_نسبي",
+    "احفظ_الفارغة", "سجل", "نسق_السجل", "تفصيل_التغييرات", "إحصاءات",
+    "شريط_تقدم", "أحجام_بشرية",
+};
+#define B5_SYNC_NKEYS_C 38
+
+typedef struct {
+    int recursive, verbose, quiet, dry_run, keep_perms, keep_times, keep_exec, compress;
+    char **skip_compress; size_t nskip_compress;
+    int by_crc, by_size_only, ignore_times, existing_only, ignore_existing;
+    long long max_delete; int has_max_delete;
+    int delete_empty, backup;
+    char *backup_dir;
+    char *backup_suffix;
+    char **exclude; size_t nexclude;
+    char **include; size_t ninclude;
+    char *exclude_file;
+    char *from_file;
+    int partial, append;
+    unsigned long long max_size; int has_max_size;
+    unsigned long long min_size; int has_min_size;
+    long long speed_limit; int has_speed_limit;
+    long long timeout; int has_timeout;
+    char *temp_dir;
+    int rel_path, keep_empty;
+    char *log;
+    char *log_format;
+    int change_details, stats, progress, human;
+} B5SyncC;
+
+static void b5_sync_free_c(B5SyncC *o) {
+    b5_strs_free_c(o->skip_compress, o->nskip_compress);
+    free(o->backup_dir);
+    free(o->backup_suffix);
+    b5_strs_free_c(o->exclude, o->nexclude);
+    b5_strs_free_c(o->include, o->ninclude);
+    free(o->exclude_file);
+    free(o->from_file);
+    free(o->temp_dir);
+    free(o->log);
+    free(o->log_format);
+}
+
+static void b5_parse_sync_c(const char *display, NvDict *pairs, B5SyncC *o, int line, int col) {
+    memset(o, 0, sizeof(*o));
+    b5_no_unknown_c(display, pairs, B5_SYNC_KEYS_C, B5_SYNC_NKEYS_C, line, col);
+    o->recursive = b5_opt_bool_c(pairs, "تكراري", 1, display, line, col);
+    o->verbose = b5_opt_bool_c(pairs, "مفصل", 0, display, line, col);
+    o->quiet = b5_opt_bool_c(pairs, "صامت", 0, display, line, col);
+    o->dry_run = b5_opt_bool_c(pairs, "تجربة_جافة", 0, display, line, col);
+    o->keep_perms = b5_opt_bool_c(pairs, "احفظ_الأذونات", 0, display, line, col);
+    o->keep_times = b5_opt_bool_c(pairs, "احفظ_الأوقات", 0, display, line, col);
+    o->keep_exec = b5_opt_bool_c(pairs, "احفظ_التنفيذ", 0, display, line, col);
+    o->compress = b5_opt_bool_c(pairs, "ضغط_أثناء_النقل", 0, display, line, col);
+    o->skip_compress = b5_opt_strs_c(pairs, "تخط_ضغط", &o->nskip_compress, display, line, col);
+    for (size_t i = 0; i < o->nskip_compress; i++) {
+        char *e = o->skip_compress[i];
+        while (*e == '.') e++;
+        if (e != o->skip_compress[i]) memmove(o->skip_compress[i], e, strlen(e) + 1);
+        for (char *p = o->skip_compress[i]; *p; p++) {
+            if (*p >= 'A' && *p <= 'Z') *p = (char)(*p + 32);
+        }
+    }
+    o->by_crc = b5_opt_bool_c(pairs, "بالبصمة", 0, display, line, col);
+    o->by_size_only = b5_opt_bool_c(pairs, "بالحجم_فقط", 0, display, line, col);
+    o->ignore_times = b5_opt_bool_c(pairs, "تجاهل_الأوقات", 0, display, line, col);
+    o->existing_only = b5_opt_bool_c(pairs, "موجود_فقط", 0, display, line, col);
+    o->ignore_existing = b5_opt_bool_c(pairs, "تجاهل_الموجود", 0, display, line, col);
+    long long tmp;
+    if (b5_opt_count_c(pairs, "حد_الحذف", &tmp, display, line, col)) { o->max_delete = tmp; o->has_max_delete = 1; }
+    o->delete_empty = b5_opt_bool_c(pairs, "احذف_الفارغة", 0, display, line, col);
+    o->backup = b5_opt_bool_c(pairs, "نسخة_احتياطية", 0, display, line, col);
+    const char *bd = b5_opt_str_c(pairs, "مجلد_النسخ", display, line, col);
+    if (bd) o->backup_dir = strdup(bd);
+    const char *bs = b5_opt_str_c(pairs, "لاحقة_النسخ", display, line, col);
+    o->backup_suffix = strdup(bs ? bs : "~");
+    o->exclude = b5_opt_strs_c(pairs, "استثن", &o->nexclude, display, line, col);
+    o->include = b5_opt_strs_c(pairs, "تضمين", &o->ninclude, display, line, col);
+    const char *ef = b5_opt_str_c(pairs, "استثن_من_ملف", display, line, col);
+    if (ef) o->exclude_file = strdup(ef);
+    const char *ff = b5_opt_str_c(pairs, "من_ملف", display, line, col);
+    if (ff) o->from_file = strdup(ff);
+    o->partial = b5_opt_bool_c(pairs, "نقل_جزئي", 0, display, line, col);
+    o->append = b5_opt_bool_c(pairs, "إلحاق", 0, display, line, col);
+    if (b5_opt_count_c(pairs, "حد_الحجم_الأقصى", &tmp, display, line, col)) { o->max_size = (unsigned long long)tmp; o->has_max_size = 1; }
+    if (b5_opt_count_c(pairs, "حد_الحجم_الأدنى", &tmp, display, line, col)) { o->min_size = (unsigned long long)tmp; o->has_min_size = 1; }
+    if (b5_opt_count_c(pairs, "حد_السرعة", &tmp, display, line, col)) { o->speed_limit = tmp; o->has_speed_limit = 1; }
+    if (b5_opt_count_c(pairs, "مهلة", &tmp, display, line, col)) { o->timeout = tmp; o->has_timeout = 1; }
+    const char *td = b5_opt_str_c(pairs, "مجلد_مؤقت", display, line, col);
+    if (td) o->temp_dir = strdup(td);
+    o->rel_path = b5_opt_bool_c(pairs, "مسار_نسبي", 0, display, line, col);
+    o->keep_empty = b5_opt_bool_c(pairs, "احفظ_الفارغة", 0, display, line, col);
+    const char *lg = b5_opt_str_c(pairs, "سجل", display, line, col);
+    if (lg) o->log = strdup(lg);
+    const char *lf = b5_opt_str_c(pairs, "نسق_السجل", display, line, col);
+    if (lf) o->log_format = strdup(lf);
+    o->change_details = b5_opt_bool_c(pairs, "تفصيل_التغييرات", 0, display, line, col);
+    o->stats = b5_opt_bool_c(pairs, "إحصاءات", 0, display, line, col);
+    o->progress = b5_opt_bool_c(pairs, "شريط_تقدم", 0, display, line, col);
+    o->human = b5_opt_bool_c(pairs, "أحجام_بشرية", 0, display, line, col);
+}
+
+/* مسار نسبي لمصدر (strip_prefix أو rel الاحتياطي). */
+static char *b5_sync_rel_c(const B5EntryC *e, const char *src_base) {
+    size_t bl = strlen(src_base);
+    if (strncmp(e->fs, src_base, bl) == 0 && e->fs[bl] == '/') {
+        return strdup(e->fs + bl + 1);
+    }
+    return strdup(e->rel);
+}
+
+/* نسخ ملف بسيط (للنسخ الاحتياطي وبديل إعادة التسمية) — الأخطاء تُتجاهل. */
+static int b5_copy_simple_c(const char *src, const char *dst) {
+    FILE *fin = fopen(src, "rb");
+    if (!fin) return 0;
+    FILE *fout = fopen(dst, "wb");
+    if (!fout) {
+        fclose(fin);
+        return 0;
+    }
+    unsigned char buf[65536];
+    size_t n;
+    int ok = 1;
+    while ((n = fread(buf, 1, sizeof(buf), fin)) > 0) {
+        if (fwrite(buf, 1, n, fout) != n) { ok = 0; break; }
+    }
+    if (ferror(fin)) ok = 0;
+    fclose(fin);
+    fclose(fout);
+    return ok;
+}
+
+/* حذف مسار (ملف أو شجرة مجلدات) — مثل remove_file ثم remove_dir_all. */
+static void b5_remove_all_c(const char *path) {
+    struct stat st;
+    if (nv_lstat(path, &st) != 0) return;
+    if (S_ISDIR(st.st_mode)) {
+        DIR *d = opendir(path);
+        if (d) {
+            struct dirent *e;
+            while ((e = readdir(d)) != NULL) {
+                if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+                char *child = b5_join_c(path, e->d_name);
+                b5_remove_all_c(child);
+                free(child);
+            }
+            closedir(d);
+        }
+        rmdir(path);
+    } else {
+        remove(path);
+    }
+}
+
+/* إعادة تسمية أو نسخ + حذف (بديل عند فشل إعادة التسمية عبر أنظمة). */
+static void b5_rename_or_copy_c(const char *stage, const char *target) {
+    if (rename(stage, target) == 0) return;
+    b5_copy_simple_c(stage, target);
+    remove(stage);
+}
+
+/* عدد مكونات مسار (للفرز الأعمق أولا). */
+static size_t b5_components_c(const char *path) {
+    size_t n = 0;
+    int in_seg = 0;
+    for (const char *p = path; *p; p++) {
+        if (*p == '/') {
+            if (in_seg) n++;
+            in_seg = 0;
+        } else {
+            in_seg = 1;
+        }
+    }
+    if (in_seg) n++;
+    return n;
+}
+
+static int b5_entry_depth_display_cmp_c(const void *a, const void *b) {
+    const B5EntryC *ea = *(B5EntryC *const *)a;
+    const B5EntryC *eb = *(B5EntryC *const *)b;
+    if (ea->depth < eb->depth) return -1;
+    if (ea->depth > eb->depth) return 1;
+    return strcmp(ea->display, eb->display);
+}
+
+static int b5_entry_display_cmp_c(const void *a, const void *b) {
+    const B5EntryC *ea = *(B5EntryC *const *)a;
+    const B5EntryC *eb = *(B5EntryC *const *)b;
+    return strcmp(ea->display, eb->display);
+}
+
+/* مزامنة.زامن(مصدر، هدف، خيارات؟) — §6 (مرآة Rust حرفيا). */
+static NvValue b5_sync_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "مزامنة.زامن";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *src_s = nv_std_need_string(DISPLAY, args[0], line, col);
+    const char *dst_s = nv_std_need_string(DISPLAY, args[1], line, col);
+    NvDict *pairs = b5_opt_dict_c(args, nargs, 2, DISPLAY, line, col);
+    B5SyncC o;
+    b5_parse_sync_c(DISPLAY, pairs, &o, line, col);
+    char *src_fs = nv_resolve_path(src_s, line, col);
+    char *dst_fs = nv_resolve_path(dst_s, line, col);
+    B5MetaC src_meta;
+    if (!b5_stat_c(src_fs, &src_meta)) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s المصدر غير موجود: %s", DISPLAY, src_s);
+    }
+    int src_is_dir = src_meta.kind == B5_KIND_DIR;
+    /* أنماط استثناء إضافية من ملف. */
+    char **exclude = o.exclude;
+    size_t nexclude = o.nexclude;
+    char **extra_excl = NULL;
+    size_t nextra_excl = 0;
+    if (o.exclude_file) {
+        extra_excl = b5_load_patterns_c(DISPLAY, o.exclude_file, &nextra_excl, line, col);
+    }
+    if (nextra_excl) {
+        char **merged = (char **)malloc((nexclude + nextra_excl) * sizeof(char *));
+        size_t k = 0;
+        for (size_t i = 0; i < nexclude; i++) merged[k++] = strdup(exclude[i]);
+        for (size_t i = 0; i < nextra_excl; i++) merged[k++] = strdup(extra_excl[i]);
+        exclude = merged;
+        nexclude = k;
+    }
+    /* قائمة ملفات من ملف (مسارات نسبية للمصدر). */
+    char **from_list = NULL;
+    size_t nfrom_list = 0;
+    if (o.from_file) {
+        from_list = b5_load_patterns_c(DISPLAY, o.from_file, &nfrom_list, line, col);
+    }
+    long long deadline = 0;
+    int has_deadline = 0;
+    if (o.has_timeout) {
+        long long t = o.timeout < 0 ? 0 : o.timeout;
+        deadline = b5_now_c() + t;
+        has_deadline = 1;
+    }
+    /* جذر الهدف الفعلي. */
+    char *dst_root;
+    char *src_base;
+    if (src_is_dir && o.rel_path) {
+        const char *base = strrchr(src_fs, '/');
+        const char *nm = base ? base + 1 : src_fs;
+        if (!*nm) nm = src_s;
+        dst_root = b5_join_c(dst_fs, nm);
+        src_base = strdup(src_fs);
+    } else {
+        dst_root = strdup(dst_fs);
+        src_base = strdup(src_fs);
+    }
+    /* مسح المصدر. */
+    B5EntryListC entries;
+    memset(&entries, 0, sizeof(entries));
+    if (src_is_dir) {
+        B5WalkC w;
+        b5_walk_new_c(&w);
+        w.include_hidden = 1;
+        w.respect_ignore = 0;
+        w.follow_links = 0;
+        w.min_depth = 1;
+        w.max_depth = o.recursive ? -1 : 1;
+        b5_walk_root_c(src_s, &w, &entries, line, col);
+    } else {
+        B5EntryC en;
+        en.fs = strdup(src_fs);
+        const char *base = strrchr(src_fs, '/');
+        const char *nm = base ? base + 1 : src_fs;
+        if (!*nm) nm = src_s;
+        en.display = strdup(nm);
+        en.name = strdup(nm);
+        en.rel = strdup(src_s);
+        en.depth = 0;
+        en.meta = src_meta;
+        en.eff = src_meta;
+        en.eff.target = src_meta.target ? strdup(src_meta.target) : NULL;
+        b5_entry_list_push_c(&entries, &en, line, col);
+    }
+    /* ترشيح من_ملف (نسبي للمصدر). */
+    if (from_list) {
+        size_t kept_n = 0;
+        for (size_t i = 0; i < entries.len; i++) {
+            B5EntryC *e = &entries.items[i];
+            char *rel = b5_sync_rel_c(e, src_base);
+            int keep = 0;
+            for (size_t j = 0; j < nfrom_list; j++) {
+                if (strcmp(from_list[j], rel) == 0) { keep = 1; break; }
+            }
+            free(rel);
+            if (keep) entries.items[kept_n++] = entries.items[i];
+            else {
+                free(entries.items[i].fs);
+                free(entries.items[i].display);
+                free(entries.items[i].name);
+                free(entries.items[i].rel);
+                b5_meta_free_c(&entries.items[i].meta);
+                b5_meta_free_c(&entries.items[i].eff);
+            }
+        }
+        entries.len = kept_n;
+    }
+    long long copied = 0, updated = 0, skipped = 0, deleted = 0;
+    unsigned long long bytes_total = 0;
+    int timed_out = 0;
+    NvValue changes = nv_list_new();
+    char **progress_lines = NULL;
+    size_t nprogress = 0, capprogress = 0;
+    if (!o.dry_run && src_is_dir) {
+        if (b5_mkdir_all_c(dst_root) != 0) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر إنشاء الهدف %s", DISPLAY, dst_s);
+        }
+    }
+    /* إنشاء مجلدات الهدف أولا. */
+    B5EntryC **dir_entries = NULL;
+    size_t ndirs = 0, capdirs = 0;
+    for (size_t i = 0; i < entries.len; i++) {
+        if (entries.items[i].eff.kind != B5_KIND_DIR) continue;
+        if (ndirs >= capdirs) {
+            size_t ncap = capdirs == 0 ? 16 : capdirs * 2;
+            B5EntryC **grown = (B5EntryC **)realloc(dir_entries, ncap * sizeof(B5EntryC *));
+            if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+            dir_entries = grown;
+            capdirs = ncap;
+        }
+        dir_entries[ndirs++] = &entries.items[i];
+    }
+    qsort(dir_entries, ndirs, sizeof(B5EntryC *), b5_entry_depth_display_cmp_c);
+    char **src_dir_set = NULL;
+    size_t nsrc_dirs = 0, capsrc_dirs = 0;
+    for (size_t i = 0; i < ndirs; i++) {
+        B5EntryC *e = dir_entries[i];
+        char *rel = src_is_dir ? b5_sync_rel_c(e, src_base) : strdup("");
+        if (nsrc_dirs >= capsrc_dirs) {
+            size_t ncap = capsrc_dirs == 0 ? 16 : capsrc_dirs * 2;
+            char **grown = (char **)realloc(src_dir_set, ncap * sizeof(char *));
+            if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+            src_dir_set = grown;
+            capsrc_dirs = ncap;
+        }
+        src_dir_set[nsrc_dirs++] = strdup(rel);
+        int is_empty = b5_dir_empty_c(e->fs);
+        if (is_empty && !o.keep_empty) {
+            free(rel);
+            continue;
+        }
+        char *target = b5_join_c(dst_root, rel);
+        if (!o.dry_run) {
+            if (b5_mkdir_all_c(target) != 0) {
+                free(rel);
+                free(target);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر إنشاء المجلد %s", DISPLAY, rel);
+            }
+            if (o.keep_times) b5_set_times_c(target, e->eff.atime, e->eff.mtime);
+            if (o.keep_perms) b5_set_mode_c(target, e->eff.mode);
+        }
+        free(rel);
+        free(target);
+    }
+    free(dir_entries);
+    /* الملفات والروابط. */
+    B5EntryC **file_entries = NULL;
+    size_t nfiles = 0, capfiles = 0;
+    for (size_t i = 0; i < entries.len; i++) {
+        if (entries.items[i].eff.kind == B5_KIND_DIR) continue;
+        if (nfiles >= capfiles) {
+            size_t ncap = capfiles == 0 ? 16 : capfiles * 2;
+            B5EntryC **grown = (B5EntryC **)realloc(file_entries, ncap * sizeof(B5EntryC *));
+            if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+            file_entries = grown;
+            capfiles = ncap;
+        }
+        file_entries[nfiles++] = &entries.items[i];
+    }
+    qsort(file_entries, nfiles, sizeof(B5EntryC *), b5_entry_display_cmp_c);
+    for (size_t fi = 0; fi < nfiles && !timed_out; fi++) {
+        B5EntryC *e = file_entries[fi];
+        if (has_deadline && b5_now_c() >= deadline) {
+            timed_out = 1;
+            break;
+        }
+        char *rel;
+        if (src_is_dir) {
+            rel = b5_sync_rel_c(e, src_base);
+        } else {
+            struct stat dst_st;
+            if (stat(dst_fs, &dst_st) == 0 && S_ISDIR(dst_st.st_mode)) rel = strdup(e->name);
+            else rel = strdup("");
+        }
+        char *target;
+        {
+            struct stat dst_st;
+            int dst_is_dir = stat(dst_fs, &dst_st) == 0 && S_ISDIR(dst_st.st_mode);
+            if (src_is_dir || dst_is_dir) target = b5_join_c(dst_root, rel);
+            else target = strdup(dst_fs);
+        }
+        /* استثناء/تضمين. */
+        if (nexclude && b5_glob_any_c(exclude, nexclude, e->name, rel, 0, line, col)) {
+            if (!o.ninclude || !b5_glob_any_c(o.include, o.ninclude, e->name, rel, 0, line, col)) {
+                skipped++;
+                free(rel);
+                free(target);
+                continue;
+            }
+        }
+        /* حدود الحجم (ملفات فقط). */
+        if (e->eff.kind == B5_KIND_FILE) {
+            if (o.has_max_size && e->eff.size > o.max_size) {
+                skipped++;
+                free(rel);
+                free(target);
+                continue;
+            }
+            if (o.has_min_size && e->eff.size < o.min_size) {
+                skipped++;
+                free(rel);
+                free(target);
+                continue;
+            }
+        }
+        /* الروابط تُنسخ روابط. */
+        if (e->meta.is_link) {
+            struct stat tst;
+            int dst_exists = nv_lstat(target, &tst) == 0;
+            if (o.existing_only && !dst_exists) {
+                skipped++;
+                free(rel);
+                free(target);
+                continue;
+            }
+            if (o.ignore_existing && dst_exists) {
+                skipped++;
+                free(rel);
+                free(target);
+                continue;
+            }
+            const char *tg = e->meta.target ? e->meta.target : "";
+            int need = 1;
+            {
+                char buf[4096];
+                ssize_t n = readlink(target, buf, sizeof(buf) - 1);
+                if (n > 0) {
+                    buf[n] = '\0';
+                    need = strcmp(buf, tg) != 0;
+                }
+            }
+            if (!need) {
+                skipped++;
+                free(rel);
+                free(target);
+                continue;
+            }
+            if (!o.dry_run) {
+                char *parent = b5_parent_c(target);
+                if (parent) {
+                    b5_mkdir_all_c(parent);
+                    free(parent);
+                }
+                b5_remove_all_c(target);
+                if (symlink(tg, target) != 0) {
+                    free(rel);
+                    free(target);
+                    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر إنشاء الرابط %s", DISPLAY, rel);
+                }
+            }
+            if (dst_exists) updated++;
+            else copied++;
+            const char *action = dst_exists ? "حدث" : "نسخ";
+            NvValue ch = nv_dict_new();
+            nv_dict_set_raw(ch.u.dict, "ملف", nv_str_new(rel, strlen(rel)));
+            nv_dict_set_raw(ch.u.dict, "فعل", nv_str_new(action, strlen(action)));
+            nv_dict_set_raw(ch.u.dict, "حجم", nv_num(0.0));
+            nv_list_push_raw(changes.u.list, ch);
+            if (!o.quiet && o.verbose) {
+                if (nprogress >= capprogress) {
+                    size_t ncap = capprogress == 0 ? 8 : capprogress * 2;
+                    char **grown = (char **)realloc(progress_lines, ncap * sizeof(char *));
+                    if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                    progress_lines = grown;
+                    capprogress = ncap;
+                }
+                size_t n = strlen(action) + 1 + strlen(rel) + 1;
+                char *pl = (char *)malloc(n);
+                snprintf(pl, n, "%s %s", action, rel);
+                progress_lines[nprogress++] = pl;
+            }
+            free(rel);
+            free(target);
+            continue;
+        }
+        if (e->eff.kind != B5_KIND_FILE) {
+            skipped++;
+            free(rel);
+            free(target);
+            continue;
+        }
+        /* قرار النسخ. */
+        B5MetaC dm;
+        int dst_exists = b5_stat_c(target, &dm);
+        if (o.existing_only && !dst_exists) {
+            skipped++;
+            free(rel);
+            free(target);
+            continue;
+        }
+        if (o.ignore_existing && dst_exists) {
+            skipped++;
+            free(rel);
+            free(target);
+            continue;
+        }
+        int do_copy = 1;
+        if (dst_exists) {
+            if (o.by_crc) {
+                uint32_t a = 0, b = 0;
+                int a_ok = b5_file_crc_c(e->fs, &a);
+                int b_ok = b5_file_crc_c(target, &b);
+                /* مرآة Option<u32> في Rust: None == None. */
+                do_copy = (a_ok != b_ok) || (a_ok && a != b);
+            } else if (o.by_size_only) {
+                do_copy = dm.size != e->eff.size;
+            } else if (o.ignore_times) {
+                do_copy = 1;
+            } else {
+                do_copy = !(dm.size == e->eff.size && dm.mtime == e->eff.mtime);
+            }
+        }
+        if (!do_copy) {
+            skipped++;
+            if (dst_exists) b5_meta_free_c(&dm);
+            free(rel);
+            free(target);
+            continue;
+        }
+        /* إلحاق: هدف أصغر وبادئته مطابقة. */
+        unsigned long long append_from = 0;
+        if (o.append && dst_exists && dm.size < e->eff.size) {
+            FILE *fa = fopen(e->fs, "rb");
+            FILE *fb = fopen(target, "rb");
+            if (fa && fb) {
+                unsigned char *ba = (unsigned char *)malloc((size_t)dm.size);
+                unsigned char *bb = (unsigned char *)malloc((size_t)dm.size);
+                if (ba && bb && fread(ba, 1, (size_t)dm.size, fa) == (size_t)dm.size &&
+                    fread(bb, 1, (size_t)dm.size, fb) == (size_t)dm.size &&
+                    memcmp(ba, bb, (size_t)dm.size) == 0) {
+                    append_from = dm.size;
+                }
+                free(ba);
+                free(bb);
+            }
+            if (fa) fclose(fa);
+            if (fb) fclose(fb);
+        }
+        /* نسخة احتياطية قبل الكتابة فوق موجود مختلف. */
+        if (o.backup && dst_exists && !o.dry_run) {
+            char *bdir;
+            if (o.backup_dir) bdir = b5_join_c(dst_root, o.backup_dir);
+            else {
+                char *par = b5_parent_c(target);
+                bdir = par ? par : strdup(dst_root);
+            }
+            char *flat = strdup(rel);
+            for (char *p = flat; *p; p++) if (*p == '/') *p = '_';
+            size_t n = strlen(flat) + strlen(o.backup_suffix) + 1;
+            char *bname = (char *)malloc(n);
+            snprintf(bname, n, "%s%s", flat, o.backup_suffix);
+            char *bpath = b5_join_c(bdir, bname);
+            char *bpar = b5_parent_c(bpath);
+            if (bpar) {
+                b5_mkdir_all_c(bpar);
+                free(bpar);
+            }
+            b5_copy_simple_c(target, bpath);
+            free(bdir);
+            free(flat);
+            free(bname);
+            free(bpath);
+        }
+        /* النقل (عبر ملف مؤقت ثم إعادة تسمية). */
+        char *stage;
+        if (o.partial) {
+            size_t n = strlen(target) + 16;
+            stage = (char *)malloc(n);
+            snprintf(stage, n, "%s.جزئي", target);
+        } else if (o.temp_dir) {
+            char *td = nv_resolve_path(o.temp_dir, line, col);
+            const char *base = strrchr(target, '/');
+            const char *nm = base ? base + 1 : target;
+            if (!*nm) nm = "ملف";
+            size_t n = strlen(nm) + 16;
+            char *sname = (char *)malloc(n);
+            snprintf(sname, n, "%s.مؤقت", nm);
+            stage = b5_join_c(td, sname);
+            free(td);
+            free(sname);
+        } else {
+            size_t n = strlen(target) + 16;
+            stage = (char *)malloc(n);
+            snprintf(stage, n, "%s.مؤقت", target);
+        }
+        unsigned long long compressed_size = 0;
+        int has_compressed = 0;
+        unsigned long long wrote = 0;
+        if (!o.dry_run) {
+            char *parent = b5_parent_c(target);
+            if (parent) {
+                b5_mkdir_all_c(parent);
+                free(parent);
+            }
+            if (o.compress && e->eff.size <= 16 * 1024 * 1024) {
+                char *ext = b5_ext_c(e->name);
+                int skip = 0;
+                if (ext) {
+                    for (size_t i = 0; i < o.nskip_compress; i++) {
+                        if (strcmp(ext, o.skip_compress[i]) == 0) { skip = 1; break; }
+                    }
+                }
+                free(ext);
+                if (!skip) {
+                    size_t raw_len = 0;
+                    char *raw = b5_read_file_c(e->fs, &raw_len);
+                    if (!raw) {
+                        free(stage);
+                        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر قراءة %s", DISPLAY, e->display);
+                    }
+                    size_t comp_len = 0;
+                    unsigned char *comp = b5_compress_bytes_c((unsigned char *)raw, raw_len, 6, &comp_len, line, col);
+                    size_t back_len = 0;
+                    unsigned char *back = b5_decompress_bytes_c(comp, comp_len, &back_len, line, col);
+                    if (!back || back_len != raw_len || memcmp(back, raw, raw_len) != 0) {
+                        free(raw);
+                        free(comp);
+                        free(back);
+                        free(stage);
+                        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s فشل ضغط النقل لـ%s", DISPLAY, e->display);
+                    }
+                    compressed_size = (unsigned long long)comp_len;
+                    has_compressed = 1;
+                    FILE *sf = fopen(stage, "wb");
+                    if (!sf || (back_len && fwrite(back, 1, back_len, sf) != back_len)) {
+                        if (sf) fclose(sf);
+                        free(raw);
+                        free(comp);
+                        free(back);
+                        free(stage);
+                        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر الكتابة في %s", DISPLAY, target);
+                    }
+                    if (sf) fclose(sf);
+                    wrote = (unsigned long long)back_len;
+                    free(raw);
+                    free(comp);
+                    free(back);
+                }
+            }
+            if (!has_compressed) {
+                if (append_from > 0) {
+                    wrote = b5_copy_stream_c(e->fs, target, append_from, o.speed_limit, o.has_speed_limit, deadline, has_deadline, DISPLAY, line, col);
+                    if (o.keep_times) b5_set_times_c(target, e->eff.atime, e->eff.mtime);
+                    if (o.keep_perms) b5_set_mode_c(target, e->eff.mode);
+                    else if (o.keep_exec) {
+                        B5MetaC cur;
+                        unsigned int curmode = 0644;
+                        if (b5_stat_c(target, &cur)) {
+                            curmode = cur.mode;
+                            b5_meta_free_c(&cur);
+                        }
+                        b5_set_mode_c(target, (curmode & ~0111u) | (e->eff.mode & 0111u));
+                    }
+                    if (dst_exists) updated++;
+                    else copied++;
+                    bytes_total += wrote;
+                    NvValue ch = nv_dict_new();
+                    nv_dict_set_raw(ch.u.dict, "ملف", nv_str_new(rel, strlen(rel)));
+                    nv_dict_set_raw(ch.u.dict, "فعل", nv_str_new(dst_exists ? "حدث" : "نسخ", strlen(dst_exists ? "حدث" : "نسخ")));
+                    nv_dict_set_raw(ch.u.dict, "حجم", nv_num((double)wrote));
+                    nv_list_push_raw(changes.u.list, ch);
+                    if (!o.quiet && (o.verbose || o.progress)) {
+                        char szbuf[64];
+                        if (o.human) b5_human_size_c(wrote, szbuf, sizeof(szbuf));
+                        else snprintf(szbuf, sizeof(szbuf), "%llu بايت", wrote);
+                        if (nprogress >= capprogress) {
+                            size_t ncap = capprogress == 0 ? 8 : capprogress * 2;
+                            char **grown = (char **)realloc(progress_lines, ncap * sizeof(char *));
+                            if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                            progress_lines = grown;
+                            capprogress = ncap;
+                        }
+                        size_t n = strlen(rel) + strlen(szbuf) + 11;
+                        char *pl = (char *)malloc(n);
+                        snprintf(pl, n, "نُقل %s %s", rel, szbuf);
+                        progress_lines[nprogress++] = pl;
+                    }
+                    if (dst_exists) b5_meta_free_c(&dm);
+                    free(rel);
+                    free(target);
+                    free(stage);
+                    continue;
+                }
+                wrote = b5_copy_stream_c(e->fs, stage, 0, o.speed_limit, o.has_speed_limit, deadline, has_deadline, DISPLAY, line, col);
+                if (o.keep_times) b5_set_times_c(stage, e->eff.atime, e->eff.mtime);
+                if (o.keep_perms) b5_set_mode_c(stage, e->eff.mode);
+                else if (o.keep_exec) {
+                    B5MetaC cur;
+                    unsigned int curmode = 0644;
+                    if (b5_stat_c(stage, &cur)) {
+                        curmode = cur.mode;
+                        b5_meta_free_c(&cur);
+                    }
+                    b5_set_mode_c(stage, (curmode & ~0111u) | (e->eff.mode & 0111u));
+                }
+                b5_rename_or_copy_c(stage, target);
+                if (o.keep_times) b5_set_times_c(target, e->eff.atime, e->eff.mtime);
+            } else {
+                b5_rename_or_copy_c(stage, target);
+                if (o.keep_times) b5_set_times_c(target, e->eff.atime, e->eff.mtime);
+                if (o.keep_perms) b5_set_mode_c(target, e->eff.mode);
+                else if (o.keep_exec) {
+                    B5MetaC cur;
+                    unsigned int curmode = 0644;
+                    if (b5_stat_c(target, &cur)) {
+                        curmode = cur.mode;
+                        b5_meta_free_c(&cur);
+                    }
+                    b5_set_mode_c(target, (curmode & ~0111u) | (e->eff.mode & 0111u));
+                }
+            }
+        } else {
+            wrote = append_from > 0 ? (e->eff.size - append_from) : e->eff.size;
+        }
+        if (dst_exists) updated++;
+        else copied++;
+        bytes_total += wrote;
+        {
+            NvValue ch = nv_dict_new();
+            nv_dict_set_raw(ch.u.dict, "ملف", nv_str_new(rel, strlen(rel)));
+            nv_dict_set_raw(ch.u.dict, "فعل", nv_str_new(dst_exists ? "حدث" : "نسخ", strlen(dst_exists ? "حدث" : "نسخ")));
+            nv_dict_set_raw(ch.u.dict, "حجم", nv_num((double)wrote));
+            if (has_compressed) {
+                nv_dict_set_raw(ch.u.dict, "مضغوط", nv_num((double)compressed_size));
+            }
+            nv_list_push_raw(changes.u.list, ch);
+        }
+        if (!o.quiet && (o.verbose || o.progress)) {
+            char szbuf[64];
+            if (o.human) b5_human_size_c(wrote, szbuf, sizeof(szbuf));
+            else snprintf(szbuf, sizeof(szbuf), "%llu بايت", wrote);
+            if (nprogress >= capprogress) {
+                size_t ncap = capprogress == 0 ? 8 : capprogress * 2;
+                char **grown = (char **)realloc(progress_lines, ncap * sizeof(char *));
+                if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                progress_lines = grown;
+                capprogress = ncap;
+            }
+            size_t n = strlen(rel) + strlen(szbuf) + 11;
+            char *pl = (char *)malloc(n);
+            snprintf(pl, n, "نُقل %s %s", rel, szbuf);
+            progress_lines[nprogress++] = pl;
+        }
+        if (dst_exists) b5_meta_free_c(&dm);
+        free(rel);
+        free(target);
+        free(stage);
+    }
+    free(file_entries);
+    /* حذف المجلدات الفارغة الزائدة في الهدف. */
+    if (o.delete_empty && !o.dry_run) {
+        long long cap = o.has_max_delete ? (o.max_delete < 0 ? 0 : o.max_delete) : (long long)9223372036854775807LL;
+        long long removed = 0;
+        char **stack = NULL;
+        size_t nstack = 0, capstack = 0;
+        char **dirs = NULL;
+        size_t ndirs2 = 0, capdirs2 = 0;
+        if (nstack >= capstack) {
+            capstack = 8;
+            stack = (char **)malloc(capstack * sizeof(char *));
+        }
+        stack[nstack++] = strdup(dst_root);
+        while (nstack > 0) {
+            char *d = stack[--nstack];
+            DIR *rd = opendir(d);
+            if (rd) {
+                struct dirent *en;
+                while ((en = readdir(rd)) != NULL) {
+                    if (strcmp(en->d_name, ".") == 0 || strcmp(en->d_name, "..") == 0) continue;
+                    char *p = b5_join_c(d, en->d_name);
+                    struct stat st;
+                    if (stat(p, &st) == 0 && S_ISDIR(st.st_mode)) {
+                        if (ndirs2 >= capdirs2) {
+                            size_t ncap = capdirs2 == 0 ? 16 : capdirs2 * 2;
+                            char **grown = (char **)realloc(dirs, ncap * sizeof(char *));
+                            if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                            dirs = grown;
+                            capdirs2 = ncap;
+                        }
+                        dirs[ndirs2++] = strdup(p);
+                        if (nstack >= capstack) {
+                            size_t ncap = capstack * 2;
+                            char **grown = (char **)realloc(stack, ncap * sizeof(char *));
+                            if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                            stack = grown;
+                            capstack = ncap;
+                        }
+                        stack[nstack++] = p;
+                    } else {
+                        free(p);
+                    }
+                }
+                closedir(rd);
+            }
+            free(d);
+        }
+        free(stack);
+        /* فرز الأعمق أولا (مستقر بترتيب الاكتشاف). */
+        for (size_t i = 0; i < ndirs2; i++) {
+            for (size_t j = i + 1; j < ndirs2; j++) {
+                if (b5_components_c(dirs[j]) > b5_components_c(dirs[i])) {
+                    char *t = dirs[i];
+                    dirs[i] = dirs[j];
+                    dirs[j] = t;
+                }
+            }
+        }
+        for (size_t i = 0; i < ndirs2 && removed < cap; i++) {
+            char *d = dirs[i];
+            size_t rl = strlen(dst_root);
+            char *rel = strncmp(d, dst_root, rl) == 0 && d[rl] == '/' ? d + rl + 1 : "";
+            int in_src = 0;
+            for (size_t j = 0; j < nsrc_dirs; j++) {
+                if (strcmp(src_dir_set[j], rel) == 0) { in_src = 1; break; }
+            }
+            if (in_src) continue;
+            if (b5_dir_empty_c(d) && rmdir(d) == 0) {
+                deleted++;
+                removed++;
+            }
+        }
+        b5_strs_free_c(dirs, ndirs2);
+    }
+    /* الطباعة. */
+    if (!o.quiet) {
+        for (size_t i = 0; i < nprogress; i++) {
+            printf("%s\n", progress_lines[i]);
+        }
+        if (o.verbose) {
+            char szbuf[64];
+            if (o.human) b5_human_size_c(bytes_total, szbuf, sizeof(szbuf));
+            else snprintf(szbuf, sizeof(szbuf), "%llu", bytes_total);
+            printf("منسوخ: %lld محدث: %lld متخطى: %lld بايتات: %s\n", copied, updated, skipped, szbuf);
+        }
+        fflush(stdout);
+    }
+    /* السجل. */
+    if (o.log && !o.dry_run) {
+        const char *fmt = o.log_format ? o.log_format : "{فعل} {ملف}";
+        char **log_lines = NULL;
+        size_t nlog = 0, caplog = 0;
+        for (size_t i = 0; i < changes.u.list->len; i++) {
+            NvValue ch = changes.u.list->items[i];
+            if (ch.tag != NV_DICT) continue;
+            int fi = nv_dict_find(ch.u.dict, "ملف");
+            int ai = nv_dict_find(ch.u.dict, "فعل");
+            int si = nv_dict_find(ch.u.dict, "حجم");
+            const char *f = fi >= 0 && ch.u.dict->entries[fi].val.tag == NV_STR ? ch.u.dict->entries[fi].val.u.str->data : "";
+            const char *a = ai >= 0 && ch.u.dict->entries[ai].val.tag == NV_STR ? ch.u.dict->entries[ai].val.u.str->data : "";
+            unsigned long long s = 0;
+            if (si >= 0 && ch.u.dict->entries[si].val.tag == NV_NUM) s = (unsigned long long)ch.u.dict->entries[si].val.u.num;
+            char szbuf[64];
+            if (o.human) b5_human_size_c(s, szbuf, sizeof(szbuf));
+            else snprintf(szbuf, sizeof(szbuf), "%llu", s);
+            char *l1 = b5_replace_all_c(fmt, "{ملف}", f);
+            char *l2 = b5_replace_all_c(l1, "{فعل}", a);
+            free(l1);
+            char *l3 = b5_replace_all_c(l2, "{حجم}", szbuf);
+            free(l2);
+            if (nlog >= caplog) {
+                size_t ncap = caplog == 0 ? 8 : caplog * 2;
+                char **grown = (char **)realloc(log_lines, ncap * sizeof(char *));
+                if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                log_lines = grown;
+                caplog = ncap;
+            }
+            log_lines[nlog++] = l3;
+        }
+        if (nlog > 0) {
+            char *fs = nv_resolve_path(o.log, line, col);
+            char *par = b5_parent_c(fs);
+            if (par) {
+                b5_mkdir_all_c(par);
+                free(par);
+            }
+            FILE *lf = fopen(fs, "wb");
+            if (lf) {
+                for (size_t i = 0; i < nlog; i++) {
+                    fwrite(log_lines[i], 1, strlen(log_lines[i]), lf);
+                    fputc('\n', lf);
+                }
+                fclose(lf);
+            }
+            free(fs);
+        }
+        b5_strs_free_c(log_lines, nlog);
+    }
+    NvValue out = nv_dict_new();
+    nv_dict_set_raw(out.u.dict, "منسوخ", nv_num((double)copied));
+    nv_dict_set_raw(out.u.dict, "محدث", nv_num((double)updated));
+    nv_dict_set_raw(out.u.dict, "متخطى", nv_num((double)skipped));
+    nv_dict_set_raw(out.u.dict, "محذوف", nv_num((double)deleted));
+    nv_dict_set_raw(out.u.dict, "بايتات", nv_num((double)bytes_total));
+    if (timed_out) {
+        nv_dict_set_raw(out.u.dict, "مهلة", nv_bool(1));
+    }
+    if (o.verbose || o.change_details) {
+        nv_dict_set_raw(out.u.dict, "تغييرات", changes);
+    }
+    if (o.stats) {
+        NvValue st = nv_dict_new();
+        nv_dict_set_raw(st.u.dict, "ملفات_منسوخة", nv_num((double)copied));
+        nv_dict_set_raw(st.u.dict, "ملفات_محدثة", nv_num((double)updated));
+        nv_dict_set_raw(st.u.dict, "بايتات", nv_num((double)bytes_total));
+        nv_dict_set_raw(st.u.dict, "ملفات_متخطاة", nv_num((double)skipped));
+        nv_dict_set_raw(out.u.dict, "إحصاءات", st);
+    }
+    b5_strs_free_c(progress_lines, nprogress);
+    b5_strs_free_c(src_dir_set, nsrc_dirs);
+    b5_entry_list_free_c(&entries);
+    free(src_fs);
+    free(dst_fs);
+    free(dst_root);
+    free(src_base);
+    b5_meta_free_c(&src_meta);
+    if (exclude != o.exclude) b5_strs_free_c(exclude, nexclude);
+    b5_strs_free_c(extra_excl, nextra_excl);
+    b5_strs_free_c(from_list, nfrom_list);
+    b5_sync_free_c(&o);
+    return out;
+}
+
+void nv_std_b5sync_fill(NvDict *d) {
+    nv_std_add_fn(d, "زامن", b5_sync_fn);
+}
+
+/* END لينكس5-ملفات مزامنة C */
+
+/* BEGIN لينكس5-ملفات ضغط C */
+
+/* ضغط LZSS بإطار نيفا NVZ1 (مرآة b5_lzss_compress في Rust حرفيا). */
+static unsigned char *b5_lzss_compress_c(const unsigned char *raw, size_t raw_len, int level, size_t *out_len) {
+    size_t cap = raw_len + raw_len / 8 + 64;
+    unsigned char *out = (unsigned char *)malloc(cap ? cap : 64);
+    size_t n = 0;
+    /* احتياطي لنمو المخرج. */
+    /* (ماكرو محلي: ضمن سعة كافية.) */
+    size_t max_cand;
+    if (level <= 1) max_cand = 0;
+    else {
+        int sh = level < 12 ? level : 12;
+        max_cand = (size_t)1 << sh;
+        if (max_cand > 4096) max_cand = 4096;
+    }
+    out[n++] = 'N';
+    out[n++] = 'V';
+    out[n++] = 'Z';
+    out[n++] = '1';
+    out[n++] = 1;
+    uint32_t orig = (uint32_t)raw_len;
+    out[n++] = (unsigned char)((orig >> 24) & 0xFF);
+    out[n++] = (unsigned char)((orig >> 16) & 0xFF);
+    out[n++] = (unsigned char)((orig >> 8) & 0xFF);
+    out[n++] = (unsigned char)(orig & 0xFF);
+    uint32_t crc = b5_crc32_c(raw, raw_len);
+    out[n++] = (unsigned char)((crc >> 24) & 0xFF);
+    out[n++] = (unsigned char)((crc >> 16) & 0xFF);
+    out[n++] = (unsigned char)((crc >> 8) & 0xFF);
+    out[n++] = (unsigned char)(crc & 0xFF);
+    size_t i = 0;
+    while (i < raw_len) {
+        size_t ctrl_pos = n;
+        if (n + 20 >= cap) {
+            cap = cap * 2 + 64;
+            out = (unsigned char *)realloc(out, cap);
+        }
+        out[n++] = 0;
+        unsigned char ctrl = 0;
+        for (int bit = 0; bit < 8; bit++) {
+            if (i >= raw_len) break;
+            size_t best_len = 0;
+            size_t best_off = 0;
+            if (max_cand > 0 && i + 3 <= raw_len) {
+                size_t start = i > 4096 ? i - 4096 : 0;
+                size_t checked = 0;
+                size_t j = i;
+                while (j > start && checked < max_cand) {
+                    j--;
+                    checked++;
+                    if (raw[j] != raw[i]) continue;
+                    size_t l = 1;
+                    while (l < 18 && i + l < raw_len && raw[j + l] == raw[i + l]) l++;
+                    if (l >= 3 && l > best_len) {
+                        best_len = l;
+                        best_off = i - j;
+                        if (l == 18) break;
+                    }
+                }
+            }
+            if (best_len >= 3) {
+                ctrl |= (unsigned char)(1 << bit);
+                unsigned int off = (unsigned int)best_off;
+                unsigned int len = (unsigned int)best_len;
+                if (n + 2 >= cap) {
+                    cap = cap * 2 + 64;
+                    out = (unsigned char *)realloc(out, cap);
+                }
+                out[n++] = (unsigned char)(off >> 4);
+                out[n++] = (unsigned char)(((off & 0xF) << 4) | (len - 3));
+                i += best_len;
+            } else {
+                if (n + 1 >= cap) {
+                    cap = cap * 2 + 64;
+                    out = (unsigned char *)realloc(out, cap);
+                }
+                out[n++] = raw[i];
+                i += 1;
+            }
+        }
+        out[ctrl_pos] = ctrl;
+    }
+    *out_len = n;
+    return out;
+}
+
+/* فك إطار نيفا (مرآة b5_lzss_decompress — NULL عند التلف). */
+static unsigned char *b5_lzss_decompress_c(const unsigned char *data, size_t len, size_t *out_len) {
+    *out_len = 0;
+    if (len < 13 || memcmp(data, "NVZ1", 4) != 0 || data[4] != 1) return NULL;
+    size_t orig_len = ((size_t)data[5] << 24) | ((size_t)data[6] << 16) | ((size_t)data[7] << 8) | (size_t)data[8];
+    uint32_t want_crc = ((uint32_t)data[9] << 24) | ((uint32_t)data[10] << 16) | ((uint32_t)data[11] << 8) | (uint32_t)data[12];
+    unsigned char *out = (unsigned char *)malloc(orig_len ? orig_len : 1);
+    size_t olen = 0;
+    size_t p = 13;
+    while (p < len && olen < orig_len) {
+        unsigned char ctrl = data[p];
+        p += 1;
+        for (int bit = 0; bit < 8; bit++) {
+            if (olen >= orig_len || p >= len) break;
+            if (ctrl & (1 << bit)) {
+                if (p + 1 >= len) {
+                    free(out);
+                    return NULL;
+                }
+                size_t off = (((size_t)data[p] << 4) | ((size_t)data[p + 1] >> 4));
+                size_t mlen = ((size_t)(data[p + 1] & 0xF)) + 3;
+                p += 2;
+                if (off == 0 || off > olen) {
+                    free(out);
+                    return NULL;
+                }
+                size_t start = olen - off;
+                for (size_t k = 0; k < mlen; k++) {
+                    out[olen++] = out[start + k];
+                }
+            } else {
+                out[olen++] = data[p];
+                p += 1;
+            }
+        }
+    }
+    if (olen != orig_len || b5_crc32_c(out, olen) != want_crc) {
+        free(out);
+        return NULL;
+    }
+    *out_len = olen;
+    return out;
+}
+
+/* اضغط بايتات (للمزامنة وللدوال العامة) — خطأ عند تجاوز 4 غيغابايت. */
+static unsigned char *b5_compress_bytes_c(const unsigned char *data, size_t len, int level, size_t *out_len, int line, int col) {
+    if (len > 0xFFFFFFFFu) {
+        nv_error(NV_ERR_RUNTIME, "الدالة مزامنة.زامن الملف أكبر من 4 غيغابايت", line, col);
+    }
+    int lv = level < 1 ? 1 : (level > 19 ? 19 : level);
+    return b5_lzss_compress_c(data, len, lv, out_len);
+}
+
+/* فك بايتات (للمزامنة وللدوال العامة) — خطأ عند التلف. */
+static unsigned char *b5_decompress_bytes_c(const unsigned char *data, size_t len, size_t *out_len, int line, int col) {
+    unsigned char *out = b5_lzss_decompress_c(data, len, out_len);
+    if (!out) {
+        nv_error(NV_ERR_RUNTIME, "الدالة مزامنة.زامن بيانات مضغوطة تالفة أو ليست بإطار نيفا", line, col);
+    }
+    return out;
+}
+
+/* مستوى الضغط من الخيارات (عدد 1..19 أو أقصى/أسرع)؛ الافتراضي 3. */
+static int b5_opt_level_c(const char *display, NvDict *pairs, int line, int col) {
+    if (!pairs) return 3;
+    int i = nv_dict_find(pairs, "مستوى");
+    if (i < 0) return 3;
+    NvValue v = pairs->entries[i].val;
+    if (v.tag == NV_NUM) {
+        long long n = (long long)v.u.num;
+        if (n < 1) n = 1;
+        if (n > 19) n = 19;
+        return (int)n;
+    }
+    if (v.tag == NV_STR) {
+        if (strcmp(v.u.str->data, "أقصى") == 0) return 19;
+        if (strcmp(v.u.str->data, "أسرع") == 0) return 1;
+    }
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مستوى الضغط عدد 1..19 أو أقصى أو أسرع", display);
+    return 3;
+}
+
+/* مستوى من قيمة موضعية (عدد أو أقصى/أسرع). */
+static int b5_level_value_c(const char *display, NvValue v, int line, int col) {
+    if (v.tag == NV_NUM) {
+        long long n = (long long)v.u.num;
+        if (n < 1) n = 1;
+        if (n > 19) n = 19;
+        return (int)n;
+    }
+    if (v.tag == NV_STR) {
+        if (strcmp(v.u.str->data, "أقصى") == 0) return 19;
+        if (strcmp(v.u.str->data, "أسرع") == 0) return 1;
+    }
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مستوى الضغط عدد 1..19 أو أقصى أو أسرع", display);
+    return 3;
+}
+
+static const char *B5_COMPRESS_FILE_KEYS_C[] = {
+    "مستوى", "أبق_الأصل", "احذف_الأصل", "إلى_المخرج", "مخرج", "كتابة_فوق", "مفصل", "صامت",
+};
+
+/* هدف افتراضي لضغط ملف (لاحقة .ضغط) أو فكه. */
+static char *b5_compress_target_c(const char *src_fs, int compress) {
+    if (compress) {
+        size_t n = strlen(src_fs) + 16;
+        char *out = (char *)malloc(n);
+        snprintf(out, n, "%s.ضغط", src_fs);
+        return out;
+    }
+    const char *suf = ".ضغط";
+    size_t sl = strlen(src_fs);
+    size_t fl = strlen(suf);
+    if (sl >= fl && strcmp(src_fs + sl - fl, suf) == 0) {
+        return j14_strndup(src_fs, sl - fl);
+    }
+    size_t n = strlen(src_fs) + 16;
+    char *out = (char *)malloc(n);
+    snprintf(out, n, "%s.مفكوك", src_fs);
+    return out;
+}
+
+/* ضغط.اضغط(بايتات، مستوى؟/خيارات؟). */
+static NvValue b5_compress_bytes_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "ضغط.اضغط";
+    if (nargs < 1 || nargs > 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", DISPLAY, nargs);
+    }
+    size_t raw_len = 0;
+    unsigned char *raw = b5_need_bytes_c(DISPLAY, args[0], &raw_len, line, col);
+    int level = 3;
+    if (nargs == 2) {
+        if (args[1].tag == NV_DICT) {
+            static const char *KEYS[] = {"مستوى"};
+            b5_no_unknown_c(DISPLAY, args[1].u.dict, KEYS, 1, line, col);
+            level = b5_opt_level_c(DISPLAY, args[1].u.dict, line, col);
+        } else {
+            level = b5_level_value_c(DISPLAY, args[1], line, col);
+        }
+    }
+    if (raw_len > 0xFFFFFFFFu) {
+        free(raw);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف أكبر من 4 غيغابايت", DISPLAY);
+    }
+    size_t comp_len = 0;
+    unsigned char *comp = b5_lzss_compress_c(raw, raw_len, level, &comp_len);
+    NvValue out = b5_bytes_value_c(comp, comp_len);
+    free(raw);
+    free(comp);
+    return out;
+}
+
+/* ضغط.فك_ضغط(بايتات). */
+static NvValue b5_decompress_bytes_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "ضغط.فك_ضغط";
+    if (nargs != 1) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", DISPLAY, nargs);
+    }
+    size_t data_len = 0;
+    unsigned char *data = b5_need_bytes_c(DISPLAY, args[0], &data_len, line, col);
+    size_t out_len = 0;
+    unsigned char *raw = b5_lzss_decompress_c(data, data_len, &out_len);
+    if (!raw) {
+        free(data);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s بيانات مضغوطة تالفة أو ليست بإطار نيفا", DISPLAY);
+    }
+    NvValue out = b5_bytes_value_c(raw, out_len);
+    free(data);
+    free(raw);
+    return out;
+}
+
+/* قراءة خيارات ملف ضغط مشتركة. */
+typedef struct {
+    int level, keep, del, to_out, overwrite, verbose, quiet;
+    char *target;
+} B5CompFileOptsC;
+
+static void b5_comp_file_opts_c(const char *display, NvValue *args, int nargs, int opt_idx, const char *src_s, char **target_s, B5CompFileOptsC *o, int line, int col) {
+    (void)src_s;
+    memset(o, 0, sizeof(*o));
+    NvDict *pairs = NULL;
+    if (nargs > opt_idx) {
+        pairs = b5_opt_dict_c(args, nargs, opt_idx, display, line, col);
+    }
+    b5_no_unknown_c(display, pairs, B5_COMPRESS_FILE_KEYS_C, 8, line, col);
+    o->level = b5_opt_level_c(display, pairs, line, col);
+    o->keep = b5_opt_bool_c(pairs, "أبق_الأصل", 1, display, line, col);
+    o->del = b5_opt_bool_c(pairs, "احذف_الأصل", 0, display, line, col);
+    o->to_out = b5_opt_bool_c(pairs, "إلى_المخرج", 0, display, line, col);
+    o->overwrite = b5_opt_bool_c(pairs, "كتابة_فوق", 0, display, line, col);
+    o->verbose = b5_opt_bool_c(pairs, "مفصل", 0, display, line, col);
+    o->quiet = b5_opt_bool_c(pairs, "صامت", 0, display, line, col);
+    o->target = NULL;
+    if (!*target_s) {
+        const char *t = b5_opt_str_c(pairs, "مخرج", display, line, col);
+        if (t) *target_s = strdup(t);
+    }
+}
+
+/* ضغط.اضغط_ملف(مصدر، هدف؟، خيارات؟). */
+static NvValue b5_compress_file_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "ضغط.اضغط_ملف";
+    if (nargs < 1 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا إلى ثلاثة لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *src_s = nv_std_need_string(DISPLAY, args[0], line, col);
+    char *target_s = NULL;
+    int opt_idx = 1;
+    if (nargs >= 2 && args[1].tag == NV_STR) {
+        target_s = strdup(args[1].u.str->data);
+        opt_idx = 2;
+    }
+    B5CompFileOptsC o;
+    b5_comp_file_opts_c(DISPLAY, args, nargs, opt_idx, src_s, &target_s, &o, line, col);
+    char *src_fs = nv_resolve_path(src_s, line, col);
+    size_t raw_len = 0;
+    char *raw = b5_read_file_c(src_fs, &raw_len);
+    if (!raw) {
+        free(src_fs);
+        free(target_s);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف غير موجود: %s", DISPLAY, src_s);
+    }
+    if (raw_len > 0xFFFFFFFFu) {
+        free(raw);
+        free(src_fs);
+        free(target_s);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف أكبر من 4 غيغابايت", DISPLAY);
+    }
+    size_t comp_len = 0;
+    unsigned char *comp = b5_lzss_compress_c((unsigned char *)raw, raw_len, o.level, &comp_len);
+    if (o.to_out) {
+        NvValue out = b5_bytes_value_c(comp, comp_len);
+        free(raw);
+        free(comp);
+        free(src_fs);
+        free(target_s);
+        return out;
+    }
+    char *dst_fs = target_s ? nv_resolve_path(target_s, line, col) : b5_compress_target_c(src_fs, 1);
+    struct stat st;
+    if (stat(dst_fs, &st) == 0 && !o.overwrite) {
+        free(raw);
+        free(comp);
+        free(src_fs);
+        free(dst_fs);
+        free(target_s);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الهدف موجود: %s (استخدم كتابة_فوق)", DISPLAY, dst_fs);
+    }
+    char *par = b5_parent_c(dst_fs);
+    if (par) {
+        b5_mkdir_all_c(par);
+        free(par);
+    }
+    FILE *f = fopen(dst_fs, "wb");
+    if (!f || (comp_len && fwrite(comp, 1, comp_len, f) != comp_len)) {
+        if (f) fclose(f);
+        free(raw);
+        free(comp);
+        free(src_fs);
+        free(dst_fs);
+        free(target_s);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر الكتابة في %s", DISPLAY, dst_fs);
+    }
+    if (f) fclose(f);
+    if (o.del || !o.keep) {
+        remove(src_fs);
+    }
+    long long ratio = raw_len == 0 ? 0 : (long long)(comp_len * 100 / raw_len);
+    if (o.verbose && !o.quiet) {
+        printf("ضغط %s ← %s (%lld\xd9\xaa)\n", dst_fs, src_s, ratio);
+        fflush(stdout);
+    }
+    NvValue out = nv_dict_new();
+    nv_dict_set_raw(out.u.dict, "مصدر", nv_str_new(src_s, strlen(src_s)));
+    nv_dict_set_raw(out.u.dict, "هدف", nv_str_new(dst_fs, strlen(dst_fs)));
+    nv_dict_set_raw(out.u.dict, "حجم_أصلي", nv_num((double)raw_len));
+    nv_dict_set_raw(out.u.dict, "حجم_مضغوط", nv_num((double)comp_len));
+    nv_dict_set_raw(out.u.dict, "نسبة", nv_num((double)ratio));
+    free(raw);
+    free(comp);
+    free(src_fs);
+    free(dst_fs);
+    free(target_s);
+    return out;
+}
+
+/* ضغط.فك_ضغط_ملف(مصدر، هدف؟، خيارات؟). */
+static NvValue b5_decompress_file_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "ضغط.فك_ضغط_ملف";
+    if (nargs < 1 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا إلى ثلاثة لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *src_s = nv_std_need_string(DISPLAY, args[0], line, col);
+    char *target_s = NULL;
+    int opt_idx = 1;
+    if (nargs >= 2 && args[1].tag == NV_STR) {
+        target_s = strdup(args[1].u.str->data);
+        opt_idx = 2;
+    }
+    B5CompFileOptsC o;
+    b5_comp_file_opts_c(DISPLAY, args, nargs, opt_idx, src_s, &target_s, &o, line, col);
+    char *src_fs = nv_resolve_path(src_s, line, col);
+    size_t data_len = 0;
+    char *data = b5_read_file_c(src_fs, &data_len);
+    if (!data) {
+        free(src_fs);
+        free(target_s);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف غير موجود: %s", DISPLAY, src_s);
+    }
+    size_t raw_len = 0;
+    unsigned char *raw = b5_lzss_decompress_c((unsigned char *)data, data_len, &raw_len);
+    if (!raw) {
+        free(data);
+        free(src_fs);
+        free(target_s);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s بيانات مضغوطة تالفة أو ليست بإطار نيفا", DISPLAY);
+    }
+    if (o.to_out) {
+        NvValue out = b5_bytes_value_c(raw, raw_len);
+        free(data);
+        free(raw);
+        free(src_fs);
+        free(target_s);
+        return out;
+    }
+    char *dst_fs = target_s ? nv_resolve_path(target_s, line, col) : b5_compress_target_c(src_fs, 0);
+    struct stat st;
+    if (stat(dst_fs, &st) == 0 && !o.overwrite) {
+        free(data);
+        free(raw);
+        free(src_fs);
+        free(dst_fs);
+        free(target_s);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الهدف موجود: %s (استخدم كتابة_فوق)", DISPLAY, dst_fs);
+    }
+    char *par = b5_parent_c(dst_fs);
+    if (par) {
+        b5_mkdir_all_c(par);
+        free(par);
+    }
+    FILE *f = fopen(dst_fs, "wb");
+    if (!f || (raw_len && fwrite(raw, 1, raw_len, f) != raw_len)) {
+        if (f) fclose(f);
+        free(data);
+        free(raw);
+        free(src_fs);
+        free(dst_fs);
+        free(target_s);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر الكتابة في %s", DISPLAY, dst_fs);
+    }
+    if (f) fclose(f);
+    if (o.del || !o.keep) {
+        remove(src_fs);
+    }
+    if (o.verbose && !o.quiet) {
+        printf("فك ضغط %s ← %s\n", dst_fs, src_s);
+        fflush(stdout);
+    }
+    NvValue out = nv_dict_new();
+    nv_dict_set_raw(out.u.dict, "مصدر", nv_str_new(src_s, strlen(src_s)));
+    nv_dict_set_raw(out.u.dict, "هدف", nv_str_new(dst_fs, strlen(dst_fs)));
+    nv_dict_set_raw(out.u.dict, "حجم_أصلي", nv_num((double)raw_len));
+    nv_dict_set_raw(out.u.dict, "حجم_مضغوط", nv_num((double)data_len));
+    free(data);
+    free(raw);
+    free(src_fs);
+    free(dst_fs);
+    free(target_s);
+    return out;
+}
+
+/* ضغط.اختبر(مسار_أو_بايتات) → منطقي. */
+static NvValue b5_compress_test_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "ضغط.اختبر";
+    if (nargs != 1) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", DISPLAY, nargs);
+    }
+    int ok = 0;
+    if (args[0].tag == NV_LIST) {
+        size_t len = 0;
+        unsigned char *data = b5_need_bytes_c(DISPLAY, args[0], &len, line, col);
+        size_t out_len = 0;
+        unsigned char *raw = b5_lzss_decompress_c(data, len, &out_len);
+        ok = raw != NULL;
+        free(raw);
+        free(data);
+    } else if (args[0].tag == NV_STR) {
+        const char *s = args[0].u.str->data;
+        char *fs = nv_resolve_path(s, line, col);
+        size_t len = 0;
+        char *data = b5_read_file_c(fs, &len);
+        free(fs);
+        if (!data) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف غير موجود: %s", DISPLAY, s);
+        }
+        size_t out_len = 0;
+        unsigned char *raw = b5_lzss_decompress_c((unsigned char *)data, len, &out_len);
+        ok = raw != NULL;
+        free(raw);
+        free(data);
+    } else {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s المعامل مسار أو بايتات", DISPLAY);
+    }
+    return nv_bool(ok);
+}
+
+void nv_std_b5compress_fill(NvDict *d) {
+    nv_std_add_fn(d, "اضغط", b5_compress_bytes_fn);
+    nv_std_add_fn(d, "فك_ضغط", b5_decompress_bytes_fn);
+    nv_std_add_fn(d, "اضغط_ملف", b5_compress_file_fn);
+    nv_std_add_fn(d, "فك_ضغط_ملف", b5_decompress_file_fn);
+    nv_std_add_fn(d, "اختبر", b5_compress_test_fn);
+}
+
+/* END لينكس5-ملفات ضغط C */
+
+/* BEGIN لينكس5-ملفات أرشيف C */
+/* مرآة b5_tar_* في Rust حرفيا (بصيغة ustar الحقيقية +
+   GNU longname)، مع إصلاحَي جمع المجلد المثبتين في
+   Rust أثناء C9 (مسار ملف الابن، ورابطية المجلد نفسه). */
+
+typedef struct {
+    char *name;
+    int kind; /* B5_KIND_* */
+    unsigned long long size;
+    long long mtime;
+    unsigned int mode;
+    unsigned int uid, gid;
+    char *uname, *gname;
+    char *linkname;
+    unsigned char *data;
+    size_t data_len;
+} B5TarEntryC;
+
+typedef struct {
+    B5TarEntryC *items;
+    size_t len, cap;
+} B5TarListC;
+
+static void b5_tar_entry_free_c(B5TarEntryC *e) {
+    free(e->name);
+    free(e->uname);
+    free(e->gname);
+    free(e->linkname);
+    free(e->data);
+    e->name = e->uname = e->gname = e->linkname = NULL;
+    e->data = NULL;
+}
+
+static void b5_tar_list_free_c(B5TarListC *l) {
+    if (!l) return;
+    for (size_t i = 0; i < l->len; i++) b5_tar_entry_free_c(&l->items[i]);
+    free(l->items);
+    l->items = NULL;
+    l->len = l->cap = 0;
+}
+
+/* دفع بأخذ الملكية (الحقول المملوكة تنتقل للقائمة). */
+static void b5_tar_list_push_c(B5TarListC *l, B5TarEntryC *e, int line, int col) {
+    if (l->len >= l->cap) {
+        size_t ncap = l->cap == 0 ? 8 : l->cap * 2;
+        B5TarEntryC *grown = (B5TarEntryC *)realloc(l->items, ncap * sizeof(B5TarEntryC));
+        if (!grown) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+        l->items = grown;
+        l->cap = ncap;
+    }
+    l->items[l->len++] = *e;
+}
+
+/* ثماني بأصفار بادئة + NUL (العرض أدنى لا أقصى — مثل Rust). */
+static size_t b5_tar_octal_c(char *dst, unsigned long long v, int width) {
+    int n = snprintf(dst, 32, "%0*llo", width, v);
+    if (n < 0) n = 0;
+    dst[n] = '\0';
+    return (size_t)n + 1;
+}
+
+static void b5_tar_put_c(unsigned char *h, size_t off, const char *s, size_t n) {
+    size_t room = 512 - off;
+    if (n > room) n = room;
+    memcpy(h + off, s, n);
+}
+
+static void b5_tar_header_c(B5TarEntryC *e, const char *name, const char *linkname, unsigned char h[512]) {
+    memset(h, 0, 512);
+    char tmp[32];
+    b5_tar_put_c(h, 0, name, strlen(name));
+    size_t n = b5_tar_octal_c(tmp, e->mode, 7);
+    b5_tar_put_c(h, 100, tmp, n);
+    n = b5_tar_octal_c(tmp, e->uid, 7);
+    b5_tar_put_c(h, 108, tmp, n);
+    n = b5_tar_octal_c(tmp, e->gid, 7);
+    b5_tar_put_c(h, 116, tmp, n);
+    n = b5_tar_octal_c(tmp, e->size, 11);
+    b5_tar_put_c(h, 124, tmp, n);
+    n = b5_tar_octal_c(tmp, e->mtime < 0 ? 0 : (unsigned long long)e->mtime, 11);
+    b5_tar_put_c(h, 136, tmp, n);
+    memset(h + 148, ' ', 8);
+    h[156] = e->kind == B5_KIND_DIR ? '5' : (e->kind == B5_KIND_LINK ? '2' : '0');
+    b5_tar_put_c(h, 157, linkname, strlen(linkname));
+    b5_tar_put_c(h, 257, "ustar", 6);
+    b5_tar_put_c(h, 263, "00", 2);
+    b5_tar_put_c(h, 265, e->uname ? e->uname : "", e->uname ? strlen(e->uname) : 0);
+    b5_tar_put_c(h, 297, e->gname ? e->gname : "", e->gname ? strlen(e->gname) : 0);
+    n = b5_tar_octal_c(tmp, 0, 7);
+    b5_tar_put_c(h, 329, tmp, n);
+    n = b5_tar_octal_c(tmp, 0, 7);
+    b5_tar_put_c(h, 337, tmp, n);
+    unsigned int sum = 0;
+    for (int i = 0; i < 512; i++) sum += h[i];
+    n = (size_t)snprintf(tmp, 32, "%06o", sum);
+    tmp[n] = '\0';
+    tmp[n + 1] = ' ';
+    b5_tar_put_c(h, 148, tmp, n + 2);
+}
+
+/* كتابة أرشيف كامل (ترويسات + بيانات + كتلتا صفر). */
+static unsigned char *b5_tar_write_c(B5TarListC *entries, size_t *len_out) {
+    J14Buf out;
+    j14_buf_init(&out);
+    for (size_t i = 0; i < entries->len; i++) {
+        B5TarEntryC *e = &entries->items[i];
+        size_t nl = strlen(e->name);
+        if (nl > 100) {
+            B5TarEntryC le;
+            memset(&le, 0, sizeof(le));
+            le.name = (char *)"././@LongLink";
+            le.kind = B5_KIND_FILE;
+            le.size = nl + 1;
+            le.mtime = 0;
+            le.mode = 0644;
+            le.uname = (char *)"";
+            le.gname = (char *)"";
+            le.linkname = (char *)"";
+            unsigned char h[512];
+            /* إدخال الاسم الطويل يبقى نوع '0' بلا رابط (كما في Rust)؛ */
+            /* تغيير النوع بعد حساب المجموع يبطل المجموع الاختباري. */
+            b5_tar_header_c(&le, "././@LongLink", "", h);
+            j14_buf_addn(&out, (const char *)h, 512);
+            j14_buf_addn(&out, e->name, nl);
+            j14_buf_addc(&out, '\0');
+            while (out.len % 512 != 0) j14_buf_addc(&out, '\0');
+        }
+        size_t ll = strlen(e->linkname);
+        if (ll > 100) {
+            B5TarEntryC le;
+            memset(&le, 0, sizeof(le));
+            le.name = (char *)"././@LongLink";
+            le.kind = B5_KIND_FILE;
+            le.size = ll + 1;
+            le.mtime = 0;
+            le.mode = 0644;
+            le.uname = (char *)"";
+            le.gname = (char *)"";
+            le.linkname = (char *)"";
+            unsigned char h[512];
+            b5_tar_header_c(&le, "././@LongLink", "", h);
+            h[156] = 'K';
+            /* أعد حساب المجموع بعد تغيير النوع (كما في Rust). */
+            {
+                char tmp[32];
+                memset(h + 148, ' ', 8);
+                unsigned int sum = 0;
+                for (int k = 0; k < 512; k++) sum += h[k];
+                size_t n = (size_t)snprintf(tmp, 32, "%06o", sum);
+                tmp[n] = '\0';
+                tmp[n + 1] = ' ';
+                b5_tar_put_c(h, 148, tmp, n + 2);
+            }
+            j14_buf_addn(&out, (const char *)h, 512);
+            j14_buf_addn(&out, e->linkname, ll);
+            j14_buf_addc(&out, '\0');
+            while (out.len % 512 != 0) j14_buf_addc(&out, '\0');
+        }
+        unsigned char h[512];
+        b5_tar_header_c(e, e->name, e->linkname, h);
+        j14_buf_addn(&out, (const char *)h, 512);
+        if (e->kind == B5_KIND_FILE && e->data_len > 0) {
+            j14_buf_addn(&out, (const char *)e->data, e->data_len);
+            while (out.len % 512 != 0) j14_buf_addc(&out, '\0');
+        }
+    }
+    for (int i = 0; i < 1024; i++) j14_buf_addc(&out, '\0');
+    *len_out = out.len;
+    return (unsigned char *)out.data;
+}
+
+/* ---------- تحليل tar ---------- */
+
+/* ثماني من حقل (تخطي فراغات/NUL البادئة؛ 1 نجاح). */
+static int b5_tar_parse_octal_c(const unsigned char *b, size_t n, unsigned long long *out) {
+    unsigned long long acc = 0;
+    int any = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = b[i];
+        if (c == 0 || c == ' ') {
+            if (any) break;
+            continue;
+        }
+        if (c < '0' || c > '7') return 0;
+        if (acc > (0xFFFFFFFFFFFFFFFFull - (unsigned long long)(c - '0')) / 8) return 0;
+        acc = acc * 8 + (unsigned long long)(c - '0');
+        any = 1;
+    }
+    *out = acc;
+    return 1;
+}
+
+/* حقل نصي حتى أول NUL (بلا NUL ← الحقل كاملا). */
+static char *b5_tar_field_c(const unsigned char *b, size_t n) {
+    size_t len = 0;
+    while (len < n && b[len] != 0) len++;
+    return j14_strndup((const char *)b, len);
+}
+
+/* تحليل أرشيف (1 نجاح؛ 0 فشل مع رسالة داخلية مملوكة في *err_out). */
+static int b5_tar_parse_c(const unsigned char *data, size_t len, B5TarListC *out, char **err_out, int line, int col) {
+    *err_out = NULL;
+    if (len % 512 != 0) {
+        *err_out = strdup("الأرشيف مقطوع (ليس مضاعف 512)");
+        return 0;
+    }
+    size_t pos = 0;
+    char *long_name = NULL;
+    char *long_link = NULL;
+    while (1) {
+        if (pos + 512 > len) break;
+        const unsigned char *h = data + pos;
+        int all_zero = 1;
+        for (int i = 0; i < 512; i++) {
+            if (h[i] != 0) { all_zero = 0; break; }
+        }
+        if (all_zero) break;
+        unsigned long long stored = 0;
+        if (!b5_tar_parse_octal_c(h + 148, 8, &stored)) stored = 0xFFFFFFFFFFFFFFFFull;
+        unsigned int sum_u = 0;
+        int sum_s = 0;
+        for (int i = 0; i < 512; i++) {
+            unsigned char v = (i >= 148 && i < 156) ? ' ' : h[i];
+            sum_u += v;
+            sum_s += (signed char)v;
+        }
+        if ((unsigned int)stored != sum_u && (int)stored != sum_s) {
+            free(long_name);
+            free(long_link);
+            *err_out = strdup("مجموع اختباري خاطئ في ترويسة tar");
+            return 0;
+        }
+        char *name_field = b5_tar_field_c(h, 100);
+        char *prefix = b5_tar_field_c(h + 345, 155);
+        char *name;
+        if (prefix[0]) {
+            size_t a = strlen(prefix), b = strlen(name_field);
+            name = (char *)malloc(a + 1 + b + 1);
+            memcpy(name, prefix, a);
+            name[a] = '/';
+            memcpy(name + a + 1, name_field, b);
+            name[a + 1 + b] = '\0';
+            free(prefix);
+            free(name_field);
+        } else {
+            free(prefix);
+            name = name_field;
+        }
+        unsigned long long mode = 0, uid = 0, gid = 0, size = 0, mtime = 0;
+        if (!b5_tar_parse_octal_c(h + 100, 8, &mode)) {
+            free(name); free(long_name); free(long_link);
+            *err_out = strdup("نمط غير ثماني في ترويسة tar");
+            return 0;
+        }
+        if (!b5_tar_parse_octal_c(h + 108, 8, &uid)) {
+            free(name); free(long_name); free(long_link);
+            *err_out = strdup("مالك غير ثماني في ترويسة tar");
+            return 0;
+        }
+        if (!b5_tar_parse_octal_c(h + 116, 8, &gid)) {
+            free(name); free(long_name); free(long_link);
+            *err_out = strdup("مجموعة غير ثمانية في ترويسة tar");
+            return 0;
+        }
+        if (!b5_tar_parse_octal_c(h + 124, 12, &size)) {
+            free(name); free(long_name); free(long_link);
+            *err_out = strdup("حجم غير ثماني في ترويسة tar");
+            return 0;
+        }
+        if (!b5_tar_parse_octal_c(h + 136, 12, &mtime)) {
+            free(name); free(long_name); free(long_link);
+            *err_out = strdup("وقت غير ثماني في ترويسة tar");
+            return 0;
+        }
+        unsigned char flag = h[156];
+        char *linkname_field = b5_tar_field_c(h + 157, 100);
+        char *uname = b5_tar_field_c(h + 265, 32);
+        char *gname = b5_tar_field_c(h + 297, 32);
+        pos += 512;
+        if (flag == 'L' || flag == 'K') {
+            size_t need = (size_t)size;
+            if (pos + need > len) {
+                free(name); free(linkname_field); free(uname); free(gname);
+                free(long_name); free(long_link);
+                *err_out = strdup(flag == 'L' ? "اسم طويل مقطوع في tar" : "رابط طويل مقطوع في tar");
+                return 0;
+            }
+            char *raw = b5_tar_field_c(data + pos, need);
+            if (flag == 'L') {
+                free(long_name);
+                long_name = raw;
+            } else {
+                free(long_link);
+                long_link = raw;
+            }
+            pos += ((need + 511) / 512) * 512;
+            free(name);
+            free(linkname_field);
+            free(uname);
+            free(gname);
+            continue;
+        }
+        if (flag == 'x' || flag == 'g') {
+            size_t need = (size_t)size;
+            if (pos + need > len) {
+                free(name); free(linkname_field); free(uname); free(gname);
+                free(long_name); free(long_link);
+                *err_out = strdup("بيانات pax مقطوعة في tar");
+                return 0;
+            }
+            pos += ((need + 511) / 512) * 512;
+            free(name);
+            free(linkname_field);
+            free(uname);
+            free(gname);
+            continue;
+        }
+        char *linkname;
+        if (long_link) {
+            free(linkname_field);
+            linkname = long_link;
+            long_link = NULL;
+        } else {
+            linkname = linkname_field;
+        }
+        if (long_name) {
+            free(name);
+            name = long_name;
+            long_name = NULL;
+        }
+        int kind;
+        if (flag == '0' || flag == 0) kind = B5_KIND_FILE;
+        else if (flag == '5') kind = B5_KIND_DIR;
+        else if (flag == '2') kind = B5_KIND_LINK;
+        else {
+            char msg[128];
+            snprintf(msg, sizeof(msg), "نوع إدخال tar غير مدعوم: %c", flag);
+            free(name); free(linkname); free(uname); free(gname);
+            free(long_name); free(long_link);
+            *err_out = strdup(msg);
+            return 0;
+        }
+        size_t need = (size_t)size;
+        if (pos + need > len) {
+            free(name); free(linkname); free(uname); free(gname);
+            free(long_name); free(long_link);
+            *err_out = strdup("بيانات إدخال مقطوعة في tar");
+            return 0;
+        }
+        B5TarEntryC e;
+        memset(&e, 0, sizeof(e));
+        e.name = name;
+        e.kind = kind;
+        e.size = size;
+        e.mtime = (long long)mtime;
+        e.mode = (unsigned int)mode;
+        e.uid = (unsigned int)uid;
+        e.gid = (unsigned int)gid;
+        e.uname = uname;
+        e.gname = gname;
+        e.linkname = linkname;
+        if (kind == B5_KIND_FILE && need > 0) {
+            e.data = (unsigned char *)malloc(need);
+            memcpy(e.data, data + pos, need);
+            e.data_len = need;
+        }
+        pos += ((need + 511) / 512) * 512;
+        b5_tar_list_push_c(out, &e, line, col);
+    }
+    free(long_name);
+    free(long_link);
+    return 1;
+}
+
+/* قراءة ملف خام (مجلد ← غير موجود مثل Rust)؛ بايتات مملوكة أو NULL وطول 0. */
+static unsigned char *b5_tar_read_raw_c(const char *fs, size_t *len_out, int line, int col) {
+    (void)line;
+    (void)col;
+    *len_out = 0;
+    struct stat st;
+    if (stat(fs, &st) != 0) return NULL;
+    if (S_ISDIR(st.st_mode)) return NULL;
+    FILE *fp = fopen(fs, "rb");
+    if (!fp) return NULL;
+    unsigned char *buf = NULL;
+    size_t len = 0, cap = 0;
+    for (;;) {
+        unsigned char chunk[8192];
+        size_t m = fread(chunk, 1, sizeof(chunk), fp);
+        if (m == 0) break;
+        if (len + m + 1 > cap) {
+            size_t ncap = cap == 0 ? 8192 : cap * 2;
+            while (ncap < len + m + 1) ncap *= 2;
+            unsigned char *grown = (unsigned char *)realloc(buf, ncap);
+            if (!grown) {
+                free(buf);
+                fclose(fp);
+                nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+            }
+            buf = grown;
+            cap = ncap;
+        }
+        memcpy(buf + len, chunk, m);
+        len += m;
+    }
+    fclose(fp);
+    if (!buf) {
+        buf = (unsigned char *)malloc(1);
+        buf[0] = 0;
+    }
+    *len_out = len;
+    return buf;
+}
+
+/* قراءة أرشيف (مع كشف NVZ1 وفكه)؛ يعيد 1 و*compressed. */
+static int b5_tar_read_file_c(const char *fs, B5TarListC *out, int *compressed_out, const char *display, int line, int col) {
+    size_t raw_len = 0;
+    unsigned char *raw = b5_tar_read_raw_c(fs, &raw_len, line, col);
+    if (!raw) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الأرشيف غير موجود: %s", display, fs);
+    }
+    int compressed = (raw_len >= 4 && memcmp(raw, "NVZ1", 4) == 0);
+    unsigned char *data = raw;
+    size_t data_len = raw_len;
+    if (compressed) {
+        size_t dl = 0;
+        unsigned char *dec = b5_lzss_decompress_c(raw, raw_len, &dl);
+        if (!dec) {
+            free(raw);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s بيانات مضغوطة تالفة أو ليست بإطار نيفا", display);
+        }
+        free(raw);
+        data = dec;
+        data_len = dl;
+    }
+    char *err = NULL;
+    if (!b5_tar_parse_c(data, data_len, out, &err, line, col)) {
+        free(data);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s أرشيف تالف: %s", display, err ? err : "?");
+    }
+    free(data);
+    if (compressed_out) *compressed_out = compressed;
+    return 1;
+}
+
+/* اسم أرشيفي: \ ← / ثم تقليم ./ و/ البادئة تكرارا. */
+static char *b5_tar_arc_name_c(const char *inp) {
+    char *n = strdup(inp);
+    for (char *p = n; *p; p++) {
+        if (*p == '\\') *p = '/';
+    }
+    while (n[0] == '.' && n[1] == '/') memmove(n, n + 2, strlen(n + 2) + 1);
+    while (n[0] == '/') memmove(n, n + 1, strlen(n + 1) + 1);
+    return n;
+}
+
+/* ---------- الجمع من المدخلات ---------- */
+
+/* إدخال tar واحد من ميتا مسار (يقرأ محتوى الملف؛
+   والرابط كما هو أو متبوعا). */
+static B5TarEntryC b5_tar_entry_from_meta_c(const char *fs, const char *name, B5MetaC *m, int is_link, int links_as_links, const char *display, int line, int col) {
+    B5TarEntryC e;
+    memset(&e, 0, sizeof(e));
+    char *uname = b5_owner_name_c(m->uid, 0);
+    char *gname = b5_owner_name_c(m->gid, 1);
+    if (is_link && links_as_links) {
+        e.name = strdup(name);
+        e.kind = B5_KIND_LINK;
+        e.size = 0;
+        e.mtime = m->mtime;
+        e.mode = m->mode;
+        e.uid = m->uid;
+        e.gid = m->gid;
+        e.uname = uname;
+        e.gname = gname;
+        e.linkname = m->target ? strdup(m->target) : strdup("");
+        return e;
+    }
+    if (m->kind == B5_KIND_DIR) {
+        e.name = strdup(name);
+        size_t nl = strlen(e.name);
+        if (nl == 0 || e.name[nl - 1] != '/') {
+            e.name = (char *)realloc(e.name, nl + 2);
+            e.name[nl] = '/';
+            e.name[nl + 1] = '\0';
+        }
+        e.kind = B5_KIND_DIR;
+        e.size = 0;
+        e.mtime = m->mtime;
+        e.mode = m->mode;
+        e.uid = m->uid;
+        e.gid = m->gid;
+        e.uname = uname;
+        e.gname = gname;
+        e.linkname = strdup("");
+        return e;
+    }
+    if (m->kind != B5_KIND_FILE) {
+        free(uname);
+        free(gname);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s نوع ملف غير مدعوم في tar: %s", display, name);
+    }
+    if (m->size > 077777777777ull) {
+        free(uname);
+        free(gname);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف أكبر من حد tar: %s", display, name);
+    }
+    size_t dlen = 0;
+    char *data = b5_read_file_c(fs, &dlen);
+    if (!data) {
+        free(uname);
+        free(gname);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر قراءة %s", display, name);
+    }
+    e.name = strdup(name);
+    e.kind = B5_KIND_FILE;
+    e.size = dlen;
+    e.mtime = m->mtime;
+    e.mode = m->mode;
+    e.uid = m->uid;
+    e.gid = m->gid;
+    e.uname = uname;
+    e.gname = gname;
+    e.linkname = strdup("");
+    e.data = (unsigned char *)data;
+    e.data_len = dlen;
+    return e;
+}
+
+/* مقارنة عروض للفرز العام (ترتيب بايتي مثل Rust). */
+static int b5_tar_disp_cmp_c(const void *a, const void *b) {
+    const B5EntryC *ea = (const B5EntryC *)a;
+    const B5EntryC *eb = (const B5EntryC *)b;
+    return strcmp(ea->display, eb->display);
+}
+
+static void b5_tar_collect_c(char **inputs, size_t ninputs, char **exclude, size_t nexclude, int links_as_links, B5TarListC *out, const char *display, int line, int col) {
+    for (size_t ii = 0; ii < ninputs; ii++) {
+        const char *inp = inputs[ii];
+        char *fs = nv_resolve_path(inp, line, col);
+        B5MetaC meta;
+        if (!b5_stat_c(fs, &meta)) {
+            free(fs);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s المدخل غير موجود: %s", display, inp);
+        }
+        char *arc = b5_tar_arc_name_c(inp);
+        if (meta.kind == B5_KIND_DIR) {
+            B5WalkC w;
+            b5_walk_new_c(&w);
+            w.include_hidden = 1;
+            w.respect_ignore = 0;
+            w.follow_links = 0;
+            w.min_depth = 0;
+            SearchIgnoreC ignore;
+            memset(&ignore, 0, sizeof(ignore));
+            B5EntryListC es;
+            memset(&es, 0, sizeof(es));
+            b5_walk_dir_c(fs, "", 0, &w, &ignore, &es, line, col);
+            search_ignore_free_c(&ignore);
+            /* المدخل نفسه أولا ثم الأبناء مرتبين بالعرض. */
+            char *self_name = NULL;
+            {
+                size_t al = strlen(arc);
+                while (al > 0 && arc[al - 1] == '/') al--;
+                self_name = (char *)malloc(al + 2);
+                memcpy(self_name, arc, al);
+                self_name[al] = '/';
+                self_name[al + 1] = '\0';
+            }
+            if (nexclude == 0 || !b5_glob_any_c(exclude, nexclude, self_name, self_name, 0, line, col)) {
+                B5TarEntryC e = b5_tar_entry_from_meta_c(fs, self_name, &meta, meta.is_link, links_as_links, display, line, col);
+                b5_tar_list_push_c(out, &e, line, col);
+            }
+            free(self_name);
+            if (es.len > 1) qsort(es.items, es.len, sizeof(B5EntryC), b5_tar_disp_cmp_c);
+            size_t al = strlen(arc);
+            while (al > 0 && arc[al - 1] == '/') al--;
+            for (size_t ci = 0; ci < es.len; ci++) {
+                B5EntryC *c = &es.items[ci];
+                const char *rel = c->rel;
+                size_t rl = strlen(rel);
+                size_t nl = al + 1 + rl + (c->eff.kind == B5_KIND_DIR ? 1 : 0) + 1;
+                char *name = (char *)malloc(nl);
+                memcpy(name, arc, al);
+                name[al] = '/';
+                memcpy(name + al + 1, rel, rl);
+                size_t p = al + 1 + rl;
+                if (c->eff.kind == B5_KIND_DIR) name[p++] = '/';
+                name[p] = '\0';
+                if (nexclude == 0 || !b5_glob_any_c(exclude, nexclude, name, name, 0, line, col)) {
+                    B5TarEntryC e = b5_tar_entry_from_meta_c(c->fs, name, &c->eff, c->meta.is_link, links_as_links, display, line, col);
+                    b5_tar_list_push_c(out, &e, line, col);
+                }
+                free(name);
+            }
+            b5_entry_list_free_c(&es);
+        } else {
+            if (nexclude == 0 || !b5_glob_any_c(exclude, nexclude, arc, arc, 0, line, col)) {
+                B5TarEntryC e = b5_tar_entry_from_meta_c(fs, arc, &meta, meta.is_link, links_as_links, display, line, col);
+                b5_tar_list_push_c(out, &e, line, col);
+            }
+        }
+        b5_meta_free_c(&meta);
+        free(arc);
+        free(fs);
+    }
+}
+
+/* مدخلات من قائمة (نص أو قائمة نصوص) أو من ملف قائمة. */
+static char **b5_tar_inputs_c(NvValue v, const char *list_file, size_t *n_out, const char *display, int line, int col) {
+    char **out = NULL;
+    size_t n = 0, cap = 0;
+    if (v.tag == NV_LIST) {
+        for (size_t i = 0; i < v.u.list->len; i++) {
+            const char *s = nv_std_need_string(display, v.u.list->items[i], line, col);
+            if (n >= cap) {
+                cap = cap == 0 ? 8 : cap * 2;
+                out = (char **)realloc(out, cap * sizeof(char *));
+            }
+            out[n++] = strdup(s);
+        }
+    } else if (v.tag == NV_STR) {
+        out = (char **)malloc(sizeof(char *));
+        out[n++] = strdup(v.u.str->data);
+    } else {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s المدخلات قائمة نصوص", display);
+    }
+    if (list_file) {
+        size_t nl = 0;
+        char **extra = b5_load_patterns_c(display, list_file, &nl, line, col);
+        for (size_t i = 0; i < nl; i++) {
+            if (n >= cap) {
+                cap = cap == 0 ? 8 : cap * 2;
+                out = (char **)realloc(out, cap * sizeof(char *));
+            }
+            out[n++] = extra[i];
+        }
+        free(extra);
+    }
+    *n_out = n;
+    return out;
+}
+
+static const char *B5_TAR_CREATE_KEYS_C[] = {
+    "مضغوط", "صيغة", "استثن", "مفصل", "من_قائمة", "روابط_كروابط", "صامت", "كتابة_فوق",
+};
+
+static const char *B5_TAR_EXTRACT_KEYS_C[] = {
+    "ملفات", "احفظ_الأذونات", "اكتب_فوق", "بلا_كتابة_فوق", "احتفظ_بالجديد",
+    "احذف_الأرشيف_بعد_الفك", "مفصل", "صامت",
+};
+
+static const char *B5_TAR_APPEND_KEYS_C[] = {
+    "مضغوط", "استثن", "مفصل", "من_قائمة", "روابط_كروابط", "صامت",
+};
+
+static NvValue b5_tar_create_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "أرشيف.أنشئ_تار";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *target_s = nv_std_need_string(DISPLAY, args[0], line, col);
+    NvDict *pairs = b5_opt_dict_c(args, nargs, 2, DISPLAY, line, col);
+    b5_no_unknown_c(DISPLAY, pairs, B5_TAR_CREATE_KEYS_C, 8, line, col);
+    int compressed = b5_opt_bool_c(pairs, "مضغوط", 0, DISPLAY, line, col);
+    const char *fmt = b5_opt_str_c(pairs, "صيغة", DISPLAY, line, col);
+    if (fmt && strcmp(fmt, "تار") != 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الصيغة الوحيدة في الدفعة: تار", DISPLAY);
+    }
+    size_t nexclude = 0;
+    char **exclude = b5_opt_strs_c(pairs, "استثن", &nexclude, DISPLAY, line, col);
+    int verbose = b5_opt_bool_c(pairs, "مفصل", 0, DISPLAY, line, col);
+    const char *list_file = b5_opt_str_c(pairs, "من_قائمة", DISPLAY, line, col);
+    int links = b5_opt_bool_c(pairs, "روابط_كروابط", 1, DISPLAY, line, col);
+    int quiet = b5_opt_bool_c(pairs, "صامت", 0, DISPLAY, line, col);
+    int overwrite = b5_opt_bool_c(pairs, "كتابة_فوق", 0, DISPLAY, line, col);
+    size_t ninputs = 0;
+    char **inputs = b5_tar_inputs_c(args[1], list_file, &ninputs, DISPLAY, line, col);
+    B5TarListC entries;
+    memset(&entries, 0, sizeof(entries));
+    b5_tar_collect_c(inputs, ninputs, exclude, nexclude, links, &entries, DISPLAY, line, col);
+    size_t blen = 0;
+    unsigned char *bytes = b5_tar_write_c(&entries, &blen);
+    if (compressed) {
+        if (blen > 0xFFFFFFFFu) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف أكبر من 4 غيغابايت", DISPLAY);
+        }
+        size_t clen = 0;
+        unsigned char *cb = b5_lzss_compress_c(bytes, blen, 6, &clen);
+        free(bytes);
+        bytes = cb;
+        blen = clen;
+    }
+    char *target_fs = nv_resolve_path(target_s, line, col);
+    struct stat tst;
+    if (stat(target_fs, &tst) == 0 && !overwrite) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الهدف موجود: %s (استخدم كتابة_فوق)", DISPLAY, target_s);
+    }
+    char *par = b5_parent_c(target_fs);
+    if (par) {
+        b5_mkdir_all_c(par);
+        free(par);
+    }
+    FILE *fp = fopen(target_fs, "wb");
+    if (!fp) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر الكتابة في %s", DISPLAY, target_s);
+    }
+    if (blen > 0) fwrite(bytes, 1, blen, fp);
+    fclose(fp);
+    if (verbose && !quiet) {
+        for (size_t i = 0; i < entries.len; i++) printf("%s\n", entries.items[i].name);
+    }
+    NvValue out = nv_dict_new();
+    nv_dict_set_raw(out.u.dict, "هدف", nv_str_cstr(target_s));
+    nv_dict_set_raw(out.u.dict, "ملفات", nv_num((double)entries.len));
+    nv_dict_set_raw(out.u.dict, "حجم", nv_num((double)blen));
+    if (verbose) {
+        NvValue names = nv_list_new();
+        for (size_t i = 0; i < entries.len; i++) {
+            nv_list_push_raw(names.u.list, nv_str_cstr(entries.items[i].name));
+        }
+        nv_dict_set_raw(out.u.dict, "أسماء", names);
+    }
+    b5_tar_list_free_c(&entries);
+    b5_strs_free_c(inputs, ninputs);
+    b5_strs_free_c(exclude, nexclude);
+    free(bytes);
+    free(target_fs);
+    return out;
+}
+
+/* اسم أرشيفي آمن للاستخراج (لا مطلق ولا «..»). */
+static int b5_tar_safe_name_c(const char *name) {
+    if (name[0] == '/' || name[0] == '\\') return 0;
+    const char *p = name;
+    while (1) {
+        const char *slash = strchr(p, '/');
+        size_t len = slash ? (size_t)(slash - p) : strlen(p);
+        if (len == 2 && p[0] == '.' && p[1] == '.') return 0;
+        if (!slash) break;
+        p = slash + 1;
+    }
+    return 1;
+}
+
+static NvValue b5_tar_extract_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "أرشيف.استخرج_تار";
+    if (nargs < 1 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا إلى ثلاثة لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *src_s = nv_std_need_string(DISPLAY, args[0], line, col);
+    const char *target_s = ".";
+    int opt_idx = 1;
+    if (nargs >= 2 && args[1].tag == NV_STR) {
+        target_s = args[1].u.str->data;
+        opt_idx = 2;
+    }
+    NvDict *pairs = NULL;
+    if (nargs > opt_idx) pairs = b5_opt_dict_c(args, nargs, opt_idx, DISPLAY, line, col);
+    b5_no_unknown_c(DISPLAY, pairs, B5_TAR_EXTRACT_KEYS_C, 8, line, col);
+    size_t nonly = 0;
+    char **only = b5_opt_strs_c(pairs, "ملفات", &nonly, DISPLAY, line, col);
+    int keep_perms = b5_opt_bool_c(pairs, "احفظ_الأذونات", 1, DISPLAY, line, col);
+    int overwrite = b5_opt_bool_c(pairs, "اكتب_فوق", 1, DISPLAY, line, col);
+    int no_overwrite = b5_opt_bool_c(pairs, "بلا_كتابة_فوق", 0, DISPLAY, line, col);
+    int keep_newer = b5_opt_bool_c(pairs, "احتفظ_بالجديد", 0, DISPLAY, line, col);
+    int delete_after = b5_opt_bool_c(pairs, "احذف_الأرشيف_بعد_الفك", 0, DISPLAY, line, col);
+    int verbose = b5_opt_bool_c(pairs, "مفصل", 0, DISPLAY, line, col);
+    int quiet = b5_opt_bool_c(pairs, "صامت", 0, DISPLAY, line, col);
+    char *src_fs = nv_resolve_path(src_s, line, col);
+    B5TarListC entries;
+    memset(&entries, 0, sizeof(entries));
+    int dummy_comp = 0;
+    b5_tar_read_file_c(src_fs, &entries, &dummy_comp, DISPLAY, line, col);
+    char *dst_root = nv_resolve_path(target_s, line, col);
+    long long extracted = 0, skipped = 0;
+    /* أوقات المجلدات بعد أبنائها. */
+    typedef struct {
+        char *dst;
+        long long mtime;
+        unsigned int mode;
+    } B5DirTimeC;
+    B5DirTimeC *dir_times = NULL;
+    size_t ndir = 0, capdir = 0;
+    for (size_t ei = 0; ei < entries.len; ei++) {
+        B5TarEntryC *e = &entries.items[ei];
+        if (nonly > 0) {
+            int found = 0;
+            for (size_t i = 0; i < nonly; i++) {
+                if (strcmp(only[i], e->name) == 0) { found = 1; break; }
+            }
+            if (!found) continue;
+        }
+        if (!b5_tar_safe_name_c(e->name)) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s اسم غير آمن في الأرشيف: %s", DISPLAY, e->name);
+        }
+        char *dst = b5_join_c(dst_root, e->name);
+        struct stat lst;
+        int exists = (nv_lstat(dst, &lst) == 0);
+        if (e->kind == B5_KIND_DIR) {
+            if (!exists) {
+                if (b5_mkdir_all_c(dst) != 0) {
+                    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر إنشاء المجلد %s", DISPLAY, e->name);
+                }
+                extracted++;
+            }
+            if (ndir >= capdir) {
+                capdir = capdir == 0 ? 8 : capdir * 2;
+                dir_times = (B5DirTimeC *)realloc(dir_times, capdir * sizeof(B5DirTimeC));
+            }
+            dir_times[ndir].dst = strdup(dst);
+            dir_times[ndir].mtime = e->mtime;
+            dir_times[ndir].mode = e->mode;
+            ndir++;
+            free(dst);
+            continue;
+        }
+        if (exists && (no_overwrite || !overwrite)) {
+            skipped++;
+            free(dst);
+            continue;
+        }
+        if (keep_newer) {
+            B5MetaC dm;
+            if (b5_stat_c(dst, &dm)) {
+                if (dm.mtime >= e->mtime) {
+                    b5_meta_free_c(&dm);
+                    skipped++;
+                    free(dst);
+                    continue;
+                }
+                b5_meta_free_c(&dm);
+            }
+        }
+        char *par = b5_parent_c(dst);
+        if (par) {
+            b5_mkdir_all_c(par);
+            free(par);
+        }
+        if (exists) {
+            struct stat fst;
+            int is_dir = (stat(dst, &fst) == 0 && S_ISDIR(fst.st_mode));
+            if (is_dir) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الهدف موجود بنوع مختلف: %s", DISPLAY, e->name);
+            }
+            b5_remove_all_c(dst);
+        }
+        if (e->kind == B5_KIND_LINK) {
+#ifndef _WIN32
+            if (symlink(e->linkname, dst) != 0) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر إنشاء الرابط %s", DISPLAY, e->name);
+            }
+#else
+            if (symlink(e->linkname, dst) != 0) {
+                skipped++;
+                free(dst);
+                continue;
+            }
+#endif
+            extracted++;
+        } else {
+            FILE *fp = fopen(dst, "wb");
+            if (!fp) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر الكتابة في %s", DISPLAY, e->name);
+            }
+            if (e->data_len > 0) fwrite(e->data, 1, e->data_len, fp);
+            fclose(fp);
+            if (keep_perms) b5_set_mode_c(dst, e->mode);
+            b5_set_times_c(dst, e->mtime, e->mtime);
+            extracted++;
+        }
+        if (verbose && !quiet) printf("%s\n", e->name);
+        free(dst);
+    }
+    for (size_t i = 0; i < ndir; i++) {
+        b5_set_times_c(dir_times[i].dst, dir_times[i].mtime, dir_times[i].mtime);
+        if (keep_perms) b5_set_mode_c(dir_times[i].dst, dir_times[i].mode);
+        free(dir_times[i].dst);
+    }
+    free(dir_times);
+    if (delete_after) remove(src_fs);
+    NvValue out = nv_dict_new();
+    nv_dict_set_raw(out.u.dict, "هدف", nv_str_cstr(target_s));
+    nv_dict_set_raw(out.u.dict, "ملفات", nv_num((double)entries.len));
+    nv_dict_set_raw(out.u.dict, "مستخرج", nv_num((double)extracted));
+    nv_dict_set_raw(out.u.dict, "متخطى", nv_num((double)skipped));
+    b5_tar_list_free_c(&entries);
+    b5_strs_free_c(only, nonly);
+    free(src_fs);
+    free(dst_root);
+    return out;
+}
+
+static NvValue b5_tar_list_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "أرشيف.اسرد_تار";
+    if (nargs < 1 || nargs > 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *src_s = nv_std_need_string(DISPLAY, args[0], line, col);
+    NvDict *pairs = b5_opt_dict_c(args, nargs, 1, DISPLAY, line, col);
+    const char *LIST_KEYS[2] = {"مفصل", "صامت"};
+    b5_no_unknown_c(DISPLAY, pairs, LIST_KEYS, 2, line, col);
+    int verbose = b5_opt_bool_c(pairs, "مفصل", 0, DISPLAY, line, col);
+    int quiet = b5_opt_bool_c(pairs, "صامت", 0, DISPLAY, line, col);
+    char *src_fs = nv_resolve_path(src_s, line, col);
+    B5TarListC entries;
+    memset(&entries, 0, sizeof(entries));
+    int dummy_comp = 0;
+    b5_tar_read_file_c(src_fs, &entries, &dummy_comp, DISPLAY, line, col);
+    NvValue out = nv_list_new();
+    for (size_t i = 0; i < entries.len; i++) {
+        B5TarEntryC *e = &entries.items[i];
+        if (verbose && !quiet) printf("%s\n", e->name);
+        const char *kind = e->kind == B5_KIND_DIR ? "مجلد" : (e->kind == B5_KIND_LINK ? "رابط" : "ملف");
+        B5MetaC tm;
+        memset(&tm, 0, sizeof(tm));
+        tm.kind = e->kind;
+        tm.size = e->size;
+        tm.mtime = e->mtime;
+        tm.atime = e->mtime;
+        tm.btime = -1;
+        tm.mode = e->mode;
+        tm.uid = e->uid;
+        tm.gid = e->gid;
+        tm.nlink = 1;
+        tm.is_link = (e->kind == B5_KIND_LINK);
+        tm.target = NULL;
+        char mode_buf[64];
+        b5_mode_str_c(&tm, mode_buf, sizeof(mode_buf));
+        NvValue d = nv_dict_new();
+        nv_dict_set_raw(d.u.dict, "اسم", nv_str_cstr(e->name));
+        nv_dict_set_raw(d.u.dict, "نوع", nv_str_cstr(kind));
+        nv_dict_set_raw(d.u.dict, "حجم", nv_num((double)e->size));
+        nv_dict_set_raw(d.u.dict, "وقت_تعديل", nv_num((double)e->mtime));
+        nv_dict_set_raw(d.u.dict, "أذونات", nv_str_cstr(mode_buf));
+        if (e->kind == B5_KIND_LINK) {
+            nv_dict_set_raw(d.u.dict, "رابط", nv_str_cstr(e->linkname));
+        }
+        nv_list_push_raw(out.u.list, d);
+    }
+    b5_tar_list_free_c(&entries);
+    free(src_fs);
+    return out;
+}
+
+/* كتابة أرشيف محدث (إلحاق أو تحديث) مع حفظ حالة
+   الضغط القديمة إن لم يُطلب غيرها. */
+static size_t b5_tar_write_back_c(const char *target_fs, B5TarListC *entries, NvDict *pairs, int old_compressed, const char *display, int line, int col) {
+    int compressed = old_compressed;
+    if (pairs) {
+        int i = nv_dict_find(pairs, "مضغوط");
+        if (i >= 0 && pairs->entries[i].val.tag == NV_BOOL) {
+            compressed = pairs->entries[i].val.u.boolean ? 1 : 0;
+        }
+    }
+    size_t blen = 0;
+    unsigned char *bytes = b5_tar_write_c(entries, &blen);
+    if (compressed) {
+        if (blen > 0xFFFFFFFFu) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف أكبر من 4 غيغابايت", display);
+        }
+        size_t clen = 0;
+        unsigned char *cb = b5_lzss_compress_c(bytes, blen, 6, &clen);
+        free(bytes);
+        bytes = cb;
+        blen = clen;
+    }
+    FILE *fp = fopen(target_fs, "wb");
+    if (!fp) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر الكتابة في %s", display, target_fs);
+    }
+    if (blen > 0) fwrite(bytes, 1, blen, fp);
+    fclose(fp);
+    free(bytes);
+    return blen;
+}
+
+static NvValue b5_tar_append_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "أرشيف.ألحق_تار";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *target_s = nv_std_need_string(DISPLAY, args[0], line, col);
+    NvDict *pairs = b5_opt_dict_c(args, nargs, 2, DISPLAY, line, col);
+    b5_no_unknown_c(DISPLAY, pairs, B5_TAR_APPEND_KEYS_C, 6, line, col);
+    size_t nexclude = 0;
+    char **exclude = b5_opt_strs_c(pairs, "استثن", &nexclude, DISPLAY, line, col);
+    int verbose = b5_opt_bool_c(pairs, "مفصل", 0, DISPLAY, line, col);
+    const char *list_file = b5_opt_str_c(pairs, "من_قائمة", DISPLAY, line, col);
+    int links = b5_opt_bool_c(pairs, "روابط_كروابط", 1, DISPLAY, line, col);
+    int quiet = b5_opt_bool_c(pairs, "صامت", 0, DISPLAY, line, col);
+    size_t ninputs = 0;
+    char **inputs = b5_tar_inputs_c(args[1], list_file, &ninputs, DISPLAY, line, col);
+    char *target_fs = nv_resolve_path(target_s, line, col);
+    B5TarListC entries;
+    memset(&entries, 0, sizeof(entries));
+    int old_compressed = 0;
+    b5_tar_read_file_c(target_fs, &entries, &old_compressed, DISPLAY, line, col);
+    B5TarListC added;
+    memset(&added, 0, sizeof(added));
+    b5_tar_collect_c(inputs, ninputs, exclude, nexclude, links, &added, DISPLAY, line, col);
+    long long n = (long long)added.len;
+    if (verbose && !quiet) {
+        for (size_t i = 0; i < added.len; i++) printf("%s\n", added.items[i].name);
+    }
+    for (size_t i = 0; i < added.len; i++) {
+        B5TarEntryC e = added.items[i];
+        added.items[i].name = NULL;
+        added.items[i].uname = NULL;
+        added.items[i].gname = NULL;
+        added.items[i].linkname = NULL;
+        added.items[i].data = NULL;
+        b5_tar_list_push_c(&entries, &e, line, col);
+    }
+    free(added.items);
+    size_t size = b5_tar_write_back_c(target_fs, &entries, pairs, old_compressed, DISPLAY, line, col);
+    NvValue out = nv_dict_new();
+    nv_dict_set_raw(out.u.dict, "هدف", nv_str_cstr(target_s));
+    nv_dict_set_raw(out.u.dict, "ملفات", nv_num((double)entries.len));
+    nv_dict_set_raw(out.u.dict, "أضيف", nv_num((double)n));
+    nv_dict_set_raw(out.u.dict, "حجم", nv_num((double)size));
+    b5_tar_list_free_c(&entries);
+    b5_strs_free_c(inputs, ninputs);
+    b5_strs_free_c(exclude, nexclude);
+    free(target_fs);
+    return out;
+}
+
+static NvValue b5_tar_update_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "أرشيف.حدث_تار";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *target_s = nv_std_need_string(DISPLAY, args[0], line, col);
+    NvDict *pairs = b5_opt_dict_c(args, nargs, 2, DISPLAY, line, col);
+    b5_no_unknown_c(DISPLAY, pairs, B5_TAR_APPEND_KEYS_C, 6, line, col);
+    size_t nexclude = 0;
+    char **exclude = b5_opt_strs_c(pairs, "استثن", &nexclude, DISPLAY, line, col);
+    int verbose = b5_opt_bool_c(pairs, "مفصل", 0, DISPLAY, line, col);
+    const char *list_file = b5_opt_str_c(pairs, "من_قائمة", DISPLAY, line, col);
+    int links = b5_opt_bool_c(pairs, "روابط_كروابط", 1, DISPLAY, line, col);
+    int quiet = b5_opt_bool_c(pairs, "صامت", 0, DISPLAY, line, col);
+    size_t ninputs = 0;
+    char **inputs = b5_tar_inputs_c(args[1], list_file, &ninputs, DISPLAY, line, col);
+    char *target_fs = nv_resolve_path(target_s, line, col);
+    B5TarListC entries;
+    memset(&entries, 0, sizeof(entries));
+    int old_compressed = 0;
+    b5_tar_read_file_c(target_fs, &entries, &old_compressed, DISPLAY, line, col);
+    B5TarListC fresh;
+    memset(&fresh, 0, sizeof(fresh));
+    b5_tar_collect_c(inputs, ninputs, exclude, nexclude, links, &fresh, DISPLAY, line, col);
+    long long added = 0, updated = 0, skipped = 0;
+    for (size_t fi = 0; fi < fresh.len; fi++) {
+        B5TarEntryC *ne = &fresh.items[fi];
+        long long idx = -1;
+        for (size_t i = 0; i < entries.len; i++) {
+            if (strcmp(entries.items[i].name, ne->name) == 0) { idx = (long long)i; break; }
+        }
+        if (idx >= 0) {
+            if (entries.items[idx].mtime >= ne->mtime) {
+                skipped++;
+                b5_tar_entry_free_c(ne);
+                ne->name = NULL;
+                ne->uname = NULL;
+                ne->gname = NULL;
+                ne->linkname = NULL;
+                ne->data = NULL;
+            } else {
+                b5_tar_entry_free_c(&entries.items[idx]);
+                memmove(&entries.items[idx], &entries.items[idx + 1], (entries.len - (size_t)idx - 1) * sizeof(B5TarEntryC));
+                entries.len--;
+                if (verbose && !quiet) printf("%s\n", ne->name);
+                B5TarEntryC e = *ne;
+                ne->name = NULL;
+                ne->uname = NULL;
+                ne->gname = NULL;
+                ne->linkname = NULL;
+                ne->data = NULL;
+                b5_tar_list_push_c(&entries, &e, line, col);
+                updated++;
+            }
+        } else {
+            if (verbose && !quiet) printf("%s\n", ne->name);
+            B5TarEntryC e = *ne;
+            ne->name = NULL;
+            ne->uname = NULL;
+            ne->gname = NULL;
+            ne->linkname = NULL;
+            ne->data = NULL;
+            b5_tar_list_push_c(&entries, &e, line, col);
+            added++;
+        }
+    }
+    free(fresh.items);
+    size_t size = b5_tar_write_back_c(target_fs, &entries, pairs, old_compressed, DISPLAY, line, col);
+    NvValue out = nv_dict_new();
+    nv_dict_set_raw(out.u.dict, "هدف", nv_str_cstr(target_s));
+    nv_dict_set_raw(out.u.dict, "ملفات", nv_num((double)entries.len));
+    nv_dict_set_raw(out.u.dict, "أضيف", nv_num((double)added));
+    nv_dict_set_raw(out.u.dict, "حدث", nv_num((double)updated));
+    nv_dict_set_raw(out.u.dict, "متخطى", nv_num((double)skipped));
+    nv_dict_set_raw(out.u.dict, "حجم", nv_num((double)size));
+    b5_tar_list_free_c(&entries);
+    b5_strs_free_c(inputs, ninputs);
+    b5_strs_free_c(exclude, nexclude);
+    free(target_fs);
+    return out;
+}
+
+static NvValue b5_tar_verify_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "أرشيف.تحقق_تار";
+    if (nargs != 1) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *src_s = nv_std_need_string(DISPLAY, args[0], line, col);
+    char *fs = nv_resolve_path(src_s, line, col);
+    size_t raw_len = 0;
+    unsigned char *raw = b5_tar_read_raw_c(fs, &raw_len, line, col);
+    if (!raw) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الأرشيف غير موجود: %s", DISPLAY, src_s);
+    }
+    unsigned char *data = raw;
+    size_t data_len = raw_len;
+    int ok = 1;
+    if (raw_len >= 4 && memcmp(raw, "NVZ1", 4) == 0) {
+        size_t dl = 0;
+        unsigned char *dec = b5_lzss_decompress_c(raw, raw_len, &dl);
+        if (!dec) {
+            ok = 0;
+        } else {
+            free(raw);
+            data = dec;
+            data_len = dl;
+        }
+    }
+    if (ok) {
+        B5TarListC entries;
+        memset(&entries, 0, sizeof(entries));
+        char *err = NULL;
+        if (!b5_tar_parse_c(data, data_len, &entries, &err, line, col)) ok = 0;
+        free(err);
+        b5_tar_list_free_c(&entries);
+    }
+    free(data);
+    free(fs);
+    return nv_bool(ok);
+}
+
+static NvValue b5_tar_size_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "أرشيف.حجم_تار";
+    if (nargs != 1) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", DISPLAY, nargs);
+    }
+    const char *src_s = nv_std_need_string(DISPLAY, args[0], line, col);
+    char *fs = nv_resolve_path(src_s, line, col);
+    B5TarListC entries;
+    memset(&entries, 0, sizeof(entries));
+    int dummy_comp = 0;
+    b5_tar_read_file_c(fs, &entries, &dummy_comp, DISPLAY, line, col);
+    unsigned long long total = 0;
+    for (size_t i = 0; i < entries.len; i++) total += entries.items[i].size;
+    struct stat st;
+    unsigned long long arc = 0;
+    if (stat(fs, &st) == 0) arc = (unsigned long long)st.st_size;
+    NvValue out = nv_dict_new();
+    nv_dict_set_raw(out.u.dict, "ملفات", nv_num((double)entries.len));
+    nv_dict_set_raw(out.u.dict, "حجم_الملفات", nv_num((double)total));
+    nv_dict_set_raw(out.u.dict, "حجم_الأرشيف", nv_num((double)arc));
+    b5_tar_list_free_c(&entries);
+    free(fs);
+    return out;
+}
+
+void nv_std_b5tar_fill(NvDict *d) {
+    nv_std_add_fn(d, "أنشئ_تار", b5_tar_create_fn);
+    nv_std_add_fn(d, "استخرج_تار", b5_tar_extract_fn);
+    nv_std_add_fn(d, "اسرد_تار", b5_tar_list_fn);
+    nv_std_add_fn(d, "ألحق_تار", b5_tar_append_fn);
+    nv_std_add_fn(d, "حدث_تار", b5_tar_update_fn);
+    nv_std_add_fn(d, "تحقق_تار", b5_tar_verify_fn);
+    nv_std_add_fn(d, "حجم_تار", b5_tar_size_fn);
+}
+
+/* END لينكس5-ملفات أرشيف C */
