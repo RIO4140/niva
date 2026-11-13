@@ -19,6 +19,9 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <stdint.h>
+#ifdef _WIN32
+#include <windows.h> // CreateSymbolicLinkA وقراءة نقطة إعادة التحليل
+#endif
 #ifdef __APPLE__
 #include <mach-o/dyld.h> // _NSGetExecutablePath — التضمين
 // في niva_rt.c وحده لا يصل هذه الوحدة (ترجمة مستقلة).
@@ -32068,6 +32071,102 @@ static void b5_mode_str_c(const B5MetaC *m, char *buf, size_t cap) {
     snprintf(buf, cap, "%s%s", letter, s);
 }
 
+#ifdef _WIN32
+/* روابط ويندوز — مرآة نظير Rust في files.rs ‏
+   (symlink_dir/symlink_file وread_link): مكتبة MinGW
+   لا توفر readlink/symlink أصلا، فإعلانهما الخارجي
+   يُجمَّع ويفشل ربطه؛ هنا التنفيذ عبر Win32. */
+/* بنية نقطة إعادة التحليل (تخطيط ABI الثابت؛ ‏
+   ترويسات MinGW العامة لا تعلنها — في DDK فقط). */
+typedef struct {
+    ULONG ReparseTag;
+    USHORT ReparseDataLength;
+    USHORT Reserved;
+    union {
+        struct {
+            USHORT SubstituteNameOffset;
+            USHORT SubstituteNameLength;
+            USHORT PrintNameOffset;
+            USHORT PrintNameLength;
+            ULONG Flags;
+            WCHAR PathBuffer[1];
+        } SymbolicLinkReparseBuffer;
+        struct {
+            USHORT SubstituteNameOffset;
+            USHORT SubstituteNameLength;
+            USHORT PrintNameOffset;
+            USHORT PrintNameLength;
+            WCHAR PathBuffer[1];
+        } MountPointReparseBuffer;
+        struct {
+            BYTE DataBuffer[1];
+        } GenericReparseBuffer;
+    } u;
+} B5ReparseData;
+
+static ssize_t b5_win_readlink_c(const char *path, char *buf, size_t bufsiz) {
+    HANDLE h;
+    char raw[MAXIMUM_REPARSE_DATA_BUFFER_SIZE];
+    DWORD got = 0;
+    B5ReparseData *rb;
+    WCHAR *name;
+    USHORT off, len;
+    int n;
+    if (!buf || bufsiz == 0) return -1;
+    h = CreateFileA(path, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    if (h == INVALID_HANDLE_VALUE) return -1;
+    if (!DeviceIoControl(h, FSCTL_GET_REPARSE_POINT, NULL, 0, raw, sizeof(raw), &got, NULL)) {
+        CloseHandle(h);
+        return -1;
+    }
+    CloseHandle(h);
+    rb = (B5ReparseData *)raw;
+    if (rb->ReparseTag != IO_REPARSE_TAG_SYMLINK) return -1;
+    off = rb->u.SymbolicLinkReparseBuffer.PrintNameOffset;
+    len = rb->u.SymbolicLinkReparseBuffer.PrintNameLength;
+    if (len == 0) {
+        /* بلا اسم عرض: الاسم البديل بعد تجريد بادئة الجهاز. */
+        off = rb->u.SymbolicLinkReparseBuffer.SubstituteNameOffset;
+        len = rb->u.SymbolicLinkReparseBuffer.SubstituteNameLength;
+    }
+    name = rb->u.SymbolicLinkReparseBuffer.PathBuffer + off / sizeof(WCHAR);
+    if (len >= 8 && name[0] == L'\\' && name[1] == L'?' && name[2] == L'?' && name[3] == L'\\') {
+        name += 4;
+        len -= 8;
+    }
+    n = WideCharToMultiByte(CP_UTF8, 0, name, len / sizeof(WCHAR), buf, (int)bufsiz - 1, NULL, NULL);
+    if (n <= 0) return -1;
+    buf[n] = '\0';
+    return (ssize_t)n;
+}
+
+static int b5_win_symlink_c(const char *target, const char *linkpath) {
+    struct stat stt;
+    DWORD flags = SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE;
+    if (stat(target, &stt) == 0 && S_ISDIR(stt.st_mode)) {
+        flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+    } else {
+        /* هدف نسبي: يُحل من مجلد الرابط نفسه لا من الجلسة. */
+        const char *slash = strrchr(linkpath, '/');
+        if (!slash) slash = strrchr(linkpath, '\\');
+        if (slash) {
+            size_t dlen = (size_t)(slash - linkpath);
+            size_t tlen = strlen(target);
+            char *joined = (char *)malloc(dlen + 1 + tlen + 1);
+            if (joined) {
+                memcpy(joined, linkpath, dlen);
+                joined[dlen] = '/';
+                memcpy(joined + dlen + 1, target, tlen + 1);
+                if (stat(joined, &stt) == 0 && S_ISDIR(stt.st_mode)) flags |= SYMBOLIC_LINK_FLAG_DIRECTORY;
+                free(joined);
+            }
+        }
+    }
+    return CreateSymbolicLinkA(linkpath, target, flags) ? 0 : -1;
+}
+#endif
+
 static int b5_stat_c(const char *path, B5MetaC *out) {
     struct stat st;
     if (nv_lstat(path, &st) != 0) return 0;
@@ -32115,6 +32214,13 @@ static int b5_stat_c(const char *path, B5MetaC *out) {
 #ifndef _WIN32
         char buf[4096];
         ssize_t n = readlink(path, buf, sizeof(buf) - 1);
+        if (n > 0) {
+            buf[n] = '\0';
+            out->target = strdup(buf);
+        }
+#else
+        char buf[4096];
+        ssize_t n = b5_win_readlink_c(path, buf, sizeof(buf) - 1);
         if (n > 0) {
             buf[n] = '\0';
             out->target = strdup(buf);
@@ -35136,12 +35242,6 @@ void nv_std_b5list_fill(NvDict *d) {
 
 /* BEGIN لينكس5-ملفات مزامنة C */
 
-#ifdef _WIN32
-/* MinGW يوفرهما لكن unistd.h غير مضمن هنا. */
-extern ssize_t readlink(const char *path, char *buf, size_t bufsiz);
-extern int symlink(const char *target, const char *linkpath);
-#endif
-
 /* إعلانات مسبقة لضغط C8 (يُستخدم في النقل المضغوط). */
 static unsigned char *b5_compress_bytes_c(const unsigned char *data, size_t len, int level, size_t *out_len, int line, int col);
 static unsigned char *b5_decompress_bytes_c(const unsigned char *data, size_t len, size_t *out_len, int line, int col);
@@ -35647,7 +35747,11 @@ static NvValue b5_sync_fn(NvValue *args, int nargs, int line, int col) {
             int need = 1;
             {
                 char buf[4096];
+#ifdef _WIN32
+                ssize_t n = b5_win_readlink_c(target, buf, sizeof(buf) - 1);
+#else
                 ssize_t n = readlink(target, buf, sizeof(buf) - 1);
+#endif
                 if (n > 0) {
                     buf[n] = '\0';
                     need = strcmp(buf, tg) != 0;
@@ -35666,7 +35770,11 @@ static NvValue b5_sync_fn(NvValue *args, int nargs, int line, int col) {
                     free(parent);
                 }
                 b5_remove_all_c(target);
+#ifdef _WIN32
+                if (b5_win_symlink_c(tg, target) != 0) {
+#else
                 if (symlink(tg, target) != 0) {
+#endif
                     free(rel);
                     free(target);
                     nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر إنشاء الرابط %s", DISPLAY, rel);
@@ -37507,7 +37615,7 @@ static NvValue b5_tar_extract_fn(NvValue *args, int nargs, int line, int col) {
                 nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر إنشاء الرابط %s", DISPLAY, e->name);
             }
 #else
-            if (symlink(e->linkname, dst) != 0) {
+            if (b5_win_symlink_c(e->linkname, dst) != 0) {
                 skipped++;
                 free(dst);
                 continue;
