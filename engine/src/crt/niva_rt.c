@@ -5231,6 +5231,26 @@ NvValue nv_call_str_method(NvValue str, const char *name, NvValue *args, int nar
         *w = '\0';
         return nv_str_take(out, outlen);
     }
+    if (strcmp(name, "استبدل_أول") == 0) {
+        if (nargs != 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الطريقة %s تتوقع 2 معاملات لكن أعطيت %d", name, nargs);
+        if (args[0].tag != NV_STR || args[1].tag != NV_STR) {
+            nv_error(NV_ERR_TYPE, "طريقة استبدل_أول تتوقع نصين: القديم والجديد", line, col);
+        }
+        const char *old = args[0].u.str->data, *nw = args[1].u.str->data;
+        size_t olen = args[0].u.str->len, nlen = args[1].u.str->len;
+        if (olen == 0) return nv_str_new(s, len);
+        const char *hit = strstr(s, old);
+        if (!hit) return nv_str_new(s, len);
+        size_t outlen = len - olen + nlen;
+        char *out = (char *)malloc(outlen + 1);
+        size_t seg = (size_t)(hit - s);
+        memcpy(out, s, seg);
+        memcpy(out + seg, nw, nlen);
+        size_t tail = (size_t)((s + len) - (hit + olen));
+        memcpy(out + seg + nlen, hit + olen, tail);
+        out[outlen] = '\0';
+        return nv_str_take(out, outlen);
+    }
     if (strcmp(name, "قسم") == 0) {
         if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الطريقة %s تتوقع 1 معاملات لكن أعطيت %d", name, nargs);
         if (args[0].tag != NV_STR) nv_error(NV_ERR_TYPE, "طريقة قسم تتوقع نصا كفاصل", line, col);
