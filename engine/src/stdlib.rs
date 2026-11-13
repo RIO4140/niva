@@ -95,7 +95,7 @@ pub type NativeFn = fn(&mut dyn HandlerCaller, &[Value], usize, usize) -> RioRes
 /// (والغائب لاشيء)؛ والمغير اقتران حذف وإضافة
 /// متجاورين. والصيغة الموحدة GNU (-u) بسياق 3.
 
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct DiffOpts {
     unified: bool,
     ignore_case: bool,
@@ -103,6 +103,11 @@ struct DiffOpts {
     ignore_all_space: bool,
     ignore_blank: bool,
     brief: bool,
+    // دفعة لينكس 4.
+    format: String,
+    ignore_pattern: Option<String>,
+    new_file_empty: bool,
+    patch: bool,
 }
 
 fn diff_parse_opts(
@@ -127,17 +132,22 @@ fn diff_parse_opts(
                     ));
                 }
                 let s = need_string(display, v, line, col)?;
-                if s != "موحد" {
-                    return Err(RioError::runtime(
-                        format!(
-                            "الدالة {} الصيغة {} غير مدعومة (المدعوم: موحد)",
-                            display, s
-                        ),
-                        line,
-                        col,
-                    ));
+                match s.as_str() {
+                    "موحد" | "سياق" | "عادي" | "جنبا_إلى_جنب" => {
+                        opts.format = s;
+                        opts.unified = true;
+                    }
+                    _ => {
+                        return Err(RioError::runtime(
+                            format!(
+                                "الدالة {} الصيغة {} غير مدعومة (المدعوم: موحد، سياق، عادي، جنبا_إلى_جنب)",
+                                display, s
+                            ),
+                            line,
+                            col,
+                        ));
+                    }
                 }
-                opts.unified = true;
             }
             "مختصر" => {
                 if !allow_brief {
@@ -171,6 +181,27 @@ fn diff_parse_opts(
                 }
                 exclude = Some(need_string(display, v, line, col)?);
             }
+            "تجاهل_بنمط" => {
+                let s = need_string(display, v, line, col)?;
+                if let Err(e) = rx_compile_fold(&s, false, false) {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} النمط في تجاهل_بنمط غير صالح: {}", display, e),
+                        line,
+                        col,
+                    ));
+                }
+                opts.ignore_pattern = Some(s);
+            }
+            "ملف_جديد_كفارغ" => {
+                opts.new_file_empty = search_need_bool(display, k, v, line, col)?;
+            }
+            "رقعة" => {
+                opts.patch = search_need_bool(display, k, v, line, col)?;
+                if opts.patch {
+                    opts.format = "موحد".to_string();
+                    opts.unified = true;
+                }
+            }
             other => {
                 return Err(RioError::runtime(
                     format!("الدالة {} لا تقبل الخيار {}", display, other),
@@ -190,8 +221,27 @@ fn diff_parse_opts(
     Ok((opts, exclude))
 }
 
+/// هل يطابق سطر نمط تجاهل_بنمط (تعابير)؟
+fn diff_pat_matches(pat: &str, line: &str) -> bool {
+    let chars: Vec<char> = line.chars().collect();
+    match rx_compile_fold(pat, false, false) {
+        Ok(prog) => rx_find_from(&prog, &chars, 0)
+            .map(|m| m.is_some())
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
 /// مفتاح مقارنة سطر حسب خيارات التجاهل.
 fn diff_key(line: &str, opts: &DiffOpts) -> String {
+    // تجاهل_بنمط (دفعة لينكس 4): السطر المطابق
+    // للنمط مفتاحه فارغ فيُعامل مساويا لأي سطر
+    // مطابق آخر.
+    if let Some(pat) = &opts.ignore_pattern {
+        if diff_pat_matches(pat, line) {
+            return String::new();
+        }
+    }
     let mut s = if opts.ignore_case {
         line.to_lowercase()
     } else {
@@ -443,6 +493,241 @@ fn diff_to_unified(
     out
 }
 
+/// عمليات ← نص سياق GNU (سياق 3؛ والمغيّر
+/// بعلامة `!`، والحذف `-`، والإضافة `+`).
+fn diff_to_context(
+    a: &[(usize, String, String)],
+    b: &[(usize, String, String)],
+    ops: &[DiffOp],
+) -> String {
+    let changed: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| !matches!(o, DiffOp::Equal(_, _)))
+        .map(|(i, _)| i)
+        .collect();
+    if changed.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("*** قديم\n--- جديد\n");
+    // علامة التغيير لكل عملية في مقطع: رزمة
+    // حذف+إضافة متجاورة بلا مساواة بينها.
+    let mut mark: Vec<bool> = vec![false; ops.len()];
+    let mut i = 0usize;
+    while i < ops.len() {
+        if matches!(ops[i], DiffOp::Equal(_, _)) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut has_del = false;
+        let mut has_ins = false;
+        while i < ops.len() && !matches!(ops[i], DiffOp::Equal(_, _)) {
+            match ops[i] {
+                DiffOp::Del(_) => has_del = true,
+                DiffOp::Ins(_) => has_ins = true,
+                _ => {}
+            }
+            i += 1;
+        }
+        if has_del && has_ins {
+            for k in start..i {
+                mark[k] = true;
+            }
+        }
+    }
+    let mut flush = |out: &mut String, ops: &[DiffOp], from: usize, to: usize| {
+        let mut a_pos = 0usize;
+        let mut b_pos = 0usize;
+        for o in &ops[..from] {
+            match o {
+                DiffOp::Equal(_, _) => {
+                    a_pos += 1;
+                    b_pos += 1;
+                }
+                DiffOp::Del(_) => a_pos += 1,
+                DiffOp::Ins(_) => b_pos += 1,
+            }
+        }
+        let (mut a_count, mut b_count) = (0usize, 0usize);
+        for o in &ops[from..=to] {
+            match o {
+                DiffOp::Equal(_, _) => {
+                    a_count += 1;
+                    b_count += 1;
+                }
+                DiffOp::Del(_) => a_count += 1,
+                DiffOp::Ins(_) => b_count += 1,
+            }
+        }
+        let arange = if a_count == 0 {
+            format!("{}", a_pos)
+        } else if a_count == 1 {
+            format!("{}", a_pos + 1)
+        } else {
+            format!("{},{}", a_pos + 1, a_pos + a_count)
+        };
+        let brange = if b_count == 0 {
+            format!("{}", b_pos)
+        } else if b_count == 1 {
+            format!("{}", b_pos + 1)
+        } else {
+            format!("{},{}", b_pos + 1, b_pos + b_count)
+        };
+        out.push_str("***************\n");
+        out.push_str(&format!("*** {} ****\n", arange));
+        for (k, o) in ops[from..=to].iter().enumerate() {
+            match o {
+                DiffOp::Equal(x, _) => {
+                    out.push_str("  ");
+                    out.push_str(&a[*x].1);
+                    out.push('\n');
+                }
+                DiffOp::Del(x) => {
+                    out.push_str(if mark[from + k] { "! " } else { "- " });
+                    out.push_str(&a[*x].1);
+                    out.push('\n');
+                }
+                DiffOp::Ins(_) => {}
+            }
+        }
+        out.push_str(&format!("--- {} ----\n", brange));
+        for (k, o) in ops[from..=to].iter().enumerate() {
+            match o {
+                DiffOp::Equal(x, _) => {
+                    out.push_str("  ");
+                    out.push_str(&a[*x].1);
+                    out.push('\n');
+                }
+                DiffOp::Ins(y) => {
+                    out.push_str(if mark[from + k] { "! " } else { "+ " });
+                    out.push_str(&b[*y].1);
+                    out.push('\n');
+                }
+                DiffOp::Del(_) => {}
+            }
+        }
+    };
+    let mut hunk_start = changed[0].saturating_sub(3);
+    let mut hunk_end = changed[0];
+    for k in 1..changed.len() {
+        let c = changed[k];
+        if c - hunk_end > 6 {
+            let to = (hunk_end + 3).min(ops.len() - 1);
+            flush(&mut out, ops, hunk_start, to);
+            hunk_start = c.saturating_sub(3);
+        }
+        hunk_end = c;
+    }
+    let to = (hunk_end + 3).min(ops.len() - 1);
+    flush(&mut out, ops, hunk_start, to);
+    out
+}
+
+/// عمليات ← نص عادي (أوامر ed: `1c1` و`1d0`
+/// و`0a1`؛ والحذف `<`، والإضافة `>`).
+fn diff_to_normal(
+    a: &[(usize, String, String)],
+    b: &[(usize, String, String)],
+    ops: &[DiffOp],
+) -> String {
+    let mut out = String::new();
+    let mut i = 0usize;
+    let (mut a_pos, mut b_pos) = (0usize, 0usize);
+    while i < ops.len() {
+        match ops[i] {
+            DiffOp::Equal(_, _) => {
+                i += 1;
+                a_pos += 1;
+                b_pos += 1;
+            }
+            _ => {
+                let mut dels: Vec<usize> = Vec::new();
+                let mut inss: Vec<usize> = Vec::new();
+                while i < ops.len() && !matches!(ops[i], DiffOp::Equal(_, _)) {
+                    match ops[i] {
+                        DiffOp::Del(x) => dels.push(x),
+                        DiffOp::Ins(y) => inss.push(y),
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                let arange = if dels.len() == 1 {
+                    format!("{}", a_pos + 1)
+                } else {
+                    format!("{},{}", a_pos + 1, a_pos + dels.len())
+                };
+                let brange = if inss.len() == 1 {
+                    format!("{}", b_pos + 1)
+                } else {
+                    format!("{},{}", b_pos + 1, b_pos + inss.len())
+                };
+                if !dels.is_empty() && !inss.is_empty() {
+                    out.push_str(&format!("{}c{}\n", arange, brange));
+                    for x in &dels {
+                        out.push_str("< ");
+                        out.push_str(&a[*x].1);
+                        out.push('\n');
+                    }
+                    out.push_str("---\n");
+                    for y in &inss {
+                        out.push_str("> ");
+                        out.push_str(&b[*y].1);
+                        out.push('\n');
+                    }
+                } else if !dels.is_empty() {
+                    out.push_str(&format!("{}d{}\n", arange, b_pos));
+                    for x in &dels {
+                        out.push_str("< ");
+                        out.push_str(&a[*x].1);
+                        out.push('\n');
+                    }
+                } else {
+                    out.push_str(&format!("{}a{}\n", a_pos, brange));
+                    for y in &inss {
+                        out.push_str("> ");
+                        out.push_str(&b[*y].1);
+                        out.push('\n');
+                    }
+                }
+                a_pos += dels.len();
+                b_pos += inss.len();
+            }
+        }
+    }
+    out
+}
+
+/// عمليات ← نص جنبا_إلى_جنب (عمودان؛ والمساوي
+/// `|`، والمحذوف `<`، والمضاف `>`).
+fn diff_to_side(
+    a: &[(usize, String, String)],
+    b: &[(usize, String, String)],
+    ops: &[DiffOp],
+) -> String {
+    let mut out = String::new();
+    for o in ops {
+        match o {
+            DiffOp::Equal(x, y) => {
+                out.push_str(&a[*x].1);
+                out.push_str(" | ");
+                out.push_str(&b[*y].1);
+                out.push('\n');
+            }
+            DiffOp::Del(x) => {
+                out.push_str(&a[*x].1);
+                out.push_str(" <\n");
+            }
+            DiffOp::Ins(y) => {
+                out.push_str("> ");
+                out.push_str(&b[*y].1);
+                out.push('\n');
+            }
+        }
+    }
+    out
+}
+
 /// فرق.فرق(نص1، نص2، خيارات؟) — البنود 186 و187
 /// و190 و191 و192 و193 و196: سجلات افتراضيا، أو
 /// نص موحد مع صيغة موحد، أو منطقي مع مختصر.
@@ -480,7 +765,13 @@ fn diff_diff(
         return Ok(Value::Bool(different));
     }
     if opts.unified {
-        return Ok(Value::Str(diff_to_unified(&a, &b, &ops)));
+        let s = match opts.format.as_str() {
+            "سياق" => diff_to_context(&a, &b, &ops),
+            "عادي" => diff_to_normal(&a, &b, &ops),
+            "جنبا_إلى_جنب" => diff_to_side(&a, &b, &ops),
+            _ => diff_to_unified(&a, &b, &ops),
+        };
+        return Ok(Value::Str(s));
     }
     Ok(Value::List(diff_to_records(&a, &b, &ops)))
 }
@@ -519,6 +810,28 @@ fn diff_same(
     Ok(Value::Bool(
         ops.iter().all(|o| matches!(o, DiffOp::Equal(_, _))),
     ))
+}
+
+/// فرق نص مع فارغ (لملف_جديد_كفارغ في
+/// فرق_مجلدين): الأول نص والثاني فارغ إن
+/// first، والعكس إن لم يكن.
+fn diff_vs_empty(
+    display: &str,
+    text: &str,
+    first: bool,
+    opts: &DiffOpts,
+    line: usize,
+    col: usize,
+) -> RioResult<(&'static str, Vec<Value>)> {
+    let a = diff_seq(if first { text } else { "" }, opts);
+    let b = diff_seq(if first { "" } else { text }, opts);
+    let ops = diff_compute(display, &a, &b, line, col)?;
+    let rs = diff_to_records(&a, &b, &ops);
+    if rs.is_empty() {
+        Ok(("متطابق", vec![]))
+    } else {
+        Ok(("مختلف", rs))
+    }
 }
 
 /// فرق.فرق_مجلدين(مجلد1، مجلد2، خيارات؟) — البندان
@@ -608,7 +921,21 @@ fn diff_dirs(
             }
         }
         let (state, recs): (&str, Vec<Value>) = match (map1.get(rel), map2.get(rel)) {
+            (Some(p1), None) if opts.new_file_empty => {
+                let b1 = std::fs::read(p1).unwrap_or_default();
+                match String::from_utf8(b1) {
+                    Ok(s1) => diff_vs_empty(DISPLAY, &s1, true, &opts, line, col)?,
+                    Err(_) => ("مختلف", vec![]),
+                }
+            }
             (Some(_), None) => ("موجود_في_الأول_فقط", vec![]),
+            (None, Some(p2)) if opts.new_file_empty => {
+                let b2 = std::fs::read(p2).unwrap_or_default();
+                match String::from_utf8(b2) {
+                    Ok(s2) => diff_vs_empty(DISPLAY, &s2, false, &opts, line, col)?,
+                    Err(_) => ("مختلف", vec![]),
+                }
+            }
             (None, Some(_)) => ("موجود_في_الثاني_فقط", vec![]),
             (Some(p1), Some(p2)) => {
                 let b1 = std::fs::read(p1).unwrap_or_default();
@@ -649,11 +976,1242 @@ fn diff_dirs(
     Ok(Value::List(out))
 }
 
+// BEGIN لينكس4-نص دوال فرق Rust
+/// فرق.قارن_ثنائيا — البند 201.
+fn diff_compare_bytes(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "فرق.قارن_ثنائيا";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let p1 = need_string(DISPLAY, &args[0], line, col)?;
+    let p2 = need_string(DISPLAY, &args[1], line, col)?;
+    let b1 = j12_read_file(ctx, &p1, line, col)?;
+    let b2 = j12_read_file(ctx, &p2, line, col)?;
+    let same = b1 == b2;
+    let mut first: Option<i64> = None;
+    if !same {
+        let n = b1.len().min(b2.len());
+        let mut i = 0usize;
+        while i < n && b1[i] == b2[i] {
+            i += 1;
+        }
+        first = Some(i as i64);
+    }
+    Ok(Value::Dict(vec![
+        ("متطابقان".to_string(), Value::Bool(same)),
+        (
+            "موضع_الاختلاف".to_string(),
+            match first {
+                Some(f) => Value::Number(f as f64),
+                None => Value::Nil,
+            },
+        ),
+        ("حجم_الأول".to_string(), Value::Number(b1.len() as f64)),
+        ("حجم_الثاني".to_string(), Value::Number(b2.len() as f64)),
+    ]))
+}
+// END لينكس4-نص دوال فرق Rust
+// BEGIN لينكس4-نص دوال محدد Rust
+/// محدد.ابحث_ضبابيا — البند 331.
+fn fuzzy_search(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "محدد.ابحث_ضبابيا";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 2 و3 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let items = need_list(DISPLAY, &args[0], line, col)?;
+    let query = need_string(DISPLAY, &args[1], line, col)?;
+    let pairs = b4_opt_pairs(DISPLAY, args, 2, line, col)?;
+    let mut exact = false;
+    let mut smart = false;
+    let mut fold = false;
+    let mut sep: Option<String> = None;
+    let mut show_fields: Option<Vec<i64>> = None;
+    let mut accept_fields: Option<Vec<i64>> = None;
+    let mut multi = true;
+    let mut no_sort = false;
+    let mut preview: Option<Value> = None;
+    let mut header: Option<String> = None;
+    let mut header_lines: i64 = 0;
+    let mut prompt: Option<String> = None;
+    let mut color = false;
+    let mut exit_one = false;
+    if let Some(ps) = pairs {
+        for (k, v) in ps {
+            match k.as_str() {
+                "دقيق" => exact = b4_need_bool(DISPLAY, v, line, col)?,
+                "حالة_ذكية" => smart = b4_need_bool(DISPLAY, v, line, col)?,
+                "تجاهل_الحالة" => fold = b4_need_bool(DISPLAY, v, line, col)?,
+                "فاصل_الحقول" => sep = Some(need_string(DISPLAY, v, line, col)?),
+                "حقول_العرض" => {
+                    let items = need_list(DISPLAY, v, line, col)?;
+                    let mut fs: Vec<i64> = Vec::new();
+                    for it in items {
+                        fs.push(need_integer(DISPLAY, it, line, col)?);
+                    }
+                    show_fields = Some(fs);
+                }
+                "حقول_القبول" => {
+                    let items = need_list(DISPLAY, v, line, col)?;
+                    let mut fs: Vec<i64> = Vec::new();
+                    for it in items {
+                        fs.push(need_integer(DISPLAY, it, line, col)?);
+                    }
+                    accept_fields = Some(fs);
+                }
+                "متعدد" => multi = b4_need_bool(DISPLAY, v, line, col)?,
+                "بلا_فرز" => no_sort = b4_need_bool(DISPLAY, v, line, col)?,
+                "معاينة" => {
+                    j3_need_func(DISPLAY, v, line, col)?;
+                    preview = Some(v.clone());
+                }
+                "رأس" => header = Some(need_string(DISPLAY, v, line, col)?),
+                "سطور_الرأس" => header_lines = b4_need_count(DISPLAY, k, v, line, col)?,
+                "موجه" => prompt = Some(need_string(DISPLAY, v, line, col)?),
+                "لون" => color = b4_need_bool(DISPLAY, v, line, col)?,
+                "اخرج_عند_واحد" => exit_one = b4_need_bool(DISPLAY, v, line, col)?,
+                other => return Err(b4_unknown_opt(DISPLAY, other, line, col)),
+            }
+        }
+    }
+    let mut strs: Vec<String> = Vec::new();
+    for it in items {
+        strs.push(need_string(DISPLAY, it, line, col)?);
+    }
+    let hl = (header_lines as usize).min(strs.len());
+    let header_text: Option<String> = if hl > 0 {
+        Some(strs[..hl].join("\n"))
+    } else {
+        None
+    };
+    let body: Vec<String> = strs[hl..].to_vec();
+    let eff_fold = fold || (smart && query.chars().all(|c| !c.is_uppercase()));
+    let qchars: Vec<char> = if eff_fold {
+        query.to_lowercase().chars().collect()
+    } else {
+        query.chars().collect()
+    };
+    let field_of = |item: &str, fields: &Option<Vec<i64>>| -> String {
+        match (&sep, fields) {
+            (Some(s), Some(fs)) => {
+                let parts: Vec<&str> = item.split(s.as_str()).collect();
+                let mut picked: Vec<&str> = Vec::new();
+                for f in fs {
+                    if *f >= 1 && (*f as usize) <= parts.len() {
+                        picked.push(parts[(*f - 1) as usize]);
+                    }
+                }
+                picked.join(s.as_str())
+            }
+            _ => item.to_string(),
+        }
+    };
+    struct Scored {
+        score: i64,
+        matched: Vec<usize>,
+        mtext: String,
+        element: String,
+    }
+    let mut scored: Vec<Scored> = Vec::new();
+    for item in &body {
+        let mtext = field_of(item, &show_fields);
+        let mchars: Vec<char> = if eff_fold {
+            mtext.to_lowercase().chars().collect()
+        } else {
+            mtext.chars().collect()
+        };
+        let found: Option<(i64, Vec<usize>)> = if exact {
+            if qchars.is_empty() {
+                Some((1000, vec![]))
+            } else {
+                let mut start: Option<usize> = None;
+                if qchars.len() <= mchars.len() {
+                    for i in 0..=(mchars.len() - qchars.len()) {
+                        if mchars[i..i + qchars.len()] == qchars[..] {
+                            start = Some(i);
+                            break;
+                        }
+                    }
+                }
+                start.map(|s| {
+                    let matched: Vec<usize> = (s..s + qchars.len()).collect();
+                    (1000 - s as i64, matched)
+                })
+            }
+        } else {
+            b4_fuzzy(&mchars, &qchars)
+        };
+        if let Some((score, matched)) = found {
+            let element = field_of(item, &accept_fields);
+            scored.push(Scored {
+                score,
+                matched,
+                mtext,
+                element,
+            });
+        }
+    }
+    if !no_sort {
+        scored.sort_by(|a, b| b.score.cmp(&a.score));
+    }
+    let mut results: Vec<Value> = Vec::new();
+    for s in &scored {
+        if let Some(f) = &preview {
+            let pv = j3_call_single(ctx, f, Value::Str(s.element.clone()), line, col)?;
+            results.push(Value::Dict(vec![
+                ("عنصر".to_string(), Value::Str(s.element.clone())),
+                ("معاينة".to_string(), pv),
+            ]));
+        } else if color {
+            let mchars: Vec<char> = s.mtext.chars().collect();
+            results.push(Value::Str(b4_colorize_fuzzy(&mchars, &s.matched)));
+        } else {
+            results.push(Value::Str(s.element.clone()));
+        }
+    }
+    let single: Value = if !multi {
+        match results.into_iter().next() {
+            Some(v) => v,
+            None => Value::Nil,
+        }
+    } else if exit_one && results.len() == 1 {
+        results.into_iter().next().unwrap()
+    } else {
+        Value::List(results)
+    };
+    let head = header.or(header_text);
+    if head.is_some() || prompt.is_some() {
+        let mut pairs: Vec<(String, Value)> = vec![("نتائج".to_string(), single)];
+        if let Some(h) = head {
+            pairs.push(("رأس".to_string(), Value::Str(h)));
+        }
+        if let Some(p) = prompt {
+            pairs.push(("موجه".to_string(), Value::Str(p)));
+        }
+        Ok(Value::Dict(pairs))
+    } else {
+        Ok(single)
+    }
+}
+
+/// محدد.أنشئ_قائمة — البند 331.
+fn fuzzy_new_list(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "محدد.أنشئ_قائمة";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 1 و2 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let items = need_list(DISPLAY, &args[0], line, col)?;
+    let pairs = b4_opt_pairs(DISPLAY, args, 1, line, col)?;
+    let mut query = String::new();
+    if let Some(ps) = pairs {
+        for (k, v) in ps {
+            match k.as_str() {
+                "استعلام" => query = need_string(DISPLAY, v, line, col)?,
+                other => return Err(b4_unknown_opt(DISPLAY, other, line, col)),
+            }
+        }
+    }
+    Ok(b4_fzf_state(items.to_vec(), query))
+}
+
+/// محدد.اقبل — البند 351.
+fn fuzzy_accept(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "محدد.اقبل";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?;
+    let items = b4_state_list(DISPLAY, pairs, "عناصر", line, col)?;
+    let idx = b4_state_num(DISPLAY, pairs, "مؤشر", line, col)?;
+    let chosen = b4_state_list(DISPLAY, pairs, "محددة", line, col)?;
+    if !chosen.is_empty() {
+        let mut out: Vec<Value> = Vec::new();
+        let mut nums: Vec<i64> = Vec::new();
+        for c in &chosen {
+            nums.push(need_integer(DISPLAY, c, line, col)?);
+        }
+        nums.sort();
+        for n in nums {
+            if n >= 0 && (n as usize) < items.len() {
+                out.push(items[n as usize].clone());
+            }
+        }
+        Ok(Value::List(out))
+    } else {
+        match items.get(idx as usize) {
+            Some(v) => Ok(Value::List(vec![v.clone()])),
+            None => Ok(Value::List(vec![])),
+        }
+    }
+}
+
+/// محدد.ألغ — البند 352.
+fn fuzzy_abort(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "محدد.ألغ";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let _ = b4_state_pairs(DISPLAY, &args[0], line, col)?;
+    Ok(Value::Nil)
+}
+
+/// محدد.بدل_الاختيار — البند 354.
+fn fuzzy_toggle(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "محدد.بدل_الاختيار";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let idx = b4_state_num(DISPLAY, &pairs, "مؤشر", line, col)?;
+    let mut chosen = b4_state_list(DISPLAY, &pairs, "محددة", line, col)?;
+    let mut nums: Vec<i64> = Vec::new();
+    for c in &chosen {
+        nums.push(need_integer(DISPLAY, c, line, col)?);
+    }
+    if let Some(p) = nums.iter().position(|n| *n == idx) {
+        nums.remove(p);
+    } else {
+        nums.push(idx);
+    }
+    nums.sort();
+    chosen = nums.into_iter().map(|n| Value::Number(n as f64)).collect();
+    let mut out = pairs;
+    b4_state_set(&mut out, "محددة", Value::List(chosen));
+    Ok(Value::Dict(out))
+}
+
+/// محدد.حدد_الكل — البند 355.
+fn fuzzy_select_all(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "محدد.حدد_الكل";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let items = b4_state_list(DISPLAY, &pairs, "عناصر", line, col)?;
+    let all: Vec<Value> = (0..items.len()).map(|i| Value::Number(i as f64)).collect();
+    let mut out = pairs;
+    b4_state_set(&mut out, "محددة", Value::List(all));
+    Ok(Value::Dict(out))
+}
+
+/// محدد.ألغ_تحديد_الكل — البند 355.
+fn fuzzy_deselect_all(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "محدد.ألغ_تحديد_الكل";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let mut out = pairs;
+    b4_state_set(&mut out, "محددة", Value::List(vec![]));
+    Ok(Value::Dict(out))
+}
+
+/// محدد.انتقل — البند 356.
+fn fuzzy_move(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "محدد.انتقل";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let dir = need_string(DISPLAY, &args[1], line, col)?;
+    let items = b4_state_list(DISPLAY, &pairs, "عناصر", line, col)?;
+    let idx = b4_state_num(DISPLAY, &pairs, "مؤشر", line, col)?;
+    let last = items.len() as i64 - 1;
+    let next = match dir.as_str() {
+        "أعلى" => (idx - 1).max(0),
+        "أسفل" => (idx + 1).min(last.max(0)),
+        "أول" => 0,
+        "آخر" => last.max(0),
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} اتجاه غير معروف: {}", DISPLAY, dir),
+                line,
+                col,
+            ))
+        }
+    };
+    let mut out = pairs;
+    b4_state_set(&mut out, "مؤشر", Value::Number(next as f64));
+    Ok(Value::Dict(out))
+}
+
+/// محدد.انتقل_صفحة — البند 357.
+fn fuzzy_page(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "محدد.انتقل_صفحة";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 2 و3 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let dir = need_string(DISPLAY, &args[1], line, col)?;
+    let size: i64 = if args.len() == 3 {
+        b4_need_count(DISPLAY, "حجم", &args[2], line, col)?
+    } else {
+        10
+    };
+    let items = b4_state_list(DISPLAY, &pairs, "عناصر", line, col)?;
+    let idx = b4_state_num(DISPLAY, &pairs, "مؤشر", line, col)?;
+    let last = items.len() as i64 - 1;
+    let next = match dir.as_str() {
+        "أعلى" => (idx - size).max(0),
+        "أسفل" => (idx + size).min(last.max(0)),
+        "أول" => 0,
+        "آخر" => last.max(0),
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} اتجاه غير معروف: {}", DISPLAY, dir),
+                line,
+                col,
+            ))
+        }
+    };
+    let mut out = pairs;
+    b4_state_set(&mut out, "مؤشر", Value::Number(next as f64));
+    Ok(Value::Dict(out))
+}
+
+/// محدد.مرر_المعاينة — البند 358.
+fn fuzzy_preview_scroll(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "محدد.مرر_المعاينة";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let dir = need_string(DISPLAY, &args[1], line, col)?;
+    let off = b4_state_num(DISPLAY, &pairs, "معاينة_إزاحة", line, col)?;
+    let next = match dir.as_str() {
+        "أعلى" => (off - 1).max(0),
+        "أسفل" => off + 1,
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} اتجاه غير معروف: {}", DISPLAY, dir),
+                line,
+                col,
+            ))
+        }
+    };
+    let mut out = pairs;
+    b4_state_set(&mut out, "معاينة_إزاحة", Value::Number(next as f64));
+    Ok(Value::Dict(out))
+}
+
+/// محدد.امسح_البحث — البند 359.
+fn fuzzy_clear_query(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "محدد.امسح_البحث";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let mut out = pairs;
+    b4_state_set(&mut out, "استعلام", Value::Str(String::new()));
+    Ok(Value::Dict(out))
+}
+
+/// محدد.امسح_التحديد — البند 359.
+fn fuzzy_clear_selection(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "محدد.امسح_التحديد";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let mut out = pairs;
+    b4_state_set(&mut out, "محددة", Value::List(vec![]));
+    Ok(Value::Dict(out))
+}
+
+/// محدد.اطبع_الاستعلام — البند 360.
+fn fuzzy_print_query(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "محدد.اطبع_الاستعلام";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?;
+    let q = b4_state_text(DISPLAY, pairs, "استعلام", line, col)?;
+    Ok(Value::Str(q))
+}
+// END لينكس4-نص دوال محدد Rust
+// BEGIN لينكس4-نص مداخل محدد Rust
+fn fzf_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("ابحث_ضبابيا", native("ابحث_ضبابيا", fuzzy_search)),
+        ("أنشئ_قائمة", native("أنشئ_قائمة", fuzzy_new_list)),
+        ("اقبل", native("اقبل", fuzzy_accept)),
+        ("ألغ", native("ألغ", fuzzy_abort)),
+        ("بدل_الاختيار", native("بدل_الاختيار", fuzzy_toggle)),
+        ("حدد_الكل", native("حدد_الكل", fuzzy_select_all)),
+        ("ألغ_تحديد_الكل", native("ألغ_تحديد_الكل", fuzzy_deselect_all)),
+        ("انتقل", native("انتقل", fuzzy_move)),
+        ("انتقل_صفحة", native("انتقل_صفحة", fuzzy_page)),
+        ("مرر_المعاينة", native("مرر_المعاينة", fuzzy_preview_scroll)),
+        ("امسح_البحث", native("امسح_البحث", fuzzy_clear_query)),
+        ("امسح_التحديد", native("امسح_التحديد", fuzzy_clear_selection)),
+        ("اطبع_الاستعلام", native("اطبع_الاستعلام", fuzzy_print_query)),
+    ]
+}
+// END لينكس4-نص مداخل محدد Rust
+// BEGIN لينكس4-نص دوال عرض Rust
+/// عرض.اعرض — البند 365.
+fn display_show(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عرض.اعرض";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 1 و2 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let pairs = b4_opt_pairs(DISPLAY, args, 1, line, col)?;
+    let header_text = Some(format!("نص ({} بايت)", text.len()));
+    let opts = b4_display_opts_parse(DISPLAY, pairs, header_text, line, col)?;
+    let lines: Vec<String> = flow_lines(&text).into_iter().map(|s| s.to_string()).collect();
+    Ok(Value::Str(b4_display_render(&lines, &opts)))
+}
+
+/// عرض.اعرض_ملفا — البند 365.
+fn display_show_file(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عرض.اعرض_ملفا";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 1 و2 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let pairs = b4_opt_pairs(DISPLAY, args, 1, line, col)?;
+    let bytes = j12_read_file(ctx, &path, line, col)?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        RioError::runtime(format!("الملف {} ليس نصا صالحا (UTF-8)", path), line, col)
+    })?;
+    let header_text = Some(format!("{} ({} بايت)", path, text.len()));
+    let mut opts = b4_display_opts_parse(DISPLAY, pairs, header_text, line, col)?;
+    let lang_given = match pairs {
+        Some(ps) => dict_get(ps, "لغة").is_some(),
+        None => false,
+    };
+    if !lang_given {
+        let ext = std::path::Path::new(&path)
+            .extension()
+            .map(|e| e.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        opts.lang = b4_lang_from_ext(&ext, &opts.bindings);
+    }
+    let lines: Vec<String> = flow_lines(&text).into_iter().map(|s| s.to_string()).collect();
+    Ok(Value::Str(b4_display_render(&lines, &opts)))
+}
+
+/// عرض.سرد_اللغات — البند 372.
+fn display_list_langs(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عرض.سرد_اللغات";
+    need_args(DISPLAY, args, 0, line, col)?;
+    Ok(Value::List(vec![
+        Value::Str("نيفا".to_string()),
+        Value::Str("بايثون".to_string()),
+        Value::Str("سي".to_string()),
+        Value::Str("جافاسكربت".to_string()),
+        Value::Str("رست".to_string()),
+        Value::Str("نص".to_string()),
+    ]))
+}
+
+/// عرض.سرد_السمات — البند 375.
+fn display_list_themes(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عرض.سرد_السمات";
+    need_args(DISPLAY, args, 0, line, col)?;
+    Ok(Value::List(vec![
+        Value::Str("داكن".to_string()),
+        Value::Str("فاتح".to_string()),
+    ]))
+}
+
+/// عرض.أزل_الألوان — البند 383.
+fn display_strip_ansi(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عرض.أزل_الألوان";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    Ok(Value::Str(b4_ansi_strip(&text)))
+}
+// END لينكس4-نص دوال عرض Rust
+// BEGIN لينكس4-نص مداخل عرض Rust
+fn display_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("اعرض", native("اعرض", display_show)),
+        ("اعرض_ملفا", native("اعرض_ملفا", display_show_file)),
+        ("سرد_اللغات", native("سرد_اللغات", display_list_langs)),
+        ("سرد_السمات", native("سرد_السمات", display_list_themes)),
+        ("أزل_الألوان", native("أزل_الألوان", display_strip_ansi)),
+    ]
+}
+// END لينكس4-نص مداخل عرض Rust
+// BEGIN لينكس4-نص دوال عارض Rust
+/// عارض.افتح — البند 386.
+fn viewer_open(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.افتح";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let lines: Vec<Value> = flow_lines(&text)
+        .into_iter()
+        .map(|s| Value::Str(s.to_string()))
+        .collect();
+    Ok(b4_less_state(lines, None))
+}
+
+/// عارض.افتح_من_ملف — البند 386.
+fn viewer_open_file(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.افتح_من_ملف";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let bytes = j12_read_file(ctx, &path, line, col)?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        RioError::runtime(format!("الملف {} ليس نصا صالحا (UTF-8)", path), line, col)
+    })?;
+    let lines: Vec<Value> = flow_lines(&text)
+        .into_iter()
+        .map(|s| Value::Str(s.to_string()))
+        .collect();
+    let mut state = match b4_less_state(lines, Some(path.clone())) {
+        Value::Dict(pairs) => pairs,
+        _ => unreachable!(),
+    };
+    b4_state_set(
+        &mut state,
+        "ملفات",
+        Value::List(vec![Value::Str(path)]),
+    );
+    Ok(Value::Dict(state))
+}
+
+/// عارض.ابحث_أماميا — البند 386.
+fn viewer_search_fwd(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.ابحث_أماميا";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 2 و3 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    let opt_pairs = b4_opt_pairs(DISPLAY, args, 2, line, col)?;
+    let mut fold = b4_state_bool(DISPLAY, &pairs, "تجاهل_الحالة", line, col)?;
+    if let Some(ps) = opt_pairs {
+        for (k, v) in ps {
+            match k.as_str() {
+                "تجاهل_الحالة" => fold = b4_need_bool(DISPLAY, v, line, col)?,
+                other => return Err(b4_unknown_opt(DISPLAY, other, line, col)),
+            }
+        }
+    }
+    let lines = b4_state_list(DISPLAY, &pairs, "أسطر", line, col)?;
+    let mut strs: Vec<String> = Vec::new();
+    for l in &lines {
+        strs.push(need_string(DISPLAY, l, line, col)?);
+    }
+    let pos = b4_state_num(DISPLAY, &pairs, "موضع", line, col)?;
+    let found = b4_less_find(&strs, &pattern, fold, pos + 1, true);
+    let mut out = pairs;
+    b4_state_set(&mut out, "نمط_البحث", Value::Str(pattern));
+    b4_state_set(&mut out, "تجاهل_الحالة", Value::Bool(fold));
+    if let Some(f) = found {
+        b4_state_set(&mut out, "موضع", Value::Number(f as f64));
+    }
+    Ok(Value::Dict(out))
+}
+
+/// عارض.ابحث_خلفيا — البند 387.
+fn viewer_search_back(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.ابحث_خلفيا";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 2 و3 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    let opt_pairs = b4_opt_pairs(DISPLAY, args, 2, line, col)?;
+    let mut fold = b4_state_bool(DISPLAY, &pairs, "تجاهل_الحالة", line, col)?;
+    if let Some(ps) = opt_pairs {
+        for (k, v) in ps {
+            match k.as_str() {
+                "تجاهل_الحالة" => fold = b4_need_bool(DISPLAY, v, line, col)?,
+                other => return Err(b4_unknown_opt(DISPLAY, other, line, col)),
+            }
+        }
+    }
+    let lines = b4_state_list(DISPLAY, &pairs, "أسطر", line, col)?;
+    let mut strs: Vec<String> = Vec::new();
+    for l in &lines {
+        strs.push(need_string(DISPLAY, l, line, col)?);
+    }
+    let pos = b4_state_num(DISPLAY, &pairs, "موضع", line, col)?;
+    let found = b4_less_find(&strs, &pattern, fold, pos - 1, false);
+    let mut out = pairs;
+    b4_state_set(&mut out, "نمط_البحث", Value::Str(pattern));
+    b4_state_set(&mut out, "تجاهل_الحالة", Value::Bool(fold));
+    if let Some(f) = found {
+        b4_state_set(&mut out, "موضع", Value::Number(f as f64));
+    }
+    Ok(Value::Dict(out))
+}
+
+/// عارض.التالي — البند 388.
+fn viewer_next(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.التالي";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let pat = match dict_get(&pairs, "نمط_البحث") {
+        Some(Value::Str(s)) => s.clone(),
+        _ => return Ok(Value::Dict(pairs)),
+    };
+    let fold = b4_state_bool(DISPLAY, &pairs, "تجاهل_الحالة", line, col)?;
+    let lines = b4_state_list(DISPLAY, &pairs, "أسطر", line, col)?;
+    let mut strs: Vec<String> = Vec::new();
+    for l in &lines {
+        strs.push(need_string(DISPLAY, l, line, col)?);
+    }
+    let pos = b4_state_num(DISPLAY, &pairs, "موضع", line, col)?;
+    let found = b4_less_find(&strs, &pat, fold, pos + 1, true);
+    let mut out = pairs;
+    if let Some(f) = found {
+        b4_state_set(&mut out, "موضع", Value::Number(f as f64));
+    }
+    Ok(Value::Dict(out))
+}
+
+/// عارض.السابق — البند 388.
+fn viewer_prev(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.السابق";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let pat = match dict_get(&pairs, "نمط_البحث") {
+        Some(Value::Str(s)) => s.clone(),
+        _ => return Ok(Value::Dict(pairs)),
+    };
+    let fold = b4_state_bool(DISPLAY, &pairs, "تجاهل_الحالة", line, col)?;
+    let lines = b4_state_list(DISPLAY, &pairs, "أسطر", line, col)?;
+    let mut strs: Vec<String> = Vec::new();
+    for l in &lines {
+        strs.push(need_string(DISPLAY, l, line, col)?);
+    }
+    let pos = b4_state_num(DISPLAY, &pairs, "موضع", line, col)?;
+    let found = b4_less_find(&strs, &pat, fold, pos - 1, false);
+    let mut out = pairs;
+    if let Some(f) = found {
+        b4_state_set(&mut out, "موضع", Value::Number(f as f64));
+    }
+    Ok(Value::Dict(out))
+}
+
+/// عارض.ميز_المطابقات — البند 390.
+fn viewer_highlight(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.ميز_المطابقات";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let mut out = pairs;
+    b4_state_set(&mut out, "ميز", Value::Bool(true));
+    Ok(Value::Dict(out))
+}
+
+/// عارض.صفحة — البند 390.
+fn viewer_page(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.صفحة";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 1 و2 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?;
+    let count: i64 = if args.len() == 2 {
+        b4_need_count(DISPLAY, "عدد", &args[1], line, col)?
+    } else {
+        10
+    };
+    Ok(Value::Str(b4_less_page(pairs, count)))
+}
+
+/// عارض.اقفز_إلى_سطر — البند 391.
+fn viewer_goto_line(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.اقفز_إلى_سطر";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let n = need_integer(DISPLAY, &args[1], line, col)?;
+    let lines = b4_state_list(DISPLAY, &pairs, "أسطر", line, col)?;
+    if n < 1 || n as usize > lines.len() {
+        return Err(RioError::runtime(
+            format!("الدالة {} رقم السطر {} خارج النطاق (الأسطر {})", DISPLAY, n, lines.len()),
+            line,
+            col,
+        ));
+    }
+    let mut out = pairs;
+    b4_state_set(&mut out, "موضع", Value::Number((n - 1) as f64));
+    Ok(Value::Dict(out))
+}
+
+/// عارض.اقفز_إلى_نسبة — البند 392.
+fn viewer_goto_pct(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.اقفز_إلى_نسبة";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let pct = need_integer(DISPLAY, &args[1], line, col)?;
+    if !(0..=100).contains(&pct) {
+        return Err(RioError::runtime(
+            format!("الدالة {} النسبة {} خارج النطاق (0..100)", DISPLAY, pct),
+            line,
+            col,
+        ));
+    }
+    let lines = b4_state_list(DISPLAY, &pairs, "أسطر", line, col)?;
+    let n = lines.len() as i64;
+    let pos = if n == 0 { 0 } else { (n - 1) * pct / 100 };
+    let mut out = pairs;
+    b4_state_set(&mut out, "موضع", Value::Number(pos as f64));
+    Ok(Value::Dict(out))
+}
+
+/// عارض.تتبع_النهاية — البند 393.
+fn viewer_follow_tail(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.تتبع_النهاية";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let path = match dict_get(&pairs, "مسار") {
+        Some(Value::Str(s)) => Some(s.clone()),
+        _ => None,
+    };
+    let mut out = pairs;
+    if let Some(p) = path {
+        let bytes = j12_read_file(ctx, &p, line, col)?;
+        let text = String::from_utf8(bytes).map_err(|_| {
+            RioError::runtime(format!("الملف {} ليس نصا صالحا (UTF-8)", p), line, col)
+        })?;
+        let lines: Vec<Value> = flow_lines(&text)
+            .into_iter()
+            .map(|s| Value::Str(s.to_string()))
+            .collect();
+        let last = lines.len() as i64 - 1;
+        b4_state_set(&mut out, "أسطر", Value::List(lines));
+        b4_state_set(&mut out, "موضع", Value::Number(last.max(0) as f64));
+    }
+    Ok(Value::Dict(out))
+}
+
+/// عارض.افتح_ملفا — البند 394.
+fn viewer_open_in(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.افتح_ملفا";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let path = need_string(DISPLAY, &args[1], line, col)?;
+    let bytes = j12_read_file(ctx, &path, line, col)?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        RioError::runtime(format!("الملف {} ليس نصا صالحا (UTF-8)", path), line, col)
+    })?;
+    let lines: Vec<Value> = flow_lines(&text)
+        .into_iter()
+        .map(|s| Value::Str(s.to_string()))
+        .collect();
+    let mut files = b4_state_list(DISPLAY, &pairs, "ملفات", line, col)?;
+    let mut files_str: Vec<String> = Vec::new();
+    for f in &files {
+        files_str.push(need_string(DISPLAY, f, line, col)?);
+    }
+    let idx = match files_str.iter().position(|f| *f == path) {
+        Some(i) => i,
+        None => {
+            files.push(Value::Str(path.clone()));
+            files.len() - 1
+        }
+    };
+    let mut out = pairs;
+    b4_state_set(&mut out, "أسطر", Value::List(lines));
+    b4_state_set(&mut out, "موضع", Value::Number(0.0));
+    b4_state_set(&mut out, "مسار", Value::Str(path));
+    b4_state_set(&mut out, "ملفات", Value::List(files));
+    b4_state_set(&mut out, "ملف_حالي", Value::Number(idx as f64));
+    Ok(Value::Dict(out))
+}
+
+/// عارض.علم_موضعا — البند 396.
+fn viewer_mark(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.علم_موضعا";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let name = need_string(DISPLAY, &args[1], line, col)?;
+    let pos = b4_state_num(DISPLAY, &pairs, "موضع", line, col)?;
+    let marks = match dict_get(&pairs, "علامات") {
+        Some(Value::Dict(mp)) => mp.clone(),
+        _ => vec![],
+    };
+    let mut new_marks = marks;
+    if let Some(slot) = new_marks.iter_mut().find(|(k, _)| *k == name) {
+        slot.1 = Value::Number(pos as f64);
+    } else {
+        new_marks.push((name, Value::Number(pos as f64)));
+    }
+    let mut out = pairs;
+    b4_state_set(&mut out, "علامات", Value::Dict(new_marks));
+    Ok(Value::Dict(out))
+}
+
+/// عارض.اقفز_إلى_علامة — البند 397.
+fn viewer_goto_mark(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.اقفز_إلى_علامة";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let name = need_string(DISPLAY, &args[1], line, col)?;
+    let marks = match dict_get(&pairs, "علامات") {
+        Some(Value::Dict(mp)) => mp.clone(),
+        _ => vec![],
+    };
+    match dict_get(&marks, &name) {
+        Some(Value::Number(n)) => {
+            let mut out = pairs;
+            b4_state_set(&mut out, "موضع", Value::Number(*n));
+            Ok(Value::Dict(out))
+        }
+        _ => Err(RioError::runtime(
+            format!("الدالة {} لا علامة باسم {}", DISPLAY, name),
+            line,
+            col,
+        )),
+    }
+}
+
+/// عارض.أعد_تحميل — البند 398.
+fn viewer_reload(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.أعد_تحميل";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let path = match dict_get(&pairs, "مسار") {
+        Some(Value::Str(s)) => Some(s.clone()),
+        _ => None,
+    };
+    let mut out = pairs;
+    if let Some(p) = path {
+        let bytes = j12_read_file(ctx, &p, line, col)?;
+        let text = String::from_utf8(bytes).map_err(|_| {
+            RioError::runtime(format!("الملف {} ليس نصا صالحا (UTF-8)", p), line, col)
+        })?;
+        let lines: Vec<Value> = flow_lines(&text)
+            .into_iter()
+            .map(|s| Value::Str(s.to_string()))
+            .collect();
+        let pos = b4_state_num(DISPLAY, &out, "موضع", line, col)?;
+        let last = lines.len() as i64 - 1;
+        b4_state_set(&mut out, "أسطر", Value::List(lines));
+        b4_state_set(&mut out, "موضع", Value::Number(pos.min(last.max(0)) as f64));
+    }
+    Ok(Value::Dict(out))
+}
+
+/// عارض.الملف_التالي — البند 399.
+fn viewer_next_file(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.الملف_التالي";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let files = b4_state_list(DISPLAY, &pairs, "ملفات", line, col)?;
+    if files.len() < 2 {
+        return Ok(Value::Dict(pairs));
+    }
+    let cur = b4_state_num(DISPLAY, &pairs, "ملف_حالي", line, col)?;
+    let n = files.len() as i64;
+    let next = (cur + 1) % n;
+    let path = need_string(DISPLAY, &files[next as usize], line, col)?;
+    let bytes = j12_read_file(ctx, &path, line, col)?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        RioError::runtime(format!("الملف {} ليس نصا صالحا (UTF-8)", path), line, col)
+    })?;
+    let lines: Vec<Value> = flow_lines(&text)
+        .into_iter()
+        .map(|s| Value::Str(s.to_string()))
+        .collect();
+    let mut out = pairs;
+    b4_state_set(&mut out, "أسطر", Value::List(lines));
+    b4_state_set(&mut out, "موضع", Value::Number(0.0));
+    b4_state_set(&mut out, "مسار", Value::Str(path));
+    b4_state_set(&mut out, "ملف_حالي", Value::Number(next as f64));
+    Ok(Value::Dict(out))
+}
+
+/// عارض.الملف_السابق — البند 399.
+fn viewer_prev_file(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.الملف_السابق";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pairs = b4_state_pairs(DISPLAY, &args[0], line, col)?.to_vec();
+    let files = b4_state_list(DISPLAY, &pairs, "ملفات", line, col)?;
+    if files.len() < 2 {
+        return Ok(Value::Dict(pairs));
+    }
+    let cur = b4_state_num(DISPLAY, &pairs, "ملف_حالي", line, col)?;
+    let n = files.len() as i64;
+    let next = (cur - 1 + n) % n;
+    let path = need_string(DISPLAY, &files[next as usize], line, col)?;
+    let bytes = j12_read_file(ctx, &path, line, col)?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        RioError::runtime(format!("الملف {} ليس نصا صالحا (UTF-8)", path), line, col)
+    })?;
+    let lines: Vec<Value> = flow_lines(&text)
+        .into_iter()
+        .map(|s| Value::Str(s.to_string()))
+        .collect();
+    let mut out = pairs;
+    b4_state_set(&mut out, "أسطر", Value::List(lines));
+    b4_state_set(&mut out, "موضع", Value::Number(0.0));
+    b4_state_set(&mut out, "مسار", Value::Str(path));
+    b4_state_set(&mut out, "ملف_حالي", Value::Number(next as f64));
+    Ok(Value::Dict(out))
+}
+
+/// عارض.اخرج — البند 400.
+fn viewer_quit(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عارض.اخرج";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let _ = b4_state_pairs(DISPLAY, &args[0], line, col)?;
+    Ok(Value::Nil)
+}
+// END لينكس4-نص دوال عارض Rust
+// BEGIN لينكس4-نص مداخل عارض Rust
+fn less_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("افتح", native("افتح", viewer_open)),
+        ("افتح_من_ملف", native("افتح_من_ملف", viewer_open_file)),
+        ("ابحث_أماميا", native("ابحث_أماميا", viewer_search_fwd)),
+        ("ابحث_خلفيا", native("ابحث_خلفيا", viewer_search_back)),
+        ("التالي", native("التالي", viewer_next)),
+        ("السابق", native("السابق", viewer_prev)),
+        ("ميز_المطابقات", native("ميز_المطابقات", viewer_highlight)),
+        ("صفحة", native("صفحة", viewer_page)),
+        ("اقفز_إلى_سطر", native("اقفز_إلى_سطر", viewer_goto_line)),
+        ("اقفز_إلى_نسبة", native("اقفز_إلى_نسبة", viewer_goto_pct)),
+        ("تتبع_النهاية", native("تتبع_النهاية", viewer_follow_tail)),
+        ("افتح_ملفا", native("افتح_ملفا", viewer_open_in)),
+        ("علم_موضعا", native("علم_موضعا", viewer_mark)),
+        ("اقفز_إلى_علامة", native("اقفز_إلى_علامة", viewer_goto_mark)),
+        ("أعد_تحميل", native("أعد_تحميل", viewer_reload)),
+        ("الملف_التالي", native("الملف_التالي", viewer_next_file)),
+        ("الملف_السابق", native("الملف_السابق", viewer_prev_file)),
+        ("اخرج", native("اخرج", viewer_quit)),
+    ]
+}
+// END لينكس4-نص مداخل عارض Rust
 fn diff_entries() -> Vec<(&'static str, Value)> {
     vec![
         ("فرق", native("فرق", diff_diff)),
         ("فرق_مجلدين", native("فرق_مجلدين", diff_dirs)),
-        ("متطابقان", native("متطابقان", diff_same)),
+        ("متطابقان", native("متطابقان", diff_same)),// BEGIN لينكس4-نص مداخل فرق
+        ("قارن_ثنائيا", native("قارن_ثنائيا", diff_compare_bytes)),
+// END لينكس4-نص مداخل فرق
+
     ]
 }
 
@@ -770,6 +2328,10 @@ pub fn native_module(name: &str) -> Option<Value> {
         "تدفق" => flow_entries(),
         // لينكس3 موجة النص: وحدة فرق (§7).
         "فرق" => diff_entries(),
+        // لينكس4 موجة النص: وحدات محدد وعرض وعارض.
+        "محدد" => fzf_entries(),
+        "عرض" => display_entries(),
+        "عارض" => less_entries(),
         "جسون" => json_entries(),
         "اكسمل" => xml_entries(),
         "يامال" => yaml_entries(),
@@ -2454,8 +4016,12 @@ fn rx_check_text(text: &str) -> Result<Vec<char>, String> {
 
 /// مطابقة كاملة لنص بنمط (مع ^ و$ ضمنيين).
 fn rx_full_match(pattern: &str, text: &str) -> Result<bool, String> {
+    rx_full_match_fold(pattern, text, false)
+}
+
+fn rx_full_match_fold(pattern: &str, text: &str, fold: bool) -> Result<bool, String> {
     let chars = rx_check_text(text)?;
-    let prog = rx_compile(pattern, true)?;
+    let prog = rx_compile_fold(pattern, true, fold)?;
     Ok(rx_match_at(&prog, &chars, 0)?.is_some())
 }
 
@@ -2794,6 +4360,42 @@ struct SearchOpts {
     json: bool,
     color: bool,
     max_depth: Option<i64>,
+    // دفعة لينكس 4 — خيارات يدوية.
+    multiline: bool,
+    dotall: bool,
+    basic_regex: bool,
+    posix_classes: bool,
+    pcre2: bool,
+    perl_regex: bool,
+    windows_lines: bool,
+    silent_errors: bool,
+    stop_at_first_nonmatch: bool,
+    byte_offset: bool,
+    all_lines: bool,
+    max_cols: Option<i64>,
+    label: Option<String>,
+    context_separator: Option<String>,
+    sort_files: Option<i8>,
+    no_restrictions: Option<i64>,
+    extra_types: Vec<(String, Vec<String>)>,
+    ignore_patterns: Vec<String>,
+    ignore_file: Option<String>,
+    ignore_parent: bool,
+    respect_vcs: bool,
+    respect_dotignore: bool,
+    encoding: Option<String>,
+    binary_as_text: bool,
+    follow_links: bool,
+    max_file_size: Option<i64>,
+    skip_dirs: bool,
+    exclude_from_file: Option<String>,
+    extra_excludes: Vec<String>,
+    extra_ignores: Vec<String>,
+    hide_filename: bool,
+    group_headers: bool,
+    group_separator: Option<String>,
+    file_pattern_fold: bool,
+    patterns_fold: bool,
 }
 
 fn search_need_bool(
@@ -2834,6 +4436,327 @@ fn search_need_count(
         ));
     }
     Ok(n)
+}
+
+/// ترجمة BRE إلى ERE (دفعة لينكس 4): `\( \) \{ \+ \? \|`
+/// تصير أقواسا وكمّيات وتناوبا؛ وغير المهروب منها يصير حرفيا.
+fn search_bre_translate(pattern: &str) -> String {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' && i + 1 < chars.len() {
+            let n = chars[i + 1];
+            match n {
+                '(' | ')' | '{' | '}' | '+' | '?' | '|' => {
+                    out.push(n);
+                    i += 2;
+                    continue;
+                }
+                _ => {
+                    out.push(c);
+                    out.push(n);
+                    i += 2;
+                    continue;
+                }
+            }
+        }
+        match c {
+            '(' | ')' | '{' | '}' | '+' | '?' | '|' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// ترجمة فئات بوزيكس داخل الأقواس فقط: [:digit:] ونحوها
+/// إلى نطاقاتها؛ و[:space:] إلى مسافة وتبويب.
+fn search_posix_translate(pattern: &str) -> String {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::new();
+    let mut i = 0usize;
+    let mut in_class = false;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' && i + 1 < chars.len() {
+            out.push(c);
+            out.push(chars[i + 1]);
+            i += 2;
+            continue;
+        }
+        if c == '[' {
+            in_class = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == ']' {
+            in_class = false;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if in_class && c == '[' && i + 1 < chars.len() && chars[i + 1] == ':' {
+            let rest: String = chars[i..].iter().collect();
+            let mut done = false;
+            for (name, rep) in [
+                ("[:digit:]", "0-9"),
+                ("[:alpha:]", "a-zA-Z"),
+                ("[:alnum:]", "a-zA-Z0-9"),
+                ("[:upper:]", "A-Z"),
+                ("[:lower:]", "a-z"),
+                ("[:space:]", " \\t"),
+            ] {
+                if let Some(tail) = rest.strip_prefix(name) {
+                    out.push_str(rep);
+                    i += name.len();
+                    let _ = tail;
+                    done = true;
+                    break;
+                }
+            }
+            if done {
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// ترجمة نقطة تطابق سطرا: `.` خارج الفئات تصير `(\n|.)`.
+fn search_dotall_translate(pattern: &str) -> String {
+    let chars: Vec<char> = pattern.chars().collect();
+    let mut out = String::new();
+    let mut i = 0usize;
+    let mut in_class = false;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '\\' && i + 1 < chars.len() {
+            out.push(c);
+            out.push(chars[i + 1]);
+            i += 2;
+            continue;
+        }
+        if c == '[' {
+            in_class = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == ']' {
+            in_class = false;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '.' && !in_class {
+            out.push_str("(\\n|.)");
+            i += 1;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// النمط الفعلي بعد ترجمات خيارات دفعة لينكس 4 (تعابير
+/// فقط؛ والنص الثابت يبقى كما هو).
+fn search_eff_pattern(pattern: &str, opts: &SearchOpts) -> String {
+    let mut p = pattern.to_string();
+    if opts.basic_regex {
+        p = search_bre_translate(&p);
+    }
+    if opts.posix_classes {
+        p = search_posix_translate(&p);
+    }
+    if opts.dotall {
+        p = search_dotall_translate(&p);
+    }
+    p
+}
+
+/// هل يطابق مسار نسبي نمط gitignore واحدا (كروي على
+/// الاسم العاري إن بلا `/`، وعلى المسار الكامل إن
+/// فيه `/`؛ والمنتهي بـ`/` للمجلدات وحدها)؟ وطيّ
+/// الحالة يطوي الطرفين ASCII.
+fn search_gitignore_one(pat: &str, rel: &str, is_dir: bool, fold: bool) -> bool {
+    let mut p = pat;
+    let neg = p.starts_with('!');
+    if neg {
+        p = &p[1..];
+    }
+    let _ = neg;
+    let dir_only = p.ends_with('/');
+    let p = p.trim_end_matches('/');
+    if p.is_empty() {
+        return false;
+    }
+    if dir_only && !is_dir {
+        // ملف تحت مجلد مطابق: أي مقطع من المسار يطابق.
+        let segs: Vec<&str> = rel.split('/').collect();
+        for k in 0..segs.len().saturating_sub(1) {
+            let prefix = segs[..=k].join("/");
+            if search_gitignore_seg(p, &prefix, fold) {
+                return true;
+            }
+        }
+        return false;
+    }
+    if p.contains('/') {
+        search_gitignore_seg(p, rel, fold)
+    } else {
+        let bare = rel.rsplit('/').next().unwrap_or(rel);
+        search_gitignore_seg(p, bare, fold)
+    }
+}
+
+fn search_gitignore_seg(pat: &str, name: &str, fold: bool) -> bool {
+    search_glob_match_fold(pat, name, fold, 0, 0).unwrap_or(false)
+}
+
+/// مطابقة gitignore بقاعدة «آخر نمط مطابق يغلب» مع
+/// النفي `!`؛ وتُستعمل لأنماط_تجاهل فقط.
+fn search_gitignore_ignored(
+    patterns: &[String],
+    rel: &str,
+    is_dir: bool,
+    fold: bool,
+) -> bool {
+    let mut ignored = false;
+    for pat in patterns {
+        let p = pat.trim();
+        if p.is_empty() || p.starts_with('#') {
+            continue;
+        }
+        let neg = p.starts_with('!');
+        let body = if neg { &p[1..] } else { p };
+        if search_gitignore_one(body, rel, is_dir, fold) {
+            ignored = !neg;
+        }
+    }
+    ignored
+}
+
+/// فك ترميز بايتات ملف حسب خيار الترميز: latin1 يحوّل
+/// كل بايت إلى محرفه؛ وutf-8 (الافتراضي) يرفض غير
+/// الصالح؛ وثنائي_كنص يفك latin1 دائما.
+fn search_decode(bytes: &[u8], opts: &SearchOpts) -> Option<String> {
+    if opts.binary_as_text {
+        return Some(bytes.iter().map(|b| *b as char).collect());
+    }
+    match opts.encoding.as_deref() {
+        Some("latin1") => Some(bytes.iter().map(|b| *b as char).collect()),
+        _ => String::from_utf8(bytes.to_vec()).ok(),
+    }
+}
+
+/// اقرأ ملفا نصا مع احترام أقصى_حجم_ملف والثنائي
+/// والترميز؛ ولاشيء للملف المتخطى.
+fn search_file_to_text(
+    fs_path: &std::path::Path,
+    opts: &SearchOpts,
+) -> Option<String> {
+    let bytes = std::fs::read(fs_path).ok()?;
+    if let Some(max) = opts.max_file_size {
+        if bytes.len() as i64 > max {
+            return None;
+        }
+    }
+    if !opts.binary_as_text && bytes.contains(&0) {
+        return None;
+    }
+    search_decode(&bytes, opts)
+}
+
+/// أنماط تجاهل مجلدات الأب (من والد الجذر حتى مجلد
+/// الجلسة ضمنا)؛ وتُقرأ .ignore و.gitignore حسب
+/// علمي تجاهل_النقطي وتجاهل_أنظمة_التحكم.
+fn search_parent_ignores(
+    ctx: &mut dyn HandlerCaller,
+    root_fs: &std::path::Path,
+    opts: &SearchOpts,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if !opts.ignore_parent || !opts.respect_ignore {
+        return out;
+    }
+    let cwd = ctx.server_cwd();
+    let mut dir = root_fs.parent().map(|p| p.to_path_buf());
+    while let Some(d) = dir {
+        out.extend(search_ignore_patterns_flags(
+            &d,
+            opts.respect_dotignore,
+            opts.respect_vcs,
+        ));
+        if d == cwd {
+            break;
+        }
+        if d.parent().is_none() {
+            break;
+        }
+        dir = d.parent().map(|p| p.to_path_buf());
+    }
+    out
+}
+
+/// اقرأ ملف تجاهل إضافي (خيار ملف_تجاهل) إلى
+/// extra_ignores؛ والغائب ← خطأ عربي.
+fn search_load_ignore_file(
+    ctx: &mut dyn HandlerCaller,
+    opts: &mut SearchOpts,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    let Some(path) = opts.ignore_file.clone() else {
+        return Ok(());
+    };
+    let full = search_resolve_path(ctx, &path);
+    let text = std::fs::read_to_string(&full).map_err(|_| {
+        RioError::runtime(format!("تعذر قراءة ملف التجاهل: {}", path), line, col)
+    })?;
+    for raw in text.lines() {
+        let pat = raw.trim_end_matches(|c: char| c.is_ascii_whitespace());
+        if pat.is_empty() || pat.starts_with('#') {
+            continue;
+        }
+        opts.extra_ignores.push(pat.to_string());
+    }
+    Ok(())
+}
+
+/// اقرأ ملف استثناء (خيار استثن_من_ملف) إلى
+/// extra_excludes؛ والغائب ← خطأ عربي.
+fn search_load_exclude_file(
+    ctx: &mut dyn HandlerCaller,
+    opts: &mut SearchOpts,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    let Some(path) = opts.exclude_from_file.clone() else {
+        return Ok(());
+    };
+    let full = search_resolve_path(ctx, &path);
+    let text = std::fs::read_to_string(&full).map_err(|_| {
+        RioError::runtime(format!("تعذر قراءة ملف الاستثناء: {}", path), line, col)
+    })?;
+    for raw in text.lines() {
+        let pat = raw.trim_end_matches(|c: char| c.is_ascii_whitespace());
+        if pat.is_empty() || pat.starts_with('#') {
+            continue;
+        }
+        opts.extra_excludes.push(pat.to_string());
+    }
+    Ok(())
 }
 
 fn search_parse_opts_dict(
@@ -2923,6 +4846,174 @@ fn search_parse_opts_dict(
             "أقصى_عمق" => {
                 opts.max_depth = Some(search_need_count(display, k, v, line, col)?);
             }
+            "متعدد_الأسطر" => {
+                opts.multiline = search_need_bool(display, k, v, line, col)?;
+            }
+            "نقطة_تطابق_سطرا" => {
+                opts.dotall = search_need_bool(display, k, v, line, col)?;
+            }
+            "بيسي_ري2" => {
+                opts.pcre2 = search_need_bool(display, k, v, line, col)?;
+            }
+            "تعابير_بيرل" => {
+                opts.perl_regex = search_need_bool(display, k, v, line, col)?;
+            }
+            "تعابير_أساسية" => {
+                opts.basic_regex = search_need_bool(display, k, v, line, col)?;
+            }
+            "أرقام_بوزيكس" => {
+                opts.posix_classes = search_need_bool(display, k, v, line, col)?;
+            }
+            "سطور_ويندوز" => {
+                opts.windows_lines = search_need_bool(display, k, v, line, col)?;
+            }
+            "صامت_الأخطاء" => {
+                opts.silent_errors = search_need_bool(display, k, v, line, col)?;
+            }
+            "توقف_عند_أول_غير_مطابق" => {
+                opts.stop_at_first_nonmatch = search_need_bool(display, k, v, line, col)?;
+            }
+            "إزاحة_البايت" => {
+                opts.byte_offset = search_need_bool(display, k, v, line, col)?;
+            }
+            "مرر_الكل" => {
+                opts.all_lines = search_need_bool(display, k, v, line, col)?;
+            }
+            "عرض_جميل" => {
+                let b = search_need_bool(display, k, v, line, col)?;
+                if b {
+                    opts.color = true;
+                    opts.line_number = true;
+                }
+            }
+            "أقصى_الأعمدة" => {
+                opts.max_cols = Some(search_need_count(display, k, v, line, col)?);
+            }
+            "تسمية_الإدخال" => {
+                opts.label = Some(search_need_text(display, k, v, line, col)?);
+            }
+            "فاصل_السياق" => {
+                opts.context_separator = Some(search_need_text(display, k, v, line, col)?);
+            }
+            "رتب_الملفات" => match v {
+                Value::Bool(true) => opts.sort_files = Some(1),
+                Value::Bool(false) => opts.sort_files = None,
+                Value::Str(s) if s == "تصاعدي" => opts.sort_files = Some(1),
+                Value::Str(s) if s == "تنازلي" => opts.sort_files = Some(-1),
+                other => {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة {} الخيار رتب_الملفات يتوقع «تصاعدي» أو «تنازلي» لكن أعطيت {}",
+                            display,
+                            other.type_name()
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+            },
+            "بلا_تجاهل" => {
+                if search_need_bool(display, k, v, line, col)? {
+                    opts.include_hidden = true;
+                    opts.respect_ignore = false;
+                }
+            }
+            "ملف_تجاهل" => {
+                opts.ignore_file = Some(search_need_text(display, k, v, line, col)?);
+            }
+            "تجاهل_الأب" => {
+                opts.ignore_parent = !search_need_bool(display, k, v, line, col)?;
+            }
+            "تجاهل_أنظمة_التحكم" => {
+                opts.respect_vcs = search_need_bool(display, k, v, line, col)?;
+            }
+            "تجاهل_النقطي" => {
+                opts.respect_dotignore = search_need_bool(display, k, v, line, col)?;
+            }
+            "نمط_ملفات_بلا_حالة" => {
+                opts.file_pattern_fold = search_need_bool(display, k, v, line, col)?;
+            }
+            "أنماط_بلا_حالة" => {
+                opts.patterns_fold = search_need_bool(display, k, v, line, col)?;
+            }
+            "أنواع_إضافية" => {
+                let pairs2 = need_dict(display, v, line, col)?;
+                for (name, exts) in pairs2 {
+                    let list = need_list(display, exts, line, col)?;
+                    let mut ev: Vec<String> = Vec::new();
+                    for e in list {
+                        ev.push(search_need_text(display, k, e, line, col)?.to_lowercase());
+                    }
+                    opts.extra_types.push((name.clone(), ev));
+                }
+            }
+            "بلا_قيود" => {
+                let n = search_need_count(display, k, v, line, col)?;
+                if n > 3 {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} مستوى بلا_قيود {} مرفوض (الصالح 0 إلى 3)", display, n),
+                        line,
+                        col,
+                    ));
+                }
+                opts.no_restrictions = Some(n);
+            }
+            "أنماط_تجاهل" => {
+                let list = need_list(display, v, line, col)?;
+                for p in list {
+                    opts.ignore_patterns
+                        .push(search_need_text(display, k, p, line, col)?);
+                }
+            }
+            "ترميز" => {
+                let s = search_need_text(display, k, v, line, col)?;
+                if s != "utf-8" && s != "latin1" {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} ترميز غير معروف: {}", display, s),
+                        line,
+                        col,
+                    ));
+                }
+                opts.encoding = Some(s);
+            }
+            "ابحث_في_الثنائي" => {
+                opts.binary_as_text = search_need_bool(display, k, v, line, col)?;
+            }
+            "ملفات_ثنائية" => {
+                let s = search_need_text(display, k, v, line, col)?;
+                match s.as_str() {
+                    "نص" => opts.binary_as_text = true,
+                    "تخطي" => opts.binary_as_text = false,
+                    _ => {
+                        return Err(RioError::runtime(
+                            format!("الدالة {} ملفات_ثنائية تتوقع «نص» أو «تخطي» لكن أعطيت {}", display, s),
+                            line,
+                            col,
+                        ));
+                    }
+                }
+            }
+            "اتبع_الروابط" | "اتبع_في_التكرار" => {
+                opts.follow_links = search_need_bool(display, k, v, line, col)?;
+            }
+            "أقصى_حجم_ملف" => {
+                opts.max_file_size = Some(search_need_count(display, k, v, line, col)?);
+            }
+            "تخطي_المجلدات" => {
+                opts.skip_dirs = search_need_bool(display, k, v, line, col)?;
+            }
+            "استثن_من_ملف" => {
+                opts.exclude_from_file = Some(search_need_text(display, k, v, line, col)?);
+            }
+            "أخف_اسم_الملف" => {
+                opts.hide_filename = search_need_bool(display, k, v, line, col)?;
+            }
+            "عناوين_المجموعات" => {
+                opts.group_headers = search_need_bool(display, k, v, line, col)?;
+            }
+            "فاصل_المجموعات" => {
+                opts.group_separator = Some(search_need_text(display, k, v, line, col)?);
+            }
             other => {
                 return Err(RioError::runtime(
                     format!("الدالة {} خيار غير معروف: {}", display, other),
@@ -2974,10 +5065,72 @@ fn search_parse_opts_dict(
     {
         search_glob_match(pat, "", 0, 0)?;
     }
+    for pat in &opts.ignore_patterns {
+        let body = pat.trim_start_matches('!').trim_end_matches('/');
+        if !body.is_empty() {
+            search_glob_match(body, "", 0, 0)?;
+        }
+    }
     for t in [&opts.file_type, &opts.not_file_type].into_iter().flatten() {
+        if t == "الكل" {
+            continue;
+        }
+        if opts.extra_types.iter().any(|(n, _)| n == t) {
+            continue;
+        }
         search_file_type_exts(t, 0, 0)?;
     }
+    // بلا_قيود (دفعة لينكس 4): 1=+مخفية، 2=+بلا_تجاهل،
+    // 3=+ثنائي كنص؛ ويُطبَّق بعد كل الخيارات فيغلبها.
+    if let Some(level) = opts.no_restrictions {
+        if level >= 1 {
+            opts.include_hidden = true;
+        }
+        if level >= 2 {
+            opts.respect_ignore = false;
+        }
+        if level >= 3 {
+            opts.binary_as_text = true;
+        }
+    }
     Ok(())
+}
+
+/// مهيئ خيارات بحث بافتراضيات المشي (تكراري
+/// واحترام تجاهل وقراءة تجاهل الأب والملفات النقطية
+/// وأنظمة التحكم).
+fn search_opts_init() -> SearchOpts {
+    let mut opts = SearchOpts::default();
+    opts.recursive = true;
+    opts.respect_ignore = true;
+    opts.ignore_parent = true;
+    opts.respect_vcs = true;
+    opts.respect_dotignore = true;
+    opts
+}
+
+/// امتدادات نوع ملف: الإضافية أولا ثم الجدول المدمج؛
+/// و«الكل» بلا ترشيح (ترجع لاشيء ليعني الكل).
+fn search_file_type_exts_opt(
+    name: &str,
+    opts: &SearchOpts,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<Vec<String>>> {
+    if name == "الكل" {
+        return Ok(None);
+    }
+    for (n, exts) in &opts.extra_types {
+        if n == name {
+            return Ok(Some(exts.clone()));
+        }
+    }
+    Ok(Some(
+        search_file_type_exts(name, line, col)?
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    ))
 }
 
 fn search_parse_opts(
@@ -2997,9 +5150,7 @@ fn search_parse_opts(
             col,
         ));
     }
-    let mut opts = SearchOpts::default();
-    opts.recursive = true;
-    opts.respect_ignore = true;
+    let mut opts = search_opts_init();
     if args.len() == 3 {
         let pairs = need_dict(display, &args[2], line, col)?;
         search_parse_opts_dict(display, pairs, &mut opts, line, col)?;
@@ -3024,9 +5175,7 @@ fn search_parse_opts_4(
             col,
         ));
     }
-    let mut opts = SearchOpts::default();
-    opts.recursive = true;
-    opts.respect_ignore = true;
+    let mut opts = search_opts_init();
     if args.len() == 4 {
         let pairs = need_dict(display, &args[3], line, col)?;
         search_parse_opts_dict(display, pairs, &mut opts, line, col)?;
@@ -3048,7 +5197,12 @@ fn search_has_context(opts: &SearchOpts) -> bool {
 
 /// هل النتيجة سجلات لا أسطر نصية؟
 fn search_record_form(opts: &SearchOpts) -> bool {
-    opts.column || opts.line_number || search_has_context(opts)
+    opts.column
+        || opts.line_number
+        || search_has_context(opts)
+        || opts.byte_offset
+        || opts.label.is_some()
+        || opts.all_lines
 }
 
 /// طيّ الحالة للنمط: تجاهل صريح، أو ذكي (يطوي إن كان
@@ -3191,6 +5345,7 @@ struct SearchHit {
     matched: String,
     before: Vec<String>,
     after: Vec<String>,
+    byte_off: usize,
 }
 
 /// فحص النص سطرا سطرا: الأسطر المؤهلة (مع العكس
@@ -3206,9 +5361,14 @@ fn search_scan(
 ) -> RioResult<Vec<SearchHit>> {
     let _ = rx_check_text(text).map_err(|e| rx_err(e, line, col))?;
     let fold = search_fold(pattern, opts);
+    let eff = if is_regex {
+        search_eff_pattern(pattern, opts)
+    } else {
+        pattern.to_string()
+    };
     let prog = if is_regex {
         Some(
-            rx_compile_fold(pattern, opts.whole_line, fold)
+            rx_compile_fold(&eff, opts.whole_line, fold)
                 .map_err(|e| rx_err(e, line, col))?,
         )
     } else {
@@ -3219,6 +5379,75 @@ fn search_scan(
     } else {
         pattern.chars().collect()
     };
+    // إزاحات بدايات الأسطر (بايتات ومحارف) لخيار إزاحة_البايت.
+    let mut line_byte: Vec<usize> = vec![0];
+    for part in text.split_inclusive('\n') {
+        line_byte.push(line_byte.last().unwrap() + part.len());
+    }
+    let char_byte: Vec<usize> = {
+        let mut v: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
+        v.push(text.len());
+        v
+    };
+    // قص السطر الطويل عند أقصى_الأعمدة مع «…».
+    let truncate = |s: &str| -> String {
+        match opts.max_cols {
+            Some(m) if (s.chars().count() as i64) > m => {
+                let mut t: String = s.chars().take(m as usize).collect();
+                t.push('…');
+                t
+            }
+            _ => s.to_string(),
+        }
+    };
+    if opts.multiline {
+        // وضع متعدد الأسطر: مطابقة على النص كله؛ والنتيجة
+        // المطابقات النصية مع سطر بدايتها.
+        let chars: Vec<char> = text.chars().collect();
+        let all = search_line_all(
+            prog.as_ref(),
+            &lit_chars,
+            is_regex,
+            &chars,
+            fold,
+            opts.whole_word,
+            opts.whole_line,
+        )
+        .map_err(|e| rx_err(e, line, col))?;
+        let mut hits: Vec<SearchHit> = Vec::new();
+        for (s, e) in all {
+            if let Some(max) = opts.max_count {
+                if hits.len() as i64 >= max {
+                    break;
+                }
+            }
+            let line_idx = chars[..s].iter().filter(|c| **c == '\n').count();
+            let line_start = chars[..s]
+                .iter()
+                .rposition(|c| *c == '\n')
+                .map(|p| p + 1)
+                .unwrap_or(0);
+            let col_in_line = s - line_start;
+            let shown_full: String = chars[s..e].iter().collect();
+            let shown = truncate(&shown_full);
+            let shown_span = if shown == shown_full {
+                Some((0, shown_full.chars().count()))
+            } else {
+                None
+            };
+            hits.push(SearchHit {
+                idx: line_idx,
+                shown,
+                span: Some((col_in_line, col_in_line + (e - s))),
+                shown_span,
+                matched: shown_full,
+                before: Vec::new(),
+                after: Vec::new(),
+                byte_off: char_byte.get(s).copied().unwrap_or(0),
+            });
+        }
+        return Ok(hits);
+    }
     let lines: Vec<&str> = text.lines().collect();
     let (ctx_before, ctx_after) = search_eff_context(opts);
     let mut hits: Vec<SearchHit> = Vec::new();
@@ -3241,12 +5470,17 @@ fn search_scan(
         )
         .map_err(|e| rx_err(e, line, col))?;
         let has = !all.is_empty();
+        // توقف_عند_أول_غير_مطابق: أول سطر بلا مطابقة يوقف الفحص.
+        if opts.stop_at_first_nonmatch && !has && !opts.invert {
+            break;
+        }
         if has != opts.invert {
             count += 1;
-            let shown = search_trimmed(raw_line, opts);
+            let shown_full = search_trimmed(raw_line, opts);
+            let shown = truncate(&shown_full);
             let shown_span = if opts.invert {
                 None
-            } else {
+            } else if shown == shown_full {
                 let schars: Vec<char> = shown.chars().collect();
                 let sall = search_line_all(
                     prog.as_ref(),
@@ -3259,6 +5493,8 @@ fn search_scan(
                 )
                 .map_err(|e| rx_err(e, line, col))?;
                 sall.first().copied()
+            } else {
+                None
             };
             let (span, matched) = if opts.invert {
                 (None, String::new())
@@ -3271,13 +5507,20 @@ fn search_scan(
             let bfrom = idx.saturating_sub(b);
             let before: Vec<String> = lines[bfrom..idx]
                 .iter()
-                .map(|l| search_trimmed(l, opts))
+                .map(|l| truncate(&search_trimmed(l, opts)))
                 .collect();
             let ato = (idx + 1 + a).min(lines.len());
             let after: Vec<String> = lines[idx + 1..ato]
                 .iter()
-                .map(|l| search_trimmed(l, opts))
+                .map(|l| truncate(&search_trimmed(l, opts)))
                 .collect();
+            let byte_off = match span {
+                Some((s, _)) => {
+                    let within: usize = chars[..s].iter().map(|c| c.len_utf8()).sum();
+                    line_byte.get(idx).copied().unwrap_or(0) + within
+                }
+                None => line_byte.get(idx).copied().unwrap_or(0),
+            };
             hits.push(SearchHit {
                 idx,
                 shown,
@@ -3286,6 +5529,7 @@ fn search_scan(
                 matched,
                 before,
                 after,
+                byte_off,
             });
         }
     }
@@ -3345,41 +5589,65 @@ fn search_render(
         return search_maybe_json(Value::Bool(!hits.is_empty()), opts, display, line, col);
     }
     let value = if search_record_form(opts) {
-        Value::List(
-            hits.iter()
-                .map(|h| {
-                    let mut pairs: Vec<(String, Value)> = vec![
-                        ("سطر".to_string(), Value::Str(search_color_shown(h, opts))),
-                        (
-                            "رقم_السطر".to_string(),
-                            Value::Number((h.idx + 1) as f64),
-                        ),
-                    ];
-                    if opts.column {
-                        pairs.push((
-                            "عمود".to_string(),
-                            Value::Number(h.span.map(|(s, _)| s + 1).unwrap_or(1) as f64),
-                        ));
+        let mut records: Vec<Value> = Vec::new();
+        // نهاية آخر مجموعة سياق مغطاة (لفاصل_السياق بين
+        // المجموعات غير المتصلة).
+        let mut last_end: Option<usize> = None;
+        for h in hits {
+            if let Some(sep) = &opts.context_separator {
+                if search_has_context(opts) {
+                    let start = h.idx.saturating_sub(h.before.len());
+                    if let Some(end) = last_end {
+                        if start > end + 1 {
+                            records.push(Value::Dict(vec![(
+                                "فاصل".to_string(),
+                                Value::Str(sep.clone()),
+                            )]));
+                        }
                     }
-                    pairs.push(("نص_مطابق".to_string(), Value::Str(h.matched.clone())));
-                    if search_has_context(opts) {
-                        pairs.push((
-                            "قبل".to_string(),
-                            Value::List(
-                                h.before.iter().map(|s| Value::Str(s.clone())).collect(),
-                            ),
-                        ));
-                        pairs.push((
-                            "بعد".to_string(),
-                            Value::List(
-                                h.after.iter().map(|s| Value::Str(s.clone())).collect(),
-                            ),
-                        ));
-                    }
-                    Value::Dict(pairs)
-                })
-                .collect(),
-        )
+                    last_end = Some(h.idx + h.after.len());
+                }
+            }
+            let mut pairs: Vec<(String, Value)> = vec![
+                ("سطر".to_string(), Value::Str(search_color_shown(h, opts))),
+                (
+                    "رقم_السطر".to_string(),
+                    Value::Number((h.idx + 1) as f64),
+                ),
+            ];
+            if let Some(label) = &opts.label {
+                pairs.push(("ملف".to_string(), Value::Str(label.clone())));
+            }
+            if opts.column {
+                pairs.push((
+                    "عمود".to_string(),
+                    Value::Number(h.span.map(|(s, _)| s + 1).unwrap_or(1) as f64),
+                ));
+            }
+            pairs.push(("نص_مطابق".to_string(), Value::Str(h.matched.clone())));
+            if opts.byte_offset {
+                pairs.push((
+                    "إزاحة_البايت".to_string(),
+                    Value::Number(h.byte_off as f64),
+                ));
+            }
+            if search_has_context(opts) {
+                pairs.push((
+                    "قبل".to_string(),
+                    Value::List(
+                        h.before.iter().map(|s| Value::Str(s.clone())).collect(),
+                    ),
+                ));
+                pairs.push((
+                    "بعد".to_string(),
+                    Value::List(
+                        h.after.iter().map(|s| Value::Str(s.clone())).collect(),
+                    ),
+                ));
+            }
+            records.push(Value::Dict(pairs));
+        }
+        Value::List(records)
     } else {
         Value::List(
             hits.iter()
@@ -3400,6 +5668,30 @@ fn search_run(
     col: usize,
 ) -> RioResult<Value> {
     let hits = search_scan(display, text, is_regex, pattern, opts, line, col)?;
+    // مرر_الكل (دفعة لينكس 4): كل سطر سجلا مع علامة مطابقة.
+    if opts.all_lines && !opts.quiet {
+        let matched_idx: std::collections::HashSet<usize> =
+            hits.iter().map(|h| h.idx).collect();
+        let mut records: Vec<Value> = Vec::new();
+        for (idx, raw) in text.lines().enumerate() {
+            let is_m = matched_idx.contains(&idx);
+            let shown_full = search_trimmed(raw, opts);
+            let shown = match opts.max_cols {
+                Some(m) if (shown_full.chars().count() as i64) > m => {
+                    let mut t: String = shown_full.chars().take(m as usize).collect();
+                    t.push('…');
+                    t
+                }
+                _ => shown_full,
+            };
+            records.push(Value::Dict(vec![
+                ("سطر".to_string(), Value::Str(shown)),
+                ("رقم_السطر".to_string(), Value::Number((idx + 1) as f64)),
+                ("مطابق".to_string(), Value::Bool(is_m)),
+            ]));
+        }
+        return search_maybe_json(Value::List(records), opts, display, line, col);
+    }
     search_render(display, &hits, opts, line, col)
 }
 
@@ -3418,9 +5710,14 @@ fn search_count_impl(
 ) -> RioResult<Value> {
     let _ = rx_check_text(text).map_err(|e| rx_err(e, line, col))?;
     let fold = search_fold(pattern, opts);
+    let eff = if is_regex {
+        search_eff_pattern(pattern, opts)
+    } else {
+        pattern.to_string()
+    };
     let prog = if is_regex {
         Some(
-            rx_compile_fold(pattern, opts.whole_line, fold)
+            rx_compile_fold(&eff, opts.whole_line, fold)
                 .map_err(|e| rx_err(e, line, col))?,
         )
     } else {
@@ -3479,9 +5776,14 @@ fn search_only_impl(
 ) -> RioResult<Value> {
     let _ = rx_check_text(text).map_err(|e| rx_err(e, line, col))?;
     let fold = search_fold(pattern, opts);
+    let eff = if is_regex {
+        search_eff_pattern(pattern, opts)
+    } else {
+        pattern.to_string()
+    };
     let prog = if is_regex {
         Some(
-            rx_compile_fold(pattern, opts.whole_line, fold)
+            rx_compile_fold(&eff, opts.whole_line, fold)
                 .map_err(|e| rx_err(e, line, col))?,
         )
     } else {
@@ -3715,15 +6017,34 @@ fn search_walk_dir(
     // لشجرته، وتُسحب عند الخروج منه.
     let base_len = ignore.len();
     if opts.respect_ignore {
-        ignore.extend(search_ignore_patterns(dir_fs));
+        ignore.extend(search_ignore_patterns_flags(
+            dir_fs,
+            opts.respect_dotignore,
+            opts.respect_vcs,
+        ));
     }
     for entry in items {
         let ft = match entry.file_type() {
             Ok(t) => t,
             Err(_) => continue,
         };
+        // اتبع_الروابط (دفعة لينكس 4): الرابط يُتبع إلى هدفه.
+        let mut is_dir = ft.is_dir();
+        let mut is_file = ft.is_file();
         if ft.is_symlink() {
-            continue;
+            if !opts.follow_links {
+                continue;
+            }
+            match std::fs::metadata(entry.path()) {
+                Ok(md) => {
+                    is_dir = md.is_dir();
+                    is_file = md.is_file();
+                    if !is_dir && !is_file {
+                        continue;
+                    }
+                }
+                Err(_) => continue,
+            }
         }
         let name = entry.file_name().to_string_lossy().into_owned();
         let child_display = if dir_display.is_empty() {
@@ -3735,10 +6056,12 @@ fn search_walk_dir(
         if !opts.include_hidden && name.starts_with('.') {
             continue;
         }
-        if ft.is_dir() {
+        if is_dir {
             // استثن_مجلدات (102): كروي على الاسم العاري مع تقليم النزول.
             if let Some(pat) = &opts.exclude_dirs {
-                if search_glob_match(pat, &name, 0, 0).unwrap_or(false) {
+                if search_glob_match_fold(pat, &name, opts.patterns_fold, 0, 0)
+                    .unwrap_or(false)
+                {
                     continue;
                 }
             }
@@ -3746,6 +6069,17 @@ fn search_walk_dir(
             if opts.respect_ignore
                 && (search_ignore_match(ignore, &child_display)
                     || search_ignore_match(ignore, &name))
+            {
+                continue;
+            }
+            // أنماط_تجاهل (دفعة لينكس 4): gitignore مع نفي ومجلدات.
+            if opts.respect_ignore
+                && search_gitignore_ignored(
+                    &opts.ignore_patterns,
+                    &child_display,
+                    true,
+                    opts.patterns_fold,
+                )
             {
                 continue;
             }
@@ -3760,7 +6094,7 @@ fn search_walk_dir(
                     out,
                 );
             }
-        } else if ft.is_file() {
+        } else if is_file {
             // احترم_التجاهل (70).
             if opts.respect_ignore
                 && (search_ignore_match(ignore, &child_display)
@@ -3768,40 +6102,74 @@ fn search_walk_dir(
             {
                 continue;
             }
+            // أنماط_تجاهل (دفعة لينكس 4).
+            if opts.respect_ignore
+                && search_gitignore_ignored(
+                    &opts.ignore_patterns,
+                    &child_display,
+                    false,
+                    opts.patterns_fold,
+                )
+            {
+                continue;
+            }
             // نمط_الملفات (77): مسار العرض أو الاسم العاري.
             if let Some(pat) = &opts.file_pattern {
-                if !search_glob_match(pat, &child_display, 0, 0).unwrap_or(false)
-                    && !search_glob_match(pat, &name, 0, 0).unwrap_or(false)
+                let fold = opts.file_pattern_fold || opts.patterns_fold;
+                if !search_glob_match_fold(pat, &child_display, fold, 0, 0)
+                    .unwrap_or(false)
+                    && !search_glob_match_fold(pat, &name, fold, 0, 0).unwrap_or(false)
                 {
                     continue;
                 }
             }
             // نوع_الملف (80) وليس_نوع_الملف (81):
-            // مقارنة الامتداد بعد خفض الحالة.
+            // مقارنة الامتداد بعد خفض الحالة؛ و«الكل»
+            // بلا ترشيح، والأنواع الإضافية من الخيارات.
             if opts.file_type.is_some() || opts.not_file_type.is_some() {
                 let ext = std::path::Path::new(&name)
                     .extension()
                     .map(|e| e.to_string_lossy().to_lowercase());
                 if let Some(t) = &opts.file_type {
-                    let exts = search_file_type_exts(t, 0, 0).unwrap_or(&[]);
-                    if !ext.as_deref().is_some_and(|e| exts.contains(&e)) {
-                        continue;
+                    if let Some(exts) = search_file_type_exts_quiet(t, opts) {
+                        if !ext
+                            .as_deref()
+                            .is_some_and(|e| exts.iter().any(|x| x == e))
+                        {
+                            continue;
+                        }
                     }
                 }
                 if let Some(t) = &opts.not_file_type {
-                    let exts = search_file_type_exts(t, 0, 0).unwrap_or(&[]);
-                    if ext.as_deref().is_some_and(|e| exts.contains(&e)) {
-                        continue;
+                    if let Some(exts) = search_file_type_exts_quiet(t, opts) {
+                        if ext
+                            .as_deref()
+                            .is_some_and(|e| exts.iter().any(|x| x == e))
+                        {
+                            continue;
+                        }
                     }
                 }
             }
             // استثن_ملفات (101): كروي واحد على العرض أو العاري.
             if let Some(pat) = &opts.exclude_files {
-                if search_glob_match(pat, &child_display, 0, 0).unwrap_or(false)
-                    || search_glob_match(pat, &name, 0, 0).unwrap_or(false)
+                if search_glob_match_fold(pat, &child_display, opts.patterns_fold, 0, 0)
+                    .unwrap_or(false)
+                    || search_glob_match_fold(pat, &name, opts.patterns_fold, 0, 0)
+                        .unwrap_or(false)
                 {
                     continue;
                 }
+            }
+            // استثن_من_ملف (دفعة لينكس 4): أنماط إضافية.
+            let excluded_extra = opts.extra_excludes.iter().any(|pat| {
+                search_glob_match_fold(pat, &child_display, opts.patterns_fold, 0, 0)
+                    .unwrap_or(false)
+                    || search_glob_match_fold(pat, &name, opts.patterns_fold, 0, 0)
+                        .unwrap_or(false)
+            });
+            if excluded_extra {
+                continue;
             }
             out.push((entry.path(), child_display));
         }
@@ -3831,10 +6199,15 @@ fn search_walk_files(
             col,
         ));
     }
+    // تخطي_المجلدات (دفعة لينكس 4): جذر مجلد يُتخطى كله.
+    if opts.skip_dirs {
+        return Ok(Vec::new());
+    }
     let base = root_display.trim_end_matches('/');
     let base = if base == "." { "" } else { base };
     let mut out: Vec<(std::path::PathBuf, String)> = Vec::new();
-    let mut ignore: Vec<String> = Vec::new();
+    // بذرة التجاهل: ملف_تجاهل + تجاهل الأب (يُحمَّلان قبل المشي).
+    let mut ignore: Vec<String> = opts.extra_ignores.clone();
     search_walk_dir(
         root_fs,
         base,
@@ -3858,16 +6231,8 @@ fn search_file_has_match(
     line: usize,
     col: usize,
 ) -> RioResult<Option<bool>> {
-    let bytes = match std::fs::read(fs_path) {
-        Ok(b) => b,
-        Err(_) => return Ok(None),
-    };
-    if bytes.contains(&0) {
+    let Some(text) = search_file_to_text(fs_path, opts) else {
         return Ok(None);
-    }
-    let text = match String::from_utf8(bytes) {
-        Ok(t) => t,
-        Err(_) => return Ok(None),
     };
     let hits = search_scan(display, &text, true, pattern, opts, line, col)?;
     Ok(Some(!hits.is_empty()))
@@ -3881,13 +6246,19 @@ fn search_files_impl(
     line: usize,
     col: usize,
 ) -> RioResult<Value> {
-    let opts = search_parse_opts(display, args, line, col)?;
+    let mut opts = search_parse_opts(display, args, line, col)?;
     let path = need_string(display, &args[0], line, col)?;
     let pattern = need_string(display, &args[1], line, col)?;
     // التحقق من النمط أولا — فلو كانت كل الملفات
     // ثنائية أو غير مقروءة لما ظهر خطأ النمط أبدا.
     let _ = search_scan(display, "", true, &pattern, &opts, line, col)?;
     let root_fs = search_resolve_path(ctx, &path);
+    // تحضير المشي (دفعة لينكس 4): ملف تجاهل واستثناء
+    // وتجاهل مجلدات الأب.
+    search_load_ignore_file(ctx, &mut opts, display, line, col)?;
+    search_load_exclude_file(ctx, &mut opts, display, line, col)?;
+    let parent = search_parent_ignores(ctx, &root_fs, &opts);
+    opts.extra_ignores.extend(parent);
     let files = search_walk_files(&path, &root_fs, &opts, line, col)?;
     let mut out: Vec<Value> = Vec::new();
     for (fs_path, disp) in &files {
@@ -3903,6 +6274,10 @@ fn search_files_impl(
         (Value::Str(x), Value::Str(y)) => x.cmp(y),
         _ => std::cmp::Ordering::Equal,
     });
+    // رتب_الملفات تنازلي (دفعة لينكس 4).
+    if opts.sort_files == Some(-1) {
+        out.reverse();
+    }
     if opts.quiet {
         return search_maybe_json(Value::Bool(!out.is_empty()), &opts, display, line, col);
     }
@@ -4319,6 +6694,242 @@ fn search_in_patterns(
     search_render(DISPLAY, &hits, &opts, line, col)
 }
 
+// BEGIN لينكس4-نص دوال بحث Rust
+/// بحث.سرد_الملفات — البند 52.
+fn search_list_files(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "بحث.سرد_الملفات";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 1 و2 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let dir = need_string(DISPLAY, &args[0], line, col)?;
+    let pairs = b4_opt_pairs(DISPLAY, args, 1, line, col)?;
+    let mut opts = search_opts_init();
+    if let Some(ps) = pairs {
+        search_parse_opts_dict(DISPLAY, ps, &mut opts, line, col)?;
+    }
+    let root_fs = search_resolve_path(ctx, &dir);
+    let mut files = search_walk_files(&dir, &root_fs, &opts, line, col)?;
+    files.sort_by(|a, b| a.1.cmp(&b.1));
+    Ok(Value::List(
+        files.into_iter().map(|(_, disp)| Value::Str(disp)).collect(),
+    ))
+}
+
+/// بحث.إحصاءات — البند 53.
+fn search_stats(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "بحث.إحصاءات";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 2 و3 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let dir = need_string(DISPLAY, &args[0], line, col)?;
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    let pairs = b4_opt_pairs(DISPLAY, args, 2, line, col)?;
+    let mut opts = search_opts_init();
+    if let Some(ps) = pairs {
+        search_parse_opts_dict(DISPLAY, ps, &mut opts, line, col)?;
+    }
+    let _ = search_scan(DISPLAY, "", true, &pattern, &opts, line, col)?;
+    let root_fs = search_resolve_path(ctx, &dir);
+    let mut files = search_walk_files(&dir, &root_fs, &opts, line, col)?;
+    files.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut searched: i64 = 0;
+    let mut matched_files: i64 = 0;
+    let mut matched_lines: i64 = 0;
+    let mut searched_lines: i64 = 0;
+    for (fs_path, _) in &files {
+        let bytes = match std::fs::read(fs_path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        if bytes.contains(&0) {
+            continue;
+        }
+        let text = match String::from_utf8(bytes) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        searched += 1;
+        searched_lines += text.lines().count() as i64;
+        let hits = search_scan(DISPLAY, &text, true, &pattern, &opts, line, col)?;
+        if !hits.is_empty() {
+            matched_files += 1;
+        }
+        matched_lines += hits.len() as i64;
+    }
+    Ok(Value::Dict(vec![
+        ("ملفات_بُحثت".to_string(), Value::Number(searched as f64)),
+        ("ملفات_مطابقة".to_string(), Value::Number(matched_files as f64)),
+        ("أسطر_مطابقة".to_string(), Value::Number(matched_lines as f64)),
+        ("أسطر_بُحثت".to_string(), Value::Number(searched_lines as f64)),
+    ]))
+}
+
+/// بحث.عد_في_ملفات — البند 54.
+fn search_count_files(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "بحث.عد_في_ملفات";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 2 و3 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let dir = need_string(DISPLAY, &args[0], line, col)?;
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    let pairs = b4_opt_pairs(DISPLAY, args, 2, line, col)?;
+    let mut opts = search_opts_init();
+    let mut include_zero = false;
+    if let Some(ps) = pairs {
+        include_zero = b4_opt_bool(DISPLAY, pairs, "أدرج_الصفر", false, line, col)?;
+        let filtered: Vec<(String, Value)> = ps
+            .iter()
+            .filter(|(k, _)| k != "أدرج_الصفر")
+            .cloned()
+            .collect();
+        search_parse_opts_dict(DISPLAY, &filtered, &mut opts, line, col)?;
+    }
+    let _ = search_scan(DISPLAY, "", true, &pattern, &opts, line, col)?;
+    let root_fs = search_resolve_path(ctx, &dir);
+    let mut files = search_walk_files(&dir, &root_fs, &opts, line, col)?;
+    files.sort_by(|a, b| a.1.cmp(&b.1));
+    let mut out: Vec<Value> = Vec::new();
+    for (fs_path, disp) in &files {
+        let bytes = match std::fs::read(fs_path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        if bytes.contains(&0) {
+            continue;
+        }
+        let text = match String::from_utf8(bytes) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let hits = search_scan(DISPLAY, &text, true, &pattern, &opts, line, col)?;
+        let n = hits.len() as i64;
+        if n > 0 || include_zero {
+            out.push(Value::Dict(vec![
+                ("ملف".to_string(), Value::Str(disp.clone())),
+                ("عدد".to_string(), Value::Number(n as f64)),
+            ]));
+        }
+    }
+    Ok(Value::List(out))
+}
+
+/// بحث.ابحث_في_مضغوط — البند 59.
+fn search_in_zip(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "بحث.ابحث_في_مضغوط";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 2 و3 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let data = need_bytes(DISPLAY, &args[0], line, col)?;
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    let pairs = b4_opt_pairs(DISPLAY, args, 2, line, col)?;
+    let mut opts = search_opts_init();
+    if let Some(ps) = pairs {
+        search_parse_opts_dict(DISPLAY, ps, &mut opts, line, col)?;
+    }
+    let _ = search_scan(DISPLAY, "", true, &pattern, &opts, line, col)?;
+    if data.len() > 10 * 1024 * 1024 {
+        return Err(RioError::runtime("أرشيف كبير جدا".to_string(), line, col));
+    }
+    let files = zip_parse(&data).map_err(|e| RioError::runtime(e, line, col))?;
+    let mut out: Vec<Value> = Vec::new();
+    for (name, content) in &files {
+        if content.contains(&0) {
+            continue;
+        }
+        let text = match String::from_utf8(content.clone()) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let hits = search_scan(DISPLAY, &text, true, &pattern, &opts, line, col)?;
+        for h in &hits {
+            out.push(Value::Dict(vec![
+                ("ملف".to_string(), Value::Str(name.clone())),
+                ("سطر".to_string(), Value::Str(search_color_shown(h, &opts))),
+                (
+                    "رقم_السطر".to_string(),
+                    Value::Number((h.idx + 1) as f64),
+                ),
+                ("نص_مطابق".to_string(), Value::Str(h.matched.clone())),
+            ]));
+        }
+    }
+    Ok(Value::List(out))
+}
+
+/// بحث.سرد_الأنواع — البند 83.
+fn search_list_types(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "بحث.سرد_الأنواع";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut out: Vec<Value> = Vec::new();
+    for (name, exts) in SEARCH_FILE_TYPES {
+        out.push(Value::Dict(vec![
+            ("نوع".to_string(), Value::Str(name.to_string())),
+            (
+                "امتدادات".to_string(),
+                Value::List(exts.iter().map(|e| Value::Str(e.to_string())).collect()),
+            ),
+        ]));
+    }
+    Ok(Value::List(out))
+}
+// END لينكس4-نص دوال بحث Rust
 fn search_entries() -> Vec<(&'static str, Value)> {
     vec![
         ("ابحث_بنمط", native("ابحث_بنمط", search_regex)),
@@ -4336,7 +6947,14 @@ fn search_entries() -> Vec<(&'static str, Value)> {
         ("ابحث_في_مجلدات", native("ابحث_في_مجلدات", search_in_dirs)),
         ("ابحث_في_المدخل", native("ابحث_في_المدخل", search_in_stdin)),
         ("ابحث_بأنماط", native("ابحث_بأنماط", search_in_patterns)),
-        ("مساعدة", native("مساعدة", search_help)),
+        ("مساعدة", native("مساعدة", search_help)),// BEGIN لينكس4-نص مداخل بحث
+        ("سرد_الملفات", native("سرد_الملفات", search_list_files)),
+        ("إحصاءات", native("إحصاءات", search_stats)),
+        ("عد_في_ملفات", native("عد_في_ملفات", search_count_files)),
+        ("ابحث_في_مضغوط", native("ابحث_في_مضغوط", search_in_zip)),
+        ("سرد_الأنواع", native("سرد_الأنواع", search_list_types)),
+// END لينكس4-نص مداخل بحث
+
     ]
 }
 
@@ -4640,8 +7258,19 @@ fn search_glob_to_regex(glob: &str) -> Result<String, String> {
 /// هل يطابق الاسم النمط الكروي؟ (مطابقة كاملة
 /// بمحرك النمط نفسه.)
 fn search_glob_match(glob: &str, name: &str, line: usize, col: usize) -> RioResult<bool> {
+    search_glob_match_fold(glob, name, false, line, col)
+}
+
+/// مطابقة كروية مع طيّ حالة اختياري (لأنماط بلا حالة).
+fn search_glob_match_fold(
+    glob: &str,
+    name: &str,
+    fold: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<bool> {
     let regex = search_glob_to_regex(glob).map_err(|e| RioError::runtime(e, line, col))?;
-    rx_full_match(&regex, name).map_err(|e| rx_err(e, line, col))
+    rx_full_match_fold(&regex, name, fold).map_err(|e| rx_err(e, line, col))
 }
 
 fn search_glob_match_fn(
@@ -4659,13 +7288,22 @@ fn search_glob_match_fn(
 /// أنماط التجاهل في مجلد: سطور `.ignore` ثم
 /// `.gitignore` (فارغ وتعليق `#` يُتخطى، ومسافة
 /// أخيرة تُقلم)؛ والغائب أو غير المقروء أو غير
-/// UTF-8 يُتجاهل بصمت.
-// يسمح بالرمز الميت: يستدعيها مولّد الدفعة (G) في
-// البحث في المجلدات — لا دالة مستخدم لها بعد.
-#[allow(dead_code)]
-fn search_ignore_patterns(dir_fs: &std::path::Path) -> Vec<String> {
+/// UTF-8 يُتجاهل بصمت؛ والعلمين يختاران أي الملفين
+/// يُقرأ (دفعة لينكس 4: تجاهل_النقطي وتجاهل_أنظمة_التحكم).
+fn search_ignore_patterns_flags(
+    dir_fs: &std::path::Path,
+    respect_dotignore: bool,
+    respect_vcs: bool,
+) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for name in [".ignore", ".gitignore"] {
+    let mut names: Vec<&str> = Vec::new();
+    if respect_dotignore {
+        names.push(".ignore");
+    }
+    if respect_vcs {
+        names.push(".gitignore");
+    }
+    for name in names {
         let text = match std::fs::read_to_string(dir_fs.join(name)) {
             Ok(t) => t,
             Err(_) => continue,
@@ -4679,6 +7317,28 @@ fn search_ignore_patterns(dir_fs: &std::path::Path) -> Vec<String> {
         }
     }
     out
+}
+
+#[allow(dead_code)]
+fn search_ignore_patterns(dir_fs: &std::path::Path) -> Vec<String> {
+    search_ignore_patterns_flags(dir_fs, true, true)
+}
+
+/// امتدادات نوع ملف بلا خطأ (للمشي): «الكل» ←
+/// لاشيء (بلا ترشيح)؛ والمجهول ← قائمة فارغة.
+fn search_file_type_exts_quiet(name: &str, opts: &SearchOpts) -> Option<Vec<String>> {
+    if name == "الكل" {
+        return None;
+    }
+    for (n, exts) in &opts.extra_types {
+        if n == name {
+            return Some(exts.clone());
+        }
+    }
+    SEARCH_FILE_TYPES
+        .iter()
+        .find(|(t, _)| *t == name)
+        .map(|(_, e)| e.iter().map(|s| s.to_string()).collect())
 }
 
 /// هل يطابق الاسم النسبي (بشرطات مائلة) أي نمط
@@ -4818,7 +7478,7 @@ fn json_write_value(v: &Value, out: &mut String, depth: usize) -> Result<(), Str
 /// (36) والنصوص خضراء (32) والأعداد صفراء (33)
 /// وصحيح/خطأ أرجوانية (35) وnull حمراء (31)؛ وكل
 /// رمز يغلَّف بإعادة ضبط؛ والمسافات تنسخ خاما.
-fn b3_json_colorize(text: &str) -> String {
+fn b3_json_colorize(text: &str, key: u8, str_: u8, num: u8, bool_: u8, null: u8) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
     let mut i = 0usize;
@@ -4849,7 +7509,7 @@ fn b3_json_colorize(text: &str) -> String {
                 j += 1;
             }
             let is_key = j < chars.len() && chars[j] == ':';
-            let code = if is_key { 36 } else { 32 };
+            let code = if is_key { key } else { str_ };
             out.push_str(&format!("\x1b[{}m{}\x1b[0m", code, tok));
             continue;
         }
@@ -4864,7 +7524,7 @@ fn b3_json_colorize(text: &str) -> String {
                 i += 1;
             }
             let tok: String = chars[start..i].iter().collect();
-            out.push_str(&format!("\x1b[33m{}\x1b[0m", tok));
+            out.push_str(&format!("\x1b[{}m{}\x1b[0m", num, tok));
             continue;
         }
         if c.is_ascii_alphabetic() {
@@ -4873,7 +7533,7 @@ fn b3_json_colorize(text: &str) -> String {
                 i += 1;
             }
             let tok: String = chars[start..i].iter().collect();
-            let code = if tok == "null" { 31 } else { 35 };
+            let code = if tok == "null" { null } else { bool_ };
             out.push_str(&format!("\x1b[{}m{}\x1b[0m", code, tok));
             continue;
         }
@@ -4883,9 +7543,11 @@ fn b3_json_colorize(text: &str) -> String {
     out
 }
 
-/// جسون.لون(نص_جيسون) — البند 213 (يدوي: نموذج
-/// جديد — ملوّن JSON): يتحقق من صحة JSON أولا ثم
-/// يلوّنه بألوان ANSI الثابتة أعلاه.
+/// جسون.لون(نص_جيسون، خيارات؟) — البند 213 (يدوي:
+/// نموذج جديد — ملوّن JSON): يتحقق من صحة JSON أولا
+/// ثم يلوّنه بألوان ANSI؛ والخيار «ألوان» قاموس
+/// دور→اسم لون عربي (مفتاح/نص/عدد/منطقي/فارغ)؛
+/// والغائب يبقى على اللون الافتراضي (36/32/33/35/31).
 fn json_color(
     _ctx: &mut dyn HandlerCaller,
     args: &[Value],
@@ -4893,7 +7555,17 @@ fn json_color(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "جسون.لون";
-    need_args(DISPLAY, args, 1, line, col)?;
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 1 و2 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
     let text = need_string(DISPLAY, &args[0], line, col)?;
     if text.chars().count() > RX_MAX_TEXT {
         return Err(RioError::runtime("النص كبير جدا", line, col));
@@ -4901,7 +7573,81 @@ fn json_color(
     if parse_json(&text).is_err() {
         return Err(RioError::runtime("نص JSON غير صالح", line, col));
     }
-    Ok(Value::Str(b3_json_colorize(&text)))
+    let mut colors = [36u8, 32u8, 33u8, 35u8, 31u8];
+    if let Some(pairs) = b4_opt_pairs(DISPLAY, args, 1, line, col)? {
+        for (k, val) in pairs {
+            match k.as_str() {
+                "ألوان" => {
+                    let roles = match val {
+                        Value::Dict(ps) => ps,
+                        other => {
+                            return Err(RioError::typ(
+                                format!(
+                                    "الدالة {} خيار ألوان يتوقع قاموسا لكن أعطيت {}",
+                                    DISPLAY,
+                                    other.type_name()
+                                ),
+                                line,
+                                col,
+                            ))
+                        }
+                    };
+                    for (role, cname) in roles {
+                        let idx = match role.as_str() {
+                            "مفتاح" => 0,
+                            "نص" => 1,
+                            "عدد" => 2,
+                            "منطقي" => 3,
+                            "فارغ" => 4,
+                            other => {
+                                return Err(RioError::runtime(
+                                    format!(
+                                        "الدالة {} دور لون غير معروف: {}",
+                                        DISPLAY, other
+                                    ),
+                                    line,
+                                    col,
+                                ))
+                            }
+                        };
+                        let name = need_string(DISPLAY, cname, line, col)?;
+                        colors[idx] = match b4_json_color_code(&name) {
+                            Some(c) => c,
+                            None => {
+                                return Err(RioError::runtime(
+                                    format!(
+                                        "الدالة {} اسم لون غير معروف: {}",
+                                        DISPLAY, name
+                                    ),
+                                    line,
+                                    col,
+                                ))
+                            }
+                        };
+                    }
+                }
+                other => return Err(b4_unknown_opt(DISPLAY, other, line, col)),
+            }
+        }
+    }
+    Ok(Value::Str(b3_json_colorize(
+        &text, colors[0], colors[1], colors[2], colors[3], colors[4],
+    )))
+}
+
+/// اسم لون عربي → رمز ANSI (لخيار ألوان في جسون.لون).
+fn b4_json_color_code(name: &str) -> Option<u8> {
+    match name {
+        "أسود" => Some(30),
+        "أحمر" => Some(31),
+        "أخضر" => Some(32),
+        "أصفر" => Some(33),
+        "أزرق" => Some(34),
+        "أرجواني" => Some(35),
+        "سماوي" => Some(36),
+        "أبيض" => Some(37),
+        _ => None,
+    }
 }
 
 /// قسّم نصا إلى قيم JSON عليا متتالية (للابتلاع):
@@ -5015,7 +7761,17 @@ fn json_filter_from_file(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "جسون.مرشح_من_ملف";
-    need_args(DISPLAY, args, 2, line, col)?;
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
     let pairs = match &args[0] {
         Value::Dict(p) => p.clone(),
         other => {
@@ -5031,10 +7787,40 @@ fn json_filter_from_file(
         }
     };
     let path = need_string(DISPLAY, &args[1], line, col)?;
+    // مسار_مكتبات (دفعة لينكس 4): قائمة مجلدات
+    // يُبحث فيها عن الملف النسبي إن غاب عن مساره.
+    let mut lib_dirs: Vec<String> = Vec::new();
+    if args.len() == 3 {
+        let pairs = need_dict(DISPLAY, &args[2], line, col)?;
+        for (k, v) in pairs {
+            if k.as_str() == "مسار_مكتبات" {
+                let list = need_list(DISPLAY, v, line, col)?;
+                for e in list {
+                    lib_dirs.push(need_string(DISPLAY, e, line, col)?);
+                }
+            } else {
+                return Err(RioError::runtime(
+                    format!("الدالة {} خيار غير معروف: {}", DISPLAY, k),
+                    line,
+                    col,
+                ));
+            }
+        }
+    }
     let full = search_resolve_path(ctx, &path);
-    let content = match std::fs::read_to_string(&full) {
-        Ok(t) => t,
-        Err(_) => {
+    let mut content: Option<String> = std::fs::read_to_string(&full).ok();
+    if content.is_none() {
+        for dir in &lib_dirs {
+            let cand = search_resolve_path(ctx, &format!("{}/{}", dir, path));
+            if let Ok(t) = std::fs::read_to_string(&cand) {
+                content = Some(t);
+                break;
+            }
+        }
+    }
+    let content = match content {
+        Some(t) => t,
+        None => {
             return Err(RioError::runtime(
                 format!("الدالة {} تعذر قراءة الملف: {}", DISPLAY, path),
                 line,
@@ -5685,6 +8471,842 @@ fn json_group_by(
     ))
 }
 // END لينكس3-نص دوال جسون Rust
+// BEGIN لينكس4-نص دوال جسون Rust
+/// جسون.طول_بايتات — البند 268.
+fn json_utf8_len(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.طول_بايتات";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let v = &args[0];
+    match v {
+        Value::Str(s) => Ok(Value::Number(s.len() as f64)),
+        _ => {
+            let text = b3_json_to_text(v).map_err(|e| RioError::runtime(e, line, col))?;
+            Ok(Value::Number(text.len() as f64))
+        }
+    }
+}
+
+/// جسون.مفاتيح_بلا_فرز — البند 270.
+fn json_keys_unsorted(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.مفاتيح_بلا_فرز";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let v = &args[0];
+    match v {
+        Value::Dict(pairs) => Ok(Value::List(
+            pairs.iter().map(|(k, _)| Value::Str(k.clone())).collect(),
+        )),
+        Value::List(items) => Ok(Value::List(
+            (0..items.len()).map(|i| Value::Number(i as f64)).collect(),
+        )),
+        other => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع قاموسا أو قائمة لكن أعطيت {}",
+                DISPLAY,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// جسون.إلى_مصفوفة — البند 292.
+fn json_to_array(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.إلى_مصفوفة";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let v = &args[0];
+    match v {
+        Value::List(items) => Ok(Value::List(items.clone())),
+        Value::Dict(pairs) => Ok(Value::List(
+            pairs.iter().map(|(_, val)| val.clone()).collect(),
+        )),
+        Value::Nil => Ok(Value::List(vec![])),
+        other => Ok(Value::List(vec![other.clone()])),
+    }
+}
+
+/// جسون.بدل_صفوف — البند 293.
+fn json_transpose(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.بدل_صفوف";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let rows = need_list(DISPLAY, &args[0], line, col)?;
+    let mut grid: Vec<Vec<Value>> = Vec::new();
+    let mut width = 0usize;
+    for r in rows {
+        let cells = need_list(DISPLAY, r, line, col)?.to_vec();
+        width = width.max(cells.len());
+        grid.push(cells);
+    }
+    let mut out: Vec<Value> = Vec::new();
+    for c in 0..width {
+        let mut col: Vec<Value> = Vec::new();
+        for r in &grid {
+            col.push(r.get(c).cloned().unwrap_or(Value::Nil));
+        }
+        out.push(Value::List(col));
+    }
+    Ok(Value::List(out))
+}
+
+/// جسون.دفق — البند 218.
+fn json_stream(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.دفق";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let v = &args[0];
+    let mut out: Vec<Value> = Vec::new();
+    b4_json_stream(v, "", &mut out);
+    Ok(Value::List(out))
+}
+
+/// جسون.بيئة — البند 264.
+fn json_env(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.بيئة";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut vars: Vec<(String, String)> = std::env::vars().collect();
+    vars.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(Value::Dict(
+        vars.into_iter()
+            .map(|(k, v)| (k, Value::Str(v)))
+            .collect(),
+    ))
+}
+
+/// جسون.صحح — البند 330.
+fn json_debug(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.صحح";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let v = &args[0];
+    let compact = match v {
+        Value::Str(s) => json_escape(s),
+        _ => {
+            let mut out = String::new();
+            json_write_value(v, &mut out, 0)
+                .map_err(|e| RioError::runtime(e, line, col))?;
+            out
+        }
+    };
+    eprintln!("تصحيح: {}", compact);
+    Ok(v.clone())
+}
+
+/// جسون.اقرأ_التالي — البند 263.
+fn json_read_next(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.اقرأ_التالي";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let end = match b4_json_first_end(&text) {
+        Some(e) => e,
+        None => {
+            return Err(RioError::runtime(
+                "نص JSON غير صالح".to_string(),
+                line,
+                col,
+            ))
+        }
+    };
+    let value = parse_json(&text[..end])
+        .map_err(|_| RioError::runtime("نص JSON غير صالح".to_string(), line, col))?;
+    let rest = text[end..].trim_start().to_string();
+    Ok(Value::Dict(vec![
+        ("قيمة".to_string(), json_to_niva(value)),
+        ("باقي".to_string(), Value::Str(rest)),
+    ]))
+}
+
+/// جسون.اقرأ_كلها — البند 263.
+fn json_read_all(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.اقرأ_كلها";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let mut out: Vec<Value> = Vec::new();
+    let mut rest = text.as_str();
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        let end = match b4_json_first_end(rest) {
+            Some(e) => e,
+            None => {
+                return Err(RioError::runtime(
+                    "نص JSON غير صالح".to_string(),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let value = parse_json(&rest[..end])
+            .map_err(|_| RioError::runtime("نص JSON غير صالح".to_string(), line, col))?;
+        out.push(json_to_niva(value));
+        rest = &rest[end..];
+    }
+    Ok(Value::List(out))
+}
+
+/// جسون.نسق — البند 210.
+fn json_format(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.نسق";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 1 و2 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let v = &args[0];
+    let pairs = b4_opt_pairs(DISPLAY, args, 1, line, col)?;
+    let mut indent: i64 = 2;
+    let mut use_tabs = false;
+    let mut ascii_only = false;
+    let mut join_out = false;
+    if let Some(ps) = pairs {
+        for (k, val) in ps {
+            match k.as_str() {
+                "مسافة_بادئة" => {
+                    let n = b4_need_count(DISPLAY, k, val, line, col)?;
+                    if n > 8 {
+                        return Err(RioError::runtime(
+                            format!("الدالة {} مسافة_بادئة {} أكبر من 8", DISPLAY, n),
+                            line,
+                            col,
+                        ));
+                    }
+                    indent = n;
+                }
+                "تبويب" => use_tabs = b4_need_bool(DISPLAY, val, line, col)?,
+                "أسكي_فقط" => ascii_only = b4_need_bool(DISPLAY, val, line, col)?,
+                "وصل_الإخراج" => join_out = b4_need_bool(DISPLAY, val, line, col)?,
+                other => return Err(b4_unknown_opt(DISPLAY, other, line, col)),
+            }
+        }
+    }
+    if join_out {
+        if let Value::List(items) = v {
+            let mut out = String::new();
+            for it in items {
+                let mut one = String::new();
+                json_write_value(it, &mut one, 0)
+                    .map_err(|e| RioError::runtime(e, line, col))?;
+                out.push_str(&one);
+            }
+            return Ok(Value::Str(out));
+        }
+    }
+    let mut out = String::new();
+    b4_json_write_pretty(v, &mut out, indent as usize, use_tabs, ascii_only, 0)
+        .map_err(|e| RioError::runtime(e, line, col))?;
+    Ok(Value::Str(out))
+}
+
+/// جسون.ابتلع_ملفا — البند 224.
+fn json_slurp_file(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.ابتلع_ملفا";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let bytes = j12_read_file(ctx, &path, line, col)?;
+    let text = String::from_utf8(bytes).map_err(|_| {
+        RioError::runtime(format!("الملف {} ليس نصا صالحا (UTF-8)", path), line, col)
+    })?;
+    let mut out: Vec<Value> = Vec::new();
+    let mut rest = text.as_str();
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        let end = match b4_json_first_end(rest) {
+            Some(e) => e,
+            None => {
+                return Err(RioError::runtime(
+                    "نص JSON غير صالح".to_string(),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let value = parse_json(&rest[..end])
+            .map_err(|_| RioError::runtime("نص JSON غير صالح".to_string(), line, col))?;
+        out.push(json_to_niva(value));
+        rest = &rest[end..];
+    }
+    Ok(Value::List(out))
+}
+
+/// جسون.معاملات_موضعية — البند 226.
+fn json_positional_args(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.معاملات_موضعية";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 1 و2 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let items = need_list(DISPLAY, &args[0], line, col)?;
+    let parse = if args.len() == 2 {
+        b4_need_bool(DISPLAY, &args[1], line, col)?
+    } else {
+        false
+    };
+    let mut out: Vec<Value> = Vec::new();
+    for it in items {
+        let s = need_string(DISPLAY, it, line, col)?;
+        if parse {
+            match parse_json(&s) {
+                Ok(v) => out.push(json_to_niva(v)),
+                Err(_) => out.push(Value::Str(s)),
+            }
+        } else {
+            out.push(Value::Str(s));
+        }
+    }
+    Ok(Value::List(out))
+}
+
+/// جسون.يحوي_مفتاحا — البند 271.
+fn json_has_key(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.يحوي_مفتاحا";
+    need_args(DISPLAY, args, 2, line, col)?;
+    match &args[0] {
+        Value::Dict(d) => {
+            let key = need_string(DISPLAY, &args[1], line, col)?;
+            Ok(Value::Bool(dict_get(d, &key).is_some()))
+        }
+        Value::List(items) => {
+            let idx = need_integer(DISPLAY, &args[1], line, col)?;
+            Ok(Value::Bool(idx >= 0 && (idx as usize) < items.len()))
+        }
+        other => Err(RioError::typ(
+            format!("الدالة {} تتوقع قاموسا أو قائمة لكن أعطيت {}", DISPLAY, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+/// جسون.مفتاح_في — البند 272.
+fn json_key_in(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.مفتاح_في";
+    need_args(DISPLAY, args, 2, line, col)?;
+    match &args[1] {
+        Value::Dict(d) => {
+            let key = need_string(DISPLAY, &args[0], line, col)?;
+            Ok(Value::Bool(dict_get(d, &key).is_some()))
+        }
+        Value::List(items) => {
+            let idx = need_integer(DISPLAY, &args[0], line, col)?;
+            Ok(Value::Bool(idx >= 0 && (idx as usize) < items.len()))
+        }
+        other => Err(RioError::typ(
+            format!("الدالة {} تتوقع قاموسا أو قائمة لكن أعطيت {}", DISPLAY, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+/// جسون.ابن_بمفتاح_محسوب — البند 241.
+fn json_computed_key(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.ابن_بمفتاح_محسوب";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let key = need_string(DISPLAY, &args[0], line, col)?;
+    Ok(Value::Dict(vec![(key, args[1].clone())]))
+}
+
+/// جسون.ادمج_بعمق — البند 247.
+fn json_merge_deep(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.ادمج_بعمق";
+    need_args(DISPLAY, args, 2, line, col)?;
+    fn merge_deep(a: &Value, b: &Value) -> Value {
+        match (a, b) {
+            (Value::Dict(ap), Value::Dict(bp)) => {
+                let mut out: Vec<(String, Value)> = Vec::new();
+                for (k, v) in ap {
+                    match dict_get(bp, k) {
+                        Some(bv) => out.push((k.clone(), merge_deep(v, bv))),
+                        None => out.push((k.clone(), v.clone())),
+                    }
+                }
+                for (k, v) in bp {
+                    if dict_get(ap, k).is_none() {
+                        out.push((k.clone(), v.clone()));
+                    }
+                }
+                Value::Dict(out)
+            }
+            (_, bval) => bval.clone(),
+        }
+    }
+    Ok(merge_deep(&args[0], &args[1]))
+}
+
+/// جسون.داخل — البند 300.
+fn json_inside(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.داخل";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let item = &args[0];
+    let container = &args[1];
+    match container {
+        Value::List(items) => Ok(Value::Bool(
+            items.iter().any(|it| b3_json_cmp(it, item) == std::cmp::Ordering::Equal),
+        )),
+        Value::Dict(pairs) => match item {
+            Value::Dict(ipairs) => Ok(Value::Bool(ipairs.iter().all(|(k, v)| {
+                match dict_get(pairs, k) {
+                    Some(cv) => b3_json_cmp(cv, v) == std::cmp::Ordering::Equal,
+                    None => false,
+                }
+            }))),
+            Value::Str(key) => Ok(Value::Bool(dict_get(pairs, key).is_some())),
+            other => Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع عنصرا قاموسا أو مفتاحا لقاموس لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            )),
+        },
+        Value::Str(s) => {
+            let sub = need_string(DISPLAY, item, line, col)?;
+            Ok(Value::Bool(s.contains(sub.as_str())))
+        }
+        other => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع قائمة أو قاموسا أو نصا لكن أعطيت {}",
+                DISPLAY,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// جسون.مسار_إلى — البند 301.
+fn json_path_to(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.مسار_إلى";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let v = &args[0];
+    let target = &args[1];
+    let mut prefix: Vec<B4Seg> = Vec::new();
+    let mut found: Option<Vec<B4Seg>> = None;
+    b4_path_to_rec(v, target, &mut prefix, &mut found);
+    match found {
+        Some(segs) => Ok(Value::List(
+            segs.into_iter()
+                .map(|s| match s {
+                    B4Seg::Key(k) => Value::Str(k),
+                    B4Seg::Idx(n) => Value::Number(n as f64),
+                })
+                .collect(),
+        )),
+        None => Ok(Value::Nil),
+    }
+}
+
+/// جسون.اقرأ_بمسار — البند 301.
+fn json_get_path(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.اقرأ_بمسار";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let v = &args[0];
+    let segs = b4_path_segs(DISPLAY, &args[1], line, col)?;
+    match b4_path_get(v, &segs) {
+        Some(x) => Ok(x.clone()),
+        None => Ok(Value::Nil),
+    }
+}
+
+/// جسون.اضبط_بمسار — البند 301.
+fn json_set_path(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.اضبط_بمسار";
+    need_args(DISPLAY, args, 3, line, col)?;
+    let mut v = args[0].clone();
+    let segs = b4_path_segs(DISPLAY, &args[1], line, col)?;
+    b4_path_set(&mut v, &segs, args[2].clone())
+        .map_err(|e| RioError::runtime(e.to_string(), line, col))?;
+    Ok(v)
+}
+
+/// جسون.احذف_بمسار — البند 302.
+fn json_del_path(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.احذف_بمسار";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let mut v = args[0].clone();
+    let segs = b4_path_segs(DISPLAY, &args[1], line, col)?;
+    b4_path_del(&mut v, &segs);
+    Ok(v)
+}
+
+/// جسون.احذف_بمسارات — البند 302.
+fn json_del_paths(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.احذف_بمسارات";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let mut v = args[0].clone();
+    let paths = need_list(DISPLAY, &args[1], line, col)?;
+    for p in paths {
+        let segs = b4_path_segs(DISPLAY, p, line, col)?;
+        b4_path_del(&mut v, &segs);
+    }
+    Ok(v)
+}
+
+/// جسون.كرر_بعمق — البند 255.
+fn json_recurse_fn(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.كرر_بعمق";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 2 و3 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let v = &args[0];
+    j3_need_func(DISPLAY, &args[1], line, col)?;
+    let limit: i64 = if args.len() == 3 {
+        b4_need_count(DISPLAY, "حد", &args[2], line, col)?
+    } else {
+        10
+    };
+    let mut out: Vec<Value> = vec![v.clone()];
+    let mut cur = v.clone();
+    for _ in 0..limit {
+        cur = j3_call_single(ctx, &args[1], cur, line, col)?;
+        if matches!(cur, Value::Nil) {
+            break;
+        }
+        out.push(cur.clone());
+    }
+    Ok(Value::List(out))
+}
+
+/// جسون.راكم — البند 258.
+fn json_reduce(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.راكم";
+    need_args(DISPLAY, args, 3, line, col)?;
+    let items = need_list(DISPLAY, &args[0], line, col)?;
+    let mut acc = args[1].clone();
+    j3_need_func(DISPLAY, &args[2], line, col)?;
+    for it in items {
+        acc = j3_call_pair(ctx, &args[2], acc, it.clone(), line, col)?;
+    }
+    Ok(acc)
+}
+
+/// جسون.لكل_عنصر — البند 259.
+fn json_foreach(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.لكل_عنصر";
+    need_args(DISPLAY, args, 3, line, col)?;
+    let items = need_list(DISPLAY, &args[0], line, col)?;
+    let mut acc = args[1].clone();
+    j3_need_func(DISPLAY, &args[2], line, col)?;
+    let mut out: Vec<Value> = vec![acc.clone()];
+    for it in items {
+        acc = j3_call_pair(ctx, &args[2], acc, it.clone(), line, col)?;
+        out.push(acc.clone());
+    }
+    Ok(Value::List(out))
+}
+
+/// جسون.طبق_على_القيم — البند 274.
+fn json_map_values(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.طبق_على_القيم";
+    need_args(DISPLAY, args, 2, line, col)?;
+    j3_need_func(DISPLAY, &args[1], line, col)?;
+    match &args[0] {
+        Value::Dict(pairs) => {
+            let mut out: Vec<(String, Value)> = Vec::new();
+            for (k, val) in pairs {
+                let nv = j3_call_single(ctx, &args[1], val.clone(), line, col)?;
+                out.push((k.clone(), nv));
+            }
+            Ok(Value::Dict(out))
+        }
+        Value::List(items) => {
+            let mut out: Vec<Value> = Vec::new();
+            for val in items {
+                out.push(j3_call_single(ctx, &args[1], val.clone(), line, col)?);
+            }
+            Ok(Value::List(out))
+        }
+        other => Err(RioError::typ(
+            format!("الدالة {} تتوقع قاموسا أو قائمة لكن أعطيت {}", DISPLAY, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+/// جسون.فريد_بمرشح — البند 279.
+fn json_unique_by(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.فريد_بمرشح";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let items = need_list(DISPLAY, &args[0], line, col)?;
+    j3_need_func(DISPLAY, &args[1], line, col)?;
+    let mut seen: Vec<Value> = Vec::new();
+    let mut out: Vec<Value> = Vec::new();
+    for it in items {
+        let key = j3_call_single(ctx, &args[1], it.clone(), line, col)?;
+        if !seen.iter().any(|s| b3_json_cmp(s, &key) == std::cmp::Ordering::Equal) {
+            seen.push(key);
+            out.push(it.clone());
+        }
+    }
+    Ok(Value::List(out))
+}
+
+/// جسون.مع_الإدخالات — البند 306.
+fn json_with_entries(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.مع_الإدخالات";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let pairs = need_dict(DISPLAY, &args[0], line, col)?;
+    j3_need_func(DISPLAY, &args[1], line, col)?;
+    let mut out: Vec<(String, Value)> = Vec::new();
+    for (k, val) in pairs {
+        let entry = Value::Dict(vec![
+            ("مفتاح".to_string(), Value::Str(k.clone())),
+            ("قيمة".to_string(), val.clone()),
+        ]);
+        let nv = j3_call_single(ctx, &args[1], entry, line, col)?;
+        let npairs = need_dict(DISPLAY, &nv, line, col)?;
+        let nk = match dict_get(npairs, "مفتاح") {
+            Some(Value::Str(s)) => s.clone(),
+            Some(other) => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع مفتاحا نصيا لكن أعطيت {}",
+                        DISPLAY,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+            None => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} إدخال بلا مفتاح", DISPLAY),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let nval = dict_get(npairs, "قيمة").cloned().unwrap_or(Value::Nil);
+        if let Some(slot) = out.iter_mut().find(|(kk, _)| *kk == nk) {
+            slot.1 = nval;
+        } else {
+            out.push((nk, nval));
+        }
+    }
+    Ok(Value::Dict(out))
+}
+
+/// جسون.أصغر_بمرشح — البند 309.
+fn json_min_by(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.أصغر_بمرشح";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let items = need_list(DISPLAY, &args[0], line, col)?;
+    j3_need_func(DISPLAY, &args[1], line, col)?;
+    if items.is_empty() {
+        return Ok(Value::Nil);
+    }
+    let mut best = items[0].clone();
+    let mut best_key = j3_call_single(ctx, &args[1], best.clone(), line, col)?;
+    for it in &items[1..] {
+        let key = j3_call_single(ctx, &args[1], it.clone(), line, col)?;
+        let ord = b3_json_cmp(&key, &best_key);
+        if ord == std::cmp::Ordering::Less {
+            best = it.clone();
+            best_key = key;
+        }
+    }
+    Ok(best)
+}
+
+/// جسون.أكبر_بمرشح — البند 309.
+fn json_max_by(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "جسون.أكبر_بمرشح";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let items = need_list(DISPLAY, &args[0], line, col)?;
+    j3_need_func(DISPLAY, &args[1], line, col)?;
+    if items.is_empty() {
+        return Ok(Value::Nil);
+    }
+    let mut best = items[0].clone();
+    let mut best_key = j3_call_single(ctx, &args[1], best.clone(), line, col)?;
+    for it in &items[1..] {
+        let key = j3_call_single(ctx, &args[1], it.clone(), line, col)?;
+        let ord = b3_json_cmp(&key, &best_key);
+        if ord == std::cmp::Ordering::Greater {
+            best = it.clone();
+            best_key = key;
+        }
+    }
+    Ok(best)
+}
+// END لينكس4-نص دوال جسون Rust
 fn json_entries() -> Vec<(&'static str, Value)> {
     vec![
         ("اقرأ", native("اقرأ", json_read)),
@@ -5713,7 +9335,39 @@ fn json_entries() -> Vec<(&'static str, Value)> {
         ("فهرس_آخر", native("فهرس_آخر", json_index_last)),
         ("إلى_إدخالات", native("إلى_إدخالات", json_to_entries)),
         ("من_إدخالات", native("من_إدخالات", json_from_entries)),
-        ("جمع_حسب", native("جمع_حسب", json_group_by)),
+        ("جمع_حسب", native("جمع_حسب", json_group_by)),// BEGIN لينكس4-نص مداخل جسون
+        ("نسق", native("نسق", json_format)),
+        ("دفق", native("دفق", json_stream)),
+        ("ابتلع_ملفا", native("ابتلع_ملفا", json_slurp_file)),
+        ("معاملات_موضعية", native("معاملات_موضعية", json_positional_args)),
+        ("ابن_بمفتاح_محسوب", native("ابن_بمفتاح_محسوب", json_computed_key)),
+        ("ادمج_بعمق", native("ادمج_بعمق", json_merge_deep)),
+        ("كرر_بعمق", native("كرر_بعمق", json_recurse_fn)),
+        ("راكم", native("راكم", json_reduce)),
+        ("لكل_عنصر", native("لكل_عنصر", json_foreach)),
+        ("اقرأ_التالي", native("اقرأ_التالي", json_read_next)),
+        ("اقرأ_كلها", native("اقرأ_كلها", json_read_all)),
+        ("بيئة", native("بيئة", json_env)),
+        ("طول_بايتات", native("طول_بايتات", json_utf8_len)),
+        ("مفاتيح_بلا_فرز", native("مفاتيح_بلا_فرز", json_keys_unsorted)),
+        ("يحوي_مفتاحا", native("يحوي_مفتاحا", json_has_key)),
+        ("مفتاح_في", native("مفتاح_في", json_key_in)),
+        ("طبق_على_القيم", native("طبق_على_القيم", json_map_values)),
+        ("فريد_بمرشح", native("فريد_بمرشح", json_unique_by)),
+        ("إلى_مصفوفة", native("إلى_مصفوفة", json_to_array)),
+        ("بدل_صفوف", native("بدل_صفوف", json_transpose)),
+        ("داخل", native("داخل", json_inside)),
+        ("مسار_إلى", native("مسار_إلى", json_path_to)),
+        ("اقرأ_بمسار", native("اقرأ_بمسار", json_get_path)),
+        ("اضبط_بمسار", native("اضبط_بمسار", json_set_path)),
+        ("احذف_بمسار", native("احذف_بمسار", json_del_path)),
+        ("احذف_بمسارات", native("احذف_بمسارات", json_del_paths)),
+        ("مع_الإدخالات", native("مع_الإدخالات", json_with_entries)),
+        ("أصغر_بمرشح", native("أصغر_بمرشح", json_min_by)),
+        ("أكبر_بمرشح", native("أكبر_بمرشح", json_max_by)),
+        ("صحح", native("صحح", json_debug)),
+// END لينكس4-نص مداخل جسون
+
 // END لينكس3-نص مداخل جسون
 
     ]
@@ -7738,11 +11392,34 @@ pub(crate) fn next_u64() -> u64 {
     x ^ (x >> 31)
 }
 
+// BEGIN لينكس4-نص دوال عشوائي Rust
+/// عشوائي.بذرة — البند 181.
+fn random_seed(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عشوائي.بذرة";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = need_integer(DISPLAY, &args[0], line, col)?;
+    let seed: u64 = if n == 0 {
+        0x9E3779B97F4A7C15
+    } else {
+        n as u64
+    };
+    RNG_STATE.store(seed, Ordering::Relaxed);
+    Ok(Value::Nil)
+}
+// END لينكس4-نص دوال عشوائي Rust
 fn random_entries() -> Vec<(&'static str, Value)> {
     vec![
         ("عدد_عشوائي", native("عدد_عشوائي", random_float)),
         ("صحيح_عشوائي", native("صحيح_عشوائي", random_int)),
-        ("اختيار", native("اختيار", random_choice)),
+        ("اختيار", native("اختيار", random_choice)),// BEGIN لينكس4-نص مداخل عشوائي
+        ("بذرة", native("بذرة", random_seed)),
+// END لينكس4-نص مداخل عشوائي
+
     ]
 }
 
@@ -8742,6 +12419,35 @@ fn sys_gid(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize
 
 // --- وقت ---
 
+// BEGIN لينكس4-نص دوال وقت Rust
+/// وقت.حلل_بصيغة — البند 328.
+fn time_parse_format(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "وقت.حلل_بصيغة";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let fmt = need_string(DISPLAY, &args[1], line, col)?;
+    match b4_parse_time_format(&text, &fmt) {
+        Some((y, mo, d, h, mi, s)) => Ok(Value::Dict(vec![
+            ("سنة".to_string(), Value::Number(y as f64)),
+            ("شهر".to_string(), Value::Number(mo as f64)),
+            ("يوم".to_string(), Value::Number(d as f64)),
+            ("ساعة".to_string(), Value::Number(h as f64)),
+            ("دقيقة".to_string(), Value::Number(mi as f64)),
+            ("ثانية".to_string(), Value::Number(s as f64)),
+        ])),
+        None => Err(RioError::runtime(
+            format!("الدالة {} النص {} لا يطابق الصيغة {} أو تاريخ غير صالح", DISPLAY, text, fmt),
+            line,
+            col,
+        )),
+    }
+}
+// END لينكس4-نص دوال وقت Rust
 fn time_entries() -> Vec<(&'static str, Value)> {
     vec![
         ("الآن", native("الآن", time_now)),
@@ -8761,7 +12467,10 @@ fn time_entries() -> Vec<(&'static str, Value)> {
         ("فرق", native("فرق", time_diff)),
         ("أضف", native("أضف", time_add)),
         // باقي J14 — البند 205: تنسيق التاريخ/الوقت.
-        ("نسق", native("نسق", time_format_custom)),
+        ("نسق", native("نسق", time_format_custom)),// BEGIN لينكس4-نص مداخل وقت
+        ("حلل_بصيغة", native("حلل_بصيغة", time_parse_format)),
+// END لينكس4-نص مداخل وقت
+
     ]
 }
 
@@ -9825,6 +13534,378 @@ fn text_trim(
     Ok(Value::Str(text.trim().to_string()))
 }
 // END لينكس3-نص دوال نص Rust
+// BEGIN لينكس4-نص دوال نص Rust
+/// نص.قسم_بنمط — البند 312.
+fn text_split_pattern(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "نص.قسم_بنمط";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 2 و3 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    let pairs = b4_opt_pairs(DISPLAY, args, 2, line, col)?;
+    let fold = b4_opt_bool(DISPLAY, pairs, "تجاهل_الحالة", false, line, col)?;
+    if let Some(ps) = pairs {
+        for (k, _) in ps {
+            if k != "تجاهل_الحالة" {
+                return Err(b4_unknown_opt(DISPLAY, k, line, col));
+            }
+        }
+    }
+    let prog = rx_compile_fold(&pattern, false, fold).map_err(|e| rx_err(e, line, col))?;
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<Value> = Vec::new();
+    let mut pos = 0usize;
+    let mut last = 0usize;
+    while pos <= chars.len() {
+        match rx_find_from(&prog, &chars, pos).map_err(|e| rx_err(e, line, col))? {
+            None => break,
+            Some((s, e, _)) => {
+                out.push(Value::Str(chars[last..s].iter().collect()));
+                if e == s {
+                    if e >= chars.len() {
+                        last = e;
+                        break;
+                    }
+                    pos = e + 1;
+                    last = e + 1;
+                } else {
+                    pos = e;
+                    last = e;
+                }
+            }
+        }
+    }
+    out.push(Value::Str(chars[last..].iter().collect()));
+    Ok(Value::List(out))
+}
+
+/// نص.صل — البند 313.
+fn text_join(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "نص.صل";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let items = need_list(DISPLAY, &args[0], line, col)?;
+    let sep = need_string(DISPLAY, &args[1], line, col)?;
+    let mut parts: Vec<String> = Vec::new();
+    for it in items {
+        parts.push(need_string(DISPLAY, it, line, col)?);
+    }
+    Ok(Value::Str(parts.join(&sep)))
+}
+
+/// نص.أزل_البادئة — البند 316.
+fn text_ltrim_str(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "نص.أزل_البادئة";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let pre = need_string(DISPLAY, &args[1], line, col)?;
+    Ok(Value::Str(match text.strip_prefix(pre.as_str()) {
+        Some(rest) => rest.to_string(),
+        None => text,
+    }))
+}
+
+/// نص.أزل_اللاحقة — البند 317.
+fn text_rtrim_str(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "نص.أزل_اللاحقة";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let suf = need_string(DISPLAY, &args[1], line, col)?;
+    Ok(Value::Str(match text.strip_suffix(suf.as_str()) {
+        Some(rest) => rest.to_string(),
+        None => text,
+    }))
+}
+
+/// نص.فكك_محارف — البند 319.
+fn text_explode(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "نص.فكك_محارف";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    Ok(Value::List(
+        text.chars().map(|c| Value::Str(c.to_string())).collect(),
+    ))
+}
+
+/// نص.ركب_محارف — البند 320.
+fn text_implode(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "نص.ركب_محارف";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let items = need_list(DISPLAY, &args[0], line, col)?;
+    let mut out = String::new();
+    for it in items {
+        out.push_str(&need_string(DISPLAY, it, line, col)?);
+    }
+    Ok(Value::Str(out))
+}
+
+/// نص.يطابق_نمطا — البند 321.
+fn text_test_pattern(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "نص.يطابق_نمطا";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 2 و3 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    let pairs = b4_opt_pairs(DISPLAY, args, 2, line, col)?;
+    let fold = b4_opt_bool(DISPLAY, pairs, "تجاهل_الحالة", false, line, col)?;
+    if let Some(ps) = pairs {
+        for (k, _) in ps {
+            if k != "تجاهل_الحالة" {
+                return Err(b4_unknown_opt(DISPLAY, k, line, col));
+            }
+        }
+    }
+    let prog = rx_compile_fold(&pattern, true, fold).map_err(|e| rx_err(e, line, col))?;
+    let chars: Vec<char> = text.chars().collect();
+    Ok(Value::Bool(
+        rx_match_at(&prog, &chars, 0)
+            .map_err(|e| rx_err(e, line, col))?
+            .is_some(),
+    ))
+}
+
+/// نص.تفاصيل_المطابقة — البند 322.
+fn text_match_details(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "نص.تفاصيل_المطابقة";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 2 و3 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    let pairs = b4_opt_pairs(DISPLAY, args, 2, line, col)?;
+    let fold = b4_opt_bool(DISPLAY, pairs, "تجاهل_الحالة", false, line, col)?;
+    if let Some(ps) = pairs {
+        for (k, _) in ps {
+            if k != "تجاهل_الحالة" {
+                return Err(b4_unknown_opt(DISPLAY, k, line, col));
+            }
+        }
+    }
+    let prog = rx_compile_fold(&pattern, false, fold).map_err(|e| rx_err(e, line, col))?;
+    let chars: Vec<char> = text.chars().collect();
+    let found = rx_find_from(&prog, &chars, 0).map_err(|e| rx_err(e, line, col))?;
+    match found {
+        None => Ok(Value::Dict(vec![
+            ("مطابق".to_string(), Value::Bool(false)),
+            ("موضع".to_string(), Value::Number(0.0)),
+            ("طول".to_string(), Value::Number(0.0)),
+            ("نص_مطابق".to_string(), Value::Str(String::new())),
+            ("مجموعات".to_string(), Value::List(vec![])),
+        ])),
+        Some((s, e, saved)) => {
+            let mut groups: Vec<Value> = Vec::new();
+            for g in 1..=prog.ngroups {
+                match rx_group_text(&chars, &saved, g) {
+                    Some(t) => groups.push(Value::Str(t)),
+                    None => groups.push(Value::Nil),
+                }
+            }
+            Ok(Value::Dict(vec![
+                ("مطابق".to_string(), Value::Bool(true)),
+                ("موضع".to_string(), Value::Number((s + 1) as f64)),
+                ("طول".to_string(), Value::Number((e - s) as f64)),
+                (
+                    "نص_مطابق".to_string(),
+                    Value::Str(chars[s..e].iter().collect()),
+                ),
+                ("مجموعات".to_string(), Value::List(groups)),
+            ]))
+        }
+    }
+}
+
+/// نص.التقط_المجموعات — البند 323.
+fn text_capture_groups(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "نص.التقط_المجموعات";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 2 و3 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    let names: Option<Vec<String>> = if args.len() == 3 {
+        let items = need_list(DISPLAY, &args[2], line, col)?;
+        let mut ns: Vec<String> = Vec::new();
+        for it in items {
+            ns.push(need_string(DISPLAY, it, line, col)?);
+        }
+        Some(ns)
+    } else {
+        None
+    };
+    let prog = rx_compile_fold(&pattern, false, false).map_err(|e| rx_err(e, line, col))?;
+    let chars: Vec<char> = text.chars().collect();
+    let found = rx_find_from(&prog, &chars, 0).map_err(|e| rx_err(e, line, col))?;
+    let mut out: Vec<(String, Value)> = Vec::new();
+    if let Some((_, _, saved)) = found {
+        for g in 1..=prog.ngroups {
+            let key = match &names {
+                Some(ns) if g - 1 < ns.len() => ns[g - 1].clone(),
+                _ => (g as u64)
+                    .to_string()
+                    .chars()
+                    .map(|c| match c {
+                        '0' => '٠',
+                        '1' => '١',
+                        '2' => '٢',
+                        '3' => '٣',
+                        '4' => '٤',
+                        '5' => '٥',
+                        '6' => '٦',
+                        '7' => '٧',
+                        '8' => '٨',
+                        '9' => '٩',
+                        _ => c,
+                    })
+                    .collect(),
+            };
+            let val = match rx_group_text(&chars, &saved, g) {
+                Some(t) => Value::Str(t),
+                None => Value::Nil,
+            };
+            out.push((key, val));
+        }
+    }
+    Ok(Value::Dict(out))
+}
+
+/// نص.امسح_النمط — البند 324.
+fn text_scan_pattern(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "نص.امسح_النمط";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع بين 2 و3 معاملات لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    let pairs = b4_opt_pairs(DISPLAY, args, 2, line, col)?;
+    let fold = b4_opt_bool(DISPLAY, pairs, "تجاهل_الحالة", false, line, col)?;
+    if let Some(ps) = pairs {
+        for (k, _) in ps {
+            if k != "تجاهل_الحالة" {
+                return Err(b4_unknown_opt(DISPLAY, k, line, col));
+            }
+        }
+    }
+    let prog = rx_compile_fold(&pattern, false, fold).map_err(|e| rx_err(e, line, col))?;
+    let chars: Vec<char> = text.chars().collect();
+    let mut out: Vec<Value> = Vec::new();
+    let mut pos = 0usize;
+    while pos <= chars.len() {
+        match rx_find_from(&prog, &chars, pos).map_err(|e| rx_err(e, line, col))? {
+            None => break,
+            Some((s, e, saved)) => {
+                let mut row: Vec<Value> = vec![Value::Str(chars[s..e].iter().collect())];
+                for g in 1..=prog.ngroups {
+                    match rx_group_text(&chars, &saved, g) {
+                        Some(t) => row.push(Value::Str(t)),
+                        None => row.push(Value::Nil),
+                    }
+                }
+                out.push(Value::List(row));
+                if e == s {
+                    if e >= chars.len() {
+                        break;
+                    }
+                    pos = e + 1;
+                } else {
+                    pos = e;
+                }
+            }
+        }
+    }
+    Ok(Value::List(out))
+}
+// END لينكس4-نص دوال نص Rust
 fn text_entries() -> Vec<(&'static str, Value)> {
     vec![
         ("نسق", native("نسق", text_format)),
@@ -9859,7 +13940,19 @@ fn text_entries() -> Vec<(&'static str, Value)> {
         ("أطول_جملة", native("أطول_جملة", text_longest_sentence)),
         ("أقصر_جملة", native("أقصر_جملة", text_shortest_sentence)),// BEGIN لينكس3-نص مداخل نص
         ("نسق_بصيغة", native("نسق_بصيغة", text_printf_format)),
-        ("قلم", native("قلم", text_trim)),
+        ("قلم", native("قلم", text_trim)),// BEGIN لينكس4-نص مداخل نص
+        ("قسم_بنمط", native("قسم_بنمط", text_split_pattern)),
+        ("صل", native("صل", text_join)),
+        ("أزل_البادئة", native("أزل_البادئة", text_ltrim_str)),
+        ("أزل_اللاحقة", native("أزل_اللاحقة", text_rtrim_str)),
+        ("فكك_محارف", native("فكك_محارف", text_explode)),
+        ("ركب_محارف", native("ركب_محارف", text_implode)),
+        ("يطابق_نمطا", native("يطابق_نمطا", text_test_pattern)),
+        ("تفاصيل_المطابقة", native("تفاصيل_المطابقة", text_match_details)),
+        ("التقط_المجموعات", native("التقط_المجموعات", text_capture_groups)),
+        ("امسح_النمط", native("امسح_النمط", text_scan_pattern)),
+// END لينكس4-نص مداخل نص
+
 // END لينكس3-نص مداخل نص
 
 // END J15-GEN rust-entries-text
@@ -14502,6 +18595,51 @@ fn flow_address_lines(
                 )),
             }
         }
+        Value::Dict(pairs) => {
+            // قاموس {خطوة: ن} — الأسطر ن، 2ن، 3ن… (البند 134).
+            let mut step: Option<i64> = None;
+            for (k, v) in pairs {
+                match k.as_str() {
+                    "خطوة" => {
+                        step = Some(need_integer(display, v, line, col)?);
+                    }
+                    other => {
+                        return Err(RioError::runtime(
+                            format!(
+                                "الدالة {} عنوان قاموسي لا يقبل المفتاح {}",
+                                display, other
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                }
+            }
+            let Some(n) = step else {
+                return Err(RioError::runtime(
+                    format!("الدالة {} عنوان قاموسي يتوقع مفتاح «خطوة»", display),
+                    line,
+                    col,
+                ));
+            };
+            if n < 1 {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} خطوة {} غير صالحة (الصالحة 1 أو أكثر)",
+                        display, n
+                    ),
+                    line,
+                    col,
+                ));
+            }
+            let mut out: Vec<usize> = Vec::new();
+            let mut i = n;
+            while i <= total {
+                out.push(i as usize);
+                i += n;
+            }
+            Ok(out)
+        }
         other => Err(RioError::runtime(
             format!(
                 "الدالة {} تتوقع عنوانا: عددا أو قائمة عددين أو نصا أو قائمة نصين أو لاشيء لكن أعطيت {}",
@@ -14532,8 +18670,49 @@ fn flow_address_lines_in_text(
 /// 117: استبدل كل مطابقات النمط؛ وخياراتها عنوان
 /// وتجاهل_الحالة (يسري على نمط الاستبدال وعلى نمط
 /// العنوان معا)؛ وبلا عنوان ≡ نمط.استبدل حرفيا.
+/// الأسطر المستبدلة وحدها (بعد الاستبدال):
+/// بلا متعدد_الأسطر: كل سطر معنون تغيّر؛ ومعه:
+/// أسطر الناتج المختلفة عن أسطر الدخل في الموضع
+/// نفسه (والزائدة كلها مستبدلة).
+fn flow_replaced_lines(
+    display: &str,
+    text: &str,
+    pattern: &str,
+    repl: &str,
+    address: Option<&Value>,
+    fold: bool,
+    multiline: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<String>> {
+    if multiline {
+        let full = flow_regex_replace_str(pattern, text, repl, fold, line, col)?;
+        let (in_lines, _) = flow_split_owned(text);
+        let (out_lines, _) = flow_split_owned(&full);
+        let mut res: Vec<String> = Vec::new();
+        for (i, ol) in out_lines.iter().enumerate() {
+            if in_lines.get(i).map(|s| s != ol).unwrap_or(true) {
+                res.push(ol.clone());
+            }
+        }
+        return Ok(res);
+    }
+    let (lines, _) = flow_split_owned(text);
+    let set = flow_resolve_set(display, address, &lines, fold, line, col)?;
+    let mut res: Vec<String> = Vec::new();
+    for (idx, raw) in lines.iter().enumerate() {
+        if set.contains(&(idx + 1)) {
+            let r = flow_regex_replace_str(pattern, raw, repl, fold, line, col)?;
+            if r != *raw {
+                res.push(r);
+            }
+        }
+    }
+    Ok(res)
+}
+
 fn flow_replace_all(
-    _ctx: &mut dyn HandlerCaller,
+    ctx: &mut dyn HandlerCaller,
     args: &[Value],
     line: usize,
     col: usize,
@@ -14555,22 +18734,51 @@ fn flow_replace_all(
     let repl = need_string(DISPLAY, &args[2], line, col)?;
     let mut address: Option<Value> = None;
     let mut fold = false;
+    let mut print_replaced = false;
+    let mut write_to: Option<String> = None;
+    let mut multiline = false;
     if args.len() == 4 {
         let pairs = need_dict(DISPLAY, &args[3], line, col)?;
         let opts = flow_parse_opts(DISPLAY, pairs, true, false, line, col)?;
         address = opts.address;
         fold = opts.ignore_case;
+        print_replaced = opts.print_replaced;
+        write_to = opts.write_replaced_to;
+        multiline = opts.multiline;
     }
-    Ok(Value::Str(flow_replace_all_core(
+    let full = flow_replace_all_core(
         DISPLAY,
         &text,
         &pattern,
         &repl,
         address.as_ref(),
         fold,
+        multiline,
         line,
         col,
-    )?))
+    )?;
+    if print_replaced || write_to.is_some() {
+        let replaced = flow_replaced_lines(
+            DISPLAY,
+            &text,
+            &pattern,
+            &repl,
+            address.as_ref(),
+            fold,
+            multiline,
+            line,
+            col,
+        )?;
+        if let Some(path) = &write_to {
+            j12_write_file(ctx, path, replaced.join("\n").as_bytes(), line, col)?;
+        }
+        if print_replaced {
+            return Ok(Value::List(
+                replaced.into_iter().map(Value::Str).collect(),
+            ));
+        }
+    }
+    Ok(Value::Str(full))
 }
 
 /// تدفق.احذف_أسطر(نص، عنوان؟) — البند 124: احذف
@@ -14751,6 +18959,11 @@ fn flow_process(
     let mut before: Option<Value> = None;
     let mut after: Option<Value> = None;
     let mut sep: Option<String> = None;
+    // خيارات لينكس4: فاصل سجلات الإدخال، وفاصل وصل
+    // نتائج الإجراء النصية، ومسار كتابة النتائج في ملف.
+    let mut record_sep: Option<String> = None;
+    let mut out_sep: Option<String> = None;
+    let mut to_file: Option<String> = None;
     if args.len() == 4 {
         let pairs = need_dict(DISPLAY, &args[3], line, col)?;
         for (k, v) in pairs {
@@ -14774,6 +18987,29 @@ fn flow_process(
                     }
                     sep = Some(s);
                 }
+                "فاصل_السجلات" => {
+                    // فاصل سجلات الإدخال (البند 160): يقسّم
+                    // النص به بدلا من السطر الجديد.
+                    let s = need_string(DISPLAY, v, line, col)?;
+                    if s.is_empty() {
+                        return Err(RioError::runtime(
+                            format!("الدالة {} فاصل السجلات فارغ", DISPLAY),
+                            line,
+                            col,
+                        ));
+                    }
+                    record_sep = Some(s);
+                }
+                "فاصل_سجل_الإخراج" => {
+                    // وصل نتائج الإجراء النصية بهذا الفاصل
+                    // وإرجاعها نصا واحدا (البند 162).
+                    out_sep = Some(need_string(DISPLAY, v, line, col)?);
+                }
+                "إلى_ملف" => {
+                    // كتابة النتائج النصية موصولة بأسطر
+                    // في هذا الملف (البند 184).
+                    to_file = Some(need_string(DISPLAY, v, line, col)?);
+                }
                 other => {
                     return Err(RioError::runtime(
                         format!("الدالة {} لا تقبل الخيار {}", DISPLAY, other),
@@ -14789,7 +19025,20 @@ fn flow_process(
     } else {
         Some(rx_compile(&pattern, false).map_err(|e| rx_err(e, line, col))?)
     };
-    let lines = flow_lines(&text);
+    // تقسيم الإدخال: بفاصل السجلات إن وُجد، وإلا
+    // بالأسطر. (البند 160: الفاصل يقسّم كما تقسّم
+    // الأسطر — قطعة أخيرة فارغة بعد فاصل أخير تُحذف.)
+    let lines: Vec<String> = match &record_sep {
+        Some(sep) => {
+            let mut rs: Vec<String> =
+                text.split(sep.as_str()).map(|s| s.to_string()).collect();
+            if text.ends_with(sep.as_str()) {
+                rs.pop();
+            }
+            rs
+        }
+        None => flow_lines(&text).into_iter().map(|s| s.to_string()).collect(),
+    };
     let total = lines.len() as i64;
     let mut out: Vec<Value> = Vec::new();
     if let Some(f) = &before {
@@ -14837,6 +19086,35 @@ fn flow_process(
         let r = j3_call_single(ctx, f, info, line, col)?;
         if r != Value::Nil {
             out.push(r);
+        }
+    }
+    // خيارات الإخراج النصي (البندان 162 و184): إن وُجد
+    // فاصل وصل أو مسار ملف، فالنتائج كلها يجب أن
+    // تكون نصا؛ تُكتب في الملف موصولة بأسطر، ويُرجع
+    // نص واحد موصول بفاصل الوصل إن وُجد.
+    if out_sep.is_some() || to_file.is_some() {
+        let mut texts: Vec<String> = Vec::with_capacity(out.len());
+        for r in &out {
+            match r {
+                Value::Str(s) => texts.push(s.clone()),
+                other => {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة {} خيار إخراج يتوقع نتيجة نصية لكن أعطيت {}",
+                            DISPLAY,
+                            other.type_name()
+                        ),
+                        line,
+                        col,
+                    ))
+                }
+            }
+        }
+        if let Some(path) = &to_file {
+            j12_write_file(ctx, path, texts.join("\n").as_bytes(), line, col)?;
+        }
+        if let Some(sep) = &out_sep {
+            return Ok(Value::Str(texts.join(sep.as_str())));
         }
     }
     Ok(Value::List(out))
@@ -15405,6 +19683,1704 @@ fn flow_col_avg(
     }
 }
 // END لينكس3-نص دوال تدفق Rust
+// BEGIN لينكس4-نص مساعدات Rust
+/// مساعدات مشتركة لدفعة لينكس 4، موجة النص (مولّدة).
+
+/// قيمة منطقية من قيمة نيفا (خطأ عربي إن لم تكن منطقية).
+fn b4_need_bool(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<bool> {
+    match v {
+        Value::Bool(b) => Ok(*b),
+        other => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع قيمة منطقية لكن أعطيت {}",
+                display,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// عدد صحيح غير سالب من قيمة نيفا.
+fn b4_need_count(
+    display: &str,
+    key: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<i64> {
+    let n = need_integer(display, v, line, col)?;
+    if n < 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} الخيار {} لا يقبل عددا سالبا", display, key),
+            line,
+            col,
+        ));
+    }
+    Ok(n)
+}
+
+/// قاموس الخيارات الاختياري (المعامل الأخير): بلا
+/// معامل أو لاشيء ← بلا خيارات؛ وقاموس ← أزواجه.
+fn b4_opt_pairs<'a>(
+    display: &str,
+    args: &'a [Value],
+    at: usize,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<&'a [(String, Value)]>> {
+    if args.len() <= at {
+        return Ok(None);
+    }
+    match &args[at] {
+        Value::Nil => Ok(None),
+        Value::Dict(pairs) => Ok(Some(pairs)),
+        other => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع قاموس خيارات لكن أعطيت {}",
+                display,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// خيار منطقي من أزواج الخيارات (افتراضي معطى).
+fn b4_opt_bool(
+    display: &str,
+    pairs: Option<&[(String, Value)]>,
+    key: &str,
+    default: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<bool> {
+    match pairs {
+        None => Ok(default),
+        Some(ps) => match dict_get(ps, key) {
+            None => Ok(default),
+            Some(v) => b4_need_bool(display, v, line, col),
+        },
+    }
+}
+
+/// خيار نصي من أزواج الخيارات (لاشيء إن غاب).
+fn b4_opt_text(
+    display: &str,
+    pairs: Option<&[(String, Value)]>,
+    key: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<String>> {
+    match pairs {
+        None => Ok(None),
+        Some(ps) => match dict_get(ps, key) {
+            None => Ok(None),
+            Some(Value::Nil) => Ok(None),
+            Some(v) => Ok(Some(need_string(display, v, line, col)?)),
+        },
+    }
+}
+
+/// خيار عددي صحيح غير سالب من أزواج الخيارات.
+fn b4_opt_count(
+    display: &str,
+    pairs: Option<&[(String, Value)]>,
+    key: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<i64>> {
+    match pairs {
+        None => Ok(None),
+        Some(ps) => match dict_get(ps, key) {
+            None => Ok(None),
+            Some(Value::Nil) => Ok(None),
+            Some(v) => Ok(Some(b4_need_count(display, key, v, line, col)?)),
+        },
+    }
+}
+
+/// خيار عددي (كسري مسموح) من أزواج الخيارات.
+fn b4_opt_number(
+    display: &str,
+    pairs: Option<&[(String, Value)]>,
+    key: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<f64>> {
+    match pairs {
+        None => Ok(None),
+        Some(ps) => match dict_get(ps, key) {
+            None => Ok(None),
+            Some(Value::Nil) => Ok(None),
+            Some(v) => Ok(Some(need_number(display, v, line, col)?)),
+        },
+    }
+}
+
+/// خيار قائمة من أزواج الخيارات.
+fn b4_opt_list(
+    display: &str,
+    pairs: Option<&[(String, Value)]>,
+    key: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<Vec<Value>>> {
+    match pairs {
+        None => Ok(None),
+        Some(ps) => match dict_get(ps, key) {
+            None => Ok(None),
+            Some(Value::Nil) => Ok(None),
+            Some(v) => Ok(Some(need_list(display, v, line, col)?.to_vec())),
+        },
+    }
+}
+
+/// خطأ خيار غير معروف في قاموس خيارات.
+fn b4_unknown_opt(display: &str, key: &str, line: usize, col: usize) -> RioError {
+    RioError::runtime(
+        format!("الدالة {} خيار غير معروف: {}", display, key),
+        line,
+        col,
+    )
+}
+
+/// عدد أيام شهر في سنة (كبيسة بالحساب الميلادي).
+fn b4_days_in_month(year: i64, month: i64) -> i64 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// تحقق من تاريخ ووقت (شهر 1..12 ويوم صالح
+/// وساعة 0..23 ودقيقة وثانية 0..59).
+fn b4_valid_date(year: i64, month: i64, day: i64, hour: i64, min: i64, sec: i64) -> bool {
+    if !(1..=12).contains(&month) {
+        return false;
+    }
+    if day < 1 || day > b4_days_in_month(year, month) {
+        return false;
+    }
+    (0..=23).contains(&hour) && (0..=59).contains(&min) && (0..=59).contains(&sec)
+}
+
+/// تحليل نص وقت بصيغة: الرموز الرقمية فقط
+/// (%Y %m %d %H %M %S %e %k)؛ والحرفي يطابق حرفيا.
+/// %Y أربعة أرقام، والباقي رقمان (و%e و%k رقمان
+/// بمسافة بادئة مسموحة)؛ وبلا تطابق أو تاريخ غير
+/// صالح ← لاشيء.
+fn b4_parse_time_format(text: &str, fmt: &str) -> Option<(i64, i64, i64, i64, i64, i64)> {
+    let t: Vec<char> = text.chars().collect();
+    let f: Vec<char> = fmt.chars().collect();
+    let mut ti = 0usize;
+    let mut fi = 0usize;
+    let mut year: i64 = 1970;
+    let mut month: i64 = 1;
+    let mut day: i64 = 1;
+    let mut hour: i64 = 0;
+    let mut min: i64 = 0;
+    let mut sec: i64 = 0;
+    let mut read_num = |t: &[char], ti: &mut usize, width: usize, space_ok: bool| -> Option<i64> {
+        let mut v: i64 = 0;
+        let mut n = 0usize;
+        while n < width && *ti < t.len() {
+            let c = t[*ti];
+            if c.is_ascii_digit() {
+                v = v * 10 + (c as i64 - '0' as i64);
+                n += 1;
+                *ti += 1;
+            } else if space_ok && n == 0 && c == ' ' {
+                *ti += 1;
+            } else {
+                break;
+            }
+        }
+        if n == 0 {
+            None
+        } else {
+            Some(v)
+        }
+    };
+    while fi < f.len() {
+        if f[fi] == '%' && fi + 1 < f.len() {
+            let code = f[fi + 1];
+            fi += 2;
+            let v = match code {
+                'Y' => read_num(&t, &mut ti, 4, false)?,
+                'm' | 'd' | 'H' | 'M' | 'S' => read_num(&t, &mut ti, 2, false)?,
+                'e' | 'k' => read_num(&t, &mut ti, 2, true)?,
+                '%' => {
+                    if ti >= t.len() || t[ti] != '%' {
+                        return None;
+                    }
+                    ti += 1;
+                    continue;
+                }
+                _ => return None,
+            };
+            match code {
+                'Y' => year = v,
+                'm' => month = v,
+                'd' | 'e' => day = v,
+                'H' | 'k' => hour = v,
+                'M' => min = v,
+                'S' => sec = v,
+                _ => {}
+            }
+        } else {
+            if ti >= t.len() || t[ti] != f[fi] {
+                return None;
+            }
+            ti += 1;
+            fi += 1;
+        }
+    }
+    if ti != t.len() {
+        return None;
+    }
+    if !b4_valid_date(year, month, day, hour, min, sec) {
+        return None;
+    }
+    Some((year, month, day, hour, min, sec))
+}
+
+/// تهريب نص إلى سلسلة JSON؛ وأسكي_فقط يهرب كل
+/// غير ASCII بـ\uXXXX (مع زوج بديل فوق 0xFFFF).
+fn b4_json_escape(s: &str, ascii_only: bool) -> String {
+    let mut out = String::new();
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c if ascii_only && (c as u32) > 0x7f => {
+                let n = c as u32;
+                if n > 0xFFFF {
+                    let v = n - 0x10000;
+                    out.push_str(&format!("\\u{:04x}\\u{:04x}", 0xD800 + (v >> 10), 0xDC00 + (v & 0x3FF)));
+                } else {
+                    out.push_str(&format!("\\u{:04x}", n));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// كتابة JSON جميلة: مسافة بادئة لكل مستوى
+/// (أو تبويب)، وأسكي_فقط، وعمق أقصى 100.
+fn b4_json_write_pretty(
+    v: &Value,
+    out: &mut String,
+    indent: usize,
+    use_tabs: bool,
+    ascii_only: bool,
+    level: usize,
+) -> Result<(), String> {
+    if level > 100 {
+        return Err("قيمة لا تقبل كتابة JSON".to_string());
+    }
+    let pad = |level: usize, out: &mut String| {
+        if use_tabs {
+            for _ in 0..level {
+                out.push('\t');
+            }
+        } else {
+            for _ in 0..indent * level {
+                out.push(' ');
+            }
+        }
+    };
+    match v {
+        Value::Nil => out.push_str("null"),
+        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
+        Value::Number(n) => {
+            if !n.is_finite() {
+                return Err("قيمة لا تقبل كتابة JSON".to_string());
+            }
+            out.push_str(&json_fmt_number(*n));
+        }
+        Value::Str(s) => out.push_str(&b4_json_escape(s, ascii_only)),
+        Value::List(items) => {
+            if items.is_empty() {
+                out.push_str("[]");
+                return Ok(());
+            }
+            if indent == 0 && !use_tabs {
+                json_write_value(v, out, level)?;
+                return Ok(());
+            }
+            out.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push('\n');
+                pad(level + 1, out);
+                b4_json_write_pretty(item, out, indent, use_tabs, ascii_only, level + 1)?;
+            }
+            out.push('\n');
+            pad(level, out);
+            out.push(']');
+        }
+        Value::Dict(pairs) => {
+            if pairs.is_empty() {
+                out.push_str("{}");
+                return Ok(());
+            }
+            if indent == 0 && !use_tabs {
+                json_write_value(v, out, level)?;
+                return Ok(());
+            }
+            out.push('{');
+            for (i, (k, val)) in pairs.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push('\n');
+                pad(level + 1, out);
+                out.push_str(&b4_json_escape(k, ascii_only));
+                out.push_str(": ");
+                b4_json_write_pretty(val, out, indent, use_tabs, ascii_only, level + 1)?;
+            }
+            out.push('\n');
+            pad(level, out);
+            out.push('}');
+        }
+        _ => return Err("قيمة لا تقبل كتابة JSON".to_string()),
+    }
+    Ok(())
+}
+
+/// مطابقة ضبابية تتابعية: تعيد الدرجة ومواضع
+/// المحارف المطابقة؛ والنقاط: +10 لبداية السلسلة
+/// أو حد كلمة، +5 للمتتالي، -1 لكل محرف متخطى.
+/// الطي: نص واستعلام مطويان مسبقا عند الحاجة.
+fn b4_fuzzy(text: &[char], query: &[char]) -> Option<(i64, Vec<usize>)> {
+    let mut score: i64 = 0;
+    let mut pos = 0usize;
+    let mut matched: Vec<usize> = Vec::new();
+    for (j, q) in query.iter().enumerate() {
+        let mut found: Option<usize> = None;
+        let mut i = pos;
+        while i < text.len() {
+            if text[i] == *q {
+                found = Some(i);
+                break;
+            }
+            i += 1;
+        }
+        let i = found?;
+        if i == 0 || !text[i - 1].is_alphanumeric() {
+            score += 10;
+        } else if i == pos && j > 0 {
+            score += 5;
+        }
+        score -= (i - pos) as i64;
+        matched.push(i);
+        pos = i + 1;
+    }
+    Some((score, matched))
+}
+
+/// تغليف المحارف المطابقة بالأخضر ANSI
+/// (تُغلَّف كل سلسلة متتالية دفعة واحدة).
+fn b4_colorize_fuzzy(text: &[char], matched: &[usize]) -> String {
+    let mut out = String::new();
+    let mut mi = 0usize;
+    let mut i = 0usize;
+    while i < text.len() {
+        if mi < matched.len() && matched[mi] == i {
+            out.push_str("\u{1b}[32m");
+            while mi < matched.len() && matched[mi] == i {
+                out.push(text[i]);
+                mi += 1;
+                i += 1;
+            }
+            out.push_str("\u{1b}[0m");
+        } else {
+            out.push(text[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// إزالة تسلسلات ANSI (ESC [ ... حرف أخير).
+fn b4_ansi_strip(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        if chars[i] == '\u{1b}' && i + 1 < chars.len() && chars[i + 1] == '[' {
+            i += 2;
+            while i < chars.len() && !chars[i].is_ascii_alphabetic() {
+                i += 1;
+            }
+            if i < chars.len() {
+                i += 1;
+            }
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// لف صلب بعدد المحارف (بلا كسر كلمات).
+fn b4_wrap(s: &str, width: usize) -> Vec<String> {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.is_empty() {
+        return vec![String::new()];
+    }
+    let w = if width == 0 { 80 } else { width };
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < chars.len() {
+        let end = (i + w).min(chars.len());
+        out.push(chars[i..end].iter().collect());
+        i = end;
+    }
+    out
+}
+
+/// كلمات لغة للتلوين (نيفا/بايثون/سي/جافاسكربت/رست).
+fn b4_keywords(lang: &str) -> &'static [&'static str] {
+    match lang {
+        "نيفا" => &[
+            "دالة", "إذا", "وإلا", "بينما", "لأجل", "في", "ارجع", "اطبع",
+            "استورد", "صحيح", "خطأ", "لاشيء", "حاول", "ماعدا", "أخيرا",
+            "كسر", "تابع", "أنشئ", "ورث", "واجهة", "نفس",
+        ],
+        "بايثون" => &[
+            "def", "class", "if", "else", "elif", "while", "for", "return",
+            "import", "from", "True", "False", "None", "try", "except",
+            "finally", "break", "continue", "pass", "with", "as", "lambda",
+        ],
+        "سي" => &[
+            "int", "char", "void", "long", "short", "float", "double",
+            "if", "else", "while", "for", "return", "struct", "typedef",
+            "const", "static", "switch", "case", "break", "continue",
+            "enum", "union", "sizeof", "unsigned", "signed",
+        ],
+        "جافاسكربت" => &[
+            "function", "const", "let", "var", "if", "else", "while",
+            "for", "return", "class", "true", "false", "null", "new",
+            "switch", "case", "break", "continue", "typeof", "this",
+        ],
+        "رست" => &[
+            "fn", "let", "mut", "if", "else", "while", "for", "return",
+            "struct", "enum", "impl", "pub", "true", "false", "match",
+            "const", "static", "trait", "use", "mod", "in", "loop",
+        ],
+        _ => &[],
+    }
+}
+
+/// محرف بداية التعليق في لغة (نيفا وبايثون #، والباقي //).
+fn b4_comment_start(lang: &str) -> &'static str {
+    match lang {
+        "نيفا" | "بايثون" => "#",
+        _ => "//",
+    }
+}
+
+/// تلوين سطر واحد: تعليق رمادي 90، ونص أخضر 32،
+/// وعدد أصفر 33، وكلمة مفتاحية سماوية 36؛ والسمة
+/// فاتح: نص 34 وعدد 35 ومفتاحية 31.
+fn b4_color_line(line: &str, lang: &str, theme: &str) -> String {
+    let (c_str, c_num, c_kw) = if theme == "فاتح" {
+        (34, 35, 31)
+    } else {
+        (32, 33, 36)
+    };
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::new();
+    let mut i = 0usize;
+    let comment = b4_comment_start(lang);
+    let keywords = b4_keywords(lang);
+    while i < chars.len() {
+        let rest: String = chars[i..].iter().collect();
+        if rest.starts_with(comment) {
+            out.push_str(&format!("\u{1b}[90m{}\u{1b}[0m", rest));
+            break;
+        }
+        let c = chars[i];
+        if c == '"' || c == '\'' {
+            let mut j = i + 1;
+            while j < chars.len() && chars[j] != c {
+                j += 1;
+            }
+            let end = if j < chars.len() { j + 1 } else { j };
+            let tok: String = chars[i..end].iter().collect();
+            out.push_str(&format!("\u{1b}[{}m{}\u{1b}[0m", c_str, tok));
+            i = end;
+            continue;
+        }
+        if c.is_ascii_digit() {
+            let mut j = i;
+            while j < chars.len() && (chars[j].is_ascii_digit() || chars[j] == '.') {
+                j += 1;
+            }
+            let tok: String = chars[i..j].iter().collect();
+            out.push_str(&format!("\u{1b}[{}m{}\u{1b}[0m", c_num, tok));
+            i = j;
+            continue;
+        }
+        if c.is_alphanumeric() || c == '_' {
+            let mut j = i;
+            while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
+                j += 1;
+            }
+            let tok: String = chars[i..j].iter().collect();
+            if keywords.contains(&tok.as_str()) {
+                out.push_str(&format!("\u{1b}[{}m{}\u{1b}[0m", c_kw, tok));
+            } else {
+                out.push_str(&tok);
+            }
+            i = j;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// خيارات عرض.اعرض بعد التحليل.
+struct B4DisplayOpts {
+    line_numbers: bool,
+    header: Option<String>,
+    grid: bool,
+    plain: bool,
+    lang: String,
+    theme: String,
+    range: Option<(usize, usize)>,
+    highlight: Vec<usize>,
+    wrap: Option<usize>,
+    tabs: usize,
+    show_all: bool,
+    bindings: Vec<(String, String)>,
+}
+
+/// تحليل خيارات العرض (ترويسة تأخذ نصها الجاهز
+/// من المتصل)؛ واللغة والسمة متحقق منهما.
+fn b4_display_opts_parse(
+    display: &str,
+    pairs: Option<&[(String, Value)]>,
+    header_text: Option<String>,
+    line: usize,
+    col: usize,
+) -> RioResult<B4DisplayOpts> {
+    let mut o = B4DisplayOpts {
+        line_numbers: false,
+        header: None,
+        grid: false,
+        plain: false,
+        lang: "نص".to_string(),
+        theme: "داكن".to_string(),
+        range: None,
+        highlight: vec![],
+        wrap: None,
+        tabs: 4,
+        show_all: false,
+        bindings: vec![],
+    };
+    if let Some(ps) = pairs {
+        for (k, v) in ps {
+            match k.as_str() {
+                "أرقام_الأسطر" => o.line_numbers = b4_need_bool(display, v, line, col)?,
+                "ترويسة" => {
+                    if b4_need_bool(display, v, line, col)? {
+                        o.header = header_text.clone();
+                    }
+                }
+                "شبكة" => o.grid = b4_need_bool(display, v, line, col)?,
+                "عادي" => o.plain = b4_need_bool(display, v, line, col)?,
+                "لغة" => {
+                    let lang = need_string(display, v, line, col)?;
+                    match lang.as_str() {
+                        "نيفا" | "بايثون" | "سي" | "جافاسكربت" | "رست" | "نص" => {
+                            o.lang = lang;
+                        }
+                        _ => {
+                            return Err(RioError::runtime(
+                                format!("الدالة {} لغة غير معروفة: {}", display, lang),
+                                line,
+                                col,
+                            ))
+                        }
+                    }
+                }
+                "ربط_الصياغة" => {
+                    let bpairs = need_dict(display, v, line, col)?;
+                    for (ext, lv) in bpairs {
+                        let lang = need_string(display, lv, line, col)?;
+                        match lang.as_str() {
+                            "نيفا" | "بايثون" | "سي" | "جافاسكربت" | "رست" | "نص" => {}
+                            _ => {
+                                return Err(RioError::runtime(
+                                    format!("الدالة {} لغة غير معروفة: {}", display, lang),
+                                    line,
+                                    col,
+                                ))
+                            }
+                        }
+                        o.bindings.push((ext.clone(), lang));
+                    }
+                }
+                "سمة" => {
+                    let theme = need_string(display, v, line, col)?;
+                    match theme.as_str() {
+                        "داكن" | "فاتح" => o.theme = theme,
+                        _ => {
+                            return Err(RioError::runtime(
+                                format!("الدالة {} سمة غير معروفة: {}", display, theme),
+                                line,
+                                col,
+                            ))
+                        }
+                    }
+                }
+                "نطاق_الأسطر" => {
+                    let items = need_list(display, v, line, col)?;
+                    if items.len() != 2 {
+                        return Err(RioError::runtime(
+                            format!("الدالة {} نطاق_الأسطر يتوقع عددين", display),
+                            line,
+                            col,
+                        ));
+                    }
+                    let a = need_integer(display, &items[0], line, col)?;
+                    let b = need_integer(display, &items[1], line, col)?;
+                    if a < 1 || b < a {
+                        return Err(RioError::runtime(
+                            format!("الدالة {} نطاق أسطر غير صالح", display),
+                            line,
+                            col,
+                        ));
+                    }
+                    o.range = Some((a as usize, b as usize));
+                }
+                "ميز_سطرا" => match v {
+                    Value::List(items) => {
+                        for it in items {
+                            let n = need_integer(display, it, line, col)?;
+                            if n >= 1 {
+                                o.highlight.push(n as usize);
+                            }
+                        }
+                    }
+                    _ => {
+                        let n = need_integer(display, v, line, col)?;
+                        if n >= 1 {
+                            o.highlight.push(n as usize);
+                        }
+                    }
+                },
+                "لف_الأسطر" => match v {
+                    Value::Bool(true) => o.wrap = Some(80),
+                    Value::Bool(false) => o.wrap = None,
+                    _ => {
+                        let n = b4_need_count(display, k, v, line, col)?;
+                        o.wrap = Some(n as usize);
+                    }
+                },
+                "تبويبات" => {
+                    let n = b4_need_count(display, k, v, line, col)?;
+                    o.tabs = n as usize;
+                }
+                "أظهر_الكل" => o.show_all = b4_need_bool(display, v, line, col)?,
+                other => return Err(b4_unknown_opt(display, other, line, col)),
+            }
+        }
+    }
+    Ok(o)
+}
+
+/// لغة ملف من امتداده (ربط صياغة أولا، ثم
+/// الخريطة المدمجة، وإلا نص).
+fn b4_lang_from_ext(ext: &str, bindings: &[(String, String)]) -> String {
+    let lower = ext.to_lowercase();
+    for (e, lang) in bindings {
+        if e.to_lowercase() == lower {
+            return lang.clone();
+        }
+    }
+    match lower.as_str() {
+        "niva" => "نيفا".to_string(),
+        "py" => "بايثون".to_string(),
+        "c" | "h" => "سي".to_string(),
+        "js" => "جافاسكربت".to_string(),
+        "rs" => "رست".to_string(),
+        _ => "نص".to_string(),
+    }
+}
+
+/// بحث في أسطر عارض: أماميا من بعد موضع،
+/// وخلفيا من قبل موضع؛ ويعيد فهرس السطر.
+fn b4_less_find(lines: &[String], pattern: &str, fold: bool, from: i64, forward: bool) -> Option<i64> {
+    let needle = if fold { pattern.to_lowercase() } else { pattern.to_string() };
+    if forward {
+        let mut i = from.max(0);
+        while (i as usize) < lines.len() {
+            let hay = if fold { lines[i as usize].to_lowercase() } else { lines[i as usize].clone() };
+            if hay.contains(needle.as_str()) {
+                return Some(i);
+            }
+            i += 1;
+        }
+        None
+    } else {
+        let mut i = from.min(lines.len() as i64 - 1);
+        while i >= 0 {
+            let hay = if fold { lines[i as usize].to_lowercase() } else { lines[i as usize].clone() };
+            if hay.contains(needle.as_str()) {
+                return Some(i);
+            }
+            i -= 1;
+        }
+        None
+    }
+}
+
+/// عرض أسطر ملونة (أو عادية) بسطر ترويسة
+/// وشبكة وأرقام أسطر ونطاق وتمييز ولف وتبويبات.
+fn b4_display_render(lines: &[String], opts: &B4DisplayOpts) -> String {
+    let (from, to) = match opts.range {
+        Some((a, b)) => (a.saturating_sub(1), b),
+        None => (0, lines.len()),
+    };
+    let from = from.min(lines.len());
+    let to = to.min(lines.len()).max(from);
+    let mut shown: Vec<String> = Vec::new();
+    for (idx, raw) in lines.iter().enumerate() {
+        if idx < from || idx >= to {
+            continue;
+        }
+        let mut line = raw.replace('\t', &" ".repeat(opts.tabs));
+        if opts.show_all {
+            line = line
+                .replace('\t', "→")
+                .replace('\u{7}', "^G")
+                .replace('\u{8}', "^H");
+        }
+        let wrapped = match opts.wrap {
+            Some(w) => b4_wrap(&line, w),
+            None => vec![line],
+        };
+        for (wi, piece) in wrapped.iter().enumerate() {
+            let num = idx + 1;
+            let mut text = if opts.plain {
+                piece.clone()
+            } else {
+                b4_color_line(piece, &opts.lang, &opts.theme)
+            };
+            if opts.highlight.contains(&num) && !opts.plain {
+                text = format!("\u{1b}[7m{}\u{1b}[0m", text);
+            }
+            if opts.line_numbers && !opts.plain {
+                let first = wi == 0;
+                let n = if first { format!("{:>4} │ ", num) } else { "     │ ".to_string() };
+                text = format!("{}{}", n, text);
+            }
+            shown.push(text);
+        }
+    }
+    let mut out = String::new();
+    if let Some(h) = &opts.header {
+        if !opts.plain {
+            out.push_str(h);
+            out.push('\n');
+            if opts.grid {
+                out.push_str(&"─".repeat(h.chars().count()));
+                out.push('\n');
+            }
+        }
+    }
+    if opts.grid && !opts.plain {
+        let width = shown.iter().map(|s| b4_ansi_strip(s).chars().count()).max().unwrap_or(0);
+        let top = format!("┌{}┐", "─".repeat(width + 2));
+        let bottom = format!("└{}┘", "─".repeat(width + 2));
+        out.push_str(&top);
+        out.push('\n');
+        for s in &shown {
+            let vis = b4_ansi_strip(s).chars().count();
+            out.push_str(&format!("│ {}{} │\n", s, " ".repeat(width - vis)));
+        }
+        out.push_str(&bottom);
+        out.push('\n');
+    } else {
+        for s in &shown {
+            out.push_str(s);
+            out.push('\n');
+        }
+    }
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+/// جزء مسار جسون: مفتاح قاموس أو فهرس قائمة.
+#[derive(Clone)]
+enum B4Seg {
+    Key(String),
+    Idx(usize),
+}
+
+/// تقسيم مسار جسون (نقطة للمفاتيح، و[ن] للقوائم).
+fn b4_path_split(path: &str) -> Vec<B4Seg> {
+    let mut out: Vec<B4Seg> = Vec::new();
+    for part in path.split('.') {
+        if part.is_empty() {
+            continue;
+        }
+        if let Some(br) = part.find('[') {
+            if !part[..br].is_empty() {
+                out.push(B4Seg::Key(part[..br].to_string()));
+            }
+            let rest = &part[br..];
+            let mut cur = rest;
+            while let Some(open) = cur.find('[') {
+                let close = match cur[open..].find(']') {
+                    Some(c) => open + c,
+                    None => break,
+                };
+                if let Ok(n) = cur[open + 1..close].parse::<usize>() {
+                    out.push(B4Seg::Idx(n));
+                }
+                cur = &cur[close + 1..];
+            }
+        } else if part.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(n) = part.parse::<usize>() {
+                out.push(B4Seg::Idx(n));
+            }
+        } else {
+            out.push(B4Seg::Key(part.to_string()));
+        }
+    }
+    out
+}
+
+/// قراءة قيمة بمسار جسون (لاشيء إن غاب جزء).
+fn b4_path_get<'a>(v: &'a Value, segs: &[B4Seg]) -> Option<&'a Value> {
+    let mut cur = v;
+    for seg in segs {
+        match seg {
+            B4Seg::Key(k) => match cur {
+                Value::Dict(pairs) => match dict_get(pairs, k) {
+                    Some(x) => cur = x,
+                    None => return None,
+                },
+                _ => return None,
+            },
+            B4Seg::Idx(n) => match cur {
+                Value::List(items) => match items.get(*n) {
+                    Some(x) => cur = x,
+                    None => return None,
+                },
+                _ => return None,
+            },
+        }
+    }
+    Some(cur)
+}
+
+/// ضبط قيمة بمسار جسون (ينشئ قواميس وسيطة؛
+/// وفهرس القائمة يجب أن يوجد أو يساوي الطول).
+fn b4_path_set(v: &mut Value, segs: &[B4Seg], new_val: Value) -> RioResult<()> {
+    if segs.is_empty() {
+        *v = new_val;
+        return Ok(());
+    }
+    match &segs[0] {
+        B4Seg::Key(k) => {
+            if !matches!(v, Value::Dict(_)) {
+                *v = Value::Dict(vec![]);
+            }
+            if let Value::Dict(pairs) = v {
+                if segs.len() == 1 {
+                    if let Some(slot) = pairs.iter_mut().find(|(kk, _)| kk == k) {
+                        slot.1 = new_val;
+                    } else {
+                        pairs.push((k.clone(), new_val));
+                    }
+                    return Ok(());
+                }
+                let pos = match pairs.iter().position(|(kk, _)| kk == k) {
+                    Some(p) => p,
+                    None => {
+                        pairs.push((k.clone(), Value::Nil));
+                        pairs.len() - 1
+                    }
+                };
+                return b4_path_set(&mut pairs[pos].1, &segs[1..], new_val);
+            }
+            Ok(())
+        }
+        B4Seg::Idx(n) => {
+            if !matches!(v, Value::List(_)) {
+                *v = Value::List(vec![]);
+            }
+            if let Value::List(items) = v {
+                if segs.len() == 1 {
+                    if *n < items.len() {
+                        items[*n] = new_val;
+                    } else if *n == items.len() {
+                        items.push(new_val);
+                    } else {
+                        return Err(RioError::runtime(
+                            "مسار جسون: فهرس قائمة خارج النطاق".to_string(),
+                            0,
+                            0,
+                        ));
+                    }
+                    return Ok(());
+                }
+                if *n >= items.len() {
+                    return Err(RioError::runtime(
+                        "مسار جسون: فهرس قائمة خارج النطاق".to_string(),
+                        0,
+                        0,
+                    ));
+                }
+                return b4_path_set(&mut items[*n], &segs[1..], new_val);
+            }
+            Ok(())
+        }
+    }
+}
+
+/// حذف قيمة بمسار جسون (صحيح إن حُذف شيء).
+fn b4_path_del(v: &mut Value, segs: &[B4Seg]) -> bool {
+    if segs.is_empty() {
+        return false;
+    }
+    match &segs[0] {
+        B4Seg::Key(k) => {
+            if let Value::Dict(pairs) = v {
+                if segs.len() == 1 {
+                    if let Some(p) = pairs.iter().position(|(kk, _)| kk == k) {
+                        pairs.remove(p);
+                        return true;
+                    }
+                    return false;
+                }
+                if let Some(p) = pairs.iter().position(|(kk, _)| kk == k) {
+                    return b4_path_del(&mut pairs[p].1, &segs[1..]);
+                }
+            }
+            false
+        }
+        B4Seg::Idx(n) => {
+            if let Value::List(items) = v {
+                if segs.len() == 1 {
+                    if *n < items.len() {
+                        items.remove(*n);
+                        return true;
+                    }
+                    return false;
+                }
+                if *n < items.len() {
+                    return b4_path_del(&mut items[*n], &segs[1..]);
+                }
+            }
+            false
+        }
+    }
+}
+
+/// دفق جسون: أزواج [مسار، قيمة] لكل عقدة
+/// بترتيب ما قبل الترتيب (الجذر مساره فارغ).
+fn b4_json_stream(v: &Value, prefix: &str, out: &mut Vec<Value>) {
+    out.push(Value::List(vec![
+        Value::Str(prefix.to_string()),
+        v.clone(),
+    ]));
+    match v {
+        Value::Dict(pairs) => {
+            for (k, val) in pairs {
+                let p = if prefix.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{}.{}", prefix, k)
+                };
+                b4_json_stream(val, &p, out);
+            }
+        }
+        Value::List(items) => {
+            for (i, item) in items.iter().enumerate() {
+                b4_json_stream(item, &format!("{}[{}]", prefix, i), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// مسار جسون من قيمة نيفا: قائمة مقاطع (نص
+/// مفتاح، وعدد فهرس)، أو نص منقّط، أو عدد مفرد.
+fn b4_path_segs(
+    display: &str,
+    v: &Value,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<B4Seg>> {
+    match v {
+        Value::List(items) => {
+            let mut out: Vec<B4Seg> = Vec::new();
+            for it in items {
+                match it {
+                    Value::Str(s) => out.push(B4Seg::Key(s.clone())),
+                    Value::Number(n) => {
+                        let idx = need_integer(display, it, line, col)?;
+                        if idx < 0 {
+                            return Err(RioError::runtime(
+                                "مسار جسون: فهرس سالب".to_string(),
+                                line,
+                                col,
+                            ));
+                        }
+                        out.push(B4Seg::Idx(idx as usize));
+                    }
+                    other => {
+                        return Err(RioError::typ(
+                            format!(
+                                "الدالة {} تتوقع مقاطع مسار نصا أو عددا لكن أعطيت {}",
+                                display,
+                                other.type_name()
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                }
+            }
+            Ok(out)
+        }
+        Value::Str(s) => Ok(b4_path_split(s)),
+        Value::Number(_) => {
+            let idx = need_integer(display, v, line, col)?;
+            if idx < 0 {
+                return Err(RioError::runtime(
+                    "مسار جسون: فهرس سالب".to_string(),
+                    line,
+                    col,
+                ));
+            }
+            Ok(vec![B4Seg::Idx(idx as usize)])
+        }
+        other => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع مسارا قائمة أو نصا لكن أعطيت {}",
+                display,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// بحث عن مسار قيمة هدف داخل قيمة (عمق أولا،
+/// ومفاتيح القاموس بترتيب الإدراج، وفهارس القوائم
+/// بالترتيب)؛ والمسار قائمة مقاطع أو لاشيء.
+fn b4_path_to_rec(
+    v: &Value,
+    target: &Value,
+    prefix: &mut Vec<B4Seg>,
+    out: &mut Option<Vec<B4Seg>>,
+) {
+    if out.is_some() {
+        return;
+    }
+    if b3_json_cmp(v, target) == std::cmp::Ordering::Equal {
+        *out = Some(prefix.clone());
+        return;
+    }
+    match v {
+        Value::Dict(pairs) => {
+            for (k, val) in pairs {
+                prefix.push(B4Seg::Key(k.clone()));
+                b4_path_to_rec(val, target, prefix, out);
+                prefix.pop();
+                if out.is_some() {
+                    return;
+                }
+            }
+        }
+        Value::List(items) => {
+            for (i, item) in items.iter().enumerate() {
+                prefix.push(B4Seg::Idx(i));
+                b4_path_to_rec(item, target, prefix, out);
+                prefix.pop();
+                if out.is_some() {
+                    return;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// قاموس حالة: يتحقق أنه قاموس ويعيد أزواجه.
+fn b4_state_pairs<'a>(
+    display: &str,
+    v: &'a Value,
+    line: usize,
+    col: usize,
+) -> RioResult<&'a [(String, Value)]> {
+    match v {
+        Value::Dict(pairs) => Ok(pairs),
+        other => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع حالة قاموس لكن أعطيت {}",
+                display,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// قراءة حقل نصي من حالة (خطأ إن غاب أو لم يكن نصا).
+fn b4_state_text(
+    display: &str,
+    pairs: &[(String, Value)],
+    key: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    match dict_get(pairs, key) {
+        Some(Value::Str(s)) => Ok(s.clone()),
+        Some(other) => Err(RioError::typ(
+            format!(
+                "الدالة {} حالة بها {} ليس نصا لكن أعطيت {}",
+                display,
+                key,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+        None => Err(RioError::runtime(
+            format!("الدالة {} حالة بلا الحقل {}", display, key),
+            line,
+            col,
+        )),
+    }
+}
+
+/// قراءة حقل عددي صحيح من حالة.
+fn b4_state_num(
+    display: &str,
+    pairs: &[(String, Value)],
+    key: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<i64> {
+    match dict_get(pairs, key) {
+        Some(v) => need_integer(display, v, line, col),
+        None => Err(RioError::runtime(
+            format!("الدالة {} حالة بلا الحقل {}", display, key),
+            line,
+            col,
+        )),
+    }
+}
+
+/// قراءة حقل قائمة من حالة.
+fn b4_state_list(
+    display: &str,
+    pairs: &[(String, Value)],
+    key: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<Value>> {
+    match dict_get(pairs, key) {
+        Some(v) => Ok(need_list(display, v, line, col)?.to_vec()),
+        None => Err(RioError::runtime(
+            format!("الدالة {} حالة بلا الحقل {}", display, key),
+            line,
+            col,
+        )),
+    }
+}
+
+/// قراءة حقل منطقي من حالة.
+fn b4_state_bool(
+    display: &str,
+    pairs: &[(String, Value)],
+    key: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<bool> {
+    match dict_get(pairs, key) {
+        Some(v) => b4_need_bool(display, v, line, col),
+        None => Err(RioError::runtime(
+            format!("الدالة {} حالة بلا الحقل {}", display, key),
+            line,
+            col,
+        )),
+    }
+}
+
+/// بناء حالة محدد جديدة (عناصر واستعلام ومؤشر
+/// ومحددة ومعاينة_إزاحة) — ترتيب المفاتيح ثابت.
+fn b4_fzf_state(items: Vec<Value>, query: String) -> Value {
+    Value::Dict(vec![
+        ("عناصر".to_string(), Value::List(items)),
+        ("استعلام".to_string(), Value::Str(query)),
+        ("مؤشر".to_string(), Value::Number(0.0)),
+        ("محددة".to_string(), Value::List(vec![])),
+        ("معاينة_إزاحة".to_string(), Value::Number(0.0)),
+    ])
+}
+
+/// بناء حالة عارض جديدة.
+fn b4_less_state(lines: Vec<Value>, path: Option<String>) -> Value {
+    Value::Dict(vec![
+        ("أسطر".to_string(), Value::List(lines)),
+        ("موضع".to_string(), Value::Number(0.0)),
+        ("نمط_البحث".to_string(), Value::Nil),
+        ("تجاهل_الحالة".to_string(), Value::Bool(false)),
+        ("ميز".to_string(), Value::Bool(false)),
+        ("علامات".to_string(), Value::Dict(vec![])),
+        ("ملفات".to_string(), Value::List(vec![])),
+        ("ملف_حالي".to_string(), Value::Number(0.0)),
+        (
+            "مسار".to_string(),
+            match path {
+                Some(p) => Value::Str(p),
+                None => Value::Nil,
+            },
+        ),
+    ])
+}
+
+/// تحديث حقل في حالة (تبديل القيمة أو إدراجها).
+fn b4_state_set(pairs: &mut Vec<(String, Value)>, key: &str, val: Value) {
+    if let Some(slot) = pairs.iter_mut().find(|(k, _)| k == key) {
+        slot.1 = val;
+    } else {
+        pairs.push((key.to_string(), val));
+    }
+}
+
+/// نهاية أول قيمة JSON في نص (بايت بعد القيمة)؛
+/// وبلا قيمة صالحة ← لاشيء. يمسح الأقواس
+/// والسلاسل (مع الهروب) والأعداد والحروف.
+fn b4_json_first_end(text: &str) -> Option<usize> {
+    let b = text.as_bytes();
+    let mut i = 0usize;
+    while i < b.len() && (b[i] == b' ' || b[i] == b'\t' || b[i] == b'\n' || b[i] == b'\r') {
+        i += 1;
+    }
+    if i >= b.len() {
+        return None;
+    }
+    let mut depth: i64 = 0;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut started = false;
+    while i < b.len() {
+        let c = b[i];
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == b'\\' {
+                esc = true;
+            } else if c == b'"' {
+                in_str = false;
+            }
+            i += 1;
+            if !in_str && depth == 0 {
+                return Some(i);
+            }
+            continue;
+        }
+        match c {
+            b'"' => {
+                in_str = true;
+                started = true;
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                started = true;
+            }
+            b'}' | b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+                if depth < 0 {
+                    return None;
+                }
+            }
+            b' ' | b'\t' | b'\n' | b'\r' | b',' | b':' => {
+                if started && depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {
+                started = true;
+            }
+        }
+        i += 1;
+    }
+    if started && depth == 0 && !in_str {
+        Some(i)
+    } else {
+        None
+    }
+}
+
+/// نص الصفحة من حالة عارض (من الموضع وعدد أسطر).
+fn b4_less_page(pairs: &[(String, Value)], count: i64) -> String {
+    let lines = match dict_get(pairs, "أسطر") {
+        Some(Value::List(items)) => items
+            .iter()
+            .filter_map(|v| match v {
+                Value::Str(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect::<Vec<String>>(),
+        _ => vec![],
+    };
+    let pos = match dict_get(pairs, "موضع") {
+        Some(Value::Number(n)) => *n as i64,
+        _ => 0,
+    };
+    let highlight = match dict_get(pairs, "ميز") {
+        Some(Value::Bool(b)) => *b,
+        _ => false,
+    };
+    let pat = match dict_get(pairs, "نمط_البحث") {
+        Some(Value::Str(s)) => Some(s.clone()),
+        _ => None,
+    };
+    let fold = match dict_get(pairs, "تجاهل_الحالة") {
+        Some(Value::Bool(b)) => *b,
+        _ => false,
+    };
+    let n = lines.len() as i64;
+    let start = pos.clamp(0, n.max(0));
+    let end = (start + count).min(n);
+    let mut out = String::new();
+    for idx in start..end {
+        let mut line = lines[idx as usize].clone();
+        if highlight {
+            if let Some(p) = &pat {
+                let needle = if fold { p.to_lowercase() } else { p.clone() };
+                let hay = if fold { line.to_lowercase() } else { line.clone() };
+                let mut res = String::new();
+                let mut rest = hay.as_str();
+                let mut rest_orig = line.as_str();
+                while let Some(at) = rest.find(&needle) {
+                    let before = &rest_orig[..at];
+                    res.push_str(before);
+                    res.push_str("\u{1b}[7m");
+                    res.push_str(&rest_orig[at..at + needle.len()]);
+                    res.push_str("\u{1b}[0m");
+                    rest = &rest[at + needle.len()..];
+                    rest_orig = &rest_orig[at + needle.len()..];
+                }
+                res.push_str(rest_orig);
+                line = res;
+            }
+        }
+        out.push_str(&line);
+        if idx + 1 < end {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+// END لينكس4-نص مساعدات Rust
+// BEGIN لينكس4-نص دوال تدفق Rust
+/// تدفق.استبدل_ظهور — البند 118.
+fn flow_replace_nth(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.استبدل_ظهور";
+    need_args(DISPLAY, args, 4, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    let repl = need_string(DISPLAY, &args[2], line, col)?;
+    let n = need_integer(DISPLAY, &args[3], line, col)?;
+    if n < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} رقم الظهور {} غير صالح (الصالح 1 أو أكثر)", DISPLAY, n),
+            line,
+            col,
+        ));
+    }
+    let prog = rx_compile(&pattern, false).map_err(|e| rx_err(e, line, col))?;
+    let (lines, trailing) = flow_split_owned(&text);
+    let mut out: Vec<String> = Vec::new();
+    for raw in &lines {
+        let chars: Vec<char> = raw.chars().collect();
+        let mut pos = 0usize;
+        let mut count = 0i64;
+        let mut replaced: Option<String> = None;
+        while pos <= chars.len() {
+            match rx_find_from(&prog, &chars, pos).map_err(|e| rx_err(e, line, col))? {
+                None => break,
+                Some((s, e, saved)) => {
+                    count += 1;
+                    if count == n {
+                        let rep = rx_expand_replacement(&repl, &chars, s, e, &saved, prog.ngroups);
+                        let mut built = String::new();
+                        built.extend(chars[..s].iter());
+                        built.push_str(&rep);
+                        built.extend(chars[e..].iter());
+                        replaced = Some(built);
+                        break;
+                    }
+                    if e == s {
+                        if e >= chars.len() {
+                            break;
+                        }
+                        pos = e + 1;
+                    } else {
+                        pos = e;
+                    }
+                }
+            }
+        }
+        out.push(replaced.unwrap_or_else(|| raw.clone()));
+    }
+    Ok(Value::Str(flow_rejoin(&out, trailing)))
+}
+
+/// تدفق.توقف_بلا_طباعة — البند 128.
+fn flow_quit_quiet(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.توقف_بلا_طباعة";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let n = need_integer(DISPLAY, &args[1], line, col)?;
+    if n == -1 {
+        return Ok(Value::Str(text));
+    }
+    if n < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} عدد الأسطر {} غير صالح (الصالح 1 أو أكثر، و-1 لآخر سطر)", DISPLAY, n),
+            line,
+            col,
+        ));
+    }
+    let (lines, trailing) = flow_split_owned(&text);
+    let keep = ((n - 1) as usize).min(lines.len());
+    Ok(Value::Str(flow_rejoin(&lines[..keep], trailing && keep == lines.len())))
+}
+
+/// تدفق.أدرج_ملفا — البند 138.
+fn flow_insert_file(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.أدرج_ملفا";
+    need_args(DISPLAY, args, 3, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let n = need_integer(DISPLAY, &args[1], line, col)?;
+    let path = need_string(DISPLAY, &args[2], line, col)?;
+    if n < 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} رقم السطر {} غير صالح (الصالح 0 أو أكثر)", DISPLAY, n),
+            line,
+            col,
+        ));
+    }
+    let bytes = j12_read_file(ctx, &path, line, col)?;
+    let inserted = String::from_utf8(bytes).map_err(|_| {
+        RioError::runtime(format!("الملف {} ليس نصا صالحا (UTF-8)", path), line, col)
+    })?;
+    let (lines, trailing) = flow_split_owned(&text);
+    let (ins_lines, _) = flow_split_owned(&inserted);
+    let at = (n as usize).min(lines.len());
+    let mut out: Vec<String> = Vec::new();
+    out.extend(lines[..at].iter().cloned());
+    out.extend(ins_lines.into_iter());
+    out.extend(lines[at..].iter().cloned());
+    Ok(Value::Str(flow_rejoin(&out, trailing)))
+}
+
+/// تدفق.اكتب_أسطر — البند 139.
+fn flow_write_lines(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.اكتب_أسطر";
+    need_args(DISPLAY, args, 3, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let n = need_integer(DISPLAY, &args[1], line, col)?;
+    let path = need_string(DISPLAY, &args[2], line, col)?;
+    let (lines, _) = flow_split_owned(&text);
+    if n < 1 || n as usize > lines.len() {
+        return Err(RioError::runtime(
+            format!("الدالة {} رقم السطر {} خارج النطاق (الأسطر {})", DISPLAY, n, lines.len()),
+            line,
+            col,
+        ));
+    }
+    let picked = lines[(n - 1) as usize].clone();
+    j12_write_file(ctx, &path, picked.as_bytes(), line, col)?;
+    Ok(Value::Str(picked))
+}
+
+/// تدفق.التالي — البند 140.
+fn flow_next_pair(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.التالي";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let n = need_integer(DISPLAY, &args[1], line, col)?;
+    let (lines, _) = flow_split_owned(&text);
+    if n < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} رقم السطر {} غير صالح (الصالح 1 أو أكثر)", DISPLAY, n),
+            line,
+            col,
+        ));
+    }
+    let idx = (n - 1) as usize;
+    let cur = lines.get(idx).map(|s| Value::Str(s.clone())).unwrap_or(Value::Nil);
+    let nxt = lines.get(idx + 1).map(|s| Value::Str(s.clone())).unwrap_or(Value::Nil);
+    Ok(Value::List(vec![cur, nxt]))
+}
+
+/// تدفق.التالي_ملحق — البند 141.
+fn flow_next_joined(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.التالي_ملحق";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let n = need_integer(DISPLAY, &args[1], line, col)?;
+    let (lines, _) = flow_split_owned(&text);
+    if n < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} رقم السطر {} غير صالح (الصالح 1 أو أكثر)", DISPLAY, n),
+            line,
+            col,
+        ));
+    }
+    let idx = (n - 1) as usize;
+    let mut out = String::new();
+    if let Some(s) = lines.get(idx) {
+        out.push_str(s);
+    }
+    if let Some(s) = lines.get(idx + 1) {
+        out.push_str(s);
+    }
+    Ok(Value::Str(out))
+}
+
+/// تدفق.عالج_متعدد — البند 158.
+fn flow_process_multi(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تدفق.عالج_متعدد";
+    need_args(DISPLAY, args, 3, line, col)?;
+    let texts = need_list(DISPLAY, &args[0], line, col)?;
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    j3_need_func(DISPLAY, &args[2], line, col)?;
+    let prog = if pattern.is_empty() {
+        None
+    } else {
+        Some(rx_compile(&pattern, false).map_err(|e| rx_err(e, line, col))?)
+    };
+    let mut out: Vec<Value> = Vec::new();
+    let mut global: i64 = 0;
+    for (fi, t) in texts.iter().enumerate() {
+        let text = need_string(DISPLAY, t, line, col)?;
+        let lines = flow_lines(&text);
+        for (i, l) in lines.iter().enumerate() {
+            let m = match &prog {
+                None => true,
+                Some(p) => flow_line_matches(p, l, line, col)?,
+            };
+            if !m {
+                continue;
+            }
+            global += 1;
+            let fields = b3_split_fields(l, None);
+            let rec = Value::Dict(vec![
+                ("سطر".to_string(), Value::Str(l.to_string())),
+                ("رقم".to_string(), Value::Number(global as f64)),
+                (
+                    "حقول".to_string(),
+                    Value::List(fields.into_iter().map(Value::Str).collect()),
+                ),
+                (
+                    "رقم_السجل_في_الملف".to_string(),
+                    Value::Number((i + 1) as f64),
+                ),
+                (
+                    "رقم_الملف".to_string(),
+                    Value::Number((fi + 1) as f64),
+                ),
+            ]);
+            let r = j3_call_single(ctx, &args[2], rec, line, col)?;
+            if r != Value::Nil {
+                out.push(r);
+            }
+        }
+    }
+    Ok(Value::List(out))
+}
+// END لينكس4-نص دوال تدفق Rust
 fn flow_entries() -> Vec<(&'static str, Value)> {
     vec![
         ("عدل_في_مكانه", native("عدل_في_مكانه", flow_edit_in_place)),
@@ -15427,7 +21403,16 @@ fn flow_entries() -> Vec<(&'static str, Value)> {
         ("عد_المطابق", native("عد_المطابق", flow_count_match)),
         ("أكبر_عمود", native("أكبر_عمود", flow_col_max)),
         ("أصغر_عمود", native("أصغر_عمود", flow_col_min)),
-        ("متوسط_عمود", native("متوسط_عمود", flow_col_avg)),
+        ("متوسط_عمود", native("متوسط_عمود", flow_col_avg)),// BEGIN لينكس4-نص مداخل تدفق
+        ("استبدل_ظهور", native("استبدل_ظهور", flow_replace_nth)),
+        ("توقف_بلا_طباعة", native("توقف_بلا_طباعة", flow_quit_quiet)),
+        ("أدرج_ملفا", native("أدرج_ملفا", flow_insert_file)),
+        ("اكتب_أسطر", native("اكتب_أسطر", flow_write_lines)),
+        ("التالي", native("التالي", flow_next_pair)),
+        ("التالي_ملحق", native("التالي_ملحق", flow_next_joined)),
+        ("عالج_متعدد", native("عالج_متعدد", flow_process_multi)),
+// END لينكس4-نص مداخل تدفق
+
 // END لينكس3-نص مداخل تدفق
 
     ]
@@ -15599,6 +21584,10 @@ struct FlowOpts {
     address: Option<Value>,
     ignore_case: bool,
     quiet: bool,
+    // دفعة لينكس 4 — خيارات استبدل_الكل.
+    print_replaced: bool,
+    write_replaced_to: Option<String>,
+    multiline: bool,
 }
 
 fn flow_parse_opts(
@@ -15613,6 +21602,9 @@ fn flow_parse_opts(
         address: None,
         ignore_case: false,
         quiet: false,
+        print_replaced: false,
+        write_replaced_to: None,
+        multiline: false,
     };
     for (k, v) in pairs {
         match k.as_str() {
@@ -15645,6 +21637,36 @@ fn flow_parse_opts(
                     ));
                 }
                 out.quiet = search_need_bool(display, k, v, line, col)?;
+            }
+            "اطبع_المستبدل" => {
+                if !allow_address {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} لا تقبل الخيار {}", display, k),
+                        line,
+                        col,
+                    ));
+                }
+                out.print_replaced = search_need_bool(display, k, v, line, col)?;
+            }
+            "اكتب_المستبدل_في" => {
+                if !allow_address {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} لا تقبل الخيار {}", display, k),
+                        line,
+                        col,
+                    ));
+                }
+                out.write_replaced_to = Some(need_string(display, v, line, col)?);
+            }
+            "متعدد_الأسطر" => {
+                if !allow_address {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} لا تقبل الخيار {}", display, k),
+                        line,
+                        col,
+                    ));
+                }
+                out.multiline = search_need_bool(display, k, v, line, col)?;
             }
             other => {
                 return Err(RioError::runtime(
@@ -15719,9 +21741,15 @@ fn flow_replace_all_core(
     repl: &str,
     address: Option<&Value>,
     fold: bool,
+    multiline: bool,
     line: usize,
     col: usize,
 ) -> RioResult<String> {
+    // متعدد_الأسطر (دفعة لينكس 4): النمط على النص
+    // كله، والعنوان يُتجاهل.
+    if multiline {
+        return flow_regex_replace_str(pattern, text, repl, fold, line, col);
+    }
     match address {
         None => flow_regex_replace_str(pattern, text, repl, fold, line, col),
         Some(addr) => {
@@ -15980,7 +22008,7 @@ fn flow_run_one_command(
             let pattern = need_string(display, need("نمط")?, line, col)?;
             let repl = need_string(display, need("بديل")?, line, col)?;
             Ok((
-                flow_replace_all_core(display, text, &pattern, &repl, address, false, line, col)?,
+                flow_replace_all_core(display, text, &pattern, &repl, address, false, false, line, col)?,
                 false,
             ))
         }
