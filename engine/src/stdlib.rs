@@ -2392,6 +2392,7 @@ pub fn native_module(name: &str) -> Option<Value> {
         "أسس" => bases_entries(),
         "وحدات" => units_entries(),
         "أرشيف" => archive_entries(),
+        "سطور" => lines_entries(),
         "كلمة_مرور" => password_entries(),
         "وهمي" => fake_entries(),
         "تقويم" => calendar_entries(),
@@ -2571,6 +2572,11 @@ fn math_entries() -> Vec<(&'static str, Value)> {
         ("بت_ازاحة_يسار", native("بت_ازاحة_يسار", math_bit_shl)),
         ("بت_ازاحة_يمين", native("بت_ازاحة_يمين", math_bit_shr)),
         ("عكس_بت", native("عكس_بت", math_bit_not)),
+        // لينكس6-هـ2: احسب_تعبير/تسلسل/تسلسل_بخطوة/نسق_بشري.
+        ("احسب_تعبير", native("احسب_تعبير", b6_math_expr)),
+        ("تسلسل", native("تسلسل", b6_math_seq)),
+        ("تسلسل_بخطوة", native("تسلسل_بخطوة", b6_math_seq_step)),
+        ("نسق_بشري", native("نسق_بشري", b6_math_human)),
 // == مولّد-دفعة2-مداخل-رياضيات: نهاية ==
     ]
 }
@@ -11872,6 +11878,10 @@ fn processes_entries() -> Vec<(&'static str, Value)> {
         ("حية", native("حية", proc_is_alive)),
         ("انتظر_الكل", native("انتظر_الكل", proc_wait_all)),
         ("انتظر_أي", native("انتظر_أي", proc_wait_any)),
+        // لينكس6-هـ2: سرد_العمليات/سرد_كامل/عملية_بمعرف.
+        ("سرد_العمليات", native("سرد_العمليات", b6_proc_list_fn)),
+        ("سرد_كامل", native("سرد_كامل", b6_proc_list_full_fn)),
+        ("عملية_بمعرف", native("عملية_بمعرف", b6_proc_by_pid)),
     ]
 }
 
@@ -12078,6 +12088,9 @@ fn crypto_entries() -> Vec<(&'static str, Value)> {
         // باقي J14 — البند 209: ChaCha20 (RFC 8439) نقي.
         ("شفر", native("شفر", crypto_encrypt)),
         ("فك_التشفير", native("فك_التشفير", crypto_decrypt)),
+        // لينكس6-هـ2: بصمة_سريعة/تحقق_بصمات.
+        ("بصمة_سريعة", native("بصمة_سريعة", b6_crypto_fast_hash)),
+        ("تحقق_بصمات", native("تحقق_بصمات", b6_crypto_verify_hashes)),
     ]
 }
 
@@ -12313,6 +12326,21 @@ fn files_entries() -> Vec<(&'static str, Value)> {
             native("احذف_ممنوح", file_saf_delete),
         ),
         ("الممنوح", native("الممنوح", file_saf_list_trees)),
+        // لينكس6-هـ2: اختبر/مسارات/مؤقت/أذونات/أحجام/مساحة.
+        ("اختبر", native("اختبر", b6_files_test)),
+        ("اسم_الملف", native("اسم_الملف", b6_files_basename)),
+        ("اسم_بلا_لاحقة", native("اسم_بلا_لاحقة", b6_files_stem)),
+        ("اسم_المجلد", native("اسم_المجلد", b6_files_dirname)),
+        ("اقرأ_الرابط", native("اقرأ_الرابط", b6_files_readlink)),
+        ("مسار_حقيقي", native("مسار_حقيقي", b6_files_realpath)),
+        ("ملف_مؤقت", native("ملف_مؤقت", b6_files_tempfile)),
+        ("احذف_مجلد", native("احذف_مجلد", b6_files_rmdir)),
+        ("غير_أذونات", native("غير_أذونات", b6_files_chmod)),
+        ("المجلد_الحالي", native("المجلد_الحالي", b6_files_pwd)),
+        ("حجم_مجلد", native("حجم_مجلد", b6_files_dir_size)),
+        ("حجم_مجلد_بشري", native("حجم_مجلد_بشري", b6_files_dir_size_human)),
+        ("مساحة_قرص", native("مساحة_قرص", b6_files_disk)),
+        ("مساحة_قرص_بشرية", native("مساحة_قرص_بشرية", b6_files_disk_human)),
     ]
 }
 
@@ -13967,6 +13995,8 @@ fn text_entries() -> Vec<(&'static str, Value)> {
 
 // END J15-GEN rust-entries-text
 
+        // لينكس6-هـ2: نسق_بمواصفات.
+        ("نسق_بمواصفات", native("نسق_بمواصفات", b6_text_printf)),
     ]
 }
 
@@ -14345,6 +14375,9 @@ fn bases_entries() -> Vec<(&'static str, Value)> {
     vec![
         ("إلى_أساس", native("إلى_أساس", bases_to_base)),
         ("من_أساس", native("من_أساس", bases_from_base)),
+        // لينكس6-هـ2: ترميز_قاعدة64/فك_قاعدة64.
+        ("ترميز_قاعدة64", native("ترميز_قاعدة64", b6_bases_b64encode)),
+        ("فك_قاعدة64", native("فك_قاعدة64", b6_bases_b64decode)),
     ]
 }
 
@@ -14879,6 +14912,13 @@ fn archive_entries() -> Vec<(&'static str, Value)> {
         ("اضغط", native("اضغط", archive_compress)),
         ("فك_ضغط", native("فك_ضغط", archive_decompress)),
         ("قائمة", native("قائمة", archive_list)),
+        ("اكتشف_صيغة", native("اكتشف_صيغة", b5_fmt_detect)),
+        ("قائمة_بصيغة", native("قائمة_بصيغة", b5_fmt_list)),
+        ("استخرج_بصيغة", native("استخرج_بصيغة", b5_fmt_extract)),
+        ("تحقق_بصيغة", native("تحقق_بصيغة", b5_fmt_verify)),
+        ("أنشئ_7z", native("أنشئ_7z", b5_sz_create)),
+        ("استخرج_7z", native("استخرج_7z", b5_sz_extract)),
+        ("اسرد_7z", native("اسرد_7z", b5_sz_list)),
     ];
     v.extend(b5_tar_entries());
     v
@@ -15258,6 +15298,11 @@ fn calendar_entries() -> Vec<(&'static str, Value)> {
         (
             "كبيسة_هجرية",
             native("كبيسة_هجرية", calendar_hijri_leap),
+        ),
+        // لينكس6-هـ2: اعرض_شهري.
+        (
+            "اعرض_شهري",
+            native("اعرض_شهري", b6_cal_monthly),
         ),
     ]
 }
@@ -29466,6 +29511,9 @@ struct B5Meta {
     uid: u32,
     gid: u32,
     nlink: u64,
+    ctime: i64,
+    dev: u64,
+    ino: u64,
     is_link: bool,
     target: Option<String>,
 }
@@ -29498,19 +29546,22 @@ fn b5_stat(path: &std::path::Path) -> Option<B5Meta> {
         None
     };
     #[cfg(unix)]
-    let (mode, uid, gid, nlink) = {
+    let (mode, uid, gid, nlink, ctime, dev, ino) = {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         (
             md.permissions().mode() & 0o7777,
             md.uid(),
             md.gid(),
             md.nlink(),
+            md.ctime(),
+            md.dev(),
+            md.ino(),
         )
     };
     #[cfg(not(unix))]
-    let (mode, uid, gid, nlink) = {
+    let (mode, uid, gid, nlink, ctime, dev, ino) = {
         let base: u32 = if md.permissions().readonly() { 0o444 } else { 0o666 };
-        (base, 0u32, 0u32, 1u64)
+        (base, 0u32, 0u32, 1u64, 0i64, 0u64, 0u64)
     };
     Some(B5Meta {
         kind,
@@ -29526,6 +29577,9 @@ fn b5_stat(path: &std::path::Path) -> Option<B5Meta> {
         uid,
         gid,
         nlink,
+        ctime,
+        dev,
+        ino,
         is_link,
         target,
     })
@@ -29553,6 +29607,9 @@ fn b5_stat_follow(path: &std::path::Path) -> Option<B5Meta> {
         m.uid = md.uid();
         m.gid = md.gid();
         m.nlink = md.nlink();
+        m.ctime = md.ctime();
+        m.dev = md.dev();
+        m.ino = md.ino();
     }
     Some(m)
 }
@@ -29611,6 +29668,172 @@ fn b5_owner_name(uid: u32, is_group: bool) -> String {
     {
         let _ = (uid, is_group);
         "غير_معروف".to_string()
+    }
+}
+
+
+/// لينكس6: uid/gid من اسم (يونكس عبر getpwnam/getgrnam؛ لاشيء عداها).
+fn b6_owner_uid(name: &str, is_group: bool) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        let c = CString::new(name).ok()?;
+        unsafe {
+            if is_group {
+                let g = libc::getgrnam(c.as_ptr());
+                if g.is_null() {
+                    return None;
+                }
+                Some((*g).gr_gid)
+            } else {
+                let p = libc::getpwnam(c.as_ptr());
+                if p.is_null() {
+                    return None;
+                }
+                Some((*p).pw_uid)
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (name, is_group);
+        None
+    }
+}
+
+/// لينكس6: هل للمعرف اسم في النظام؟ (يونكس فقط).
+fn b6_uid_has_name(uid: u32, is_group: bool) -> bool {
+    #[cfg(unix)]
+    {
+        b5_owner_name(uid, is_group) != format!("{}", uid)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (uid, is_group);
+        false
+    }
+}
+
+/// لينكس6: اسم نظام الملفات لمسار (statfs على يونكس؛
+/// «ntfs» على ويندوز؛ «غير_معروف» عند الفشل).
+fn b6_fstype(path: &std::path::Path) -> String {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes())
+            .unwrap_or_else(|_| std::ffi::CString::new("").unwrap());
+        unsafe {
+            let mut st: libc::statfs = std::mem::zeroed();
+            if libc::statfs(c.as_ptr(), &mut st) != 0 {
+                return "غير_معروف".to_string();
+            }
+            let name = match st.f_type as u64 {
+                0xEF53 => "ext4",
+                0x9123683E => "btrfs",
+                0x01021994 => "tmpfs",
+                0x794C7630 => "overlayfs",
+                0x9FA0 => "proc",
+                0x62656572 => "sysfs",
+                0xFF534D42 => "cifs",
+                0x6969 => "nfs",
+                0x5346544E => "ntfs",
+                0x858458F6 => "ramfs",
+                0x52654973 => "reiserfs",
+                0x58465342 => "xfs",
+                0x2FC12FC1 => "zfs",
+                0x65735546 => "fuse",
+                _ => "غير_معروف",
+            };
+            name.to_string()
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(path.as_os_str().as_bytes())
+            .unwrap_or_else(|_| std::ffi::CString::new("").unwrap());
+        unsafe {
+            let mut st: libc::statfs = std::mem::zeroed();
+            if libc::statfs(c.as_ptr(), &mut st) != 0 {
+                return "غير_معروف".to_string();
+            }
+            let raw = &st.f_fstypename as &[libc::c_char];
+            let len = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
+            let bytes: Vec<u8> = raw[..len].iter().map(|&c| c as u8).collect();
+            let name = String::from_utf8_lossy(&bytes).into_owned();
+            if name.is_empty() {
+                "غير_معروف".to_string()
+            } else {
+                name
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = path;
+        "ntfs".to_string()
+    }
+}
+
+/// لينكس6: رابط OSC-8 قابل للنقر (مسار ملف).
+fn b6_osc8(display: &str, abs: &str) -> String {
+    format!(
+        "\u{1b}]8;;file://{}\u{1b}\\{}\u{1b}]8;;\u{1b}\\",
+        abs, display
+    )
+}
+
+/// لينكس6: مالك/مجموعة من قيمة خيار (نص اسم أو عدد).
+/// يعيد (المعرف، مجهول_الاسم): الاسم المجهول لا يطابق أبدا.
+fn b6_opt_owner(
+    display: &str,
+    pairs: &[(String, Value)],
+    key: &str,
+    is_group: bool,
+    line: usize,
+    col: usize,
+) -> RioResult<(Option<u32>, bool)> {
+    match dict_get(pairs, key) {
+        None => Ok((None, false)),
+        Some(Value::Number(_)) => {
+            let n = need_integer(display, &dict_get(pairs, key).unwrap().clone(), line, col)?;
+            if n < 0 {
+                return Err(RioError::runtime(
+                    format!("الدالة {} الخيار {} لا يقبل عددا سالبا", display, key),
+                    line,
+                    col,
+                ));
+            }
+            Ok((Some(n as u32), false))
+        }
+        Some(Value::Str(s)) => {
+            let t = s.trim();
+            if let Ok(n) = t.parse::<u32>() {
+                return Ok((Some(n), false));
+            }
+            match b6_owner_uid(t, is_group) {
+                Some(u) => Ok((Some(u), false)),
+                None => Ok((None, true)),
+            }
+        }
+        Some(other) => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع نصا أو عددا للخيار {} لكن أعطيت {}",
+                display,
+                key,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// لينكس6: مجلد مسار نصي (نقطة عند غيابه).
+fn b6_parent_dir(path: &str) -> String {
+    match std::path::Path::new(path).parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_string_lossy().into_owned(),
+        _ => ".".to_string(),
     }
 }
 
@@ -29688,6 +29911,12 @@ struct B5Walk {
     show_errors: bool,
     errors: Vec<String>,
     visited: Vec<std::path::PathBuf>,
+    respect_vcs: bool,
+    no_parent_ignore: bool,
+    follow_cmd: bool,
+    single_fs: bool,
+    root_dev: Option<u64>,
+    exclude_if_present: Vec<String>,
 }
 
 impl B5Walk {
@@ -29702,6 +29931,12 @@ impl B5Walk {
             prune: Vec::new(),
             gitignore_extra: Vec::new(),
             show_errors: false,
+            respect_vcs: true,
+            no_parent_ignore: false,
+            follow_cmd: false,
+            single_fs: false,
+            root_dev: None,
+            exclude_if_present: Vec::new(),
             errors: Vec::new(),
             visited: Vec::new(),
         }
@@ -29765,7 +30000,7 @@ fn b5_walk_dir(
     items.sort_by_key(|e| e.file_name());
     let base_len = ignore.len();
     if w.respect_ignore {
-        ignore.extend(search_ignore_patterns_flags(dir_fs, true, true));
+        ignore.extend(search_ignore_patterns_flags(dir_fs, true, w.respect_vcs));
     }
     for entry in items {
         let name = entry.file_name().to_string_lossy().into_owned();
@@ -29794,6 +30029,9 @@ fn b5_walk_dir(
             uid: meta.uid,
             gid: meta.gid,
             nlink: meta.nlink,
+            ctime: meta.ctime,
+            dev: meta.dev,
+            ino: meta.ino,
             is_link: meta.is_link,
             target: meta.target.clone(),
         };
@@ -29810,6 +30048,13 @@ fn b5_walk_dir(
         if is_dir {
             if !w.prune.is_empty()
                 && b5_glob_any(&w.prune, &name, &rel, false, 0, 0)
+            {
+                continue;
+            }
+            if !w.exclude_if_present.is_empty()
+                && w.exclude_if_present
+                    .iter()
+                    .any(|n| entry.path().join(n).is_file())
             {
                 continue;
             }
@@ -29837,6 +30082,9 @@ fn b5_walk_dir(
                         uid: meta.uid,
                         gid: meta.gid,
                         nlink: meta.nlink,
+                        ctime: meta.ctime,
+                        dev: meta.dev,
+                        ino: meta.ino,
                         is_link: meta.is_link,
                         target: meta.target.clone(),
                     },
@@ -29850,12 +30098,17 @@ fn b5_walk_dir(
                         uid: eff_meta.uid,
                         gid: eff_meta.gid,
                         nlink: eff_meta.nlink,
+                        ctime: eff_meta.ctime,
+                        dev: eff_meta.dev,
+                        ino: eff_meta.ino,
                         is_link: eff_meta.is_link,
                         target: eff_meta.target.clone(),
                     },
                 });
             }
-            if w.can_descend(depth + 1) {
+            if w.can_descend(depth + 1)
+                && !(w.single_fs && w.root_dev.map_or(false, |d| meta.dev != d))
+            {
                 let canon = std::fs::canonicalize(entry.path())
                     .unwrap_or_else(|_| entry.path());
                 if w.follow_links && w.visited.contains(&canon) {
@@ -29891,6 +30144,9 @@ fn b5_walk_dir(
                         uid: meta.uid,
                         gid: meta.gid,
                         nlink: meta.nlink,
+                        ctime: meta.ctime,
+                        dev: meta.dev,
+                        ino: meta.ino,
                         is_link: meta.is_link,
                         target: meta.target.clone(),
                     },
@@ -29904,6 +30160,9 @@ fn b5_walk_dir(
                         uid: eff_meta.uid,
                         gid: eff_meta.gid,
                         nlink: eff_meta.nlink,
+                        ctime: eff_meta.ctime,
+                        dev: eff_meta.dev,
+                        ino: eff_meta.ino,
                         is_link: eff_meta.is_link,
                         target: eff_meta.target.clone(),
                     },
@@ -29937,7 +30196,12 @@ fn b5_walk_root(
         }
     };
     if meta.is_file() {
-        if let Some(m) = b5_stat(&root_fs) {
+        let root_m = if w.follow_cmd {
+            b5_stat_follow(&root_fs)
+        } else {
+            b5_stat(&root_fs)
+        };
+        if let Some(m) = root_m {
             let name = root_fs
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -29958,6 +30222,9 @@ fn b5_walk_root(
                     uid: m.uid,
                     gid: m.gid,
                     nlink: m.nlink,
+                    ctime: m.ctime,
+                    dev: m.dev,
+                    ino: m.ino,
                     is_link: m.is_link,
                     target: m.target.clone(),
                 },
@@ -29971,6 +30238,9 @@ fn b5_walk_root(
                     uid: m.uid,
                     gid: m.gid,
                     nlink: m.nlink,
+                    ctime: m.ctime,
+                    dev: m.dev,
+                    ino: m.ino,
                     is_link: m.is_link,
                     target: m.target.clone(),
                 },
@@ -29988,11 +30258,11 @@ fn b5_walk_root(
     let base = root_display.trim_end_matches('/');
     let base = if base == "." { "" } else { base };
     let mut ignore: Vec<String> = Vec::new();
-    if w.respect_ignore {
+    if w.respect_ignore && !w.no_parent_ignore {
         let cwd = ctx.server_cwd();
         let mut dir = root_fs.parent().map(|p| p.to_path_buf());
         while let Some(d) = dir {
-            ignore.extend(search_ignore_patterns_flags(&d, true, true));
+            ignore.extend(search_ignore_patterns_flags(&d, true, w.respect_vcs));
             if d == cwd {
                 break;
             }
@@ -30001,6 +30271,9 @@ fn b5_walk_root(
     }
     let _ = display;
     let _ = (line, col);
+    if w.single_fs {
+        w.root_dev = b5_stat(&root_fs).map(|m| m.dev);
+    }
     b5_walk_dir(&root_fs, base, 0, w, &mut ignore, out);
     Ok(())
 }
@@ -30032,6 +30305,8 @@ fn b5_long_line(
     show_size: bool,
     show_time: bool,
     color: bool,
+    octal: bool,
+    numeric_owner: bool,
     display: &str,
     line: usize,
     col: usize,
@@ -30057,10 +30332,20 @@ fn b5_long_line(
     if color {
         name = b5_colorize(&name, m.kind, b5_is_exec(&e.fs, m));
     }
-    let mut parts: Vec<String> = vec![b5_mode_str(m), format!("{}", m.nlink)];
+    let mode_part = if octal {
+        format!("{:o}", m.mode & 0o7777)
+    } else {
+        b5_mode_str(m)
+    };
+    let mut parts: Vec<String> = vec![mode_part, format!("{}", m.nlink)];
     if show_owner {
-        parts.push(b5_owner_name(m.uid, false));
-        parts.push(b5_owner_name(m.gid, true));
+        if numeric_owner {
+            parts.push(format!("{}", m.uid));
+            parts.push(format!("{}", m.gid));
+        } else {
+            parts.push(b5_owner_name(m.uid, false));
+            parts.push(b5_owner_name(m.gid, true));
+        }
     }
     if show_size {
         parts.push(size);
@@ -30179,6 +30464,39 @@ struct B5Search {
     path_glob: Option<String>,
     path_glob_fold: bool,
     path_regex: Option<String>,
+    // لينكس6: مفاتيح الدفعة 6.
+    no_vcs_ignore: bool,
+    no_parent_ignore: bool,
+    exclude_if_present: Vec<String>,
+    owner_uid: Option<u32>,
+    owner_unknown: bool,
+    group_gid: Option<u32>,
+    group_unknown: bool,
+    no_owner: bool,
+    nlink_eq: Option<u64>,
+    same_file: Option<String>,
+    fstype: Option<String>,
+    single_fs: bool,
+    follow_cmd: bool,
+    depth_first: bool,
+    warn: bool,
+    mute_warn: bool,
+    content_empty: bool,
+    delete_matches: bool,
+    exec_in_dir: bool,
+    exec_batch_in_dir: bool,
+    ask_in_dir: bool,
+    batch_size: Option<i64>,
+    nul_sep: bool,
+    strip_dot_prefix: bool,
+    clickable: bool,
+    link_target: Option<String>,
+    link_target_kind: Option<String>,
+    ctime_within: Option<i64>,
+    atime_within2: Option<i64>,
+    day_start: bool,
+    newest_access_or_create: bool,
+    // (خيوط: يُتحقق منه في التحليل فقط؛ التنفيذ تسلسلي حتى نموذج التزامن §102.)
 }
 
 const B5_SEARCH_KEYS: &[&str] = &[
@@ -30239,6 +30557,38 @@ const B5_SEARCH_KEYS: &[&str] = &[
     "اسم_بلا_حالة",
     "مسار_نمط",
     "مسار_نمط_بلا_حالة",
+    "بلا_تجاهل_نسق",
+    "بلا_تجاهل_الأب",
+    "استثن_عند_وجود",
+    "مالك",
+    "حجم_دفعة",
+    "افصل_بصفر",
+    "بلا_بادئة",
+    "نظام_ملفات_واحد",
+    "خيوط",
+    "روابط_قابلة_للنقر",
+    "هدف_رابط",
+    "نوع_بعد_الحل",
+    "تغير_حالة_خلال",
+    "استخدم_خلال",
+    "من_بداية_اليوم",
+    "أحدث_وصول_أو_إنشاء",
+    "مجموعة",
+    "بلا_مالك",
+    "رقم_مالك",
+    "رقم_مجموعة",
+    "عدد_روابط",
+    "نفس_الملف",
+    "نوع_نظام_ملفات",
+    "اتبع_روابط_الأمر",
+    "أعماق_أولا",
+    "نفذ_في_مجلد",
+    "نفذ_دفعة_في_مجلد",
+    "اسأل_في_مجلد",
+    "احذف",
+    "حذّر",
+    "اكتم_التحذير",
+    "محتوى_فارغ",
     "تعبير",
 ];
 
@@ -30529,6 +30879,130 @@ fn b5_parse_search(
     let min_depth = b5_opt_count(display, pairs, "عمق_أدنى", line, col)?.unwrap_or(1);
     let max_depth = b5_opt_count(display, pairs, "عمق_أقصى", line, col)?;
     let exact_depth = b5_opt_count(display, pairs, "عمق_دقيق", line, col)?;
+    // لينكس6: مفاتيح الدفعة 6.
+    let no_vcs_ignore = b5_opt_bool(display, pairs, "بلا_تجاهل_نسق", false, line, col)?;
+    let no_parent_ignore = b5_opt_bool(display, pairs, "بلا_تجاهل_الأب", false, line, col)?;
+    let exclude_if_present = b5_opt_strs(display, pairs, "استثن_عند_وجود", line, col)?;
+    let (mut owner_uid, owner_unknown) = b6_opt_owner(display, pairs, "مالك", false, line, col)?;
+    if let Some(n) = b5_opt_count(display, pairs, "رقم_مالك", line, col)? {
+        if owner_uid.is_some() {
+            return Err(RioError::runtime(
+                format!("الدالة {} لا يجمع مالك ورقم_مالك", display),
+                line,
+                col,
+            ));
+        }
+        owner_uid = Some(n as u32);
+    }
+    let (mut group_gid, group_unknown) = b6_opt_owner(display, pairs, "مجموعة", true, line, col)?;
+    if let Some(n) = b5_opt_count(display, pairs, "رقم_مجموعة", line, col)? {
+        if group_gid.is_some() {
+            return Err(RioError::runtime(
+                format!("الدالة {} لا يجمع مجموعة ورقم_مجموعة", display),
+                line,
+                col,
+            ));
+        }
+        group_gid = Some(n as u32);
+    }
+    let no_owner = b5_opt_bool(display, pairs, "بلا_مالك", false, line, col)?;
+    let nlink_eq = b5_opt_count(display, pairs, "عدد_روابط", line, col)?.map(|n| n as u64);
+    let same_file = b5_opt_str(display, pairs, "نفس_الملف", line, col)?;
+    let fstype = b5_opt_str(display, pairs, "نوع_نظام_ملفات", line, col)?;
+    let single_fs = b5_opt_bool(display, pairs, "نظام_ملفات_واحد", false, line, col)?;
+    let follow_cmd = b5_opt_bool(display, pairs, "اتبع_روابط_الأمر", false, line, col)?;
+    if follow_cmd && b5_opt_bool(display, pairs, "بلا_اتباع", false, line, col)? {
+        return Err(RioError::runtime(
+            format!("الدالة {} لا يجمع اتبع_روابط_الأمر وبلا_اتباع", display),
+            line,
+            col,
+        ));
+    }
+    let depth_first = b5_opt_bool(display, pairs, "أعماق_أولا", false, line, col)?;
+    let warn = b5_opt_bool(display, pairs, "حذّر", false, line, col)?;
+    let mute_warn = b5_opt_bool(display, pairs, "اكتم_التحذير", false, line, col)?;
+    let content_empty = b5_opt_bool(display, pairs, "محتوى_فارغ", false, line, col)?;
+    let delete_matches = b5_opt_bool(display, pairs, "احذف", false, line, col)?;
+    if delete_matches && (exec_each.is_some() || exec_batch.is_some() || write_to.is_some()) {
+        return Err(RioError::runtime(
+            format!("الدالة {} احذف لا يجمع التنفيذ أو اكتب_في", display),
+            line,
+            col,
+        ));
+    }
+    let exec_in_dir = b5_opt_bool(display, pairs, "نفذ_في_مجلد", false, line, col)?;
+    if exec_in_dir && exec_each.is_none() {
+        return Err(RioError::runtime(
+            format!("الدالة {} نفذ_في_مجلد يحتاج نفذ_لكل", display),
+            line,
+            col,
+        ));
+    }
+    let exec_batch_in_dir = b5_opt_bool(display, pairs, "نفذ_دفعة_في_مجلد", false, line, col)?;
+    if exec_batch_in_dir && exec_batch.is_none() {
+        return Err(RioError::runtime(
+            format!("الدالة {} نفذ_دفعة_في_مجلد يحتاج نفذ_دفعة", display),
+            line,
+            col,
+        ));
+    }
+    let ask_in_dir = b5_opt_bool(display, pairs, "اسأل_في_مجلد", false, line, col)?;
+    if ask_in_dir && ask.is_none() {
+        return Err(RioError::runtime(
+            format!("الدالة {} اسأل_في_مجلد يحتاج اسأل", display),
+            line,
+            col,
+        ));
+    }
+    let batch_size = b5_opt_count(display, pairs, "حجم_دفعة", line, col)?;
+    if let Some(n) = batch_size {
+        if n < 1 {
+            return Err(RioError::runtime(
+                format!("الدالة {} حجم_دفعة لا يقبل صفرا", display),
+                line,
+                col,
+            ));
+        }
+        if exec_batch.is_none() {
+            return Err(RioError::runtime(
+                format!("الدالة {} حجم_دفعة يحتاج نفذ_دفعة", display),
+                line,
+                col,
+            ));
+        }
+    }
+    let nul_sep = b5_opt_bool(display, pairs, "افصل_بصفر", false, line, col)?;
+    let strip_dot_prefix = b5_opt_bool(display, pairs, "بلا_بادئة", false, line, col)?;
+    let clickable = b5_opt_bool(display, pairs, "روابط_قابلة_للنقر", false, line, col)?;
+    let link_target = b5_opt_str(display, pairs, "هدف_رابط", line, col)?;
+    let link_target_kind = b5_opt_str(display, pairs, "نوع_بعد_الحل", line, col)?;
+    if let Some(k) = &link_target_kind {
+        if !matches!(k.as_str(), "ملف" | "مجلد" | "رابط" | "الكل") {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} نوع_بعد_الحل غير معروف: {} (ملف/مجلد/رابط/الكل)",
+                    display, k
+                ),
+                line,
+                col,
+            ));
+        }
+    }
+    let ctime_within = b5_opt_count(display, pairs, "تغير_حالة_خلال", line, col)?;
+    let atime_within2 = b5_opt_count(display, pairs, "استخدم_خلال", line, col)?;
+    let day_start = b5_opt_bool(display, pairs, "من_بداية_اليوم", false, line, col)?;
+    let newest_access_or_create =
+        b5_opt_bool(display, pairs, "أحدث_وصول_أو_إنشاء", false, line, col)?;
+    let threads = b5_opt_count(display, pairs, "خيوط", line, col)?;
+    if let Some(n) = threads {
+        if n < 1 {
+            return Err(RioError::runtime(
+                format!("الدالة {} خيوط لا تقبل صفرا", display),
+                line,
+                col,
+            ));
+        }
+    }
     Ok(B5Search {
         glob: b5_opt_bool(display, pairs, "نمط_قشرة", false, line, col)?,
         fold,
@@ -30582,7 +31056,50 @@ fn b5_parse_search(
         path_glob: b5_opt_str(display, pairs, "مسار_نمط", line, col)?,
         path_glob_fold: b5_opt_bool(display, pairs, "مسار_نمط_بلا_حالة", false, line, col)?,
         path_regex: b5_opt_str(display, pairs, "تعبير", line, col)?,
+        no_vcs_ignore,
+        no_parent_ignore,
+        exclude_if_present,
+        owner_uid,
+        owner_unknown,
+        group_gid,
+        group_unknown,
+        no_owner,
+        nlink_eq,
+        same_file,
+        fstype,
+        single_fs,
+        follow_cmd,
+        depth_first,
+        warn,
+        mute_warn,
+        content_empty,
+        delete_matches,
+        exec_in_dir,
+        exec_batch_in_dir,
+        ask_in_dir,
+        batch_size,
+        nul_sep,
+        strip_dot_prefix,
+        clickable,
+        link_target,
+        link_target_kind,
+        ctime_within,
+        atime_within2,
+        day_start,
+        newest_access_or_create,
     })
+}
+
+/// لينكس6: وسيط اسأل (نص أو قاموس {مسار، مجلد}).
+fn b6_ask_arg(path: &str, in_dir: bool) -> Value {
+    if in_dir {
+        Value::Dict(vec![
+            ("مسار".to_string(), Value::Str(path.to_string())),
+            ("مجلد".to_string(), Value::Str(b6_parent_dir(path))),
+        ])
+    } else {
+        Value::Str(path.to_string())
+    }
 }
 
 /// بحث_ملفات.ابحث(نمط، جذر؟، خيارات؟) — §§1–2.
@@ -30738,7 +31255,10 @@ fn b5_search_files(
         }
         None => None,
     };
-    let now = b5_now();
+    let mut now = b5_now();
+    if o.day_start {
+        now -= now % 86400;
+    }
     // المشي.
     let mut w = B5Walk::new();
     w.include_hidden = o.include_hidden;
@@ -30749,6 +31269,11 @@ fn b5_search_files(
     w.exact_depth = o.exact_depth;
     w.prune = o.prune.clone();
     w.show_errors = o.show_errors;
+    w.respect_vcs = !o.no_vcs_ignore;
+    w.no_parent_ignore = o.no_parent_ignore;
+    w.follow_cmd = o.follow_cmd;
+    w.single_fs = o.single_fs;
+    w.exclude_if_present = o.exclude_if_present.clone();
     if let Some(f) = &o.ignore_file {
         w.gitignore_extra = b5_load_patterns(ctx, DISPLAY, f, line, col)?;
     }
@@ -30767,11 +31292,32 @@ fn b5_search_files(
         }
     }
     let _ = missing_root;
-    if o.show_errors {
+    if (o.show_errors || o.warn) && !o.mute_warn {
         for e in &w.errors {
             eprintln!("{}", e);
         }
     }
+    // لينكس6: مراجع ما قبل الترشيح.
+    let link_target_rx = match &o.link_target {
+        Some(p) => b5_compile_rx(p, o.fold, DISPLAY, line, col)?,
+        None => None,
+    };
+    let same_dev_ino: Option<(u64, u64)> = match &o.same_file {
+        Some(p) => {
+            let fs = search_resolve_path(ctx, p);
+            match b5_stat(&fs) {
+                Some(m) => Some((m.dev, m.ino)),
+                None => {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} الملف المرجعي غير موجود: {}", DISPLAY, p),
+                        line,
+                        col,
+                    ))
+                }
+            }
+        }
+        None => None,
+    };
     // الترشيح.
     let mut kept: Vec<&B5Entry> = Vec::new();
     for e in &entries {
@@ -30928,7 +31474,11 @@ fn b5_search_files(
             }
         }
         if let Some(s) = o.changed_within {
-            if e.eff.mtime < now - s {
+            if o.newest_access_or_create {
+                if e.eff.atime < now - s && e.eff.ctime < now - s {
+                    continue;
+                }
+            } else if e.eff.mtime < now - s {
                 continue;
             }
         }
@@ -31025,25 +31575,126 @@ fn b5_search_files(
                 continue;
             }
         }
+        // لينكس6: مرشحات الدفعة 6.
+        if o.owner_unknown || o.group_unknown {
+            continue;
+        }
+        if let Some(u) = o.owner_uid {
+            if e.eff.uid != u {
+                continue;
+            }
+        }
+        if let Some(g) = o.group_gid {
+            if e.eff.gid != g {
+                continue;
+            }
+        }
+        if o.no_owner && b6_uid_has_name(e.eff.uid, false) {
+            continue;
+        }
+        if let Some(n) = o.nlink_eq {
+            if e.eff.nlink != n {
+                continue;
+            }
+        }
+        if let Some((d, ino)) = same_dev_ino {
+            if e.meta.dev != d || e.meta.ino != ino {
+                continue;
+            }
+        }
+        if let Some(f) = &o.fstype {
+            if b6_fstype(&e.fs) != *f {
+                continue;
+            }
+        }
+        if let Some(p) = &o.link_target {
+            if !e.meta.is_link {
+                continue;
+            }
+            let tgt = e.meta.target.clone().unwrap_or_default();
+            if !b5_pat_hit(p, &tgt, &tgt, o.glob, o.fold, &link_target_rx, DISPLAY, line, col)? {
+                continue;
+            }
+        }
+        if let Some(k) = &o.link_target_kind {
+            let good = match k.as_str() {
+                "ملف" => e.eff.kind == B5Kind::File,
+                "مجلد" => e.eff.kind == B5Kind::Dir,
+                "رابط" => e.meta.is_link,
+                _ => true,
+            };
+            if !good {
+                continue;
+            }
+        }
+        if let Some(s2) = o.ctime_within {
+            if e.eff.ctime < now - s2 {
+                continue;
+            }
+        }
+        if let Some(s2) = o.atime_within2 {
+            if e.eff.atime < now - s2 {
+                continue;
+            }
+        }
+        if o.content_empty && e.eff.kind == B5Kind::File {
+            let emp = if e.eff.size == 0 {
+                true
+            } else {
+                match std::fs::read(&e.fs) {
+                    Ok(b) if b.len() <= 1024 * 1024 => {
+                        String::from_utf8_lossy(&b).trim().is_empty()
+                    }
+                    _ => false,
+                }
+            };
+            if !emp {
+                continue;
+            }
+        }
         kept.push(e);
     }
-    kept.sort_by(|a, b| a.display.cmp(&b.display));
+    if o.depth_first {
+        kept.sort_by(|a, b| b.depth.cmp(&a.depth).then(a.display.cmp(&b.display)));
+    } else {
+        kept.sort_by(|a, b| a.display.cmp(&b.display));
+    }
     if o.first_only {
         kept.truncate(1);
     }
     if let Some(n) = o.max_results {
         kept.truncate(n.max(0) as usize);
     }
+    // لينكس6: حذف المطابقات (ملفات فقط).
+    if o.delete_matches {
+        for e in &kept {
+            if e.eff.kind == B5Kind::File {
+                if let Err(er) = std::fs::remove_file(&e.fs) {
+                    w.errors.push(format!("تعذر حذف {}: {}", e.display, er));
+                }
+            }
+        }
+        if (o.show_errors || o.warn) && !o.mute_warn {
+            for e in &w.errors {
+                eprintln!("{}", e);
+            }
+        }
+    }
     // العرض.
     let mut displays: Vec<String> = Vec::new();
     for e in &kept {
-        let d = if o.abs_path {
+        let mut d = if o.abs_path {
             search_resolve_path(ctx, &e.display)
                 .to_string_lossy()
                 .replace('\\', "/")
         } else {
             e.display.clone()
         };
+        if o.strip_dot_prefix {
+            if let Some(t) = d.strip_prefix("./") {
+                d = t.to_string();
+            }
+        }
         displays.push(d);
     }
     // التنفيذ.
@@ -31052,7 +31703,8 @@ fn b5_search_files(
         for (i, _) in kept.iter().enumerate() {
             let path = displays[i].clone();
             if let Some(ask) = &o.ask {
-                let (res, produced) = ctx.call_handler(ask, Value::Str(path.clone()), line, col);
+                let (res, produced) =
+                    ctx.call_handler(ask, b6_ask_arg(&path, o.ask_in_dir), line, col);
                 if !produced.is_empty() {
                     print!("{}", produced);
                 }
@@ -31072,7 +31724,18 @@ fn b5_search_files(
                     }
                 }
             }
-            let (res, produced) = ctx.call_handler(f, Value::Str(path), line, col);
+            let (res, produced) = if o.exec_in_dir {
+                let dir = search_resolve_path(ctx, &b6_parent_dir(&path));
+                let saved = std::env::current_dir().ok();
+                let _ = std::env::set_current_dir(&dir);
+                let out = ctx.call_handler(f, Value::Str(path), line, col);
+                if let Some(d) = saved {
+                    let _ = std::env::set_current_dir(d);
+                }
+                out
+            } else {
+                ctx.call_handler(f, Value::Str(path), line, col)
+            };
             if !produced.is_empty() {
                 print!("{}", produced);
             }
@@ -31081,10 +31744,10 @@ fn b5_search_files(
         return Ok(Value::List(results));
     }
     if let Some(f) = &o.exec_batch {
-        let mut paths: Vec<Value> = Vec::new();
+        let mut kept_paths: Vec<String> = Vec::new();
         for d in &displays {
             if let Some(ask) = &o.ask {
-                let (res, produced) = ctx.call_handler(ask, Value::Str(d.clone()), line, col);
+                let (res, produced) = ctx.call_handler(ask, b6_ask_arg(d, o.ask_in_dir), line, col);
                 if !produced.is_empty() {
                     print!("{}", produced);
                 }
@@ -31104,13 +31767,57 @@ fn b5_search_files(
                     }
                 }
             }
-            paths.push(Value::Str(d.clone()));
+            kept_paths.push(d.clone());
         }
-        let (res, produced) = ctx.call_handler(f, Value::List(paths), line, col);
-        if !produced.is_empty() {
-            print!("{}", produced);
+        // لينكس6: تجميع (لكل مجلد أو بحجم دفعة) ثم استدعاء لكل مجموعة.
+        let mut groups: Vec<Vec<String>> = Vec::new();
+        if o.exec_batch_in_dir {
+            for p in &kept_paths {
+                let dir = b6_parent_dir(p);
+                let mut placed = false;
+                for g in groups.iter_mut() {
+                    if !g.is_empty() && b6_parent_dir(&g[0]) == dir {
+                        g.push(p.clone());
+                        placed = true;
+                        break;
+                    }
+                }
+                if !placed {
+                    groups.push(vec![p.clone()]);
+                }
+            }
+        } else if let Some(n) = o.batch_size {
+            let n = n.max(1) as usize;
+            for chunk in kept_paths.chunks(n) {
+                groups.push(chunk.to_vec());
+            }
+        } else {
+            groups.push(kept_paths);
         }
-        return res;
+        if groups.len() == 1 {
+            let paths: Vec<Value> = groups
+                .into_iter()
+                .next()
+                .unwrap_or_default()
+                .into_iter()
+                .map(Value::Str)
+                .collect();
+            let (res, produced) = ctx.call_handler(f, Value::List(paths), line, col);
+            if !produced.is_empty() {
+                print!("{}", produced);
+            }
+            return res;
+        }
+        let mut results: Vec<Value> = Vec::new();
+        for g in groups {
+            let paths: Vec<Value> = g.into_iter().map(Value::Str).collect();
+            let (res, produced) = ctx.call_handler(f, Value::List(paths), line, col);
+            if !produced.is_empty() {
+                print!("{}", produced);
+            }
+            results.push(res?);
+        }
+        return Ok(Value::List(results));
     }
     // تفاصيل.
     if o.details {
@@ -31132,6 +31839,18 @@ fn b5_search_files(
                 (
                     "أذونات".to_string(),
                     Value::Str(format!("{:o}", e.eff.mode & 0o7777)),
+                ),
+                (
+                    "مالك".to_string(),
+                    Value::Str(b5_owner_name(e.eff.uid, false)),
+                ),
+                (
+                    "مجموعة".to_string(),
+                    Value::Str(b5_owner_name(e.eff.gid, true)),
+                ),
+                (
+                    "عدد_روابط".to_string(),
+                    Value::Number(e.eff.nlink as f64),
                 ),
             ];
             if e.meta.is_link {
@@ -31157,6 +31876,8 @@ fn b5_search_files(
                 true,
                 true,
                 o.color,
+                false,
+                false,
                 DISPLAY,
                 line,
                 col,
@@ -31164,21 +31885,36 @@ fn b5_search_files(
         } else if let Some(f) = &o.format {
             lines.push(b5_apply_format(e, f, DISPLAY, line, col)?);
         } else if o.color {
-            lines.push(b5_colorize(
+            let mut t = b5_colorize(
                 &displays[i],
                 e.eff.kind,
                 b5_is_exec(&e.fs, &e.eff),
-            ));
+            );
+            if o.clickable {
+                let abs = search_resolve_path(ctx, &displays[i])
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                t = b6_osc8(&t, &abs);
+            }
+            lines.push(t);
         } else {
-            lines.push(displays[i].clone());
+            let mut t = displays[i].clone();
+            if o.clickable {
+                let abs = search_resolve_path(ctx, &displays[i])
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                t = b6_osc8(&t, &abs);
+            }
+            lines.push(t);
         }
     }
     if let Some(path) = &o.write_to {
         let fs = search_resolve_path(ctx, path);
+        let sep = if o.nul_sep { "\0" } else { "\n" };
         let text = if lines.is_empty() {
             String::new()
         } else {
-            lines.join("\n") + "\n"
+            lines.join(sep) + sep
         };
         std::fs::write(&fs, text).map_err(|_| {
             RioError::runtime(format!("الدالة {} تعذر الكتابة في {}", DISPLAY, path), line, col)
@@ -31213,11 +31949,20 @@ fn b5_db_read(
             col,
         )
     })?;
-    Ok(text
-        .lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
-        .collect())
+    if text.contains('\0') {
+        // لينكس6: ملف مفصول بصفر (افصل_بصفر) — يُكتشف تلقائيا.
+        Ok(text
+            .split('\0')
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect())
+    } else {
+        Ok(text
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_string())
+            .collect())
+    }
 }
 
 /// قاعدة_أسماء.ابن(جذور؟، مسار_قاعدة؟، خيارات؟).
@@ -31284,11 +32029,27 @@ fn b5_namebase_build(
         }
     };
     let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
-    b5_no_unknown(DISPLAY, pairs, &["استثن", "مفصل"], line, col)?;
+    b5_no_unknown(
+        DISPLAY,
+        pairs,
+        &[
+            "استثن",
+            "مفصل",
+            "افصل_بصفر",
+            "استثن_نظام_ملفات",
+            "احترم_الرؤية",
+        ],
+        line,
+        col,
+    )?;
     let exclude = b5_opt_strs(DISPLAY, pairs, "استثن", line, col)?;
     let verbose = b5_opt_bool(DISPLAY, pairs, "مفصل", false, line, col)?;
+    // لينكس6: مفاتيح إضافية (افصل_بصفر/استثن_نظام_ملفات/احترم_الرؤية).
+    let nul_sep = b5_opt_bool(DISPLAY, pairs, "افصل_بصفر", false, line, col)?;
+    let exclude_fs = b5_opt_strs(DISPLAY, pairs, "استثن_نظام_ملفات", line, col)?;
+    let respect_visible = b5_opt_bool(DISPLAY, pairs, "احترم_الرؤية", false, line, col)?;
     let mut w = B5Walk::new();
-    w.include_hidden = true;
+    w.include_hidden = !respect_visible;
     w.respect_ignore = false;
     w.follow_links = false;
     let db_fs = search_resolve_path(ctx, &db_path);
@@ -31304,6 +32065,9 @@ fn b5_namebase_build(
             if !exclude.is_empty() && b5_glob_any(&exclude, &e.name, &e.rel, false, line, col) {
                 continue;
             }
+            if !exclude_fs.is_empty() && exclude_fs.iter().any(|f| f == &b6_fstype(&e.fs)) {
+                continue;
+            }
             all.push(e.display);
         }
     }
@@ -31311,6 +32075,8 @@ fn b5_namebase_build(
     all.dedup();
     let text = if all.is_empty() {
         String::new()
+    } else if nul_sep {
+        all.join("\0") + "\0"
     } else {
         all.join("\n") + "\n"
     };
@@ -31366,10 +32132,20 @@ fn b5_namebase_search(
     b5_no_unknown(
         DISPLAY,
         pairs,
-        &["بالمسار", "تعبير", "بلا_حالة", "عد", "حد", "موجود_فقط"],
+        &[
+            "بالمسار",
+            "تعبير",
+            "بلا_حالة",
+            "عد",
+            "حد",
+            "موجود_فقط",
+            "افصل_بصفر",
+        ],
         line,
         col,
     )?;
+    // لينكس6: افصل_بصفر يُقبل هنا؛ الكشف تلقائي في b5_db_read.
+    let _ = b5_opt_bool(DISPLAY, pairs, "افصل_بصفر", false, line, col)?;
     let by_path = b5_opt_bool(DISPLAY, pairs, "بالمسار", false, line, col)?;
     let is_regex = b5_opt_bool(DISPLAY, pairs, "تعبير", false, line, col)?;
     let fold = b5_opt_bool(DISPLAY, pairs, "بلا_حالة", false, line, col)?;
@@ -31517,7 +32293,9 @@ fn b5_namebase_list(
         }
     };
     let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
-    b5_no_unknown(DISPLAY, pairs, &["حد"], line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["حد", "افصل_بصفر"], line, col)?;
+    // لينكس6: افصل_بصفر يُقبل هنا؛ الكشف تلقائي في b5_db_read.
+    let _ = b5_opt_bool(DISPLAY, pairs, "افصل_بصفر", false, line, col)?;
     let limit = b5_opt_count(DISPLAY, pairs, "حد", line, col)?;
     let mut entries = b5_db_read(ctx, DISPLAY, &db_path, line, col)?;
     if let Some(n) = limit {
@@ -31537,7 +32315,12 @@ fn b5_namebase_entries() -> Vec<(&'static str, Value)> {
 
 /// --- مرر_أسماء (xargs) ---
 
-/// اقتباس عنصر يحوي فراغا أو علامة تنصيص.
+/// لينكس6: اقتباس دائم بعلامتي تنصيص (خيار جمّع_باقتباس).
+fn b6_quote_always(item: &str) -> String {
+    format!("\"{}\"", item.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// اقتباس عنصر أمر واحد (علامتا تنصيص عند الحاجة).
 fn b5_quote_item(item: &str) -> String {
     if item.is_empty() {
         return "\"\"".to_string();
@@ -31562,6 +32345,12 @@ struct B5Xargs {
     verbose: bool,
     no_input: bool,
     placeholder: String,
+    // لينكس6.
+    nul_sep: bool,
+    max_cmd_len: Option<i64>,
+    end_marker: Option<String>,
+    implicit_replace: bool,
+    quote_all: bool,
 }
 
 fn b5_parse_xargs(
@@ -31583,6 +32372,11 @@ fn b5_parse_xargs(
             "بلا_مدخل",
             "استبدل",
             "اخرج_عند_الفشل",
+            "افصل_بصفر",
+            "حد_طول_الأمر",
+            "علامة_نهاية",
+            "استبدال_ضمني",
+            "جمّع_باقتباس",
         ],
         line,
         col,
@@ -31613,6 +32407,16 @@ fn b5_parse_xargs(
             col,
         ));
     }
+    let max_cmd_len = b5_opt_count(display, pairs, "حد_طول_الأمر", line, col)?;
+    if let Some(m) = max_cmd_len {
+        if m < 1 {
+            return Err(RioError::runtime(
+                format!("الدالة {} حد_طول_الأمر لا يقبل صفرا أو سالبا", display),
+                line,
+                col,
+            ));
+        }
+    }
     Ok(B5Xargs {
         from_file: b5_opt_str(display, pairs, "من_ملف", line, col)?,
         sep: b5_opt_str(display, pairs, "فاصل", line, col)?,
@@ -31622,6 +32426,11 @@ fn b5_parse_xargs(
         verbose: b5_opt_bool(display, pairs, "مفصل", false, line, col)?,
         no_input: b5_opt_bool(display, pairs, "بلا_مدخل", false, line, col)?,
         placeholder,
+        nul_sep: b5_opt_bool(display, pairs, "افصل_بصفر", false, line, col)?,
+        max_cmd_len,
+        end_marker: b5_opt_str(display, pairs, "علامة_نهاية", line, col)?,
+        implicit_replace: b5_opt_bool(display, pairs, "استبدال_ضمني", false, line, col)?,
+        quote_all: b5_opt_bool(display, pairs, "جمّع_باقتباس", false, line, col)?,
     })
 }
 
@@ -31636,39 +32445,62 @@ fn b5_xargs_items(
 ) -> RioResult<Vec<String>> {
     if let Some(f) = &o.from_file {
         let pats = b5_load_patterns(ctx, display, f, line, col)?;
-        return Ok(pats);
+        return Ok(b6_xargs_cut_marker(pats, &o.end_marker));
     }
-    match input {
-        Value::Nil => Ok(Vec::new()),
+    let collected: Vec<String> = match input {
+        Value::Nil => Vec::new(),
         Value::Str(s) => {
-            let parts: Vec<String> = match &o.sep {
-                Some(sep) => s
-                    .split(sep.as_str())
-                    .map(|x| x.to_string())
-                    .collect(),
-                None => s.lines().map(|x| x.to_string()).collect(),
+            let parts: Vec<String> = if o.nul_sep {
+                s.split('\0').map(|x| x.to_string()).collect()
+            } else {
+                match &o.sep {
+                    Some(sep) => s
+                        .split(sep.as_str())
+                        .map(|x| x.to_string())
+                        .collect(),
+                    None => s.lines().map(|x| x.to_string()).collect(),
+                }
             };
-            Ok(parts
+            parts
                 .into_iter()
                 .filter(|x| !x.trim().is_empty())
-                .collect())
+                .collect()
         }
         Value::List(items) => {
             let mut out = Vec::new();
             for it in items {
                 out.push(need_string(display, it, line, col)?);
             }
-            Ok(out)
+            out
         }
-        other => Err(RioError::typ(
-            format!(
-                "الدالة {} تتوقع نصا أو قائمة للمدخل لكن أعطيت {}",
-                display,
-                other.type_name()
-            ),
-            line,
-            col,
-        )),
+        other => {
+            return Err(RioError::typ(
+                format!("الدالة {} تتوقع نصا أو قائمة للمدخل لكن أعطيت {}",
+                    display,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    Ok(b6_xargs_cut_marker(collected, &o.end_marker))
+}
+
+/// لينكس6: اقطع العناصر عند أول ظهور لعلامة النهاية (إن وُجدت).
+fn b6_xargs_cut_marker(items: Vec<String>, marker: &Option<String>) -> Vec<String> {
+    match marker {
+        None => items,
+        Some(m) => {
+            let mut out = Vec::new();
+            for it in items {
+                if it == *m {
+                    break;
+                }
+                out.push(it);
+            }
+            out
+        }
     }
 }
 
@@ -31692,24 +32524,51 @@ fn b5_xargs_build(
         }
         return out;
     }
-    let per_run = match (o.max_args, o.max_lines) {
-        (Some(a), Some(b)) => (a.min(b)).max(1) as usize,
-        (Some(a), None) => a.max(1) as usize,
-        (None, Some(b)) => b.max(1) as usize,
-        (None, None) => items.len(),
-    };
-    for chunk in items.chunks(per_run) {
-        let args = chunk
-            .iter()
-            .map(|x| b5_quote_item(x))
-            .collect::<Vec<_>>()
-            .join(" ");
-        let full = if args.is_empty() {
-            cmd.to_string()
+    // لينكس6: استبدال ضمني — تشغيلة واحدة لكل عنصر يُلحق بها مقتبسا.
+    if o.implicit_replace {
+        for it in items {
+            let q = if o.quote_all {
+                b6_quote_always(it)
+            } else {
+                b5_quote_item(it)
+            };
+            out.push((format!("{} {}", cmd, q), vec![it.clone()]));
+        }
+        return out;
+    }
+    // تجميع بالعدد (حد_المعاملات/حد_الأسطر) وبطول الأمر الكلي (حد_طول_الأمر).
+    let quote = |x: &str| {
+        if o.quote_all {
+            b6_quote_always(x)
         } else {
-            format!("{} {}", cmd, args)
-        };
-        out.push((full, chunk.to_vec()));
+            b5_quote_item(x)
+        }
+    };
+    let mut cur: Vec<String> = Vec::new();
+    let mut cur_raw: Vec<String> = Vec::new();
+    let mut cur_len = cmd.len();
+    for it in items {
+        let q = quote(it);
+        let add = q.len() + 1;
+        let over_count = o.max_args.map_or(false, |a| cur.len() as i64 >= a)
+            || o.max_lines.map_or(false, |b| cur.len() as i64 >= b);
+        let over_len = o
+            .max_cmd_len
+            .map_or(false, |m| (cur_len + add) as i64 > m);
+        if !cur.is_empty() && (over_count || over_len) {
+            out.push((
+                format!("{} {}", cmd, cur.join(" ")),
+                std::mem::take(&mut cur_raw),
+            ));
+            cur.clear();
+            cur_len = cmd.len();
+        }
+        cur_len += add;
+        cur.push(q);
+        cur_raw.push(it.clone());
+    }
+    if !cur.is_empty() {
+        out.push((format!("{} {}", cmd, cur.join(" ")), cur_raw));
     }
     out
 }
@@ -31909,6 +32768,107 @@ fn b5_classify(e: &B5Entry) -> &'static str {
 }
 
 /// سرد.اسرد(مجلد؟، خيارات؟) → نص.
+/// لينكس6: رمز لون ANSI من اسم عربي.
+fn b6_color_code(name: &str) -> Option<&'static str> {
+    match name {
+        "أحمر" => Some("\u{1b}[31m"),
+        "أخضر" => Some("\u{1b}[32m"),
+        "أصفر" => Some("\u{1b}[33m"),
+        "أزرق" => Some("\u{1b}[34m"),
+        "بنفسجي" => Some("\u{1b}[35m"),
+        "سماوي" => Some("\u{1b}[36m"),
+        "أبيض" => Some("\u{1b}[37m"),
+        "رمادي" => Some("\u{1b}[90m"),
+        "بلا" => Some(""),
+        _ => None,
+    }
+}
+
+/// لينكس6: لون نص برمز ANSI (بلا رمز ← كما هو).
+fn b6_paint(text: &str, code: &str) -> String {
+    if code.is_empty() {
+        text.to_string()
+    } else {
+        format!("{}{}\u{1b}[0m", code, text)
+    }
+}
+
+/// لينكس6: أيقونة نوع المدخل.
+fn b6_icon(e: &B5Entry) -> &'static str {
+    if e.meta.is_link {
+        "🔗"
+    } else if e.eff.kind == B5Kind::Dir {
+        "📁"
+    } else if b5_is_exec(&e.fs, &e.eff) {
+        "⚙"
+    } else {
+        "📄"
+    }
+}
+
+/// لينكس6: مفتاح نوع المدخل لألوان_مخصصة (مجلد/ملف/رابط/تنفيذي).
+fn b6_type_key(e: &B5Entry) -> &'static str {
+    if e.meta.is_link {
+        "رابط"
+    } else if e.eff.kind == B5Kind::Dir {
+        "مجلد"
+    } else if b5_is_exec(&e.fs, &e.eff) {
+        "تنفيذي"
+    } else {
+        "ملف"
+    }
+}
+
+/// لينكس6: نقاط التثبيت (لينكس ‎/proc/mounts‎؛ ماك getmntinfo؛ ويندوز محركات موجودة).
+fn b6_mounts() -> Vec<(String, String)> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut out = Vec::new();
+        if let Ok(text) = std::fs::read_to_string("/proc/mounts") {
+            for l in text.lines() {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                if f.len() >= 3 {
+                    let mp = f[1].replace("\\040", " ");
+                    out.push((mp, f[2].to_string()));
+                }
+            }
+        }
+        out
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut out = Vec::new();
+        unsafe {
+            let mut mnt: *mut libc::statfs = std::ptr::null_mut();
+            let n = libc::getmntinfo(&mut mnt, libc::MNT_WAIT);
+            if n > 0 && !mnt.is_null() {
+                for i in 0..n {
+                    let e = &*mnt.add(i as usize);
+                    let mp = std::ffi::CStr::from_ptr(e.f_mntonname.as_ptr())
+                        .to_string_lossy()
+                        .into_owned();
+                    let ty = std::ffi::CStr::from_ptr(e.f_fstypename.as_ptr())
+                        .to_string_lossy()
+                        .into_owned();
+                    out.push((mp, ty));
+                }
+            }
+        }
+        out
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let mut out = Vec::new();
+        for c in b'C'..=b'Z' {
+            let p = format!("{}:\\", c as char);
+            if std::path::Path::new(&p).exists() {
+                out.push((p, "ntfs".to_string()));
+            }
+        }
+        out
+    }
+}
+
 fn b5_list(
     ctx: &mut dyn HandlerCaller,
     args: &[Value],
@@ -31976,6 +32936,18 @@ fn b5_list(
             "استثن",
             "من_قائمة",
             "مسار_مطلق",
+            "شبكي",
+            "مجلدات_كملفات",
+            "أذونات_ثمانية",
+            "أرقام_المالك",
+            "أيقونات",
+            "مقياس_ألوان",
+            "اعرض_المثبتة",
+            "حالة_مستودع",
+            "احترم_تجاهل_مستودع",
+            "روابط_تشعبية",
+            "ألوان_مخصصة",
+            "عرض_الشاشة",
         ],
         line,
         col,
@@ -32033,6 +33005,64 @@ fn b5_list(
     let exclude = b5_opt_strs(DISPLAY, pairs, "استثن", line, col)?;
     let from_list = b5_opt_strs(DISPLAY, pairs, "من_قائمة", line, col)?;
     let abs_path = b5_opt_bool(DISPLAY, pairs, "مسار_مطلق", false, line, col)?;
+    // لينكس6: مفاتيح إضافية.
+    let grid = b5_opt_bool(DISPLAY, pairs, "شبكي", false, line, col)?;
+    let dirs_as_files = b5_opt_bool(DISPLAY, pairs, "مجلدات_كملفات", false, line, col)?;
+    let octal_perms = b5_opt_bool(DISPLAY, pairs, "أذونات_ثمانية", false, line, col)?;
+    let numeric_owner = b5_opt_bool(DISPLAY, pairs, "أرقام_المالك", false, line, col)?;
+    let icons = b5_opt_bool(DISPLAY, pairs, "أيقونات", false, line, col)?;
+    let color_scale = b5_opt_bool(DISPLAY, pairs, "مقياس_ألوان", false, line, col)?;
+    let show_mounts = b5_opt_bool(DISPLAY, pairs, "اعرض_المثبتة", false, line, col)?;
+    let repo_status = b5_opt_bool(DISPLAY, pairs, "حالة_مستودع", false, line, col)?;
+    let respect_gitignore = b5_opt_bool(DISPLAY, pairs, "احترم_تجاهل_مستودع", false, line, col)?;
+    let hyperlinks = b5_opt_bool(DISPLAY, pairs, "روابط_تشعبية", false, line, col)?;
+    let screen_width = b5_opt_count(DISPLAY, pairs, "عرض_الشاشة", line, col)?
+        .unwrap_or(80)
+        .max(20);
+    let custom_colors: Vec<(String, String)> = match dict_get(pairs, "ألوان_مخصصة") {
+        None => Vec::new(),
+        Some(Value::Dict(ps)) => {
+            let mut out = Vec::new();
+            for (k, v) in ps {
+                let c = need_string(DISPLAY, v, line, col)?;
+                if b6_color_code(&c).is_none() {
+                    return Err(RioError::runtime(
+                        format!(
+                            "الدالة {} لون غير معروف في ألوان_مخصصة: {} (أحمر/أخضر/أصفر/أزرق/بنفسجي/سماوي/أبيض/رمادي/بلا)",
+                            DISPLAY, c
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+                out.push((k.clone(), c));
+            }
+            out
+        }
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع قاموسا لألوان_مخصصة لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ));
+        }
+    };
+    // مجلدات_كملفات تلغي التكرار والشجرة.
+    let tree = if dirs_as_files { false } else { tree };
+    if dirs_as_files {
+        recursive = false;
+    }
+    if grid && (tree || recursive || one_line) {
+        return Err(RioError::runtime(
+            format!("الدالة {} شبكي لا يجتمع مع شجري أو تكرار أو سطر_واحد", DISPLAY),
+            line,
+            col,
+        ));
+    }
     // جمع المدخلات.
     let mut entries: Vec<B5Entry> = Vec::new();
     if !from_list.is_empty() {
@@ -32055,6 +33085,9 @@ fn b5_list(
                             uid: m.uid,
                             gid: m.gid,
                             nlink: m.nlink,
+                            ctime: m.ctime,
+                            dev: m.dev,
+                            ino: m.ino,
                             is_link: m.is_link,
                             target: m.target.clone(),
                         })
@@ -32069,6 +33102,9 @@ fn b5_list(
                             uid: m.uid,
                             gid: m.gid,
                             nlink: m.nlink,
+                            ctime: m.ctime,
+                            dev: m.dev,
+                            ino: m.ino,
                             is_link: m.is_link,
                             target: m.target.clone(),
                         }
@@ -32117,6 +33153,14 @@ fn b5_list(
             }
         }
     }
+    // لينكس6: قواعد .gitignore للمجلد المسرد + هل فيه مستودع.
+    let list_dir_fs = search_resolve_path(ctx, &dir);
+    let git_patterns: Vec<String> = if respect_gitignore || repo_status {
+        search_ignore_patterns_flags(&list_dir_fs, false, true)
+    } else {
+        Vec::new()
+    };
+    let has_repo = list_dir_fs.ancestors().any(|a| a.join(".git").exists());
     // ترشيح النوع والاستثناء.
     let mut kept: Vec<B5Entry> = Vec::new();
     for e in entries {
@@ -32129,7 +33173,48 @@ fn b5_list(
         if !exclude.is_empty() && b5_glob_any(&exclude, &e.name, &e.rel, false, line, col) {
             continue;
         }
+        if respect_gitignore
+            && from_list.is_empty()
+            && search_gitignore_ignored(&git_patterns, &e.rel, e.eff.kind == B5Kind::Dir, false)
+        {
+            continue;
+        }
         kept.push(e);
+    }
+    // لينكس6: نقاط التثبيت كمدخلات إضافية (بلا تكرار).
+    if show_mounts && from_list.is_empty() {
+        let mk_meta = || B5Meta {
+            kind: B5Kind::Dir,
+            size: 0,
+            mtime: 0,
+            atime: 0,
+            btime: None,
+            mode: 0o755,
+            uid: 0,
+            gid: 0,
+            nlink: 1,
+            ctime: 0,
+            dev: 0,
+            ino: 0,
+            is_link: false,
+            target: None,
+        };
+        for (mp, _fs) in b6_mounts() {
+            if !kept.iter().any(|e| e.display == mp) {
+                kept.push(B5Entry {
+                    fs: std::path::PathBuf::from(&mp),
+                    display: mp.clone(),
+                    name: std::path::Path::new(&mp)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| mp.clone()),
+                    rel: mp.clone(),
+                    depth: 1,
+                    meta: mk_meta(),
+                    eff: mk_meta(),
+                });
+            }
+        }
     }
     // الفرز.
     let sort_entries = |v: &mut Vec<B5Entry>| {
@@ -32224,6 +33309,9 @@ fn b5_list(
                     uid: e.meta.uid,
                     gid: e.meta.gid,
                     nlink: e.meta.nlink,
+                    ctime: e.meta.ctime,
+                    dev: e.meta.dev,
+                    ino: e.meta.ino,
                     is_link: e.meta.is_link,
                     target: e.meta.target.clone(),
                 },
@@ -32241,6 +33329,9 @@ fn b5_list(
                     uid: e.eff.uid,
                     gid: e.eff.gid,
                     nlink: e.eff.nlink,
+                    ctime: e.eff.ctime,
+                    dev: e.eff.dev,
+                    ino: e.eff.ino,
                     is_link: e.eff.is_link,
                     target: e.eff.target.clone(),
                 },
@@ -32249,7 +33340,7 @@ fn b5_list(
                 // b5_long_line يلحق الهدف أصلا.
             }
             let _ = &mut ee;
-            out.push(b5_long_line(
+            let mut l = b5_long_line(
                 &ee,
                 &time_fmt,
                 &time_kind,
@@ -32258,10 +33349,19 @@ fn b5_list(
                 !hide_size,
                 !hide_time,
                 false,
+                octal_perms,
+                numeric_owner,
                 DISPLAY,
                 line,
                 col,
-            )?);
+            )?;
+            if icons {
+                l = format!("{} {}", b6_icon(e), l);
+            }
+            if hyperlinks {
+                l = b6_osc8(&l, &e.fs.to_string_lossy());
+            }
+            out.push(l);
             return Ok(());
         }
         let mut name = if tree || recursive {
@@ -32279,6 +33379,18 @@ fn b5_list(
                 }
             }
         }
+        // لينكس6: أيقونات + لون مخصص + روابط تشعبية.
+        if icons {
+            name = format!("{} {}", b6_icon(e), name);
+        }
+        if let Some((_, c)) = custom_colors.iter().find(|(k, _)| k == b6_type_key(e)) {
+            if let Some(code) = b6_color_code(c) {
+                name = b6_paint(&name, code);
+            }
+        }
+        if hyperlinks {
+            name = b6_osc8(&name, &e.fs.to_string_lossy());
+        }
         let mut parts: Vec<String> = Vec::new();
         if show_perms {
             parts.push(b5_mode_str(&e.eff));
@@ -32293,10 +33405,18 @@ fn b5_list(
             } else {
                 e.eff.size
             };
-            if human {
-                parts.push(b5_human_size(s));
+            let s_txt = if human { b5_human_size(s) } else { format!("{}", s) };
+            if color_scale {
+                let code = if s < 1024 {
+                    "\u{1b}[32m"
+                } else if s < 1024 * 1024 {
+                    "\u{1b}[33m"
+                } else {
+                    "\u{1b}[31m"
+                };
+                parts.push(b6_paint(&s_txt, code));
             } else {
-                parts.push(format!("{}", s));
+                parts.push(s_txt);
             }
         }
         if !hide_time {
@@ -32306,6 +33426,21 @@ fn b5_list(
                 _ => e.eff.mtime,
             };
             parts.push(b5_fmt_time(epoch, &time_fmt, DISPLAY, line, col)?);
+        }
+        if repo_status {
+            let st = if !has_repo {
+                "بلا_مستودع"
+            } else if search_gitignore_ignored(
+                &git_patterns,
+                &e.rel,
+                e.eff.kind == B5Kind::Dir,
+                false,
+            ) {
+                "متجاهل"
+            } else {
+                "متعقب"
+            };
+            parts.push(st.to_string());
         }
         parts.push(name);
         out.push(parts.join(" "));
@@ -32409,7 +33544,32 @@ fn b5_list(
     } else {
         let mut v = kept;
         sort_entries(&mut v);
-        if one_line {
+        if grid {
+            let mut cells: Vec<String> = Vec::new();
+            for e in &v {
+                let mut tmp: Vec<String> = Vec::new();
+                line_for(e, &mut tmp, line, col)?;
+                cells.extend(tmp);
+            }
+            let w = screen_width as usize;
+            let max_len = cells
+                .iter()
+                .map(|c| c.chars().count())
+                .max()
+                .unwrap_or(0);
+            let cols = (w / (max_len + 2).max(1)).max(1);
+            let rows = cells.len().div_ceil(cols).max(1);
+            for r in 0..rows {
+                let mut row: Vec<String> = Vec::new();
+                for c in 0..cols {
+                    let idx = c * rows + r;
+                    if idx < cells.len() {
+                        row.push(format!("{:<width$}", cells[idx], width = max_len));
+                    }
+                }
+                lines.push(row.join("  ").trim_end().to_string());
+            }
+        } else if one_line {
             let mut names: Vec<String> = Vec::new();
             for e in &v {
                 let mut tmp: Vec<String> = Vec::new();
@@ -32609,6 +33769,31 @@ struct B5Sync {
     stats: bool,
     progress: bool,
     human: bool,
+    // لينكس6.
+    archive: bool,
+    keep_owner: bool,
+    keep_group: bool,
+    keep_atime: bool,
+    transfer_mode: Option<u32>,
+    transfer_uid: Option<u32>,
+    keep_hardlinks: bool,
+    keep_xattrs: bool,
+    keep_acls: bool,
+    comp_algo: Option<String>,
+    compare_hash: Option<String>,
+    delete_absent: bool,
+    delete_before: bool,
+    delete_during: bool,
+    delete_after: bool,
+    delete_excluded: bool,
+    filter_rules: Vec<(String, bool)>,
+    exclude_vcs: bool,
+    in_place: bool,
+    defer_replace: bool,
+    whole_file: bool,
+    connect_timeout: Option<i64>,
+    fsync_disk: bool,
+    name_encoding: String,
 }
 
 const B5_SYNC_KEYS: &[&str] = &[
@@ -32650,7 +33835,432 @@ const B5_SYNC_KEYS: &[&str] = &[
     "إحصاءات",
     "شريط_تقدم",
     "أحجام_بشرية",
+    "أرشيفي",
+    "احفظ_الملكية",
+    "احفظ_المجموعة",
+    "احفظ_وقت_الوصول",
+    "أذونات_النقل",
+    "مالك_النقل",
+    "احفظ_الروابط_الصلبة",
+    "احفظ_السمات",
+    "احفظ_قوائم_الوصول",
+    "خوارزمية_ضغط",
+    "بصمة_مقارنة",
+    "احذف_الغائب",
+    "احذف_قبل",
+    "احذف_أثناء",
+    "احذف_بعد",
+    "احذف_المستثناة",
+    "قاعدة_تصفية",
+    "استثن_نسق_الإصدار",
+    "اكتب_في_المكان",
+    "أجّل_قبل_الاستبدال",
+    "كامل_دون_فرق",
+    "مهلة_اتصال",
+    "زامن_القرص",
+    "ترميز_أسماء",
 ];
+
+/// لينكس6: حلل نصا ثمانيا (755 ← 0o755).
+fn b6_parse_octal(s: &str) -> Option<u32> {
+    let t = s.trim().strip_prefix("0o").unwrap_or(s.trim());
+    if t.is_empty() || !t.chars().all(|c| ('0'..='7').contains(&c)) {
+        return None;
+    }
+    u32::from_str_radix(t, 8).ok()
+}
+
+/// لينكس6: غيّر المالك/المجموعة بأفضل جهد (يونكس؛ يتجاهل EPERM وغيره).
+fn b6_chown(path: &std::path::Path, uid: Option<u32>, gid: Option<u32>) {
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        let p = match CString::new(path.to_string_lossy().as_bytes()) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        unsafe {
+            let _ = libc::chown(
+                p.as_ptr(),
+                uid.unwrap_or(u32::MAX),
+                gid.unwrap_or(u32::MAX),
+            );
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, uid, gid);
+    }
+}
+
+/// لينكس6: اضبط وقت الوصول وحده (يحافظ على وقت التعديل الحالي).
+fn b6_set_atime(path: &std::path::Path, atime: i64) {
+    let mtime = b5_stat(path).map(|m| m.mtime).unwrap_or(0);
+    b5_set_times(path, atime, mtime);
+}
+
+/// لينكس6: بصمة sha256 لملف (تُقرأ كاملة؛ خطأ القراءة ← لا شيء).
+fn b6_file_sha256(path: &std::path::Path) -> Option<String> {
+    let data = std::fs::read(path).ok()?;
+    Some(crate::crypto::sha256_hex(&data))
+}
+
+/// لينكس6: اسم الملف بترميز latin1 (يونكس: بايتات الاسم ← محارف U+0000..U+00FF).
+fn b6_latin1_filename(path: &std::path::Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let bytes = path.file_name()?.as_bytes();
+        Some(bytes.iter().map(|&b| b as char).collect())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// لينكس6: زامن الملف مع القرص بأفضل جهد.
+fn b6_fsync(path: &std::path::Path) {
+    if let Ok(f) = std::fs::File::open(path) {
+        let _ = f.sync_all();
+    }
+}
+
+/// لينكس6: انسخ السمات الموسعة (لينكس/ماك؛ بأفضل جهد؛ بلا security.*).
+fn b6_copy_xattrs(src: &std::path::Path, dst: &std::path::Path) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::ffi::CString;
+        let sp = match CString::new(src.to_string_lossy().as_bytes()) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let dp = match CString::new(dst.to_string_lossy().as_bytes()) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        unsafe {
+            let n = libc::listxattr(sp.as_ptr(), std::ptr::null_mut(), 0);
+            if n <= 0 {
+                return;
+            }
+            let mut buf = vec![0u8; n as usize];
+            let n2 = libc::listxattr(
+                sp.as_ptr(),
+                buf.as_mut_ptr() as *mut libc::c_char,
+                n as libc::size_t,
+            );
+            if n2 <= 0 {
+                return;
+            }
+            let mut i = 0usize;
+            while i < n2 as usize {
+                let end = buf[i..]
+                    .iter()
+                    .position(|&b| b == 0)
+                    .map(|p| i + p)
+                    .unwrap_or(n2 as usize);
+                let name = &buf[i..end];
+                i = end + 1;
+                if name.is_empty() || name.starts_with(b"security.") {
+                    continue;
+                }
+                let name_c = match CString::new(name) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let sz = libc::getxattr(sp.as_ptr(), name_c.as_ptr(), std::ptr::null_mut(), 0);
+                if sz <= 0 {
+                    continue;
+                }
+                let mut val = vec![0u8; sz as usize];
+                let sz2 = libc::getxattr(
+                    sp.as_ptr(),
+                    name_c.as_ptr(),
+                    val.as_mut_ptr() as *mut libc::c_void,
+                    sz as libc::size_t,
+                );
+                if sz2 < 0 {
+                    continue;
+                }
+                let _ = libc::setxattr(
+                    dp.as_ptr(),
+                    name_c.as_ptr(),
+                    val.as_ptr() as *const libc::c_void,
+                    sz2 as libc::size_t,
+                    0,
+                );
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::ffi::CString;
+        let sp = match CString::new(src.to_string_lossy().as_bytes()) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let dp = match CString::new(dst.to_string_lossy().as_bytes()) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        unsafe {
+            let n = libc::listxattr(sp.as_ptr(), std::ptr::null_mut(), 0, 0);
+            if n <= 0 {
+                return;
+            }
+            let mut buf = vec![0u8; n as usize];
+            let n2 = libc::listxattr(
+                sp.as_ptr(),
+                buf.as_mut_ptr() as *mut libc::c_char,
+                n as libc::size_t,
+                0,
+            );
+            if n2 <= 0 {
+                return;
+            }
+            let mut i = 0usize;
+            while i < n2 as usize {
+                let end = buf[i..]
+                    .iter()
+                    .position(|&b| b == 0)
+                    .map(|p| i + p)
+                    .unwrap_or(n2 as usize);
+                let name = &buf[i..end];
+                i = end + 1;
+                if name.is_empty() || name.starts_with(b"security.") {
+                    continue;
+                }
+                let name_c = match CString::new(name) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let sz = libc::getxattr(sp.as_ptr(), name_c.as_ptr(), std::ptr::null_mut(), 0, 0, 0);
+                if sz <= 0 {
+                    continue;
+                }
+                let mut val = vec![0u8; sz as usize];
+                let sz2 = libc::getxattr(
+                    sp.as_ptr(),
+                    name_c.as_ptr(),
+                    val.as_mut_ptr() as *mut libc::c_void,
+                    sz as libc::size_t,
+                    0,
+                    0,
+                );
+                if sz2 < 0 {
+                    continue;
+                }
+                let _ = libc::setxattr(
+                    dp.as_ptr(),
+                    name_c.as_ptr(),
+                    val.as_ptr() as *const libc::c_void,
+                    sz2 as libc::size_t,
+                    0,
+                    0,
+                );
+            }
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (src, dst);
+    }
+}
+
+/// لينكس6: انسخ قوائم الوصول (system.posix_acl_access/default على لينكس فقط).
+fn b6_copy_acls(src: &std::path::Path, dst: &std::path::Path) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::ffi::CString;
+        let sp = match CString::new(src.to_string_lossy().as_bytes()) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let dp = match CString::new(dst.to_string_lossy().as_bytes()) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        for name in ["system.posix_acl_access", "system.posix_acl_default"] {
+            let name_c = match CString::new(name) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            unsafe {
+                let sz = libc::getxattr(sp.as_ptr(), name_c.as_ptr(), std::ptr::null_mut(), 0);
+                if sz <= 0 {
+                    continue;
+                }
+                let mut val = vec![0u8; sz as usize];
+                let sz2 = libc::getxattr(
+                    sp.as_ptr(),
+                    name_c.as_ptr(),
+                    val.as_mut_ptr() as *mut libc::c_void,
+                    sz as libc::size_t,
+                );
+                if sz2 < 0 {
+                    continue;
+                }
+                let _ = libc::setxattr(
+                    dp.as_ptr(),
+                    name_c.as_ptr(),
+                    val.as_ptr() as *const libc::c_void,
+                    sz2 as libc::size_t,
+                    0,
+                );
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (src, dst);
+    }
+}
+
+/// لينكس6: هل المدخل مستثنى فعليا؟ (أنماط + قواعد مركبة + نسق إصدار).
+fn b6_sync_excluded(
+    name: &str,
+    rel: &str,
+    exclude: &[String],
+    include: &[String],
+    rules: &[(String, bool)],
+    exclude_vcs: bool,
+    line: usize,
+    col: usize,
+) -> bool {
+    if exclude_vcs {
+        let first = rel.split('/').next().unwrap_or("");
+        if matches!(first, ".git" | ".svn" | ".hg") {
+            return true;
+        }
+    }
+    for (pat, is_include) in rules {
+        if b5_glob_any(&[pat.clone()], name, rel, false, line, col) {
+            return !*is_include;
+        }
+    }
+    if !exclude.is_empty() && b5_glob_any(exclude, name, rel, false, line, col) {
+        if include.is_empty() || !b5_glob_any(include, name, rel, false, line, col) {
+            return true;
+        }
+    }
+    false
+}
+
+/// لينكس6: ما بعد النسخ (أذونات نقل/ملكية/وقت وصول/سمات/قوائم/مزامنة قرص).
+fn b6_sync_after_copy(o: &B5Sync, src: &std::path::Path, dst: &std::path::Path, src_meta: &B5Meta) {
+    if let Some(m) = o.transfer_mode {
+        b5_set_mode(dst, m);
+    }
+    let uid = o.transfer_uid.or(if o.keep_owner {
+        Some(src_meta.uid)
+    } else {
+        None
+    });
+    let gid = if o.keep_group {
+        Some(src_meta.gid)
+    } else {
+        None
+    };
+    if uid.is_some() || gid.is_some() {
+        b6_chown(dst, uid, gid);
+    }
+    if o.keep_atime && !o.keep_times {
+        b6_set_atime(dst, src_meta.atime);
+    }
+    if o.keep_xattrs {
+        b6_copy_xattrs(src, dst);
+    }
+    if o.keep_acls {
+        b6_copy_acls(src, dst);
+    }
+    if o.fsync_disk {
+        b6_fsync(dst);
+    }
+}
+
+/// لينكس6: احذف من الهدف ما غاب عن المصدر (الأعمق أولا؛ مع حد_الحذف؛ تجربة جافة تعد بلا حذف).
+fn b6_sync_prune(
+    walk_root: &std::path::Path,
+    dst_root: &std::path::Path,
+    src_files: &std::collections::HashSet<String>,
+    src_dirs: &std::collections::HashSet<String>,
+    o: &B5Sync,
+    exclude: &[String],
+    cap: &mut i64,
+    line: usize,
+    col: usize,
+) -> RioResult<i64> {
+    let mut deleted_here = 0i64;
+    let mut stack: Vec<std::path::PathBuf> = vec![walk_root.to_path_buf()];
+    let mut all: Vec<std::path::PathBuf> = Vec::new();
+    while let Some(d) = stack.pop() {
+        if let Ok(rd) = std::fs::read_dir(&d) {
+            for en in rd.flatten() {
+                let p = en.path();
+                if std::fs::symlink_metadata(&p)
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false)
+                {
+                    stack.push(p.clone());
+                }
+                all.push(p);
+            }
+        }
+    }
+    all.sort_by(|a, b| b.components().count().cmp(&a.components().count()));
+    for p in all {
+        if *cap <= 0 {
+            break;
+        }
+        let rel = match p.strip_prefix(dst_root) {
+            Ok(r) => r.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
+        };
+        if rel.is_empty() {
+            continue;
+        }
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if src_files.contains(&rel) || src_dirs.contains(&rel) {
+            continue;
+        }
+        let is_dir = std::fs::symlink_metadata(&p)
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
+        if b6_sync_excluded(
+            &name,
+            &rel,
+            exclude,
+            &o.include,
+            &o.filter_rules,
+            o.exclude_vcs,
+            line,
+            col,
+        ) && !o.delete_excluded
+        {
+            continue;
+        }
+        if o.dry_run {
+            deleted_here += 1;
+            *cap -= 1;
+            continue;
+        }
+        let ok = if is_dir {
+            std::fs::remove_dir_all(&p).is_ok()
+        } else {
+            std::fs::remove_file(&p).is_ok()
+        };
+        if ok {
+            deleted_here += 1;
+            *cap -= 1;
+        }
+    }
+    Ok(deleted_here)
+}
 
 fn b5_parse_sync(
     display: &str,
@@ -32659,7 +34269,7 @@ fn b5_parse_sync(
     col: usize,
 ) -> RioResult<B5Sync> {
     b5_no_unknown(display, pairs, B5_SYNC_KEYS, line, col)?;
-    Ok(B5Sync {
+    let mut o = B5Sync {
         recursive: b5_opt_bool(display, pairs, "تكراري", true, line, col)?,
         verbose: b5_opt_bool(display, pairs, "مفصل", false, line, col)?,
         quiet: b5_opt_bool(display, pairs, "صامت", false, line, col)?,
@@ -32702,7 +34312,238 @@ fn b5_parse_sync(
         stats: b5_opt_bool(display, pairs, "إحصاءات", false, line, col)?,
         progress: b5_opt_bool(display, pairs, "شريط_تقدم", false, line, col)?,
         human: b5_opt_bool(display, pairs, "أحجام_بشرية", false, line, col)?,
-    })
+        archive: b5_opt_bool(display, pairs, "أرشيفي", false, line, col)?,
+        keep_owner: b5_opt_bool(display, pairs, "احفظ_الملكية", false, line, col)?,
+        keep_group: b5_opt_bool(display, pairs, "احفظ_المجموعة", false, line, col)?,
+        keep_atime: b5_opt_bool(display, pairs, "احفظ_وقت_الوصول", false, line, col)?,
+        transfer_mode: match dict_get(pairs, "أذونات_النقل") {
+            None => None,
+            Some(Value::Str(s)) => Some(match b6_parse_octal(s) {
+                Some(m) => m,
+                None => {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} أذونات_النقل ثماني غير صالح: {}", display, s),
+                        line,
+                        col,
+                    ))
+                }
+            }),
+            Some(other) => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} أذونات_النقل تتوقع نصا ثمانيا لكن أعطيت {}",
+                        display,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        },
+        transfer_uid: match dict_get(pairs, "مالك_النقل") {
+            None => None,
+            Some(Value::Str(s)) => {
+                if !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()) {
+                    Some(s.parse::<u32>().map_err(|_| {
+                        RioError::runtime(
+                            format!("الدالة {} مالك_النقل رقم غير صالح: {}", display, s),
+                            line,
+                            col,
+                        )
+                    })?)
+                } else {
+                    match b6_owner_uid(s, false) {
+                        Some(u) => Some(u),
+                        None => {
+                            return Err(RioError::runtime(
+                                format!("الدالة {} مالك_النقل غير معروف: {}", display, s),
+                                line,
+                                col,
+                            ))
+                        }
+                    }
+                }
+            }
+            Some(other) => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} مالك_النقل تتوقع نصا لكن أعطيت {}",
+                        display,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        },
+        keep_hardlinks: b5_opt_bool(display, pairs, "احفظ_الروابط_الصلبة", false, line, col)?,
+        keep_xattrs: b5_opt_bool(display, pairs, "احفظ_السمات", false, line, col)?,
+        keep_acls: b5_opt_bool(display, pairs, "احفظ_قوائم_الوصول", false, line, col)?,
+        comp_algo: b5_opt_str(display, pairs, "خوارزمية_ضغط", line, col)?,
+        compare_hash: b5_opt_str(display, pairs, "بصمة_مقارنة", line, col)?,
+        delete_absent: b5_opt_bool(display, pairs, "احذف_الغائب", false, line, col)?,
+        delete_before: b5_opt_bool(display, pairs, "احذف_قبل", false, line, col)?,
+        delete_during: b5_opt_bool(display, pairs, "احذف_أثناء", false, line, col)?,
+        delete_after: b5_opt_bool(display, pairs, "احذف_بعد", false, line, col)?,
+        delete_excluded: b5_opt_bool(display, pairs, "احذف_المستثناة", false, line, col)?,
+        filter_rules: match dict_get(pairs, "قاعدة_تصفية") {
+            None => Vec::new(),
+            Some(Value::List(items)) => {
+                let mut out = Vec::new();
+                for it in items {
+                    match it {
+                        Value::Dict(ps) => {
+                            let pat = match dict_get(ps, "نمط") {
+                                Some(Value::Str(s)) => s.clone(),
+                                _ => {
+                                    return Err(RioError::runtime(
+                                        format!(
+                                            "الدالة {} قاعدة_تصفية تتوقع نمط نصا",
+                                            display
+                                        ),
+                                        line,
+                                        col,
+                                    ))
+                                }
+                            };
+                            let kind = match dict_get(ps, "نوع") {
+                                Some(Value::Str(s)) => s.clone(),
+                                _ => {
+                                    return Err(RioError::runtime(
+                                        format!(
+                                            "الدالة {} قاعدة_تصفية تتوقع نوع نصا",
+                                            display
+                                        ),
+                                        line,
+                                        col,
+                                    ))
+                                }
+                            };
+                            let is_include = match kind.as_str() {
+                                "تضمين" => true,
+                                "استثناء" => false,
+                                _ => {
+                                    return Err(RioError::runtime(
+                                        format!(
+                                            "الدالة {} نوع قاعدة_تصفية غير معروف: {} (تضمين/استثناء)",
+                                            display, kind
+                                        ),
+                                        line,
+                                        col,
+                                    ))
+                                }
+                            };
+                            out.push((pat, is_include));
+                        }
+                        _ => {
+                            return Err(RioError::typ(
+                                format!(
+                                    "الدالة {} قاعدة_تصفية تتوقع قواميس لكن أعطيت {}",
+                                    display,
+                                    it.type_name()
+                                ),
+                                line,
+                                col,
+                            ))
+                        }
+                    }
+                }
+                out
+            }
+            Some(other) => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} قاعدة_تصفية تتوقع قائمة لكن أعطيت {}",
+                        display,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        },
+        exclude_vcs: b5_opt_bool(display, pairs, "استثن_نسق_الإصدار", false, line, col)?,
+        in_place: b5_opt_bool(display, pairs, "اكتب_في_المكان", false, line, col)?,
+        defer_replace: b5_opt_bool(display, pairs, "أجّل_قبل_الاستبدال", false, line, col)?,
+        whole_file: b5_opt_bool(display, pairs, "كامل_دون_فرق", false, line, col)?,
+        connect_timeout: b5_opt_count(display, pairs, "مهلة_اتصال", line, col)?,
+        fsync_disk: b5_opt_bool(display, pairs, "زامن_القرص", false, line, col)?,
+        name_encoding: b5_opt_str(display, pairs, "ترميز_أسماء", line, col)?
+            .unwrap_or_else(|| "utf8".to_string()),
+    };
+    // لينكس6: تحقق وتجاوزات.
+    if let Some(a) = &o.comp_algo {
+        if a != "lzss" && a != "بلا" {
+            return Err(RioError::runtime(
+                format!("الدالة {} خوارزمية_ضغط غير معروفة: {} (lzss/بلا)", display, a),
+                line,
+                col,
+            ));
+        }
+        if a == "بلا" {
+            o.compress = false;
+        }
+    }
+    if let Some(h) = &o.compare_hash {
+        if h != "crc32" && h != "sha256" && h != "حجم" {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} بصمة_مقارنة غير معروفة: {} (crc32/sha256/حجم)",
+                    display, h
+                ),
+                line,
+                col,
+            ));
+        }
+    }
+    if o.name_encoding != "utf8" && o.name_encoding != "latin1" {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} ترميز_أسماء غير معروف: {} (utf8/latin1)",
+                display, o.name_encoding
+            ),
+            line,
+            col,
+        ));
+    }
+    if let Some(t) = o.connect_timeout {
+        if t < 0 {
+            return Err(RioError::runtime(
+                format!("الدالة {} مهلة_اتصال لا تقبل سالبا", display),
+                line,
+                col,
+            ));
+        }
+    }
+    if o.archive {
+        o.recursive = true;
+        o.keep_perms = true;
+        o.keep_times = true;
+        o.keep_owner = true;
+        o.keep_group = true;
+    }
+    if o.whole_file {
+        o.partial = false;
+        o.append = false;
+    }
+    if o.in_place && o.defer_replace {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} اكتب_في_المكان يتعارض مع أجّل_قبل_الاستبدال",
+                display
+            ),
+            line,
+            col,
+        ));
+    }
+    if o.in_place && o.partial {
+        return Err(RioError::runtime(
+            format!("الدالة {} اكتب_في_المكان يتعارض مع نقل_جزئي", display),
+            line,
+            col,
+        ));
+    }
+    Ok(o)
 }
 
 /// مزامنة.زامن(مصدر، هدف، خيارات؟) — §6.
@@ -32799,6 +34640,9 @@ fn b5_sync(
                 uid: m.uid,
                 gid: m.gid,
                 nlink: m.nlink,
+                ctime: m.ctime,
+                dev: m.dev,
+                ino: m.ino,
                 is_link: m.is_link,
                 target: m.target.clone(),
             },
@@ -32812,6 +34656,9 @@ fn b5_sync(
                 uid: m.uid,
                 gid: m.gid,
                 nlink: m.nlink,
+                ctime: m.ctime,
+                dev: m.dev,
+                ino: m.ino,
                 is_link: m.is_link,
                 target: m.target.clone(),
             },
@@ -32870,7 +34717,13 @@ fn b5_sync(
         if is_empty && !o.keep_empty {
             continue;
         }
-        let target = dst_root.join(&rel);
+        let mut target = dst_root.join(&rel);
+        // لينكس6: تحويل اسم المجلد من latin1.
+        if o.name_encoding == "latin1" {
+            if let Some(n) = b6_latin1_filename(&e.fs) {
+                target = target.parent().map(|p| p.join(n)).unwrap_or(target);
+            }
+        }
         if !o.dry_run {
             if std::fs::create_dir_all(&target).is_err() {
                 return Err(RioError::runtime(
@@ -32886,7 +34739,50 @@ fn b5_sync(
             if o.keep_perms {
                 b5_set_mode(&target, e.eff.mode);
             }
+            // لينكس6: ملكية المجلد (احفظ_الملكية/احفظ_المجموعة/مالك_النقل).
+            let duid = if o.keep_owner {
+                Some(e.eff.uid)
+            } else {
+                o.transfer_uid
+            };
+            let dgid = if o.keep_group { Some(e.eff.gid) } else { None };
+            if duid.is_some() || dgid.is_some() {
+                b6_chown(&target, duid, dgid);
+            }
         }
+    }
+    // لينكس6: مجموعات مسارات المصدر النسبية للحذف + خريطة الروابط الصلبة.
+    let mut src_file_rels: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    for e in entries.iter().filter(|e| e.eff.kind != B5Kind::Dir) {
+        let rel = if src_is_dir {
+            e.fs
+                .strip_prefix(&src_base)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_else(|_| e.rel.clone())
+        } else {
+            e.name.clone()
+        };
+        src_file_rels.insert(rel);
+    }
+    let src_dir_rels: std::collections::HashSet<String> =
+        src_dir_set.iter().cloned().collect();
+    let mut delete_cap: i64 = o.max_delete.unwrap_or(i64::MAX).max(0);
+    let mut hard_seen: std::collections::HashMap<(u64, u64), std::path::PathBuf> =
+        std::collections::HashMap::new();
+    // لينكس6: الحذف قبل النقل.
+    if o.delete_absent && o.delete_before && src_is_dir {
+        deleted += b6_sync_prune(
+            &dst_root,
+            &dst_root,
+            &src_file_rels,
+            &src_dir_rels,
+            &o,
+            &exclude,
+            &mut delete_cap,
+            line,
+            col,
+        )?;
     }
     // الملفات والروابط.
     let mut file_entries: Vec<&B5Entry> = entries
@@ -32918,19 +34814,30 @@ fn b5_sync(
                 String::new()
             }
         };
-        let target = if src_is_dir || dst_fs.is_dir() {
+        let mut target = if src_is_dir || dst_fs.is_dir() {
             dst_root.join(&rel)
         } else {
             dst_fs.clone()
         };
-        // استثناء/تضمين.
-        if !exclude.is_empty() && b5_glob_any(&exclude, &e.name, &rel, false, line, col) {
-            if o.include.is_empty()
-                || !b5_glob_any(&o.include, &e.name, &rel, false, line, col)
-            {
-                skipped += 1;
-                continue;
+        // لينكس6: تحويل اسم الملف من latin1.
+        if o.name_encoding == "latin1" {
+            if let Some(n) = b6_latin1_filename(&e.fs) {
+                target = target.parent().map(|p| p.join(n)).unwrap_or(target);
             }
+        }
+        // استثناء/تضمين (أنماط + قواعد مركبة + نسق إصدار).
+        if b6_sync_excluded(
+            &e.name,
+            &rel,
+            &exclude,
+            &o.include,
+            &o.filter_rules,
+            o.exclude_vcs,
+            line,
+            col,
+        ) {
+            skipped += 1;
+            continue;
         }
         // حدود الحجم (ملفات فقط).
         if e.eff.kind == B5Kind::File {
@@ -33024,6 +34931,42 @@ fn b5_sync(
             skipped += 1;
             continue;
         }
+        // لينكس6: روابط صلبة — عقدة منسوخة من قبل تُربط بدلا من النسخ.
+        if o.keep_hardlinks && e.meta.nlink > 1 {
+            let key = (e.meta.dev, e.meta.ino);
+            if let Some(first) = hard_seen.get(&key) {
+                if o.dry_run {
+                    copied += 1;
+                    continue;
+                }
+                if let Some(parent) = target.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let dst_exists_here = std::fs::symlink_metadata(&target).is_ok();
+                let _ = std::fs::remove_file(&target);
+                if std::fs::hard_link(first, &target).is_ok() {
+                    if dst_exists_here {
+                        updated += 1;
+                    } else {
+                        copied += 1;
+                    }
+                    bytes_total += e.eff.size;
+                    changes.push(Value::Dict(vec![
+                        ("ملف".to_string(), Value::Str(rel.clone())),
+                        (
+                            "فعل".to_string(),
+                            Value::Str(if dst_exists_here {
+                                "حدث".to_string()
+                            } else {
+                                "نسخ".to_string()
+                            }),
+                        ),
+                        ("حجم".to_string(), Value::Number(e.eff.size as f64)),
+                    ]));
+                    continue;
+                }
+            }
+        }
         // قرار النسخ.
         let dst_meta = b5_stat(&target);
         let dst_exists = dst_meta.is_some();
@@ -33041,6 +34984,20 @@ fn b5_sync(
                 let a = b5_file_crc(&e.fs);
                 let b = b5_file_crc(&target);
                 do_copy = a != b;
+            } else if let Some(h) = &o.compare_hash {
+                do_copy = match h.as_str() {
+                    "crc32" => {
+                        let a = b5_file_crc(&e.fs);
+                        let b = b5_file_crc(&target);
+                        a != b
+                    }
+                    "sha256" => {
+                        let a = b6_file_sha256(&e.fs);
+                        let b = b6_file_sha256(&target);
+                        a != b
+                    }
+                    _ => dm.size != e.eff.size,
+                };
             } else if o.by_size_only {
                 do_copy = dm.size != e.eff.size;
             } else if o.ignore_times {
@@ -33092,7 +35049,9 @@ fn b5_sync(
         }
         // النقل (عبر ملف مؤقت ثم إعادة تسمية؛ مع
         // نقل_جزئي يبقى المرحلي باسم .جزئي ظاهر).
-        let stage = if o.partial {
+        let stage = if o.in_place {
+            target.clone()
+        } else if o.partial {
             let mut t = target.clone().into_os_string();
             t.push(".جزئي");
             std::path::PathBuf::from(t)
@@ -33172,6 +35131,10 @@ fn b5_sync(
                         let cur = b5_stat(&target).map(|m| m.mode).unwrap_or(0o644);
                         b5_set_mode(&target, (cur & !0o111) | (e.eff.mode & 0o111));
                     }
+                    b6_sync_after_copy(&o, &e.fs, &target, &e.eff);
+                    if o.keep_hardlinks && e.meta.nlink > 1 {
+                        hard_seen.insert((e.meta.dev, e.meta.ino), target.clone());
+                    }
                     if dst_exists {
                         updated += 1;
                     } else {
@@ -33220,6 +35183,7 @@ fn b5_sync(
                 if o.keep_times {
                     b5_set_times(&target, e.eff.atime, e.eff.mtime);
                 }
+                b6_sync_after_copy(&o, &e.fs, &target, &e.eff);
             } else {
                 // المضغوط كُتب مرحليا: انقله للهدف.
                 if std::fs::rename(&stage, &target).is_err() {
@@ -33235,6 +35199,7 @@ fn b5_sync(
                     let cur = b5_stat(&target).map(|m| m.mode).unwrap_or(0o644);
                     b5_set_mode(&target, (cur & !0o111) | (e.eff.mode & 0o111));
                 }
+                b6_sync_after_copy(&o, &e.fs, &target, &e.eff);
             }
         } else {
             wrote = if append_from > 0 {
@@ -33242,6 +35207,9 @@ fn b5_sync(
             } else {
                 e.eff.size
             };
+        }
+        if o.keep_hardlinks && e.meta.nlink > 1 {
+            hard_seen.insert((e.meta.dev, e.meta.ino), target.clone());
         }
         if dst_exists {
             updated += 1;
@@ -33273,6 +35241,41 @@ fn b5_sync(
                 sz
             ));
         }
+        // لينكس6: الحذف أثناء النقل — بعد كل ملف، احذف الغائب في مجلده.
+        if o.delete_absent && o.delete_during && src_is_dir {
+            let parent = target
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| dst_root.clone());
+            deleted += b6_sync_prune(
+                &parent,
+                &dst_root,
+                &src_file_rels,
+                &src_dir_rels,
+                &o,
+                &exclude,
+                &mut delete_cap,
+                line,
+                col,
+            )?;
+        }
+    }
+    // لينكس6: الحذف بعد النقل (الافتراضي عند احذف_الغائب بلا توقيت).
+    if o.delete_absent
+        && (o.delete_after || (!o.delete_before && !o.delete_during))
+        && src_is_dir
+    {
+        deleted += b6_sync_prune(
+            &dst_root,
+            &dst_root,
+            &src_file_rels,
+            &src_dir_rels,
+            &o,
+            &exclude,
+            &mut delete_cap,
+            line,
+            col,
+        )?;
     }
     // حذف المجلدات الفارغة الزائدة في الهدف.
     if o.delete_empty && !o.dry_run {
@@ -33434,41 +35437,40 @@ fn b5_sync_entries() -> Vec<(&'static str, Value)> {
 /// النافذة 4096؛ المستوى 1 حرفي فقط،
 /// والأعلى يزيد عمق البحث.
 
-fn b5_lzss_compress(raw: &[u8], level: usize) -> Vec<u8> {
+/// لينكس6: تيار رموز LZSS فوق نافذة (قاموس + بيانات)؛ يُضغط الجزء بعد القاموس فقط.
+fn b6_lzss_tokens(virt: &[u8], dict_len: usize, level: usize, extreme: bool) -> Vec<u8> {
     let mut out: Vec<u8> = Vec::new();
-    out.extend_from_slice(b"NVZ1");
-    out.push(1);
-    out.extend_from_slice(&(raw.len() as u32).to_be_bytes());
-    out.extend_from_slice(&crc32(raw).to_be_bytes());
-    let max_cand: usize = if level <= 1 {
+    let max_cand: usize = if extreme {
+        4096
+    } else if level <= 1 {
         0
     } else {
         (1usize << level.min(12)).min(4096)
     };
-    let mut i = 0usize;
-    while i < raw.len() {
+    let mut i = dict_len;
+    while i < virt.len() {
         let ctrl_pos = out.len();
         out.push(0);
         let mut ctrl: u8 = 0;
         for bit in 0..8 {
-            if i >= raw.len() {
+            if i >= virt.len() {
                 break;
             }
             // أطول مطابقة في النافذة.
             let mut best_len = 0usize;
             let mut best_off = 0usize;
-            if max_cand > 0 && i + 3 <= raw.len() {
+            if max_cand > 0 && i + 3 <= virt.len() {
                 let start = i.saturating_sub(4096);
                 let mut checked = 0usize;
                 let mut j = i;
                 while j > start && checked < max_cand {
                     j -= 1;
                     checked += 1;
-                    if raw[j] != raw[i] {
+                    if virt[j] != virt[i] {
                         continue;
                     }
                     let mut l = 1usize;
-                    while l < 18 && i + l < raw.len() && raw[j + l] == raw[i + l] {
+                    while l < 18 && i + l < virt.len() && virt[j + l] == virt[i + l] {
                         l += 1;
                     }
                     if l >= 3 && l > best_len {
@@ -33488,7 +35490,7 @@ fn b5_lzss_compress(raw: &[u8], level: usize) -> Vec<u8> {
                 out.push((((off & 0xF) << 4) | (len - 3)) as u8);
                 i += best_len;
             } else {
-                out.push(raw[i]);
+                out.push(virt[i]);
                 i += 1;
             }
         }
@@ -33497,19 +35499,71 @@ fn b5_lzss_compress(raw: &[u8], level: usize) -> Vec<u8> {
     out
 }
 
+/// لينكس6: إطار مضغوط (سحر + إصدار + حجم + بصمة + [طول القاموس + القاموس] + رموز).
+/// الإصدار 1 بلا قاموس، والإصدار 2 بقاموس مخزن في الإطار.
+fn b6_lzss_frame(
+    raw: &[u8],
+    level: usize,
+    dict: &[u8],
+    extreme: bool,
+    magic: &[u8; 4],
+) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(magic);
+    out.push(if dict.is_empty() { 1 } else { 2 });
+    out.extend_from_slice(&(raw.len() as u32).to_be_bytes());
+    out.extend_from_slice(&crc32(raw).to_be_bytes());
+    let mut virt: Vec<u8> = Vec::with_capacity(dict.len() + raw.len());
+    virt.extend_from_slice(dict);
+    virt.extend_from_slice(raw);
+    if !dict.is_empty() {
+        out.extend_from_slice(&(dict.len() as u32).to_be_bytes());
+        out.extend_from_slice(dict);
+    }
+    let eff_level = if extreme { level.max(9) } else { level };
+    out.extend_from_slice(&b6_lzss_tokens(&virt, dict.len(), eff_level, extreme));
+    out
+}
+
+fn b5_lzss_compress(raw: &[u8], level: usize) -> Vec<u8> {
+    b6_lzss_frame(raw, level, &[], false, b"NVZ1")
+}
+
+/// لينكس6: ضغط بإطار NVZX (سحر xz فوق محرك LZSS نفسه).
+fn b6_lzss_compress_xz(raw: &[u8], level: usize, dict: &[u8], extreme: bool) -> Vec<u8> {
+    b6_lzss_frame(raw, level, dict, extreme, b"NVZX")
+}
+
 fn b5_lzss_decompress(data: &[u8]) -> Option<Vec<u8>> {
-    if data.len() < 13 || &data[0..4] != b"NVZ1" || data[4] != 1 {
+    if data.len() < 13
+        || (&data[0..4] != b"NVZ1" && &data[0..4] != b"NVZX")
+        || (data[4] != 1 && data[4] != 2)
+    {
         return None;
     }
     let orig_len = u32::from_be_bytes([data[5], data[6], data[7], data[8]]) as usize;
     let want_crc = u32::from_be_bytes([data[9], data[10], data[11], data[12]]);
-    let mut out: Vec<u8> = Vec::with_capacity(orig_len);
+    let mut dict: &[u8] = &[];
     let mut p = 13usize;
-    while p < data.len() && out.len() < orig_len {
+    if data[4] == 2 {
+        if data.len() < 17 {
+            return None;
+        }
+        let dlen = u32::from_be_bytes([data[13], data[14], data[15], data[16]]) as usize;
+        if data.len() < 17 + dlen {
+            return None;
+        }
+        dict = &data[17..17 + dlen];
+        p = 17 + dlen;
+    }
+    // النافذة = القاموس + المخرجات؛ والمطابقات إزاحات منها.
+    let mut full: Vec<u8> = Vec::with_capacity(dict.len() + orig_len);
+    full.extend_from_slice(dict);
+    while p < data.len() && full.len() - dict.len() < orig_len {
         let ctrl = data[p];
         p += 1;
         for bit in 0..8 {
-            if out.len() >= orig_len || p >= data.len() {
+            if full.len() - dict.len() >= orig_len || p >= data.len() {
                 break;
             }
             if ctrl & (1 << bit) != 0 {
@@ -33519,24 +35573,25 @@ fn b5_lzss_decompress(data: &[u8]) -> Option<Vec<u8>> {
                 let off = (((data[p] as usize) << 4) | ((data[p + 1] as usize) >> 4)) as usize;
                 let len = ((data[p + 1] & 0xF) as usize) + 3;
                 p += 2;
-                if off == 0 || off > out.len() {
+                if off == 0 || off > full.len() {
                     return None;
                 }
-                let start = out.len() - off;
+                let start = full.len() - off;
                 for k in 0..len {
-                    let b = out[start + k];
-                    out.push(b);
+                    let b = full[start + k];
+                    full.push(b);
                 }
             } else {
-                out.push(data[p]);
+                full.push(data[p]);
                 p += 1;
             }
         }
     }
-    if out.len() != orig_len || crc32(&out) != want_crc {
+    let out = &full[dict.len()..];
+    if out.len() != orig_len || crc32(out) != want_crc {
         return None;
     }
-    Some(out)
+    Some(out.to_vec())
 }
 
 /// اضغط بايتات بإطار نيفا.
@@ -33656,7 +35711,194 @@ const B5_COMPRESS_FILE_KEYS: &[&str] = &[
     "كتابة_فوق",
     "مفصل",
     "صامت",
+    "صيغة",
+    "مجلد_ناتج",
+    "تخط_المضغوط",
+    "لاحقة",
+    "تكيفي",
+    "خيوط",
+    "قاموس",
+    "قسّم_الناتج",
+    "متطرف",
+    "خوارزمية",
+    "حد_ذاكرة",
 ];
+
+/// لينكس6: خيارات الضغط الكاملة (تكيفي/خيوط/قاموس/متطرف/خوارزمية/حد_ذاكرة/صيغة).
+struct B6CompressOpts {
+    level: usize,
+    extreme: bool,
+    dict: Vec<u8>,
+    algo: String,
+    mem_mb: Option<i64>,
+    format: String,
+}
+
+fn b6_compress_opts(
+    display: &str,
+    pairs: &[(String, Value)],
+    raw_len: usize,
+    line: usize,
+    col: usize,
+) -> RioResult<B6CompressOpts> {
+    let mut level = b5_opt_level(display, pairs, line, col)?;
+    let adaptive = b5_opt_bool(display, pairs, "تكيفي", false, line, col)?;
+    if adaptive {
+        level = if raw_len < 1024 {
+            1
+        } else if raw_len < 65536 {
+            3
+        } else if raw_len < 1024 * 1024 {
+            6
+        } else {
+            9
+        };
+    }
+    let extreme = b5_opt_bool(display, pairs, "متطرف", false, line, col)?;
+    if extreme {
+        level = level.max(9);
+    }
+    if let Some(t) = b5_opt_count(display, pairs, "خيوط", line, col)? {
+        if t < 1 {
+            return Err(RioError::runtime(
+                format!("الدالة {} خيوط لا تقبل صفرا أو سالبا", display),
+                line,
+                col,
+            ));
+        }
+        // التنفيذ تسلسلي حتى نموذج التزامن §102.
+    }
+    let dict = match dict_get(pairs, "قاموس") {
+        None => Vec::new(),
+        Some(v) => b5_need_bytes(display, v, line, col)?,
+    };
+    let algo = b5_opt_str(display, pairs, "خوارزمية", line, col)?
+        .unwrap_or_else(|| "lzss".to_string());
+    if algo != "lzss" && algo != "بلا" {
+        return Err(RioError::runtime(
+            format!("الدالة {} خوارزمية غير معروفة: {} (lzss/بلا)", display, algo),
+            line,
+            col,
+        ));
+    }
+    let mem_mb = b5_opt_count(display, pairs, "حد_ذاكرة", line, col)?;
+    if let Some(m) = mem_mb {
+        if m < 1 {
+            return Err(RioError::runtime(
+                format!("الدالة {} حد_ذاكرة لا يقبل صفرا أو سالبا", display),
+                line,
+                col,
+            ));
+        }
+        if (raw_len as i64) > m * 1024 * 1024 {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} المدخل أكبر من حد_ذاكرة ({} ميغابايت)",
+                    display, m
+                ),
+                line,
+                col,
+            ));
+        }
+    }
+    let format = b5_opt_str(display, pairs, "صيغة", line, col)?
+        .unwrap_or_else(|| "nvz".to_string());
+    if format != "nvz" && format != "xz" {
+        return Err(RioError::runtime(
+            format!("الدالة {} صيغة ضغط غير معروفة: {} (nvz/xz)", display, format),
+            line,
+            col,
+        ));
+    }
+    Ok(B6CompressOpts {
+        level,
+        extreme,
+        dict,
+        algo,
+        mem_mb,
+        format,
+    })
+}
+
+/// لينكس6: ضغط كامل بالخيارات (بلا ← الخام كما هو).
+fn b6_compress_full(
+    raw: &[u8],
+    o: &B6CompressOpts,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<u8>> {
+    if raw.len() > u32::MAX as usize {
+        return Err(RioError::runtime(
+            format!("الدالة {} الملف أكبر من 4 غيغابايت", display),
+            line,
+            col,
+        ));
+    }
+    if let Some(m) = o.mem_mb {
+        if (raw.len() as i64) > m * 1024 * 1024 {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} المدخل أكبر من حد_ذاكرة ({} ميغابايت)",
+                    display, m
+                ),
+                line,
+                col,
+            ));
+        }
+    }
+    if o.algo == "بلا" {
+        return Ok(raw.to_vec());
+    }
+    if o.format == "xz" {
+        Ok(b6_lzss_compress_xz(raw, o.level, &o.dict, o.extreme))
+    } else {
+        Ok(b6_lzss_frame(raw, o.level, &o.dict, o.extreme, b"NVZ1"))
+    }
+}
+
+/// لينكس6: فك ضغط بأي إطار نيفا (NVZ1/NVZX)؛ خوارزمية بلا ← الخام كما هو.
+fn b6_decompress_full(
+    data: &[u8],
+    algo: &str,
+    want_format: &Option<String>,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<u8>> {
+    if algo == "بلا" {
+        return Ok(data.to_vec());
+    }
+    if let Some(f) = want_format {
+        let magic: &[u8] = if f == "xz" { b"NVZX" } else { b"NVZ1" };
+        if data.len() < 4 || &data[0..4] != magic {
+            return Err(RioError::runtime(
+                format!("الدالة {} البيانات ليست بصيغة {}", display, f),
+                line,
+                col,
+            ));
+        }
+    }
+    match b5_lzss_decompress(data) {
+        Some(v) => Ok(v),
+        None => Err(RioError::runtime(
+            format!("الدالة {} بيانات مضغوطة تالفة أو ليست بإطار نيفا", display),
+            line,
+            col,
+        )),
+    }
+}
+
+/// لينكس6: هل البايتات مضغوطة أصلا؟ (سحر نيفا أو لاحقة شائعة).
+fn b6_looks_compressed(name: &str, data: &[u8]) -> bool {
+    if data.len() >= 4 && (&data[0..4] == b"NVZ1" || &data[0..4] == b"NVZX") {
+        return true;
+    }
+    let lower = name.to_lowercase();
+    ["ضغط", "xz", "gz", "bz2", "zst", "lz4"]
+        .iter()
+        .any(|e| lower.ends_with(&format!(".{}", e)))
+}
 
 /// مستوى من قيمة موضعية (عدد أو «أقصى»/«أسرع»).
 fn b5_level_value(
@@ -33697,20 +35939,50 @@ fn b5_compress_bytes(
         ));
     }
     let raw = b5_need_bytes(DISPLAY, &args[0], line, col)?;
-    // مستوى موضعي (عدد أو «أقصى»/«أسرع») أو
-    // قاموس خيارات {مستوى} (صيغة الجدول).
-    let level = if args.len() == 2 {
+    // مستوى موضعي أو قاموس خيارات كامل.
+    let opts = if args.len() == 2 {
         match &args[1] {
             Value::Dict(ps) => {
-                b5_no_unknown(DISPLAY, ps, &["مستوى"], line, col)?;
-                b5_opt_level(DISPLAY, ps, line, col)?
+                b5_no_unknown(
+                    DISPLAY,
+                    ps,
+                    &[
+                        "مستوى",
+                        "تكيفي",
+                        "خيوط",
+                        "قاموس",
+                        "متطرف",
+                        "خوارزمية",
+                        "حد_ذاكرة",
+                        "صيغة",
+                    ],
+                    line,
+                    col,
+                )?;
+                b6_compress_opts(DISPLAY, ps, raw.len(), line, col)?
             }
-            v => b5_level_value(DISPLAY, v, line, col)?,
+            v => B6CompressOpts {
+                level: b5_level_value(DISPLAY, v, line, col)?,
+                extreme: false,
+                dict: Vec::new(),
+                algo: "lzss".to_string(),
+                mem_mb: None,
+                format: "nvz".to_string(),
+            },
         }
     } else {
-        3
+        B6CompressOpts {
+            level: 3,
+            extreme: false,
+            dict: Vec::new(),
+            algo: "lzss".to_string(),
+            mem_mb: None,
+            format: "nvz".to_string(),
+        }
     };
-    Ok(b5_bytes_value(&b5_compress(&raw, level, DISPLAY, line, col)?))
+    Ok(b5_bytes_value(&b6_compress_full(
+        &raw, &opts, DISPLAY, line, col,
+    )?))
 }
 
 fn b5_decompress_bytes(
@@ -33721,10 +35993,10 @@ fn b5_decompress_bytes(
 ) -> RioResult<Value> {
     const DISPLAY: &str = "ضغط.فك_ضغط";
     let _ = ctx;
-    if args.len() != 1 {
+    if args.is_empty() || args.len() > 2 {
         return Err(RioError::runtime(
             format!(
-                "الدالة {} تتوقع معاملا واحدا لكن أعطيت {}",
+                "الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}",
                 DISPLAY,
                 args.len()
             ),
@@ -33733,25 +36005,224 @@ fn b5_decompress_bytes(
         ));
     }
     let data = b5_need_bytes(DISPLAY, &args[0], line, col)?;
-    Ok(b5_bytes_value(&b5_decompress(&data, DISPLAY, line, col)?))
+    let algo = if args.len() == 2 {
+        match &args[1] {
+            Value::Dict(ps) => {
+                b5_no_unknown(DISPLAY, ps, &["خوارزمية", "صيغة"], line, col)?;
+                b5_opt_str(DISPLAY, ps, "خوارزمية", line, col)?
+                    .unwrap_or_else(|| "lzss".to_string())
+            }
+            _ => "lzss".to_string(),
+        }
+    } else {
+        "lzss".to_string()
+    };
+    let want_format = if args.len() == 2 {
+        match &args[1] {
+            Value::Dict(ps) => b5_opt_str(DISPLAY, ps, "صيغة", line, col)?,
+            _ => None,
+        }
+    } else {
+        None
+    };
+    Ok(b5_bytes_value(&b6_decompress_full(
+        &data, &algo, &want_format, DISPLAY, line, col,
+    )?))
 }
 
 /// هدف افتراضي لضغط ملف (لاحقة .ضغط) أو فكه.
-fn b5_compress_target(src: &std::path::Path, compress: bool) -> std::path::PathBuf {
+/// لينكس6: هدف افتراضي لضغط ملف (لاحقة مخصصة أو .ضغط) أو فكه (يحذف اللاحقة).
+fn b5_compress_target(
+    src: &std::path::Path,
+    compress: bool,
+    suffix: Option<&str>,
+) -> std::path::PathBuf {
     if compress {
         let mut s = src.as_os_str().to_owned();
-        s.push(".ضغط");
+        s.push(suffix.unwrap_or(".ضغط"));
         std::path::PathBuf::from(s)
     } else {
         let s = src.to_string_lossy();
-        if let Some(stripped) = s.strip_suffix(".ضغط") {
-            std::path::PathBuf::from(stripped)
-        } else {
-            let mut t = src.as_os_str().to_owned();
-            t.push(".مفكوك");
-            std::path::PathBuf::from(t)
+        let mut stripped: Option<&str> = None;
+        if let Some(suf) = suffix {
+            stripped = s.strip_suffix(suf);
+        }
+        if stripped.is_none() {
+            stripped = s
+                .strip_suffix(".ضغط")
+                .or_else(|| s.strip_suffix(".xz"));
+        }
+        match stripped {
+            Some(st) => std::path::PathBuf::from(st),
+            None => {
+                let mut t = src.as_os_str().to_owned();
+                t.push(".مفكوك");
+                std::path::PathBuf::from(t)
+            }
         }
     }
+}
+
+/// لينكس6: نتيجة ضغط ملف واحد.
+struct B6CompressOut {
+    dst: std::path::PathBuf,
+    raw_len: usize,
+    comp_len: usize,
+    format: String,
+    skipped: bool,
+    parts: usize,
+    bytes: Option<Vec<u8>>,
+}
+
+/// لينكس6: اضغط ملف واحد (نواة اضغط_ملف + اضغط_قائمة).
+fn b6_compress_one_file(
+    ctx: &mut dyn HandlerCaller,
+    src_s: &str,
+    target_s: Option<String>,
+    pairs: &[(String, Value)],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<B6CompressOut> {
+    let src_fs = search_resolve_path(ctx, src_s);
+    let raw = std::fs::read(&src_fs).map_err(|_| {
+        RioError::runtime(format!("الدالة {} الملف غير موجود: {}", display, src_s), line, col)
+    })?;
+    let opts = b6_compress_opts(display, pairs, raw.len(), line, col)?;
+    let keep = b5_opt_bool(display, pairs, "أبق_الأصل", true, line, col)?;
+    let del = b5_opt_bool(display, pairs, "احذف_الأصل", false, line, col)?;
+    let to_out = b5_opt_bool(display, pairs, "إلى_المخرج", false, line, col)?;
+    let overwrite = b5_opt_bool(display, pairs, "كتابة_فوق", false, line, col)?;
+    let verbose = b5_opt_bool(display, pairs, "مفصل", false, line, col)?;
+    let quiet = b5_opt_bool(display, pairs, "صامت", false, line, col)?;
+    let suffix = b5_opt_str(display, pairs, "لاحقة", line, col)?;
+    let suffix = suffix.as_deref().unwrap_or(if opts.format == "xz" {
+        ".xz"
+    } else {
+        ".ضغط"
+    });
+    // تخطي المضغوط أصلا: يعيد المسار الأصلي بلا كتابة.
+    if b5_opt_bool(display, pairs, "تخط_المضغوط", false, line, col)?
+        && b6_looks_compressed(src_s, &raw)
+    {
+        return Ok(B6CompressOut {
+            dst: src_fs,
+            raw_len: raw.len(),
+            comp_len: raw.len(),
+            format: opts.format,
+            skipped: true,
+            parts: 0,
+            bytes: None,
+        });
+    }
+    let comp = b6_compress_full(&raw, &opts, display, line, col)?;
+    if to_out {
+        return Ok(B6CompressOut {
+            dst: src_fs,
+            raw_len: raw.len(),
+            comp_len: comp.len(),
+            format: opts.format,
+            skipped: false,
+            parts: 0,
+            bytes: Some(comp),
+        });
+    }
+    let split = b5_opt_count(display, pairs, "قسّم_الناتج", line, col)?;
+    if let Some(n) = split {
+        if n < 1 {
+            return Err(RioError::runtime(
+                format!("الدالة {} قسّم_الناتج لا يقبل صفرا أو سالبا", display),
+                line,
+                col,
+            ));
+        }
+    }
+    let dst_fs = match target_s {
+        Some(t) => search_resolve_path(ctx, &t),
+        None => match b5_opt_str(display, pairs, "مجلد_ناتج", line, col)? {
+            Some(d) => {
+                let dir = search_resolve_path(ctx, &d);
+                let base = src_fs
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "ملف".to_string());
+                dir.join(format!("{}{}", base, suffix))
+            }
+            None => b5_compress_target(&src_fs, true, Some(suffix)),
+        },
+    };
+    let part_name = |i: usize| -> std::path::PathBuf {
+        let mut t = dst_fs.clone().into_os_string();
+        t.push(format!(".جزء{}", i));
+        std::path::PathBuf::from(t)
+    };
+    let check_target = if split.is_some() {
+        part_name(1)
+    } else {
+        dst_fs.clone()
+    };
+    if check_target.exists() && !overwrite {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} الهدف موجود: {} (استخدم كتابة_فوق)",
+                display,
+                check_target.display()
+            ),
+            line,
+            col,
+        ));
+    }
+    if let Some(parent) = dst_fs.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut parts = 0usize;
+    if let Some(n) = split {
+        let n = n as usize;
+        for (i, chunk) in comp.chunks(n).enumerate() {
+            let p = part_name(i + 1);
+            std::fs::write(&p, chunk).map_err(|_| {
+                RioError::runtime(
+                    format!("الدالة {} تعذر الكتابة في {}", display, p.display()),
+                    line,
+                    col,
+                )
+            })?;
+            parts += 1;
+        }
+    } else {
+        std::fs::write(&dst_fs, &comp).map_err(|_| {
+            RioError::runtime(
+                format!("الدالة {} تعذر الكتابة في {}", display, dst_fs.display()),
+                line,
+                col,
+            )
+        })?;
+    }
+    if del || !keep {
+        let _ = std::fs::remove_file(&src_fs);
+    }
+    let ratio = if raw.is_empty() {
+        0
+    } else {
+        (comp.len() * 100 / raw.len()) as i64
+    };
+    if verbose && !quiet {
+        println!(
+            "ضغط {} ← {} ({}٪)",
+            dst_fs.display(),
+            src_s,
+            ratio
+        );
+    }
+    Ok(B6CompressOut {
+        dst: if split.is_some() { part_name(1) } else { dst_fs },
+        raw_len: raw.len(),
+        comp_len: comp.len(),
+        format: opts.format,
+        skipped: false,
+        parts,
+        bytes: None,
+    })
 }
 
 fn b5_compress_file(
@@ -33787,81 +36258,30 @@ fn b5_compress_file(
         &[][..]
     };
     b5_no_unknown(DISPLAY, pairs, B5_COMPRESS_FILE_KEYS, line, col)?;
-    let level = b5_opt_level(DISPLAY, pairs, line, col)?;
-    // أبق_الأصل افتراضي صحيح (الجدول 304)؛
-    // والحذف إن طُلب صراحة أو أُلغي الإبقاء.
-    let keep = b5_opt_bool(DISPLAY, pairs, "أبق_الأصل", true, line, col)?;
-    let del = b5_opt_bool(DISPLAY, pairs, "احذف_الأصل", false, line, col)?;
-    let to_out = b5_opt_bool(DISPLAY, pairs, "إلى_المخرج", false, line, col)?;
-    let overwrite = b5_opt_bool(DISPLAY, pairs, "كتابة_فوق", false, line, col)?;
-    let verbose = b5_opt_bool(DISPLAY, pairs, "مفصل", false, line, col)?;
-    let quiet = b5_opt_bool(DISPLAY, pairs, "صامت", false, line, col)?;
     if target_s.is_none() {
         target_s = b5_opt_str(DISPLAY, pairs, "مخرج", line, col)?;
     }
-    let src_fs = search_resolve_path(ctx, &src_s);
-    let raw = std::fs::read(&src_fs).map_err(|_| {
-        RioError::runtime(format!("الدالة {} الملف غير موجود: {}", DISPLAY, src_s), line, col)
-    })?;
-    let comp = b5_compress(&raw, level, DISPLAY, line, col)?;
-    // إلى_المخرج: بايتات بدل ملف، بلا كتابة
-    // وبلا حذف للأصل.
-    if to_out {
-        return Ok(b5_bytes_value(&comp));
+    let out = b6_compress_one_file(ctx, &src_s, target_s, pairs, DISPLAY, line, col)?;
+    if let Some(b) = out.bytes {
+        return Ok(b5_bytes_value(&b));
     }
-    let dst_fs = match target_s {
-        Some(t) => search_resolve_path(ctx, &t),
-        None => b5_compress_target(&src_fs, true),
-    };
-    if dst_fs.exists() && !overwrite {
-        return Err(RioError::runtime(
-            format!(
-                "الدالة {} الهدف موجود: {} (استخدم كتابة_فوق)",
-                DISPLAY,
-                dst_fs.display()
-            ),
-            line,
-            col,
-        ));
-    }
-    if let Some(parent) = dst_fs.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    std::fs::write(&dst_fs, &comp).map_err(|_| {
-        RioError::runtime(
-            format!("الدالة {} تعذر الكتابة في {}", DISPLAY, dst_fs.display()),
-            line,
-            col,
-        )
-    })?;
-    if del || !keep {
-        let _ = std::fs::remove_file(&src_fs);
-    }
-    let ratio = if raw.is_empty() {
+    let ratio = if out.raw_len == 0 {
         0
     } else {
-        (comp.len() * 100 / raw.len()) as i64
+        (out.comp_len * 100 / out.raw_len) as i64
     };
-    if verbose && !quiet {
-        println!(
-            "ضغط {} ← {} ({}٪)",
-            dst_fs.display(),
-            src_s,
-            ratio
-        );
-    }
     Ok(Value::Dict(vec![
         ("مصدر".to_string(), Value::Str(src_s)),
         (
             "هدف".to_string(),
-            Value::Str(dst_fs.to_string_lossy().into_owned()),
+            Value::Str(out.dst.to_string_lossy().into_owned()),
         ),
-        ("حجم_أصلي".to_string(), Value::Number(raw.len() as f64)),
-        (
-            "حجم_مضغوط".to_string(),
-            Value::Number(comp.len() as f64),
-        ),
+        ("حجم_أصلي".to_string(), Value::Number(out.raw_len as f64)),
+        ("حجم_مضغوط".to_string(), Value::Number(out.comp_len as f64)),
         ("نسبة".to_string(), Value::Number(ratio as f64)),
+        ("صيغة".to_string(), Value::Str(out.format)),
+        ("متخطى".to_string(), Value::Bool(out.skipped)),
+        ("أجزاء".to_string(), Value::Number(out.parts as f64)),
     ]))
 }
 
@@ -33904,6 +36324,25 @@ fn b5_decompress_file(
     let overwrite = b5_opt_bool(DISPLAY, pairs, "كتابة_فوق", false, line, col)?;
     let verbose = b5_opt_bool(DISPLAY, pairs, "مفصل", false, line, col)?;
     let quiet = b5_opt_bool(DISPLAY, pairs, "صامت", false, line, col)?;
+    let algo = b5_opt_str(DISPLAY, pairs, "خوارزمية", line, col)?
+        .unwrap_or_else(|| "lzss".to_string());
+    if algo != "lzss" && algo != "بلا" {
+        return Err(RioError::runtime(
+            format!("الدالة {} خوارزمية غير معروفة: {} (lzss/بلا)", DISPLAY, algo),
+            line,
+            col,
+        ));
+    }
+    let want_format = b5_opt_str(DISPLAY, pairs, "صيغة", line, col)?;
+    if let Some(f) = &want_format {
+        if f != "nvz" && f != "xz" {
+            return Err(RioError::runtime(
+                format!("الدالة {} صيغة ضغط غير معروفة: {} (nvz/xz)", DISPLAY, f),
+                line,
+                col,
+            ));
+        }
+    }
     if target_s.is_none() {
         target_s = b5_opt_str(DISPLAY, pairs, "مخرج", line, col)?;
     }
@@ -33911,15 +36350,21 @@ fn b5_decompress_file(
     let data = std::fs::read(&src_fs).map_err(|_| {
         RioError::runtime(format!("الدالة {} الملف غير موجود: {}", DISPLAY, src_s), line, col)
     })?;
-    let raw = b5_decompress(&data, DISPLAY, line, col)?;
-    // إلى_المخرج: بايتات بدل ملف، بلا كتابة
-    // وبلا حذف للأصل.
+    let detected = if data.len() >= 4 && &data[0..4] == b"NVZ1" {
+        "nvz"
+    } else if data.len() >= 4 && &data[0..4] == b"NVZX" {
+        "xz"
+    } else {
+        "بلا"
+    };
+    let raw = b6_decompress_full(&data, &algo, &want_format, DISPLAY, line, col)?;
     if to_out {
         return Ok(b5_bytes_value(&raw));
     }
+    let suffix = b5_opt_str(DISPLAY, pairs, "لاحقة", line, col)?;
     let dst_fs = match target_s {
         Some(t) => search_resolve_path(ctx, &t),
-        None => b5_compress_target(&src_fs, false),
+        None => b5_compress_target(&src_fs, false, suffix.as_deref()),
     };
     if dst_fs.exists() && !overwrite {
         return Err(RioError::runtime(
@@ -33955,10 +36400,8 @@ fn b5_decompress_file(
             Value::Str(dst_fs.to_string_lossy().into_owned()),
         ),
         ("حجم_أصلي".to_string(), Value::Number(raw.len() as f64)),
-        (
-            "حجم_مضغوط".to_string(),
-            Value::Number(data.len() as f64),
-        ),
+        ("حجم_مضغوط".to_string(), Value::Number(data.len() as f64)),
+        ("صيغة".to_string(), Value::Str(detected.to_string())),
     ]))
 }
 
@@ -33970,10 +36413,10 @@ fn b5_compress_test(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "ضغط.اختبر";
-    if args.len() != 1 {
+    if args.is_empty() || args.len() > 2 {
         return Err(RioError::runtime(
             format!(
-                "الدالة {} تتوقع معاملا واحدا لكن أعطيت {}",
+                "الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}",
                 DISPLAY,
                 args.len()
             ),
@@ -33997,7 +36440,212 @@ fn b5_compress_test(
             ))
         }
     };
-    Ok(Value::Bool(b5_lzss_decompress(&data).is_some()))
+    let (want_format, auto) = if args.len() == 2 {
+        match &args[1] {
+            Value::Dict(ps) => {
+                b5_no_unknown(DISPLAY, ps, &["صيغة", "آلي"], line, col)?;
+                (
+                    b5_opt_str(DISPLAY, ps, "صيغة", line, col)?,
+                    b5_opt_bool(DISPLAY, ps, "آلي", false, line, col)?,
+                )
+            }
+            _ => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} الخيارات قاموس", DISPLAY),
+                    line,
+                    col,
+                ))
+            }
+        }
+    } else {
+        (None, false)
+    };
+    if let Some(f) = &want_format {
+        if f != "nvz" && f != "xz" {
+            return Err(RioError::runtime(
+                format!("الدالة {} صيغة ضغط غير معروفة: {} (nvz/xz)", DISPLAY, f),
+                line,
+                col,
+            ));
+        }
+    }
+    let detected = if data.len() >= 4 && &data[0..4] == b"NVZ1" {
+        Some("nvz")
+    } else if data.len() >= 4 && &data[0..4] == b"NVZX" {
+        Some("xz")
+    } else {
+        None
+    };
+    let ok = match &want_format {
+        Some(f) => detected.as_deref() == Some(f.as_str()) && b5_lzss_decompress(&data).is_some(),
+        None => b5_lzss_decompress(&data).is_some(),
+    };
+    if auto {
+        let orig = b5_lzss_decompress(&data).map(|v| v.len()).unwrap_or(0);
+        Ok(Value::Dict(vec![
+            ("صالح".to_string(), Value::Bool(ok)),
+            (
+                "صيغة".to_string(),
+                Value::Str(detected.unwrap_or("بلا").to_string()),
+            ),
+            ("حجم_أصلي".to_string(), Value::Number(orig as f64)),
+            ("حجم_مضغوط".to_string(), Value::Number(data.len() as f64)),
+        ]))
+    } else {
+        Ok(Value::Bool(ok))
+    }
+}
+
+/// لينكس6: ضغط.معلومات(مسار_أو_بايتات، خيارات؟) → قاموس.
+/// المستوى غير مخزن في إطار نيفا فيعاد -1.
+fn b5_compress_info(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ضغط.معلومات";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let data = match &args[0] {
+        Value::List(_) => b5_need_bytes(DISPLAY, &args[0], line, col)?,
+        Value::Str(s) => {
+            let fs = search_resolve_path(ctx, s);
+            std::fs::read(&fs).map_err(|_| {
+                RioError::runtime(format!("الدالة {} الملف غير موجود: {}", DISPLAY, s), line, col)
+            })?
+        }
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} المعامل مسار أو بايتات", DISPLAY),
+                line,
+                col,
+            ))
+        }
+    };
+    if args.len() == 2 {
+        match &args[1] {
+            Value::Dict(ps) => {
+                b5_no_unknown(DISPLAY, ps, &["آلي"], line, col)?;
+                let _ = b5_opt_bool(DISPLAY, ps, "آلي", false, line, col)?;
+            }
+            _ => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} الخيارات قاموس", DISPLAY),
+                    line,
+                    col,
+                ))
+            }
+        }
+    }
+    let format = if data.len() >= 4 && &data[0..4] == b"NVZ1" {
+        "nvz"
+    } else if data.len() >= 4 && &data[0..4] == b"NVZX" {
+        "xz"
+    } else {
+        return Err(RioError::runtime(
+            format!("الدالة {} ليست مضغوطة بإطار نيفا", DISPLAY),
+            line,
+            col,
+        ));
+    };
+    let raw = b5_decompress(&data, DISPLAY, line, col)?;
+    let ratio = if raw.is_empty() {
+        0
+    } else {
+        (data.len() * 100 / raw.len()) as i64
+    };
+    Ok(Value::Dict(vec![
+        ("صيغة".to_string(), Value::Str(format.to_string())),
+        ("حجم_أصلي".to_string(), Value::Number(raw.len() as f64)),
+        ("حجم_مضغوط".to_string(), Value::Number(data.len() as f64)),
+        ("مستوى".to_string(), Value::Number(-1.0)),
+        ("نسبة".to_string(), Value::Number(ratio as f64)),
+    ]))
+}
+
+/// لينكس6: ضغط.اضغط_قائمة(قائمة_مسارات، خيارات؟) → قائمة المسارات الناتجة.
+fn b5_compress_list(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ضغط.اضغط_قائمة";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let paths: Vec<String> = match &args[0] {
+        Value::List(items) => {
+            let mut v = Vec::new();
+            for it in items {
+                v.push(need_string(DISPLAY, it, line, col)?);
+            }
+            v
+        }
+        Value::Str(s) => vec![s.clone()],
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} المعامل قائمة مسارات أو مسار", DISPLAY),
+                line,
+                col,
+            ))
+        }
+    };
+    let pairs = if args.len() == 2 {
+        match &args[1] {
+            Value::Dict(ps) => {
+                b5_no_unknown(DISPLAY, ps, B5_COMPRESS_FILE_KEYS, line, col)?;
+                ps.as_slice()
+            }
+            _ => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} الخيارات قاموس", DISPLAY),
+                    line,
+                    col,
+                ))
+            }
+        }
+    } else {
+        &[][..]
+    };
+    if b5_opt_bool(DISPLAY, pairs, "إلى_المخرج", false, line, col)? {
+        return Err(RioError::runtime(
+            format!("الدالة {} إلى_المخرج لا يناسب اضغط_قائمة", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    if dict_get(pairs, "مخرج").is_some() && paths.len() > 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} مخرج لا يناسب قائمة مسارات", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let mut out: Vec<Value> = Vec::new();
+    for p in &paths {
+        let r = b6_compress_one_file(ctx, p, None, pairs, DISPLAY, line, col)?;
+        out.push(Value::Str(r.dst.to_string_lossy().into_owned()));
+    }
+    Ok(Value::List(out))
 }
 
 fn b5_compress_entries() -> Vec<(&'static str, Value)> {
@@ -34007,6 +36655,8 @@ fn b5_compress_entries() -> Vec<(&'static str, Value)> {
         ("اضغط_ملف", native("اضغط_ملف", b5_compress_file)),
         ("فك_ضغط_ملف", native("فك_ضغط_ملف", b5_decompress_file)),
         ("اختبر", native("اختبر", b5_compress_test)),
+        ("معلومات", native("معلومات", b5_compress_info)),
+        ("اضغط_قائمة", native("اضغط_قائمة", b5_compress_list)),
     ]
 }
 
@@ -34043,7 +36693,161 @@ fn b5_tar_put(dst: &mut [u8], off: usize, bytes: &[u8]) {
     dst[off..off + n].copy_from_slice(&bytes[..n]);
 }
 
-fn b5_tar_header(e: &B5TarEntry, name: &str, linkname: &str) -> [u8; 512] {
+/// لينكس6: نسق tar (v7 بلا سحر، ustar، gnu، pax).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum B5TarFormat {
+    Tar,
+    Ustar,
+    Gnu,
+    Pax,
+}
+
+fn b6_tar_parse_format(
+    s: &str,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<B5TarFormat> {
+    match s {
+        "tar" => Ok(B5TarFormat::Tar),
+        "ustar" => Ok(B5TarFormat::Ustar),
+        "gnu" => Ok(B5TarFormat::Gnu),
+        "pax" => Ok(B5TarFormat::Pax),
+        _ => Err(RioError::runtime(
+            format!(
+                "الدالة {} صيغة tar غير معروفة: {} (tar/ustar/gnu/pax)",
+                display, s
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// لينكس6: كشف نسق tar من بايتات الترويسة الأولى.
+fn b6_tar_format_of_data(data: &[u8]) -> B5TarFormat {
+    if data.len() >= 265 {
+        if &data[257..262] == b"ustar" && data[262] == 0 {
+            return B5TarFormat::Ustar;
+        }
+        if &data[257..262] == b"ustar" && data[262] == b' ' {
+            return B5TarFormat::Gnu;
+        }
+        if data[257..265].iter().all(|b| *b == 0) {
+            return B5TarFormat::Tar;
+        }
+    }
+    B5TarFormat::Ustar
+}
+
+/// لينكس6: سجل pax واحد "<طول> <مفتاح>=<قيمة>\n".
+fn b6_pax_record(key: &str, value: &str) -> String {
+    let base = key.len() + value.len() + 3;
+    let mut len = base + 1;
+    loop {
+        let total = base + len.to_string().len();
+        if total == len {
+            break;
+        }
+        len = total;
+    }
+    format!("{} {}={}\n", len, key, value)
+}
+
+/// لينكس6: حلل سجلات pax إلى نصوص "<مفتاح>=<قيمة>".
+fn b6_pax_records(raw: &[u8]) -> Vec<String> {
+    let text = String::from_utf8_lossy(raw);
+    let mut out = Vec::new();
+    let mut rest = text.as_ref();
+    while !rest.is_empty() {
+        let sp = match rest.find(' ') {
+            Some(i) => i,
+            None => break,
+        };
+        let len: usize = match rest[..sp].parse() {
+            Ok(n) => n,
+            Err(_) => break,
+        };
+        if len <= sp || len > rest.len() {
+            break;
+        }
+        let end = if rest.as_bytes()[len - 1] == b'\n' {
+            len - 1
+        } else {
+            len
+        };
+        out.push(rest[sp + 1..end].to_string());
+        rest = &rest[len..];
+    }
+    out
+}
+
+/// لينكس6: قسّم اسما طويلا إلى (بادئة ≤155، باق ≤100) عند شرطة.
+fn b6_tar_split_prefix(name: &str) -> Option<(String, String)> {
+    let bytes = name.as_bytes();
+    let mut i = bytes.len();
+    while i > 0 {
+        i -= 1;
+        if bytes[i] == b'/' {
+            let prefix = &name[..i];
+            let rest = &name[i + 1..];
+            if !prefix.is_empty()
+                && !rest.is_empty()
+                && prefix.as_bytes().len() <= 155
+                && rest.as_bytes().len() <= 100
+            {
+                return Some((prefix.to_string(), rest.to_string()));
+            }
+        }
+    }
+    None
+}
+
+/// لينكس6: طبّق خريطة تحويل أسماء (أول بادئة مطابقة).
+fn b6_tar_rename(name: &str, rename: &[(String, String)]) -> String {
+    for (from, to) in rename {
+        if let Some(rest) = name.strip_prefix(from.as_str()) {
+            return format!("{}{}", to, rest);
+        }
+    }
+    name.to_string()
+}
+
+/// لينكس6: حلل خريطة تحويل أسماء من الخيارات.
+fn b6_tar_rename_map(
+    display: &str,
+    pairs: &[(String, Value)],
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<(String, String)>> {
+    match dict_get(pairs, "حوّل_أسماء") {
+        None => Ok(Vec::new()),
+        Some(Value::Dict(ps)) => {
+            let mut out = Vec::new();
+            for (k, v) in ps {
+                out.push((k.clone(), need_string(display, v, line, col)?));
+            }
+            Ok(out)
+        }
+        Some(other) => Err(RioError::typ(
+            format!(
+                "الدالة {} حوّل_أسماء تتوقع قاموسا لكن أعطيت {}",
+                display,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+fn b5_tar_header(
+    e: &B5TarEntry,
+    name: &str,
+    prefix: &str,
+    linkname: &str,
+    fmt: B5TarFormat,
+) -> [u8; 512] {
     let mut h = [0u8; 512];
     b5_tar_put(&mut h, 0, name.as_bytes());
     b5_tar_put(&mut h, 100, &b5_tar_octal(e.mode as u64 & 0o7777, 7));
@@ -34062,12 +36866,24 @@ fn b5_tar_header(e: &B5TarEntry, name: &str, linkname: &str) -> [u8; 512] {
     };
     h[156] = flag;
     b5_tar_put(&mut h, 157, linkname.as_bytes());
-    b5_tar_put(&mut h, 257, b"ustar\0");
-    b5_tar_put(&mut h, 263, b"00");
+    match fmt {
+        B5TarFormat::Tar => {}
+        B5TarFormat::Gnu => {
+            b5_tar_put(&mut h, 257, b"ustar ");
+            b5_tar_put(&mut h, 263, b" \0");
+        }
+        _ => {
+            b5_tar_put(&mut h, 257, b"ustar\0");
+            b5_tar_put(&mut h, 263, b"00");
+        }
+    }
     b5_tar_put(&mut h, 265, e.uname.as_bytes());
     b5_tar_put(&mut h, 297, e.gname.as_bytes());
     b5_tar_put(&mut h, 329, &b5_tar_octal(0, 7));
     b5_tar_put(&mut h, 337, &b5_tar_octal(0, 7));
+    if fmt != B5TarFormat::Tar && !prefix.is_empty() {
+        b5_tar_put(&mut h, 345, prefix.as_bytes());
+    }
     let sum: u32 = h.iter().map(|b| *b as u32).sum();
     let mut chk = format!("{:06o}", sum).into_bytes();
     chk.push(0);
@@ -34076,9 +36892,104 @@ fn b5_tar_header(e: &B5TarEntry, name: &str, linkname: &str) -> [u8; 512] {
     h
 }
 
-fn b5_tar_write(entries: &[B5TarEntry]) -> Vec<u8> {
+fn b5_tar_write(
+    entries: &[B5TarEntry],
+    fmt: B5TarFormat,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<u8>> {
     let mut out: Vec<u8> = Vec::new();
     for e in entries {
+        // pax: مدخل x الموسع للأسماء الطويلة قبل كل شيء.
+        if fmt == B5TarFormat::Pax
+            && (e.name.as_bytes().len() > 100 || e.linkname.as_bytes().len() > 100)
+        {
+            let mut records = String::new();
+            if e.name.as_bytes().len() > 100 {
+                records.push_str(&b6_pax_record("path", &e.name));
+            }
+            if e.linkname.as_bytes().len() > 100 {
+                records.push_str(&b6_pax_record("linkpath", &e.linkname));
+            }
+            let x = B5TarEntry {
+                name: "././@PaxHeader".to_string(),
+                kind: B5Kind::File,
+                size: records.len() as u64,
+                mtime: 0,
+                mode: 0o644,
+                uid: 0,
+                gid: 0,
+                uname: String::new(),
+                gname: String::new(),
+                linkname: String::new(),
+                data: records.into_bytes(),
+            };
+            let hdr = b5_tar_header(&x, &x.name.clone(), "", "", fmt);
+            out.extend_from_slice(&hdr);
+            out.extend_from_slice(&x.data);
+            let pad = (512 - (x.data.len() % 512)) % 512;
+            out.extend(std::iter::repeat(0u8).take(pad));
+        }
+        // v7 لا يمثل أسماء أطول من 100 بايت.
+        if fmt == B5TarFormat::Tar
+            && (e.name.as_bytes().len() > 100 || e.linkname.as_bytes().len() > 100)
+        {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} الاسم أطول من 100 بايت في صيغة tar: {}",
+                    display, e.name
+                ),
+                line,
+                col,
+            ));
+        }
+        // ustar: تقسيم البادئة بدلا من L عند الإمكان.
+        if fmt == B5TarFormat::Ustar && e.name.as_bytes().len() > 100 {
+            if let Some((prefix, rest)) = b6_tar_split_prefix(&e.name) {
+                if e.linkname.as_bytes().len() > 100 {
+                    let long = B5TarEntry {
+                        name: "././@LongLink".to_string(),
+                        kind: B5Kind::File,
+                        size: (e.linkname.as_bytes().len() + 1) as u64,
+                        mtime: 0,
+                        mode: 0o644,
+                        uid: 0,
+                        gid: 0,
+                        uname: String::new(),
+                        gname: String::new(),
+                        linkname: String::new(),
+                        data: {
+                            let mut d = e.linkname.as_bytes().to_vec();
+                            d.push(0);
+                            d
+                        },
+                    };
+                    let mut hdr = b5_tar_header(&long, &long.name.clone(), "", "", fmt);
+                    hdr[156] = b'K';
+                    for b in hdr.iter_mut().skip(148).take(8) {
+                        *b = b' ';
+                    }
+                    let sum: u32 = hdr.iter().map(|b| *b as u32).sum();
+                    let mut chk = format!("{:06o}", sum).into_bytes();
+                    chk.push(0);
+                    chk.push(b' ');
+                    b5_tar_put(&mut hdr, 148, &chk);
+                    out.extend_from_slice(&hdr);
+                    out.extend_from_slice(&long.data);
+                    let pad = (512 - (long.data.len() % 512)) % 512;
+                    out.extend(std::iter::repeat(0u8).take(pad));
+                }
+                let hdr = b5_tar_header(e, &rest, &prefix, &e.linkname.clone(), fmt);
+                out.extend_from_slice(&hdr);
+                if e.kind == B5Kind::File {
+                    out.extend_from_slice(&e.data);
+                    let pad = (512 - (e.data.len() % 512)) % 512;
+                    out.extend(std::iter::repeat(0u8).take(pad));
+                }
+                continue;
+            }
+        }
         if e.name.as_bytes().len() > 100 {
             let long = B5TarEntry {
                 name: "././@LongLink".to_string(),
@@ -34097,7 +37008,7 @@ fn b5_tar_write(entries: &[B5TarEntry]) -> Vec<u8> {
                     d
                 },
             };
-            let hdr = b5_tar_header(&long, &long.name.clone(), "");
+            let hdr = b5_tar_header(&long, &long.name.clone(), "", "", fmt);
             out.extend_from_slice(&hdr);
             out.extend_from_slice(&long.data);
             let pad = (512 - (long.data.len() % 512)) % 512;
@@ -34121,7 +37032,7 @@ fn b5_tar_write(entries: &[B5TarEntry]) -> Vec<u8> {
                     d
                 },
             };
-            let hdr = b5_tar_header(&long, &long.name.clone(), "");
+            let hdr = b5_tar_header(&long, &long.name.clone(), "", "", fmt);
             // إدخال الرابط الطويل نوعه 'K'.
             let mut hdr = hdr;
             hdr[156] = b'K';
@@ -34139,7 +37050,7 @@ fn b5_tar_write(entries: &[B5TarEntry]) -> Vec<u8> {
             let pad = (512 - (long.data.len() % 512)) % 512;
             out.extend(std::iter::repeat(0u8).take(pad));
         }
-        let hdr = b5_tar_header(e, &e.name.clone(), &e.linkname.clone());
+        let hdr = b5_tar_header(e, &e.name.clone(), "", &e.linkname.clone(), fmt);
         out.extend_from_slice(&hdr);
         if e.kind == B5Kind::File {
             out.extend_from_slice(&e.data);
@@ -34148,7 +37059,7 @@ fn b5_tar_write(entries: &[B5TarEntry]) -> Vec<u8> {
         }
     }
     out.extend(std::iter::repeat(0u8).take(1024));
-    out
+    Ok(out)
 }
 
 fn b5_tar_parse_octal(field: &[u8]) -> Option<u64> {
@@ -34189,6 +37100,11 @@ fn b5_tar_parse(data: &[u8]) -> Result<Vec<B5TarEntry>, String> {
     let mut pos = 0usize;
     let mut long_name: Option<String> = None;
     let mut long_link: Option<String> = None;
+    // لينكس6: سجلات pax المعلقة للمدخل التالي.
+    let mut pax_path: Option<String> = None;
+    let mut pax_linkpath: Option<String> = None;
+    let mut pax_size: Option<u64> = None;
+    let mut pax_mtime: Option<i64> = None;
     while pos + 512 <= data.len() {
         let h = &data[pos..pos + 512];
         pos += 512;
@@ -34220,12 +37136,13 @@ fn b5_tar_parse(data: &[u8]) -> Result<Vec<B5TarEntry>, String> {
             .ok_or("مالك غير ثماني في ترويسة tar")? as u32;
         let gid = b5_tar_parse_octal(&h[116..124])
             .ok_or("مجموعة غير ثمانية في ترويسة tar")? as u32;
-        let size = b5_tar_parse_octal(&h[124..136])
+        let mut size = b5_tar_parse_octal(&h[124..136])
             .ok_or("حجم غير ثماني في ترويسة tar")?;
-        let mtime = b5_tar_parse_octal(&h[136..148])
+        let mut mtime = b5_tar_parse_octal(&h[136..148])
             .ok_or("وقت غير ثماني في ترويسة tar")? as i64;
         let flag = h[156];
         let mut linkname = b5_tar_field_str(&h[157..257]);
+        // لينكس6: حجم/وقت قد يتجاوزهما سجل pax لاحقا — متغيران.
         let uname = b5_tar_field_str(&h[265..297]);
         let gname = b5_tar_field_str(&h[297..329]);
         if flag == b'L' {
@@ -34251,10 +37168,25 @@ fn b5_tar_parse(data: &[u8]) -> Result<Vec<B5TarEntry>, String> {
             continue;
         }
         if flag == b'x' || flag == b'g' {
-            // pax ممتد: تُتخطى بياناته.
             let need = size as usize;
             if pos + need > data.len() {
                 return Err("بيانات pax مقطوعة في tar".to_string());
+            }
+            if flag == b'x' {
+                for rec in b6_pax_records(&data[pos..pos + need]) {
+                    if let Some((k, v)) = rec.split_once('=') {
+                        match k {
+                            "path" => pax_path = Some(v.to_string()),
+                            "linkpath" => pax_linkpath = Some(v.to_string()),
+                            "size" => pax_size = v.parse::<u64>().ok(),
+                            "mtime" => {
+                                let int_part = v.split('.').next().unwrap_or(v);
+                                pax_mtime = int_part.parse::<i64>().ok();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
             pos += (need + 511) / 512 * 512;
             continue;
@@ -34264,6 +37196,18 @@ fn b5_tar_parse(data: &[u8]) -> Result<Vec<B5TarEntry>, String> {
         }
         if let Some(ll) = long_link.take() {
             linkname = ll;
+        }
+        if let Some(p) = pax_path.take() {
+            name = p;
+        }
+        if let Some(l) = pax_linkpath.take() {
+            linkname = l;
+        }
+        if let Some(sz) = pax_size.take() {
+            size = sz;
+        }
+        if let Some(mt) = pax_mtime.take() {
+            mtime = mt;
         }
         let kind = match flag {
             b'0' | 0 => B5Kind::File,
@@ -34318,13 +37262,25 @@ fn b5_tar_read_file(
             col,
         )
     })?;
-    let compressed = raw.len() >= 4 && &raw[0..4] == b"NVZ1";
-    let data = if compressed {
-        b5_decompress(&raw, display, line, col)?
+    return b6_tar_read_bytes(&raw, display, line, col);
+}
+
+/// لينكس6: قراءة أرشيف tar من بايتات (يكشف إطار ضغط نيفا تلقائيا).
+fn b6_tar_read_bytes(
+    data: &[u8],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(Vec<B5TarEntry>, bool)> {
+    let compressed = data.len() >= 4 && (&data[0..4] == b"NVZ1" || &data[0..4] == b"NVZX");
+    let data_owned;
+    let parsed: &[u8] = if compressed {
+        data_owned = b5_decompress(data, display, line, col)?;
+        &data_owned
     } else {
-        raw
+        data
     };
-    match b5_tar_parse(&data) {
+    match b5_tar_parse(parsed) {
         Ok(es) => Ok((es, compressed)),
         Err(m) => Err(RioError::runtime(
             format!("الدالة {} أرشيف تالف: {}", display, m),
@@ -34354,6 +37310,9 @@ fn b5_tar_collect(
     inputs: &[String],
     exclude: &[String],
     links_as_links: bool,
+    rename: &[(String, String)],
+    skip_dirs: bool,
+    follow_target: bool,
     display: &str,
     line: usize,
     col: usize,
@@ -34410,6 +37369,10 @@ fn b5_tar_collect(
                 {
                     continue;
                 }
+                if skip_dirs && m.kind == B5Kind::Dir {
+                    continue;
+                }
+                let name = b6_tar_rename(&name, rename);
                 out.push(b5_tar_entry_from_meta(
                     ctx,
                     &ifs,
@@ -34417,6 +37380,7 @@ fn b5_tar_collect(
                     &m,
                     is_link,
                     links_as_links,
+                    follow_target,
                     display,
                     line,
                     col,
@@ -34426,6 +37390,7 @@ fn b5_tar_collect(
             if !exclude.is_empty() && b5_glob_any(exclude, &arc, &arc, false, line, col) {
                 continue;
             }
+            let arc = b6_tar_rename(&arc, rename);
             out.push(b5_tar_entry_from_meta(
                 ctx,
                 &fs,
@@ -34433,6 +37398,7 @@ fn b5_tar_collect(
                 &meta,
                 meta.is_link,
                 links_as_links,
+                follow_target,
                 display,
                 line,
                 col,
@@ -34451,6 +37417,7 @@ fn b5_tar_entry_from_meta(
     m: &B5Meta,
     is_link: bool,
     links_as_links: bool,
+    follow_target: bool,
     display: &str,
     line: usize,
     col: usize,
@@ -34474,6 +37441,13 @@ fn b5_tar_entry_from_meta(
             linkname: m.target.clone().unwrap_or_default(),
             data: Vec::new(),
         });
+    }
+    if is_link && follow_target {
+        if let Some(tm) = b5_stat_follow(fs) {
+            return b5_tar_entry_from_meta(
+                ctx, fs, name, &tm, false, links_as_links, follow_target, display, line, col,
+            );
+        }
     }
     if m.kind == B5Kind::Dir {
         return Ok(B5TarEntry {
@@ -34562,6 +37536,9 @@ fn b5_tar_inputs(
 const B5_TAR_CREATE_KEYS: &[&str] = &[
     "مضغوط",
     "صيغة",
+    "حوّل_أسماء",
+    "فارغ_من_المجلدات",
+    "أرشف_هدف_الرابط",
     "استثن",
     "مفصل",
     "من_قائمة",
@@ -34579,6 +37556,10 @@ const B5_TAR_EXTRACT_KEYS: &[&str] = &[
     "احذف_الأرشيف_بعد_الفك",
     "مفصل",
     "صامت",
+    "أزل_مكونات",
+    "حوّل_أسماء",
+    "من_بايتات",
+    "إلى_بايتات",
 ];
 
 fn b5_tar_create(
@@ -34603,15 +37584,14 @@ fn b5_tar_create(
     let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
     b5_no_unknown(DISPLAY, pairs, B5_TAR_CREATE_KEYS, line, col)?;
     let compressed = b5_opt_bool(DISPLAY, pairs, "مضغوط", false, line, col)?;
-    if let Some(f) = b5_opt_str(DISPLAY, pairs, "صيغة", line, col)? {
-        if f != "تار" {
-            return Err(RioError::runtime(
-                format!("الدالة {} الصيغة الوحيدة في الدفعة: تار", DISPLAY),
-                line,
-                col,
-            ));
-        }
-    }
+    let fmt = match b5_opt_str(DISPLAY, pairs, "صيغة", line, col)? {
+        Some(f) => b6_tar_parse_format(&f, DISPLAY, line, col)?,
+        None => B5TarFormat::Ustar,
+    };
+    let rename = b6_tar_rename_map(DISPLAY, pairs, line, col)?;
+    let skip_dirs = b5_opt_bool(DISPLAY, pairs, "فارغ_من_المجلدات", false, line, col)?;
+    let follow_target =
+        b5_opt_bool(DISPLAY, pairs, "أرشف_هدف_الرابط", false, line, col)?;
     let exclude = b5_opt_strs(DISPLAY, pairs, "استثن", line, col)?;
     let verbose = b5_opt_bool(DISPLAY, pairs, "مفصل", false, line, col)?;
     let list_file = b5_opt_str(DISPLAY, pairs, "من_قائمة", line, col)?;
@@ -34619,8 +37599,10 @@ fn b5_tar_create(
     let quiet = b5_opt_bool(DISPLAY, pairs, "صامت", false, line, col)?;
     let overwrite = b5_opt_bool(DISPLAY, pairs, "كتابة_فوق", false, line, col)?;
     let inputs = b5_tar_inputs(ctx, &args[1], list_file.as_deref(), DISPLAY, line, col)?;
-    let entries = b5_tar_collect(ctx, &inputs, &exclude, links, DISPLAY, line, col)?;
-    let mut bytes = b5_tar_write(&entries);
+    let entries = b5_tar_collect(
+        ctx, &inputs, &exclude, links, &rename, skip_dirs, follow_target, DISPLAY, line, col,
+    )?;
+    let mut bytes = b5_tar_write(&entries, fmt, DISPLAY, line, col)?;
     if compressed {
         bytes = b5_compress(&bytes, 6, DISPLAY, line, col)?;
     }
@@ -34652,10 +37634,17 @@ fn b5_tar_create(
             println!("{}", n);
         }
     }
+    let fmt_name = match fmt {
+        B5TarFormat::Tar => "تار",
+        B5TarFormat::Ustar => "ustar",
+        B5TarFormat::Gnu => "gnu",
+        B5TarFormat::Pax => "pax",
+    };
     let mut out: Vec<(String, Value)> = vec![
         ("هدف".to_string(), Value::Str(target_s)),
         ("ملفات".to_string(), Value::Number(entries.len() as f64)),
         ("حجم".to_string(), Value::Number(bytes.len() as f64)),
+        ("صيغة".to_string(), Value::Str(fmt_name.to_string())),
     ];
     if verbose {
         out.push((
@@ -34692,7 +37681,11 @@ fn b5_tar_extract(
             col,
         ));
     }
-    let src_s = need_string(DISPLAY, &args[0], line, col)?;
+    let src_s = match &args[0] {
+        Value::Str(s) => s.clone(),
+        Value::List(_) => String::new(),
+        _ => need_string(DISPLAY, &args[0], line, col)?,
+    };
     let mut target_s = ".".to_string();
     let mut opt_idx = 1usize;
     if args.len() >= 2 {
@@ -34715,12 +37708,50 @@ fn b5_tar_extract(
     let delete_after = b5_opt_bool(DISPLAY, pairs, "احذف_الأرشيف_بعد_الفك", false, line, col)?;
     let verbose = b5_opt_bool(DISPLAY, pairs, "مفصل", false, line, col)?;
     let quiet = b5_opt_bool(DISPLAY, pairs, "صامت", false, line, col)?;
+    let strip = match dict_get(pairs, "أزل_مكونات") {
+        None => 0usize,
+        Some(Value::Number(n)) if *n >= 0.0 && n.fract() == 0.0 => *n as usize,
+        Some(Value::Number(_)) => {
+            return Err(RioError::runtime(
+                format!("الدالة {} أزل_مكونات عدد صحيح لا سالب", DISPLAY),
+                line,
+                col,
+            ))
+        }
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} أزل_مكونات تتوقع عددا لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let rename = b6_tar_rename_map(DISPLAY, pairs, line, col)?;
+    let from_bytes = b5_opt_bool(DISPLAY, pairs, "من_بايتات", false, line, col)?;
+    let to_bytes = b5_opt_bool(DISPLAY, pairs, "إلى_بايتات", false, line, col)?;
     let src_fs = search_resolve_path(ctx, &src_s);
-    let (entries, _) = b5_tar_read_file(&src_fs, DISPLAY, line, col)?;
+    let (entries, _) = if from_bytes {
+        let raw = b5_need_bytes(DISPLAY, &args[0], line, col)?;
+        b6_tar_read_bytes(&raw, DISPLAY, line, col)?
+    } else {
+        if matches!(&args[0], Value::List(_)) {
+            return Err(RioError::typ(
+                format!("الدالة {} الأرشيف مسار نصي بلا من_بايتات", DISPLAY),
+                line,
+                col,
+            ));
+        }
+        b5_tar_read_file(&src_fs, DISPLAY, line, col)?
+    };
     let dst_root = search_resolve_path(ctx, &target_s);
     let mut extracted = 0i64;
     let mut skipped = 0i64;
     let mut dir_times: Vec<(std::path::PathBuf, i64, i64, u32)> = Vec::new();
+    let mut out_bytes: Vec<(String, Value)> = Vec::new();
     for e in &entries {
         if !only.is_empty() && !only.iter().any(|n| n == &e.name) {
             continue;
@@ -34732,13 +37763,43 @@ fn b5_tar_extract(
                 col,
             ));
         }
-        let dst = dst_root.join(&e.name);
+        let mut name = b6_tar_rename(&e.name, &rename);
+        for _ in 0..strip {
+            match name.find('/') {
+                Some(i) => name = name[i + 1..].to_string(),
+                None => {
+                    name = String::new();
+                    break;
+                }
+            }
+        }
+        if name.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        if !b5_tar_safe_name(&name) {
+            return Err(RioError::runtime(
+                format!("الدالة {} اسم غير آمن بعد التحويل: {}", DISPLAY, name),
+                line,
+                col,
+            ));
+        }
+        let dst = dst_root.join(&name);
+        if to_bytes {
+            if e.kind == B5Kind::File {
+                out_bytes.push((name.clone(), b5_bytes_value(&e.data)));
+                extracted += 1;
+            } else {
+                skipped += 1;
+            }
+            continue;
+        }
         let exists = std::fs::symlink_metadata(&dst).is_ok();
         if e.kind == B5Kind::Dir {
             if !exists {
                 if std::fs::create_dir_all(&dst).is_err() {
                     return Err(RioError::runtime(
-                        format!("الدالة {} تعذر إنشاء المجلد {}", DISPLAY, e.name),
+                        format!("الدالة {} تعذر إنشاء المجلد {}", DISPLAY, name),
                         line,
                         col,
                     ));
@@ -34769,7 +37830,7 @@ fn b5_tar_extract(
             let want_dir = false;
             if is_dir != want_dir {
                 return Err(RioError::runtime(
-                    format!("الدالة {} الهدف موجود بنوع مختلف: {}", DISPLAY, e.name),
+                    format!("الدالة {} الهدف موجود بنوع مختلف: {}", DISPLAY, name),
                     line,
                     col,
                 ));
@@ -34782,7 +37843,7 @@ fn b5_tar_extract(
             {
                 if std::os::unix::fs::symlink(&e.linkname, &dst).is_err() {
                     return Err(RioError::runtime(
-                        format!("الدالة {} تعذر إنشاء الرابط {}", DISPLAY, e.name),
+                        format!("الدالة {} تعذر إنشاء الرابط {}", DISPLAY, name),
                         line,
                         col,
                     ));
@@ -34806,7 +37867,7 @@ fn b5_tar_extract(
         } else {
             std::fs::write(&dst, &e.data).map_err(|_| {
                 RioError::runtime(
-                    format!("الدالة {} تعذر الكتابة في {}", DISPLAY, e.name),
+                    format!("الدالة {} تعذر الكتابة في {}", DISPLAY, name),
                     line,
                     col,
                 )
@@ -34818,7 +37879,7 @@ fn b5_tar_extract(
             extracted += 1;
         }
         if verbose && !quiet {
-            println!("{}", e.name);
+            println!("{}", name);
         }
     }
     // أوقات المجلدات بعد أبنائها.
@@ -34828,15 +37889,19 @@ fn b5_tar_extract(
             b5_set_mode(&d, mode);
         }
     }
-    if delete_after {
+    if delete_after && !from_bytes {
         let _ = std::fs::remove_file(&src_fs);
     }
-    Ok(Value::Dict(vec![
+    let mut out: Vec<(String, Value)> = vec![
         ("هدف".to_string(), Value::Str(target_s)),
         ("ملفات".to_string(), Value::Number(entries.len() as f64)),
         ("مستخرج".to_string(), Value::Number(extracted as f64)),
         ("متخطى".to_string(), Value::Number(skipped as f64)),
-    ]))
+    ];
+    if to_bytes {
+        out.push(("بايتات".to_string(), Value::Dict(out_bytes)));
+    }
+    Ok(Value::Dict(out))
 }
 
 fn b5_tar_list(
@@ -34884,6 +37949,9 @@ fn b5_tar_list(
             uid: e.uid,
             gid: e.gid,
             nlink: 1,
+            ctime: e.mtime,
+            dev: 0,
+            ino: 0,
             is_link: e.kind == B5Kind::Link,
             target: None,
         };
@@ -34930,7 +37998,18 @@ fn b5_tar_write_back(
         Some(Value::Bool(b)) => *b,
         _ => old_compressed,
     };
-    let mut bytes = b5_tar_write(entries);
+    let fmt = match std::fs::read(target_fs) {
+        Ok(raw) => {
+            let data = if raw.len() >= 4 && (&raw[0..4] == b"NVZ1" || &raw[0..4] == b"NVZX") {
+                b5_decompress(&raw, display, line, col).unwrap_or(raw)
+            } else {
+                raw
+            };
+            b6_tar_format_of_data(&data)
+        }
+        Err(_) => B5TarFormat::Ustar,
+    };
+    let mut bytes = b5_tar_write(entries, fmt, display, line, col)?;
     if compressed {
         bytes = b5_compress(&bytes, 6, display, line, col)?;
     }
@@ -34974,7 +38053,8 @@ fn b5_tar_append(
     let inputs = b5_tar_inputs(ctx, &args[1], list_file.as_deref(), DISPLAY, line, col)?;
     let target_fs = search_resolve_path(ctx, &target_s);
     let (mut entries, old_compressed) = b5_tar_read_file(&target_fs, DISPLAY, line, col)?;
-    let added = b5_tar_collect(ctx, &inputs, &exclude, links, DISPLAY, line, col)?;
+    let added =
+        b5_tar_collect(ctx, &inputs, &exclude, links, &[], false, false, DISPLAY, line, col)?;
     let n = added.len();
     if verbose && !quiet {
         for e in &added {
@@ -35021,7 +38101,8 @@ fn b5_tar_update(
     let inputs = b5_tar_inputs(ctx, &args[1], list_file.as_deref(), DISPLAY, line, col)?;
     let target_fs = search_resolve_path(ctx, &target_s);
     let (mut entries, old_compressed) = b5_tar_read_file(&target_fs, DISPLAY, line, col)?;
-    let fresh = b5_tar_collect(ctx, &inputs, &exclude, links, DISPLAY, line, col)?;
+    let fresh =
+        b5_tar_collect(ctx, &inputs, &exclude, links, &[], false, false, DISPLAY, line, col)?;
     let mut added = 0i64;
     let mut updated = 0i64;
     let mut skipped = 0i64;
@@ -35083,7 +38164,7 @@ fn b5_tar_verify(
     let raw = std::fs::read(&fs).map_err(|_| {
         RioError::runtime(format!("الدالة {} الأرشيف غير موجود: {}", DISPLAY, src_s), line, col)
     })?;
-    let data = if raw.len() >= 4 && &raw[0..4] == b"NVZ1" {
+    let data = if raw.len() >= 4 && (&raw[0..4] == b"NVZ1" || &raw[0..4] == b"NVZX") {
         match b5_decompress(&raw, DISPLAY, line, col) {
             Ok(d) => d,
             Err(_) => return Ok(Value::Bool(false)),
@@ -35136,3 +38217,5337 @@ fn b5_tar_entries() -> Vec<(&'static str, Value)> {
         ("حجم_تار", native("حجم_تار", b5_tar_size)),
     ]
 }
+
+// لينكس6-ب-قاعدة_أسماء_ومرر_أسماء
+
+// لينكس6-ب2-سرد
+
+// لينكس6-ج-مزامنة
+
+// لينكس6-د1-ضغط
+
+// لينكس6-د1ب-ضغط-ملفات
+
+// لينكس6-د2-تار
+
+// لينكس6-تار-د2ب: مفاتيح إنشاء/استخراج تار لينكس6.
+
+// لينكس6-تار-د2ب-إصلاح-بايتات.
+
+// لينكس6-تار-د2ب-إصلاح-تحويل.
+
+// ===== لينكس6-د3أ: صيغ الأرشيف — كشف + cpio + ar + mtree + قائمة_بصيغة =====
+
+/// مدخل سرد موحد لصيغ الأرشيف.
+struct B6FmtEntry {
+    name: String,
+    size: u64,
+    kind: B5Kind,
+}
+
+fn b6_fmt_dict(e: &B6FmtEntry) -> Value {
+    let kind = match e.kind {
+        B5Kind::Dir => "مجلد",
+        B5Kind::Link => "رابط",
+        _ => "ملف",
+    };
+    Value::Dict(vec![
+        ("اسم".to_string(), Value::Str(e.name.clone())),
+        ("حجم".to_string(), Value::Number(e.size as f64)),
+        ("نوع".to_string(), Value::Str(kind.to_string())),
+    ])
+}
+
+fn b6_looks_tar(data: &[u8]) -> bool {
+    data.len() >= 512
+        && !data[..512].iter().all(|b| *b == 0)
+        && b5_tar_parse(data).is_ok()
+}
+
+fn b6_detect_format(data: &[u8]) -> &'static str {
+    if data.len() >= 4 && (&data[0..4] == b"NVZ1" || &data[0..4] == b"NVZX") {
+        return "nvz";
+    }
+    if data.len() >= 2 && data[0] == 0x1F && data[1] == 0x8B {
+        return "gzip";
+    }
+    if data.len() >= 3 && &data[0..3] == b"BZh" {
+        return "bzip2";
+    }
+    if data.len() >= 6 && &data[0..6] == b"\xFD7zXZ\x00" {
+        return "xz";
+    }
+    if data.len() >= 4 && &data[0..4] == b"\x04\x22\x4D\x18" {
+        return "lz4";
+    }
+    if data.len() >= 4 && &data[0..4] == b"\x28\xB5\x2F\xFD" {
+        return "zstd";
+    }
+    if data.len() >= 4
+        && (&data[0..4] == b"PK\x03\x04"
+            || &data[0..4] == b"PK\x05\x06"
+            || &data[0..4] == b"PK\x07\x08")
+    {
+        return "zip";
+    }
+    if data.len() >= 6 && &data[0..6] == b"7z\xBC\xAF\x27\x1C" {
+        return "7z";
+    }
+    if data.len() >= 6
+        && (&data[0..6] == b"070701" || &data[0..6] == b"070702" || &data[0..6] == b"070707")
+    {
+        return "cpio";
+    }
+    if data.len() >= 8 && &data[0..8] == b"!<arch>\n" {
+        return "ar";
+    }
+    if data.len() >= 7 && &data[0..7] == b"Rar!\x1A\x07\x00" {
+        return "rar";
+    }
+    if data.len() >= 8 && &data[0..8] == b"Rar!\x1A\x07\x01\x00" {
+        return "rar";
+    }
+    if data.len() >= 4 && &data[0..4] == b"MSCF" {
+        return "cab";
+    }
+    if data.len() >= 4 && &data[0..4] == b"xar!" {
+        return "xar";
+    }
+    if data.len() > 32774 && &data[32769..32774] == b"CD001" {
+        return "iso";
+    }
+    if b6_looks_tar(data) {
+        return "tar";
+    }
+    if data.starts_with(b"#mtree") {
+        return "mtree";
+    }
+    if let Ok(text) = std::str::from_utf8(data) {
+        if let Some(first) = text.lines().next() {
+            if first.contains(" type=") && !first.starts_with('#') && !first.starts_with('/') {
+                return "mtree";
+            }
+        }
+    }
+    "غير_معروف"
+}
+
+/// توحيد اسم صيغة يكتبه المستخدم (تار ← tar).
+fn b6_fmt_norm(s: &str) -> &str {
+    match s {
+        "تار" => "tar",
+        _ => s,
+    }
+}
+
+/// قراءة مصدر أرشيف: مسار نصي أو بايتات؛ تعيد (البايتات، مسار المصدر إن كان ملفا).
+fn b6_read_archive_source(
+    ctx: &mut dyn HandlerCaller,
+    v: &Value,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(Vec<u8>, Option<std::path::PathBuf>)> {
+    match v {
+        Value::Str(s) => {
+            let fs = search_resolve_path(ctx, s);
+            let raw = std::fs::read(&fs).map_err(|_| {
+                RioError::runtime(
+                    format!("الدالة {} الأرشيف غير موجود: {}", display, s),
+                    line,
+                    col,
+                )
+            })?;
+            Ok((raw, Some(fs)))
+        }
+        Value::List(_) => Ok((b5_need_bytes(display, v, line, col)?, None)),
+        _ => Err(RioError::typ(
+            format!(
+                "الدالة {} المصدر مسار نصي أو بايتات لكن أعطيت {}",
+                display,
+                v.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+fn b5_fmt_detect(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أرشيف.اكتشف_صيغة";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا واحدا لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let (data, _) = b6_read_archive_source(ctx, &args[0], DISPLAY, line, col)?;
+    Ok(Value::Str(b6_detect_format(&data).to_string()))
+}
+
+fn b6_hex_u64(data: &[u8]) -> Option<u64> {
+    let s = std::str::from_utf8(data).ok()?;
+    u64::from_str_radix(s.trim(), 16).ok()
+}
+
+/// تحليل cpio newc (070701/070702/070707) — يعيد (المدخلات، محتوى كل ملف).
+fn b6_cpio_parse(data: &[u8]) -> Result<Vec<(B6FmtEntry, Vec<u8>)>, String> {
+    let mut out: Vec<(B6FmtEntry, Vec<u8>)> = Vec::new();
+    let mut pos = 0usize;
+    loop {
+        if pos > data.len() || data.len() - pos < 110 {
+            return Err("أرشيف cpio ناقص".to_string());
+        }
+        let magic = &data[pos..pos + 6];
+        if magic != b"070701" && magic != b"070702" && magic != b"070707" {
+            return Err("أرشيف cpio بسحر غير معروف".to_string());
+        }
+        let mode = b6_hex_u64(&data[pos + 14..pos + 22])
+            .ok_or_else(|| "حقل cpio غير سداسي".to_string())?;
+        let size = b6_hex_u64(&data[pos + 54..pos + 62])
+            .ok_or_else(|| "حقل cpio غير سداسي".to_string())? as usize;
+        let namesize = b6_hex_u64(&data[pos + 94..pos + 102])
+            .ok_or_else(|| "حقل cpio غير سداسي".to_string())? as usize;
+        if namesize == 0 {
+            return Err("أرشيف cpio ناقص".to_string());
+        }
+        let name_end = (pos + 110)
+            .checked_add(namesize)
+            .ok_or_else(|| "أرشيف cpio ناقص".to_string())?;
+        if name_end > data.len() {
+            return Err("أرشيف cpio ناقص".to_string());
+        }
+        let name = String::from_utf8_lossy(&data[pos + 110..name_end - 1]).to_string();
+        let head_end = (name_end + 3) & !3;
+        let data_end = head_end
+            .checked_add(size)
+            .ok_or_else(|| "أرشيف cpio ناقص".to_string())?;
+        if data_end > data.len() {
+            return Err("أرشيف cpio ناقص".to_string());
+        }
+        let content = data[head_end..data_end].to_vec();
+        pos = (data_end + 3) & !3;
+        if name == "TRAILER!!!" {
+            break;
+        }
+        let kind = match mode & 0o170000 {
+            0o040000 => B5Kind::Dir,
+            0o120000 => B5Kind::Link,
+            _ => B5Kind::File,
+        };
+        out.push((
+            B6FmtEntry {
+                name,
+                size: size as u64,
+                kind,
+            },
+            content,
+        ));
+        if out.len() > 1000 {
+            return Err("أرشيف كبير جدا".to_string());
+        }
+    }
+    Ok(out)
+}
+
+fn b6_cpio_list(data: &[u8]) -> Result<Vec<B6FmtEntry>, String> {
+    Ok(b6_cpio_parse(data)?
+        .into_iter()
+        .map(|(e, _)| e)
+        .collect())
+}
+
+/// تحليل ar (يونكس) — يعيد (المدخلات، محتوى كل ملف).
+fn b6_ar_parse(data: &[u8]) -> Result<Vec<(B6FmtEntry, Vec<u8>)>, String> {
+    if data.len() < 8 || &data[0..8] != b"!<arch>\n" {
+        return Err("أرشيف ar بسحر غير معروف".to_string());
+    }
+    let mut out: Vec<(B6FmtEntry, Vec<u8>)> = Vec::new();
+    let mut long_names: Vec<u8> = Vec::new();
+    let mut pos = 8usize;
+    while pos < data.len() {
+        if data.len() - pos < 60 {
+            return Err("أرشيف ar ناقص".to_string());
+        }
+        let hdr = &data[pos..pos + 60];
+        if &hdr[58..60] != b"`\n" {
+            return Err("أرشيف ar بترويسة تالفة".to_string());
+        }
+        let raw_name = String::from_utf8_lossy(&hdr[0..16]).trim_end().to_string();
+        let size_s = String::from_utf8_lossy(&hdr[48..58]).trim().to_string();
+        let size: usize = size_s
+            .parse()
+            .map_err(|_| "حجم ar غير عددي".to_string())?;
+        let body_at = pos + 60;
+        let body_end = body_at
+            .checked_add(size)
+            .ok_or_else(|| "أرشيف ar ناقص".to_string())?;
+        if body_end > data.len() {
+            return Err("أرشيف ar ناقص".to_string());
+        }
+        let body = &data[body_at..body_end];
+        pos = (body_end + 1) & !1;
+        if raw_name == "/" {
+            continue;
+        }
+        if raw_name == "//" {
+            long_names = body.to_vec();
+            continue;
+        }
+        let (name, content) = if let Some(rest) = raw_name.strip_prefix("#1/") {
+            let nlen: usize = rest
+                .parse()
+                .map_err(|_| "اسم ar الطويل غير عددي".to_string())?;
+            if nlen > body.len() {
+                return Err("أرشيف ar ناقص".to_string());
+            }
+            (
+                String::from_utf8_lossy(&body[..nlen]).to_string(),
+                body[nlen..].to_vec(),
+            )
+        } else if let Some(rest) = raw_name.strip_prefix('/') {
+            let off: usize = rest
+                .parse()
+                .map_err(|_| "إزاحة ar غير عددية".to_string())?;
+            if off >= long_names.len() {
+                return Err("أرشيف ar ناقص".to_string());
+            }
+            let tail = &long_names[off..];
+            let end = tail.iter().position(|b| *b == b'\n').unwrap_or(tail.len());
+            (
+                String::from_utf8_lossy(&tail[..end])
+                    .trim_end_matches('/')
+                    .to_string(),
+                body.to_vec(),
+            )
+        } else {
+            (
+                raw_name.trim_end_matches('/').to_string(),
+                body.to_vec(),
+            )
+        };
+        let size = content.len() as u64;
+        out.push((
+            B6FmtEntry {
+                name,
+                size,
+                kind: B5Kind::File,
+            },
+            content,
+        ));
+        if out.len() > 1000 {
+            return Err("أرشيف كبير جدا".to_string());
+        }
+    }
+    Ok(out)
+}
+
+fn b6_mtree_unescape(s: &str) -> String {
+    s.replace("\\040", " ")
+}
+
+/// تحليل بيان mtree نصي — يعيد (المدخلات، سمات كل مدخل).
+fn b6_mtree_parse(text: &str) -> Result<Vec<(B6FmtEntry, Vec<(String, String)>)>, String> {
+    let mut out: Vec<(B6FmtEntry, Vec<(String, String)>)> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim_end();
+        if line.is_empty()
+            || line.starts_with('#')
+            || line.starts_with("/set")
+            || line.starts_with("/unset")
+        {
+            continue;
+        }
+        let mut parts = line.splitn(2, ' ');
+        let raw_name = parts.next().unwrap_or("");
+        let rest = parts.next().unwrap_or("");
+        if raw_name.is_empty() {
+            continue;
+        }
+        let mut attrs: Vec<(String, String)> = Vec::new();
+        for tok in rest.split_whitespace() {
+            if let Some((k, v)) = tok.split_once('=') {
+                attrs.push((k.to_string(), v.to_string()));
+            }
+        }
+        let get = |k: &str| attrs.iter().find(|(kk, _)| kk == k).map(|(_, v)| v.clone());
+        let size: u64 = get("size").and_then(|s| s.parse().ok()).unwrap_or(0);
+        let kind = match get("type").as_deref() {
+            Some("dir") => B5Kind::Dir,
+            Some("link") => B5Kind::Link,
+            _ => B5Kind::File,
+        };
+        out.push((
+            B6FmtEntry {
+                name: b6_mtree_unescape(raw_name),
+                size,
+                kind,
+            },
+            attrs,
+        ));
+        if out.len() > 1000 {
+            return Err("بيان mtree كبير جدا".to_string());
+        }
+    }
+    Ok(out)
+}
+
+fn b5_fmt_list(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أرشيف.قائمة_بصيغة";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let (data, _) = b6_read_archive_source(ctx, &args[0], DISPLAY, line, col)?;
+    let fmt = match args.get(1) {
+        Some(v) => b6_fmt_norm(&need_string(DISPLAY, v, line, col)?).to_string(),
+        None => b6_detect_format(&data).to_string(),
+    };
+    let entries: Vec<B6FmtEntry> = match fmt.as_str() {
+        "tar" => {
+            let (es, _) = b6_tar_read_bytes(&data, DISPLAY, line, col)?;
+            es.into_iter()
+                .map(|e| B6FmtEntry {
+                    name: e.name,
+                    size: e.size,
+                    kind: e.kind,
+                })
+                .collect()
+        }
+        "zip" => zip_parse(&data)
+            .map_err(|e| RioError::runtime(format!("الدالة {} {}", DISPLAY, e), line, col))?
+            .into_iter()
+            .map(|(n, c)| {
+                let kind = if n.ends_with('/') {
+                    B5Kind::Dir
+                } else {
+                    B5Kind::File
+                };
+                B6FmtEntry {
+                    name: n.trim_end_matches('/').to_string(),
+                    size: c.len() as u64,
+                    kind,
+                }
+            })
+            .collect(),
+        "cpio" => b6_cpio_list(&data)
+            .map_err(|e| RioError::runtime(format!("الدالة {} {}", DISPLAY, e), line, col))?,
+        "ar" => b6_ar_parse(&data)
+            .map_err(|e| RioError::runtime(format!("الدالة {} {}", DISPLAY, e), line, col))?
+            .into_iter()
+            .map(|(e, _)| e)
+            .collect(),
+        "mtree" => {
+            let text = String::from_utf8_lossy(&data).to_string();
+            b6_mtree_parse(&text)
+                .map_err(|e| RioError::runtime(format!("الدالة {} {}", DISPLAY, e), line, col))?
+                .into_iter()
+                .map(|(e, _)| e)
+                .collect()
+        }
+        "nvz" | "gzip" | "bzip2" | "xz" | "lz4" | "zstd" => {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} الصيغة {} ضغط ملف واحد لا أرشيف",
+                    DISPLAY, fmt
+                ),
+                line,
+                col,
+            ))
+        }
+        "7z" => b6_sz_list(&data)
+            .map_err(|e| RioError::runtime(format!("الدالة {} {}", DISPLAY, e), line, col))?,
+        "iso" => b6_iso_list(&data)
+            .map_err(|e| RioError::runtime(format!("الدالة {} {}", DISPLAY, e), line, col))?,
+        "rar" => b6_rar_list(&data)
+            .map_err(|e| RioError::runtime(format!("الدالة {} {}", DISPLAY, e), line, col))?,
+        "cab" => b6_cab_list(&data)
+            .map_err(|e| RioError::runtime(format!("الدالة {} {}", DISPLAY, e), line, col))?,
+        "xar" => b6_xar_list(&data)
+            .map_err(|e| RioError::runtime(format!("الدالة {} {}", DISPLAY, e), line, col))?,
+        _ => {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} الصيغة {} غير مدعومة في قائمة_بصيغة",
+                    DISPLAY, fmt
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    Ok(Value::List(entries.iter().map(b6_fmt_dict).collect()))
+}
+
+
+// لينكس6-د3أ-صيغ.
+
+// ===== لينكس6-د3ب: صيغ الأرشيف — ISO/RAR/CAB/XAR + استخراج/تحقق =====
+
+fn b6_le_u16(data: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(data.get(at..at + 2)?.try_into().ok()?))
+}
+
+fn b6_le_u32(data: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?))
+}
+
+fn b6_be_u16(data: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_be_bytes(data.get(at..at + 2)?.try_into().ok()?))
+}
+
+fn b6_be_u64(data: &[u8], at: usize) -> Option<u64> {
+    Some(u64::from_be_bytes(data.get(at..at + 8)?.try_into().ok()?))
+}
+
+/// مشي مجلد ISO9660 (سجل المجلدات) — يجمع المدخلات بمسارات كاملة.
+fn b6_iso_dir(
+    data: &[u8],
+    extent: u32,
+    size: u32,
+    prefix: &str,
+    depth: u8,
+    out: &mut Vec<B6FmtEntry>,
+) -> Result<(), String> {
+    if depth > 8 {
+        return Ok(());
+    }
+    let start = (extent as usize).checked_mul(2048).ok_or_else(|| "ISO تالف".to_string())?;
+    let end = start
+        .checked_add(size as usize)
+        .ok_or_else(|| "ISO تالف".to_string())?;
+    if end > data.len() {
+        return Err("ISO تالف".to_string());
+    }
+    let mut off = start;
+    while off < end {
+        let len_dr = data[off] as usize;
+        if len_dr == 0 {
+            off = (off / 2048 + 1) * 2048;
+            continue;
+        }
+        if off + len_dr > end || off + 33 > end {
+            return Err("ISO تالف".to_string());
+        }
+        let rec = &data[off..off + len_dr];
+        let ext = u32::from_le_bytes(rec[2..6].try_into().unwrap());
+        let sz = u32::from_le_bytes(rec[10..14].try_into().unwrap());
+        let flags = rec[25];
+        let name_len = rec[32] as usize;
+        if off + 33 + name_len > end {
+            return Err("ISO تالف".to_string());
+        }
+        let raw_name = &rec[33..33 + name_len];
+        let name = if name_len == 1 && raw_name[0] == 0 {
+            ".".to_string()
+        } else if name_len == 1 && raw_name[0] == 1 {
+            "..".to_string()
+        } else {
+            let s = String::from_utf8_lossy(raw_name).to_string();
+            s.split(';').next().unwrap_or("").to_string()
+        };
+        if name != "." && name != ".." && !name.is_empty() {
+            let full = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{}/{}", prefix, name)
+            };
+            let kind = if flags & 2 != 0 {
+                B5Kind::Dir
+            } else {
+                B5Kind::File
+            };
+            out.push(B6FmtEntry {
+                name: full.clone(),
+                size: sz as u64,
+                kind,
+            });
+            if kind == B5Kind::Dir {
+                b6_iso_dir(data, ext, sz, &full, depth + 1, out)?;
+            }
+        }
+        off += len_dr;
+        if out.len() > 1000 {
+            return Err("ISO كبير جدا".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn b6_iso_list(data: &[u8]) -> Result<Vec<B6FmtEntry>, String> {
+    if data.len() < 32768 + 190 || data[32768] != 1 || &data[32769..32774] != b"CD001" {
+        return Err("ISO بلا واصف مجلد أول".to_string());
+    }
+    let root = &data[32768 + 156..32768 + 190];
+    let extent = u32::from_le_bytes(root[2..6].try_into().unwrap());
+    let size = u32::from_le_bytes(root[10..14].try_into().unwrap());
+    let mut out = Vec::new();
+    b6_iso_dir(data, extent, size, "", 0, &mut out)?;
+    Ok(out)
+}
+
+/// عدد صحيح متغير الطول RAR5 (7 بتات لكل بايت، الأهم أخيرا).
+fn b6_rar_vint(data: &[u8], pos: &mut usize) -> Result<u64, String> {
+    let mut v: u64 = 0;
+    let mut shift = 0u32;
+    for _ in 0..10 {
+        let b = *data.get(*pos).ok_or_else(|| "RAR5 ناقص".to_string())?;
+        *pos += 1;
+        v |= ((b & 0x7F) as u64) << shift;
+        if b & 0x80 == 0 {
+            return Ok(v);
+        }
+        shift += 7;
+    }
+    Err("RAR5 بعدد صحيح طويل جدا".to_string())
+}
+
+fn b6_rar4_list(data: &[u8]) -> Result<Vec<B6FmtEntry>, String> {
+    let mut out = Vec::new();
+    let mut pos = 7usize;
+    while pos + 7 <= data.len() {
+        let typ = data[pos + 2];
+        let flags = b6_le_u16(data, pos + 3).ok_or_else(|| "RAR4 تالف".to_string())?;
+        let size = b6_le_u16(data, pos + 5).ok_or_else(|| "RAR4 تالف".to_string())? as usize;
+        if size < 7 {
+            return Err("RAR4 تالف".to_string());
+        }
+        if typ == 0x74 {
+            if pos + 7 + 25 > data.len() {
+                return Err("RAR4 تالف".to_string());
+            }
+            let pack = b6_le_u32(data, pos + 7).ok_or_else(|| "RAR4 تالف".to_string())? as usize;
+            let unp = b6_le_u32(data, pos + 11).ok_or_else(|| "RAR4 تالف".to_string())?;
+            let name_len =
+                b6_le_u16(data, pos + 7 + 19).ok_or_else(|| "RAR4 تالف".to_string())? as usize;
+            let name_at = pos + 7 + 25;
+            if name_at + name_len > data.len() {
+                return Err("RAR4 تالف".to_string());
+            }
+            let name = String::from_utf8_lossy(&data[name_at..name_at + name_len]).to_string();
+            out.push(B6FmtEntry {
+                name,
+                size: unp as u64,
+                kind: B5Kind::File,
+            });
+            pos += size + pack;
+        } else {
+            let mut next = pos + size;
+            if flags & 0x8000 != 0 {
+                if pos + size + 4 > data.len() {
+                    return Err("RAR4 تالف".to_string());
+                }
+                let add = b6_le_u32(data, pos + size).ok_or_else(|| "RAR4 تالف".to_string())? as usize;
+                next += add;
+            }
+            pos = next;
+        }
+        if out.len() > 1000 {
+            return Err("RAR كبير جدا".to_string());
+        }
+    }
+    Ok(out)
+}
+
+fn b6_rar5_list(data: &[u8]) -> Result<Vec<B6FmtEntry>, String> {
+    let mut out = Vec::new();
+    let mut pos = 8usize;
+    while pos < data.len() {
+        let block_start = pos;
+        if pos + 4 > data.len() {
+            break;
+        }
+        let mut p = pos + 4;
+        let header_size = b6_rar_vint(data, &mut p)? as usize;
+        let type_pos = p;
+        let header_type = b6_rar_vint(data, &mut p)?;
+        let header_flags = b6_rar_vint(data, &mut p)?;
+        let mut data_size = 0usize;
+        if header_flags & 0x0001 != 0 {
+            let _ = b6_rar_vint(data, &mut p)?;
+        }
+        if header_flags & 0x0002 != 0 {
+            data_size = b6_rar_vint(data, &mut p)? as usize;
+        }
+        let header_end = type_pos
+            .checked_add(header_size)
+            .ok_or_else(|| "RAR5 تالف".to_string())?;
+        if header_end > data.len() {
+            return Err("RAR5 تالف".to_string());
+        }
+        if header_type == 2 {
+            let file_flags = b6_rar_vint(data, &mut p)?;
+            let unpack_size = b6_rar_vint(data, &mut p)?;
+            let _attrs = b6_rar_vint(data, &mut p)?;
+            if file_flags & 0x0002 != 0 {
+                p += 4;
+            }
+            if file_flags & 0x0004 != 0 {
+                p += 4;
+            }
+            let _compr = b6_rar_vint(data, &mut p)?;
+            let _host = b6_rar_vint(data, &mut p)?;
+            let name_len = b6_rar_vint(data, &mut p)? as usize;
+            if p + name_len > data.len() {
+                return Err("RAR5 تالف".to_string());
+            }
+            let name = String::from_utf8_lossy(&data[p..p + name_len]).to_string();
+            let kind = if file_flags & 0x0001 != 0 {
+                B5Kind::Dir
+            } else {
+                B5Kind::File
+            };
+            out.push(B6FmtEntry {
+                name,
+                size: unpack_size,
+                kind,
+            });
+        } else if header_type == 5 {
+            break;
+        }
+        pos = header_end
+            .checked_add(data_size)
+            .ok_or_else(|| "RAR5 تالف".to_string())?;
+        if pos <= block_start {
+            return Err("RAR5 تالف".to_string());
+        }
+        if out.len() > 1000 {
+            return Err("RAR كبير جدا".to_string());
+        }
+    }
+    Ok(out)
+}
+
+fn b6_rar_list(data: &[u8]) -> Result<Vec<B6FmtEntry>, String> {
+    if data.len() >= 7 && &data[0..7] == b"Rar!\x1A\x07\x00" {
+        b6_rar4_list(data)
+    } else if data.len() >= 8 && &data[0..8] == b"Rar!\x1A\x07\x01\x00" {
+        b6_rar5_list(data)
+    } else {
+        Err("RAR بسحر غير معروف".to_string())
+    }
+}
+
+fn b6_cab_skip_str(data: &[u8], mut p: usize) -> Result<usize, String> {
+    while p < data.len() {
+        if data[p] == 0 {
+            return Ok(p + 1);
+        }
+        p += 1;
+    }
+    Err("CAB تالف".to_string())
+}
+
+fn b6_cab_list(data: &[u8]) -> Result<Vec<B6FmtEntry>, String> {
+    if data.len() < 36 || &data[0..4] != b"MSCF" {
+        return Err("CAB بسحر غير معروف".to_string());
+    }
+    let coff_files = b6_le_u32(data, 16).ok_or_else(|| "CAB تالف".to_string())? as usize;
+    let c_folders = b6_le_u16(data, 26).ok_or_else(|| "CAB تالف".to_string())? as usize;
+    let c_files = b6_le_u16(data, 28).ok_or_else(|| "CAB تالف".to_string())? as usize;
+    let flags = b6_le_u16(data, 30).ok_or_else(|| "CAB تالف".to_string())?;
+    let mut p = 36usize;
+    if flags & 0x0004 != 0 {
+        p = b6_cab_skip_str(data, p)?;
+        p = b6_cab_skip_str(data, p)?;
+    }
+    if flags & 0x0008 != 0 {
+        p = b6_cab_skip_str(data, p)?;
+        p = b6_cab_skip_str(data, p)?;
+    }
+    if flags & 0x0001 != 0 {
+        if p + 4 > data.len() {
+            return Err("CAB تالف".to_string());
+        }
+        let cb_header = b6_le_u16(data, p).ok_or_else(|| "CAB تالف".to_string())? as usize;
+        p += 4 + cb_header;
+    }
+    let _ = p;
+    let _ = c_folders;
+    let mut fp = coff_files;
+    let mut out = Vec::new();
+    for _ in 0..c_files {
+        if fp + 16 > data.len() {
+            return Err("CAB تالف".to_string());
+        }
+        let cb_file = b6_le_u32(data, fp).ok_or_else(|| "CAB تالف".to_string())?;
+        let attribs = b6_le_u16(data, fp + 14).ok_or_else(|| "CAB تالف".to_string())?;
+        fp += 16;
+        let name_end = b6_cab_skip_str(data, fp)?;
+        let name = String::from_utf8_lossy(&data[fp..name_end - 1]).to_string();
+        fp = name_end;
+        let kind = if attribs & 0x10 != 0 {
+            B5Kind::Dir
+        } else {
+            B5Kind::File
+        };
+        out.push(B6FmtEntry {
+            name,
+            size: cb_file as u64,
+            kind,
+        });
+        if out.len() > 1000 {
+            return Err("CAB كبير جدا".to_string());
+        }
+    }
+    Ok(out)
+}
+
+fn b6_xml_tag(block: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let s = block.find(&open)? + open.len();
+    let e = block[s..].find(&close)? + s;
+    Some(block[s..e].to_string())
+}
+
+fn b6_xar_list(data: &[u8]) -> Result<Vec<B6FmtEntry>, String> {
+    if data.len() < 28 || &data[0..4] != b"xar!" {
+        return Err("XAR بسحر غير معروف".to_string());
+    }
+    let header_size = b6_be_u16(data, 4).ok_or_else(|| "XAR تالف".to_string())? as usize;
+    let toc_comp = b6_be_u64(data, 8).ok_or_else(|| "XAR تالف".to_string())? as usize;
+    let toc_uncomp = b6_be_u64(data, 16).ok_or_else(|| "XAR تالف".to_string())? as usize;
+    if toc_comp != toc_uncomp {
+        return Err("TOC في XAR مضغوط — غير مدعوم".to_string());
+    }
+    if header_size + toc_comp > data.len() {
+        return Err("XAR تالف".to_string());
+    }
+    let toc = String::from_utf8_lossy(&data[header_size..header_size + toc_comp]).to_string();
+    let mut out = Vec::new();
+    let mut rest = toc.as_str();
+    while let Some(fi) = rest.find("<file") {
+        let seg = &rest[fi..];
+        let end = seg.find("</file>").ok_or_else(|| "XAR تالف".to_string())?;
+        let block = &seg[..end];
+        let name = b6_xml_tag(block, "name").unwrap_or_default();
+        let size: u64 = b6_xml_tag(block, "size")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let kind = match b6_xml_tag(block, "type").as_deref() {
+            Some("directory") => B5Kind::Dir,
+            Some("symlink") => B5Kind::Link,
+            _ => B5Kind::File,
+        };
+        if !name.is_empty() {
+            out.push(B6FmtEntry { name, size, kind });
+        }
+        rest = &seg[end + 7..];
+        if out.len() > 1000 {
+            return Err("XAR كبير جدا".to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// كتابة مدخل مستخرج على القرص (ملف/مجلد/رابط)؛ تعيد عبر العدادات.
+fn b6_fmt_write_file(
+    dst_root: &std::path::Path,
+    name: &str,
+    content: &[u8],
+    kind: B5Kind,
+    mtime: i64,
+    display: &str,
+    line: usize,
+    col: usize,
+    extracted: &mut i64,
+    skipped: &mut i64,
+) -> RioResult<()> {
+    if !b5_tar_safe_name(name) {
+        return Err(RioError::runtime(
+            format!("الدالة {} اسم غير آمن في الأرشيف: {}", display, name),
+            line,
+            col,
+        ));
+    }
+    let dst = dst_root.join(name);
+    if kind == B5Kind::Dir {
+        let _ = std::fs::create_dir_all(&dst);
+        *extracted += 1;
+        return Ok(());
+    }
+    if let Some(parent) = dst.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if kind == B5Kind::Link {
+        #[cfg(unix)]
+        {
+            let target = String::from_utf8_lossy(content).to_string();
+            let _ = std::fs::remove_file(&dst);
+            if std::os::unix::fs::symlink(&target, &dst).is_ok() {
+                *extracted += 1;
+            } else {
+                *skipped += 1;
+            }
+            return Ok(());
+        }
+        #[cfg(not(unix))]
+        {
+            *skipped += 1;
+            return Ok(());
+        }
+    }
+    match std::fs::write(&dst, content) {
+        Ok(()) => {
+            if mtime != 0 {
+                b5_set_times(&dst, mtime, mtime);
+            }
+            *extracted += 1;
+            Ok(())
+        }
+        Err(_) => Err(RioError::runtime(
+            format!("الدالة {} تعذر الكتابة في {}", display, name),
+            line,
+            col,
+        )),
+    }
+}
+
+/// تحقق بيان mtree: وجود الملفات وأحجامها وsha256 (وmd5 بالحجم فقط).
+fn b6_mtree_verify(
+    entries: &[(B6FmtEntry, Vec<(String, String)>)],
+    base: &std::path::Path,
+) -> bool {
+    for (e, attrs) in entries {
+        let p = base.join(&e.name);
+        match e.kind {
+            B5Kind::Dir => {
+                if !p.is_dir() {
+                    return false;
+                }
+            }
+            B5Kind::Link => {
+                if !p.is_symlink() {
+                    return false;
+                }
+            }
+            _ => {
+                let data = match std::fs::read(&p) {
+                    Ok(d) => d,
+                    Err(_) => return false,
+                };
+                if data.len() as u64 != e.size {
+                    return false;
+                }
+                if let Some(sha) = attrs.iter().find(|(k, _)| k == "sha256").map(|(_, v)| v) {
+                    if crate::crypto::sha256_hex(&data).to_lowercase() != sha.to_lowercase() {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+fn b5_fmt_extract(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أرشيف.استخرج_بصيغة";
+    if args.is_empty() || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا إلى ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let (data, _) = b6_read_archive_source(ctx, &args[0], DISPLAY, line, col)?;
+    let mut target_s = ".".to_string();
+    if args.len() >= 2 {
+        if let Value::Str(s) = &args[1] {
+            target_s = s.clone();
+        }
+    }
+    let fmt = match args.get(2) {
+        Some(v) => b6_fmt_norm(&need_string(DISPLAY, v, line, col)?).to_string(),
+        None => b6_detect_format(&data).to_string(),
+    };
+    let dst_root = search_resolve_path(ctx, &target_s);
+    let _ = std::fs::create_dir_all(&dst_root);
+    let mut extracted = 0i64;
+    let mut skipped = 0i64;
+    let mut total = 0i64;
+    match fmt.as_str() {
+        "tar" => {
+            let synth = vec![args[0].clone(), Value::Str(target_s.clone())];
+            return b5_tar_extract(ctx, &synth, line, col);
+        }
+        "zip" => {
+            let files = zip_parse(&data)
+                .map_err(|e| RioError::runtime(format!("الدالة {} {}", DISPLAY, e), line, col))?;
+            for (n, c) in files {
+                total += 1;
+                let kind = if n.ends_with('/') {
+                    B5Kind::Dir
+                } else {
+                    B5Kind::File
+                };
+                let name = n.trim_end_matches('/').to_string();
+                b6_fmt_write_file(
+                    &dst_root, &name, &c, kind, 0, DISPLAY, line, col, &mut extracted,
+                    &mut skipped,
+                )?;
+            }
+        }
+        "7z" => {
+            let files = b6_sz_parse(&data)
+                .map_err(|e| RioError::runtime(format!("الدالة {} {}", DISPLAY, e), line, col))?;
+            for f in files {
+                total += 1;
+                b6_fmt_write_file(
+                    &dst_root, &f.name, &f.data, f.kind, f.mtime, DISPLAY, line, col,
+                    &mut extracted, &mut skipped,
+                )?;
+            }
+        }
+        "cpio" => {
+            let files = b6_cpio_parse(&data)
+                .map_err(|e| RioError::runtime(format!("الدالة {} {}", DISPLAY, e), line, col))?;
+            for (e, content) in files {
+                total += 1;
+                b6_fmt_write_file(
+                    &dst_root, &e.name, &content, e.kind, 0, DISPLAY, line, col, &mut extracted,
+                    &mut skipped,
+                )?;
+            }
+        }
+        "ar" => {
+            let files = b6_ar_parse(&data)
+                .map_err(|e| RioError::runtime(format!("الدالة {} {}", DISPLAY, e), line, col))?;
+            for (e, content) in files {
+                total += 1;
+                b6_fmt_write_file(
+                    &dst_root, &e.name, &content, e.kind, 0, DISPLAY, line, col, &mut extracted,
+                    &mut skipped,
+                )?;
+            }
+        }
+        "nvz" => {
+            let raw = b5_decompress(&data, DISPLAY, line, col)?;
+            let base = match &args[0] {
+                Value::Str(s) => s
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(s.as_str())
+                    .to_string(),
+                _ => "ملف".to_string(),
+            };
+            let name = base
+                .strip_suffix(".ضغط")
+                .or_else(|| base.strip_suffix(".xz"))
+                .unwrap_or(&base)
+                .to_string();
+            total += 1;
+            b6_fmt_write_file(
+                &dst_root, &name, &raw, B5Kind::File, 0, DISPLAY, line, col, &mut extracted,
+                &mut skipped,
+            )?;
+        }
+        "iso" | "rar" | "cab" | "xar" | "mtree" => {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} الصيغة {} سرد فقط — الاستخراج غير مدعوم",
+                    DISPLAY, fmt
+                ),
+                line,
+                col,
+            ))
+        }
+        "gzip" | "bzip2" | "xz" | "lz4" | "zstd" => {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} الصيغة {} ضغط ملف واحد — استخدم ضغط.فك_ضغط_ملف",
+                    DISPLAY, fmt
+                ),
+                line,
+                col,
+            ))
+        }
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} صيغة غير معروفة: {}", DISPLAY, fmt),
+                line,
+                col,
+            ))
+        }
+    }
+    Ok(Value::Dict(vec![
+        ("هدف".to_string(), Value::Str(target_s)),
+        ("ملفات".to_string(), Value::Number(total as f64)),
+        ("مستخرج".to_string(), Value::Number(extracted as f64)),
+        ("متخطى".to_string(), Value::Number(skipped as f64)),
+    ]))
+}
+
+fn b5_fmt_verify(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أرشيف.تحقق_بصيغة";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let (data, src_path) = b6_read_archive_source(ctx, &args[0], DISPLAY, line, col)?;
+    let fmt = match args.get(1) {
+        Some(v) => b6_fmt_norm(&need_string(DISPLAY, v, line, col)?).to_string(),
+        None => b6_detect_format(&data).to_string(),
+    };
+    let ok = match fmt.as_str() {
+        "tar" => b6_tar_read_bytes(&data, DISPLAY, line, col).is_ok(),
+        "zip" => zip_parse(&data).is_ok(),
+        "7z" => b6_sz_parse(&data).is_ok(),
+        "cpio" => b6_cpio_list(&data).is_ok(),
+        "ar" => b6_ar_parse(&data).is_ok(),
+        "mtree" => match b6_mtree_parse(&String::from_utf8_lossy(&data).to_string()) {
+            Ok(entries) => {
+                let base = src_path
+                    .as_ref()
+                    .and_then(|p| p.parent().map(|x| x.to_path_buf()))
+                    .unwrap_or_else(|| std::path::PathBuf::from("."));
+                b6_mtree_verify(&entries, &base)
+            }
+            Err(_) => false,
+        },
+        "iso" => b6_iso_list(&data).is_ok(),
+        "rar" => b6_rar_list(&data).is_ok(),
+        "cab" => b6_cab_list(&data).is_ok(),
+        "xar" => b6_xar_list(&data).is_ok(),
+        "nvz" => b5_decompress(&data, DISPLAY, line, col).is_ok(),
+        "gzip" | "bzip2" | "xz" | "lz4" | "zstd" => true,
+        _ => false,
+    };
+    Ok(Value::Bool(ok))
+}
+
+// ===== لينكس6-د3ب: 7z بطريقة Copy فقط =====
+
+/// عدد صحيح متغير الطول 7z (البايت الأول يحمل البتات العليا).
+fn b6_sz_read_u64(data: &[u8], pos: &mut usize) -> Option<u64> {
+    let b0 = *data.get(*pos)?;
+    *pos += 1;
+    if b0 < 0x80 {
+        return Some(b0 as u64);
+    }
+    if b0 == 0xFF {
+        let mut v: u64 = 0;
+        for i in 0..8 {
+            v |= (*data.get(*pos)? as u64) << (8 * i);
+            *pos += 1;
+        }
+        return Some(v);
+    }
+    let mut n = 0usize;
+    let mut mask: u8 = 0x80;
+    while b0 & mask != 0 {
+        n += 1;
+        mask >>= 1;
+    }
+    let mut v: u64 = (b0 & (mask - 1)) as u64;
+    for _ in 0..n {
+        v = (v << 8) | (*data.get(*pos)? as u64);
+        *pos += 1;
+    }
+    Some(v)
+}
+
+fn b6_sz_write_u64(out: &mut Vec<u8>, v: u64) {
+    if v < 0x80 {
+        out.push(v as u8);
+        return;
+    }
+    let mut n = 1usize;
+    while n < 8 && v >= (1u64 << (7 + 7 * n)) {
+        n += 1;
+    }
+    if n >= 8 {
+        out.push(0xFF);
+        out.extend_from_slice(&v.to_le_bytes());
+        return;
+    }
+    let first: u8 = (0xFFu8 << (8 - n)) | ((v >> (8 * n)) as u8 & (0xFF >> (n + 1)));
+    out.push(first);
+    for i in (0..n).rev() {
+        out.push((v >> (8 * i)) as u8);
+    }
+}
+
+struct B6SzFile {
+    name: String,
+    size: u64,
+    kind: B5Kind,
+    mtime: i64,
+    data: Vec<u8>,
+}
+
+struct B6SzFolder {
+    coder_id: Vec<u8>,
+    unpack_size: u64,
+}
+
+fn b6_sz_skip_crc(data: &[u8], pos: &mut usize, count: usize) -> Result<(), String> {
+    let all = *data.get(*pos).ok_or_else(|| "7z تالف".to_string())?;
+    *pos += 1;
+    if all == 0 {
+        let nbytes = (count + 7) / 8;
+        *pos = pos
+            .checked_add(nbytes)
+            .ok_or_else(|| "7z تالف".to_string())?;
+        if *pos > data.len() {
+            return Err("7z تالف".to_string());
+        }
+        let defined = (0..count)
+            .filter(|i| {
+                let byte = data.get(*pos - nbytes + i / 8).copied().unwrap_or(0);
+                byte & (0x80 >> (i % 8)) != 0
+            })
+            .count();
+        *pos = pos
+            .checked_add(defined * 4)
+            .ok_or_else(|| "7z تالف".to_string())?;
+    } else {
+        *pos = pos
+            .checked_add(count * 4)
+            .ok_or_else(|| "7z تالف".to_string())?;
+    }
+    if *pos > data.len() {
+        return Err("7z تالف".to_string());
+    }
+    Ok(())
+}
+
+/// تحليل أقسام التدفقات (PackInfo/UnpackInfo/SubStreamsInfo) حتى kEnd.
+fn b6_sz_parse_streams(
+    data: &[u8],
+    pos: &mut usize,
+) -> Result<(Vec<u64>, Vec<B6SzFolder>, Vec<u64>, Vec<u64>), String> {
+    let mut pack_sizes: Vec<u64> = Vec::new();
+    let mut folders: Vec<B6SzFolder> = Vec::new();
+    let mut sub_counts: Vec<u64> = Vec::new();
+    let mut sub_sizes: Vec<u64> = Vec::new();
+    loop {
+        let id = *data.get(*pos).ok_or_else(|| "7z تالف".to_string())?;
+        *pos += 1;
+        match id {
+            0x00 => break,
+            0x06 => {
+                let _pack_pos = b6_sz_read_u64(data, pos).ok_or_else(|| "7z تالف".to_string())?;
+                let n = b6_sz_read_u64(data, pos).ok_or_else(|| "7z تالف".to_string())? as usize;
+                loop {
+                    let pid = *data.get(*pos).ok_or_else(|| "7z تالف".to_string())?;
+                    *pos += 1;
+                    match pid {
+                        0x00 => break,
+                        0x09 => {
+                            for _ in 0..n {
+                                pack_sizes.push(
+                                    b6_sz_read_u64(data, pos)
+                                        .ok_or_else(|| "7z تالف".to_string())?,
+                                );
+                            }
+                        }
+                        0x0A => {
+                            b6_sz_skip_crc(data, pos, n)?;
+                        }
+                        _ => return Err("7z بخاصية PackInfo غير معروفة".to_string()),
+                    }
+                }
+            }
+            0x07 => {
+                let kfolder = *data.get(*pos).ok_or_else(|| "7z تالف".to_string())?;
+                *pos += 1;
+                if kfolder != 0x0B {
+                    return Err("7z بلا kFolder".to_string());
+                }
+                let nf = b6_sz_read_u64(data, pos).ok_or_else(|| "7z تالف".to_string())? as usize;
+                for _ in 0..nf {
+                    let external = *data.get(*pos).ok_or_else(|| "7z تالف".to_string())?;
+                    *pos += 1;
+                    if external != 0 {
+                        return Err("مجلد 7z خارجي غير مدعوم".to_string());
+                    }
+                    let ncoders =
+                        b6_sz_read_u64(data, pos).ok_or_else(|| "7z تالف".to_string())?;
+                    let mut coder_id: Vec<u8> = Vec::new();
+                    let mut nin = 1u64;
+                    let mut nout = 1u64;
+                    for _ in 0..ncoders {
+                        let main = *data.get(*pos).ok_or_else(|| "7z تالف".to_string())?;
+                        *pos += 1;
+                        let id_size = (main & 0x0F) as usize + 1;
+                        if *pos + id_size > data.len() {
+                            return Err("7z تالف".to_string());
+                        }
+                        coder_id = data[*pos..*pos + id_size].to_vec();
+                        *pos += id_size;
+                        if main & 0x20 != 0 {
+                            let asize =
+                                b6_sz_read_u64(data, pos).ok_or_else(|| "7z تالف".to_string())?
+                                    as usize;
+                            *pos = pos.checked_add(asize).ok_or_else(|| "7z تالف".to_string())?;
+                            if *pos > data.len() {
+                                return Err("7z تالف".to_string());
+                            }
+                        }
+                        if main & 0x10 != 0 {
+                            nin = b6_sz_read_u64(data, pos)
+                                .ok_or_else(|| "7z تالف".to_string())?;
+                            nout = b6_sz_read_u64(data, pos)
+                                .ok_or_else(|| "7z تالف".to_string())?;
+                        }
+                    }
+                    if ncoders > 1 || nin != 1 || nout != 1 {
+                        let nb = b6_sz_read_u64(data, pos)
+                            .ok_or_else(|| "7z تالف".to_string())?;
+                        for _ in 0..nb {
+                            let _ = b6_sz_read_u64(data, pos)
+                                .ok_or_else(|| "7z تالف".to_string())?;
+                            let _ = b6_sz_read_u64(data, pos)
+                                .ok_or_else(|| "7z تالف".to_string())?;
+                        }
+                        let np = b6_sz_read_u64(data, pos)
+                            .ok_or_else(|| "7z تالف".to_string())?;
+                        for _ in 0..np {
+                            let _ = b6_sz_read_u64(data, pos)
+                                .ok_or_else(|| "7z تالف".to_string())?;
+                        }
+                    }
+                    folders.push(B6SzFolder {
+                        coder_id,
+                        unpack_size: 0,
+                    });
+                }
+                loop {
+                    let pid = *data.get(*pos).ok_or_else(|| "7z تالف".to_string())?;
+                    *pos += 1;
+                    match pid {
+                        0x00 => break,
+                        0x0C => {
+                            for f in folders.iter_mut() {
+                                f.unpack_size = b6_sz_read_u64(data, pos)
+                                    .ok_or_else(|| "7z تالف".to_string())?;
+                            }
+                        }
+                        0x0A => {
+                            b6_sz_skip_crc(data, pos, folders.len())?;
+                        }
+                        _ => return Err("7z بخاصية UnpackInfo غير معروفة".to_string()),
+                    }
+                }
+            }
+            0x08 => {
+                loop {
+                    let pid = *data.get(*pos).ok_or_else(|| "7z تالف".to_string())?;
+                    *pos += 1;
+                    match pid {
+                        0x00 => break,
+                        0x0D => {
+                            for _ in 0..folders.len() {
+                                sub_counts.push(
+                                    b6_sz_read_u64(data, pos)
+                                        .ok_or_else(|| "7z تالف".to_string())?,
+                                );
+                            }
+                        }
+                        0x09 => {
+                            let total: usize =
+                                sub_counts.iter().map(|c| *c as usize).sum::<usize>();
+                            let n = total.saturating_sub(folders.len());
+                            for _ in 0..n {
+                                sub_sizes.push(
+                                    b6_sz_read_u64(data, pos)
+                                        .ok_or_else(|| "7z تالف".to_string())?,
+                                );
+                            }
+                        }
+                        0x0A => {
+                            let total: usize =
+                                sub_counts.iter().map(|c| *c as usize).sum::<usize>();
+                            b6_sz_skip_crc(data, pos, total)?;
+                        }
+                        _ => return Err("7z بخاصية SubStreamsInfo غير معروفة".to_string()),
+                    }
+                }
+            }
+            _ => return Err("7z بقسم تدفقات غير معروف".to_string()),
+        }
+    }
+    // أحجام التدفقات الفرعية: آخر كل مجلد = باقي حجم فك المجلد.
+    let mut flat_sizes: Vec<u64> = Vec::new();
+    {
+        let mut si = 0usize;
+        for (fi, f) in folders.iter().enumerate() {
+            let c = sub_counts.get(fi).copied().unwrap_or(1) as usize;
+            let mut sum = 0u64;
+            for j in 0..c {
+                if j + 1 == c {
+                    flat_sizes.push(f.unpack_size.saturating_sub(sum));
+                } else {
+                    let s = sub_sizes.get(si).copied().unwrap_or(0);
+                    si += 1;
+                    sum += s;
+                    flat_sizes.push(s);
+                }
+            }
+        }
+    }
+    Ok((pack_sizes, folders, flat_sizes, sub_counts))
+}
+
+fn b6_sz_parse(data: &[u8]) -> Result<Vec<B6SzFile>, String> {
+    if data.len() < 32 || &data[0..6] != b"7z\xBC\xAF\x27\x1C" {
+        return Err("7z بسحر غير معروف".to_string());
+    }
+    let start_crc = b6_le_u32(data, 8).ok_or_else(|| "7z تالف".to_string())?;
+    if crc32(&data[12..32]) != start_crc {
+        return Err("7z ببصمة ترويسة بداية غير مطابقة".to_string());
+    }
+    let next_off = u64::from_le_bytes(data[12..20].try_into().unwrap()) as usize;
+    let next_size = u64::from_le_bytes(data[20..28].try_into().unwrap()) as usize;
+    let next_crc = b6_le_u32(data, 28).ok_or_else(|| "7z تالف".to_string())?;
+    let head_at = 32usize
+        .checked_add(next_off)
+        .ok_or_else(|| "7z تالف".to_string())?;
+    let head_end = head_at
+        .checked_add(next_size)
+        .ok_or_else(|| "7z تالف".to_string())?;
+    if head_end > data.len() {
+        return Err("7z تالف".to_string());
+    }
+    let head = &data[head_at..head_end];
+    if crc32(head) != next_crc {
+        return Err("7z ببصمة ترويسة غير مطابقة".to_string());
+    }
+    let pack_start = head_end;
+    let mut pos = 0usize;
+    let first = *head.get(pos).ok_or_else(|| "7z تالف".to_string())?;
+    pos += 1;
+    if first != 0x01 {
+        return Err("7z بلا ترويسة kHeader".to_string());
+    }
+    let mut pack_sizes: Vec<u64> = Vec::new();
+    let mut folders: Vec<B6SzFolder> = Vec::new();
+    let mut sub_sizes: Vec<u64> = Vec::new();
+    let mut sub_counts: Vec<u64> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    let mut mtimes: Vec<i64> = Vec::new();
+    let mut attribs: Vec<u32> = Vec::new();
+    let mut empty_stream: Vec<bool> = Vec::new();
+    let mut nfiles = 0usize;
+    loop {
+        let id = *head.get(pos).ok_or_else(|| "7z تالف".to_string())?;
+        pos += 1;
+        match id {
+            0x00 => break,
+            0x02 => loop {
+                let pid = *head.get(pos).ok_or_else(|| "7z تالف".to_string())?;
+                pos += 1;
+                if pid == 0x00 {
+                    break;
+                }
+                let sz = b6_sz_read_u64(head, &mut pos)
+                    .ok_or_else(|| "7z تالف".to_string())? as usize;
+                pos = pos.checked_add(sz).ok_or_else(|| "7z تالف".to_string())?;
+                if pos > head.len() {
+                    return Err("7z تالف".to_string());
+                }
+            },
+            0x04 => {
+                let (ps, fs, ss, sc) = b6_sz_parse_streams(head, &mut pos)?;
+                pack_sizes = ps;
+                folders = fs;
+                sub_sizes = ss;
+                sub_counts = sc;
+            }
+            0x05 => {
+                nfiles = b6_sz_read_u64(head, &mut pos)
+                    .ok_or_else(|| "7z تالف".to_string())? as usize;
+                loop {
+                    let pid = *head.get(pos).ok_or_else(|| "7z تالف".to_string())?;
+                    pos += 1;
+                    match pid {
+                        0x00 => break,
+                        0x0E | 0x0F | 0x10 => {
+                            let sz = b6_sz_read_u64(head, &mut pos)
+                                .ok_or_else(|| "7z تالف".to_string())? as usize;
+                            if pos + sz > head.len() {
+                                return Err("7z تالف".to_string());
+                            }
+                            if pid == 0x0E {
+                                for i in 0..nfiles {
+                                    let byte = head[pos + i / 8];
+                                    empty_stream.push(byte & (0x80 >> (i % 8)) != 0);
+                                }
+                            }
+                            pos += sz;
+                        }
+                        0x11 => {
+                            let ext = *head.get(pos).ok_or_else(|| "7z تالف".to_string())?;
+                            pos += 1;
+                            if ext != 0 {
+                                return Err("أسماء 7z خارجية غير مدعومة".to_string());
+                            }
+                            let sz = b6_sz_read_u64(head, &mut pos)
+                                .ok_or_else(|| "7z تالف".to_string())? as usize;
+                            if pos + sz > head.len() {
+                                return Err("7z تالف".to_string());
+                            }
+                            let raw = &head[pos..pos + sz];
+                            pos += sz;
+                            let mut units: Vec<u16> = Vec::new();
+                            let mut cur: Vec<u16> = Vec::new();
+                            for ch in raw.chunks_exact(2) {
+                                let u = u16::from_le_bytes([ch[0], ch[1]]);
+                                if u == 0 {
+                                    units.push(0);
+                                    names.push(String::from_utf16_lossy(&cur));
+                                    cur.clear();
+                                } else {
+                                    cur.push(u);
+                                }
+                            }
+                            let _ = units;
+                            if !cur.is_empty() {
+                                names.push(String::from_utf16_lossy(&cur));
+                            }
+                        }
+                        0x12 | 0x13 | 0x14 => {
+                            let ext = *head.get(pos).ok_or_else(|| "7z تالف".to_string())?;
+                            pos += 1;
+                            if ext != 0 {
+                                return Err("أوقات 7z خارجية غير مدعومة".to_string());
+                            }
+                            let _sz = b6_sz_read_u64(head, &mut pos)
+                                .ok_or_else(|| "7z تالف".to_string())?;
+                            let all = *head.get(pos).ok_or_else(|| "7z تالف".to_string())?;
+                            pos += 1;
+                            let mut defined: Vec<bool> = vec![true; nfiles];
+                            if all == 0 {
+                                let nbytes = (nfiles + 7) / 8;
+                                if pos + nbytes > head.len() {
+                                    return Err("7z تالف".to_string());
+                                }
+                                for i in 0..nfiles {
+                                    defined[i] =
+                                        head[pos + i / 8] & (0x80 >> (i % 8)) != 0;
+                                }
+                                pos += nbytes;
+                            }
+                            if pid == 0x14 {
+                                for i in 0..nfiles {
+                                    if defined[i] {
+                                        if pos + 8 > head.len() {
+                                            return Err("7z تالف".to_string());
+                                        }
+                                        let ft = u64::from_le_bytes(
+                                            head[pos..pos + 8].try_into().unwrap(),
+                                        );
+                                        pos += 8;
+                                        let unix = (ft / 10_000_000)
+                                            .saturating_sub(11_644_473_600)
+                                            as i64;
+                                        mtimes.push(unix);
+                                    } else {
+                                        mtimes.push(0);
+                                    }
+                                }
+                            } else {
+                                for i in 0..nfiles {
+                                    if defined[i] {
+                                        if pos + 8 > head.len() {
+                                            return Err("7z تالف".to_string());
+                                        }
+                                        pos += 8;
+                                    }
+                                }
+                            }
+                        }
+                        0x15 => {
+                            let ext = *head.get(pos).ok_or_else(|| "7z تالف".to_string())?;
+                            pos += 1;
+                            if ext != 0 {
+                                return Err("سمات 7z خارجية غير مدعومة".to_string());
+                            }
+                            let _sz = b6_sz_read_u64(head, &mut pos)
+                                .ok_or_else(|| "7z تالف".to_string())?;
+                            let all = *head.get(pos).ok_or_else(|| "7z تالف".to_string())?;
+                            pos += 1;
+                            let mut defined: Vec<bool> = vec![true; nfiles];
+                            if all == 0 {
+                                let nbytes = (nfiles + 7) / 8;
+                                if pos + nbytes > head.len() {
+                                    return Err("7z تالف".to_string());
+                                }
+                                for i in 0..nfiles {
+                                    defined[i] =
+                                        head[pos + i / 8] & (0x80 >> (i % 8)) != 0;
+                                }
+                                pos += nbytes;
+                            }
+                            for i in 0..nfiles {
+                                if defined[i] {
+                                    if pos + 4 > head.len() {
+                                        return Err("7z تالف".to_string());
+                                    }
+                                    attribs.push(u32::from_le_bytes(
+                                        head[pos..pos + 4].try_into().unwrap(),
+                                    ));
+                                    pos += 4;
+                                } else {
+                                    attribs.push(0);
+                                }
+                            }
+                        }
+                        _ => return Err("7z بخاصية ملفات غير معروفة".to_string()),
+                    }
+                }
+            }
+            _ => return Err("7z بقسم ترويسة غير معروف".to_string()),
+        }
+    }
+    if names.len() != nfiles {
+        return Err("7z بأسماء ناقصة".to_string());
+    }
+    while mtimes.len() < nfiles {
+        mtimes.push(0);
+    }
+    while attribs.len() < nfiles {
+        attribs.push(0);
+    }
+    while empty_stream.len() < nfiles {
+        empty_stream.push(false);
+    }
+    // بيانات التدفقات المضغوطة: مجلد بعد مجلد بترتيب الحزم.
+    let mut folder_data: Vec<Vec<u8>> = Vec::new();
+    {
+        let mut at = pack_start;
+        for (i, f) in folders.iter().enumerate() {
+            let plen = pack_sizes.get(i).copied().unwrap_or(0) as usize;
+            if at + plen > data.len() {
+                return Err("7z تالف".to_string());
+            }
+            if f.coder_id != vec![0u8] {
+                return Err("طريقة ضغط 7z غير Copy غير مدعومة".to_string());
+            }
+            folder_data.push(data[at..at + plen].to_vec());
+            at += plen;
+        }
+    }
+    // توزيع التدفقات الفرعية على الملفات بالترتيب.
+    let mut folder_sub_range: Vec<(usize, usize)> = Vec::new();
+    {
+        let mut acc = 0usize;
+        for (fi, _) in folders.iter().enumerate() {
+            let c = sub_counts.get(fi).copied().unwrap_or(1) as usize;
+            folder_sub_range.push((acc, acc + c));
+            acc += c;
+        }
+    }
+    let mut out: Vec<B6SzFile> = Vec::new();
+    let mut sub_idx = 0usize;
+    let mut sub_off: Vec<usize> = vec![0; folders.len()];
+    for i in 0..nfiles {
+        let is_dir = attribs[i] & 0x10 != 0;
+        let kind = if is_dir {
+            B5Kind::Dir
+        } else {
+            B5Kind::File
+        };
+        let mut content: Vec<u8> = Vec::new();
+        if !empty_stream[i] {
+            if sub_idx >= sub_sizes.len() {
+                return Err("7z تالف".to_string());
+            }
+            let mut fidx = 0usize;
+            for (fi, (s0, e0)) in folder_sub_range.iter().enumerate() {
+                if sub_idx >= *s0 && sub_idx < *e0 {
+                    fidx = fi;
+                    break;
+                }
+            }
+            let fdata = &folder_data[fidx];
+            let off = sub_off[fidx];
+            let want = sub_sizes[sub_idx] as usize;
+            if off + want > fdata.len() {
+                return Err("7z تالف".to_string());
+            }
+            content = fdata[off..off + want].to_vec();
+            sub_off[fidx] += want;
+            sub_idx += 1;
+        }
+        out.push(B6SzFile {
+            name: names[i].clone(),
+            size: content.len() as u64,
+            kind,
+            mtime: mtimes[i],
+            data: content,
+        });
+        if out.len() > 1000 {
+            return Err("7z كبير جدا".to_string());
+        }
+    }
+    Ok(out)
+}
+
+fn b6_sz_list(data: &[u8]) -> Result<Vec<B6FmtEntry>, String> {
+    Ok(b6_sz_parse(data)?
+        .into_iter()
+        .map(|f| B6FmtEntry {
+            name: f.name,
+            size: f.size,
+            kind: f.kind,
+        })
+        .collect())
+}
+
+/// بناء أرشيف 7z بطريقة Copy (مجلد لكل ملف، تيار فك واحد لكل ملف).
+fn b6_sz_build(entries: &[B5TarEntry]) -> Vec<u8> {
+    let n = entries.len();
+    let mut head: Vec<u8> = Vec::new();
+    head.push(0x01);
+    // MainStreamsInfo.
+    head.push(0x04);
+    // PackInfo.
+    head.push(0x06);
+    b6_sz_write_u64(&mut head, 0);
+    b6_sz_write_u64(&mut head, n as u64);
+    head.push(0x09);
+    for e in entries {
+        b6_sz_write_u64(&mut head, e.data.len() as u64);
+    }
+    head.push(0x00);
+    // UnpackInfo.
+    head.push(0x07);
+    head.push(0x0B);
+    b6_sz_write_u64(&mut head, n as u64);
+    for _ in entries {
+        head.push(0x00);
+        b6_sz_write_u64(&mut head, 1);
+        head.push(0x00);
+        head.push(0x00);
+    }
+    head.push(0x0C);
+    for e in entries {
+        b6_sz_write_u64(&mut head, e.data.len() as u64);
+    }
+    head.push(0x0A);
+    head.push(0x01);
+    for e in entries {
+        head.extend_from_slice(&crc32(&e.data).to_le_bytes());
+    }
+    head.push(0x00);
+    // SubStreamsInfo.
+    head.push(0x08);
+    head.push(0x0D);
+    for _ in entries {
+        b6_sz_write_u64(&mut head, 1);
+    }
+    head.push(0x00);
+    head.push(0x00);
+    // FilesInfo.
+    head.push(0x05);
+    b6_sz_write_u64(&mut head, n as u64);
+    // الأسماء UTF-16LE.
+    head.push(0x11);
+    head.push(0x00);
+    let mut names_bytes: Vec<u8> = Vec::new();
+    for e in entries {
+        for u in e.name.encode_utf16() {
+            names_bytes.extend_from_slice(&u.to_le_bytes());
+        }
+        names_bytes.extend_from_slice(&0u16.to_le_bytes());
+    }
+    b6_sz_write_u64(&mut head, names_bytes.len() as u64);
+    head.extend_from_slice(&names_bytes);
+    // وقت التعديل FILETIME.
+    head.push(0x14);
+    head.push(0x00);
+    b6_sz_write_u64(&mut head, (1 + 8 * n) as u64);
+    head.push(0x01);
+    for e in entries {
+        let ft = ((e.mtime.max(0) as u64) + 11_644_473_600) * 10_000_000;
+        head.extend_from_slice(&ft.to_le_bytes());
+    }
+    // سمات ويندوز: مجلد 0x10 وإلا 0x20.
+    head.push(0x15);
+    head.push(0x00);
+    b6_sz_write_u64(&mut head, (1 + 4 * n) as u64);
+    head.push(0x01);
+    for e in entries {
+        let a: u32 = if e.kind == B5Kind::Dir { 0x10 } else { 0x20 };
+        head.extend_from_slice(&a.to_le_bytes());
+    }
+    head.push(0x00);
+    head.push(0x00);
+    // الترويسة الكاملة + بيانات الحزم.
+    let mut out: Vec<u8> = Vec::new();
+    out.extend_from_slice(b"7z\xBC\xAF\x27\x1C");
+    out.extend_from_slice(&[0u8, 4u8]);
+    let after: Vec<u8> = {
+        let mut v = Vec::new();
+        v.extend_from_slice(&0u64.to_le_bytes());
+        v.extend_from_slice(&(head.len() as u64).to_le_bytes());
+        v.extend_from_slice(&crc32(&head).to_le_bytes());
+        v
+    };
+    out.extend_from_slice(&crc32(&after).to_le_bytes());
+    out.extend_from_slice(&after);
+    out.extend_from_slice(&head);
+    for e in entries {
+        out.extend_from_slice(&e.data);
+    }
+    out
+}
+
+const B5_SZ_CREATE_KEYS: &[&str] = &["استثن", "مفصل", "من_قائمة", "صامت", "كتابة_فوق"];
+
+fn b5_sz_create(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أرشيف.أنشئ_7z";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let target_s = need_string(DISPLAY, &args[0], line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, B5_SZ_CREATE_KEYS, line, col)?;
+    let exclude = b5_opt_strs(DISPLAY, pairs, "استثن", line, col)?;
+    let verbose = b5_opt_bool(DISPLAY, pairs, "مفصل", false, line, col)?;
+    let list_file = b5_opt_str(DISPLAY, pairs, "من_قائمة", line, col)?;
+    let quiet = b5_opt_bool(DISPLAY, pairs, "صامت", false, line, col)?;
+    let overwrite = b5_opt_bool(DISPLAY, pairs, "كتابة_فوق", false, line, col)?;
+    let inputs = b5_tar_inputs(ctx, &args[1], list_file.as_deref(), DISPLAY, line, col)?;
+    let entries = b5_tar_collect(ctx, &inputs, &exclude, false, &[], false, true, DISPLAY, line, col)?;
+    let bytes = b6_sz_build(&entries);
+    let target_fs = search_resolve_path(ctx, &target_s);
+    if target_fs.exists() && !overwrite {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} الهدف موجود: {} (استخدم كتابة_فوق)",
+                DISPLAY, target_s
+            ),
+            line,
+            col,
+        ));
+    }
+    if let Some(parent) = target_fs.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&target_fs, &bytes).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر الكتابة في {}", DISPLAY, target_s),
+            line,
+            col,
+        )
+    })?;
+    if verbose && !quiet {
+        for e in &entries {
+            println!("{}", e.name);
+        }
+    }
+    Ok(Value::Dict(vec![
+        ("هدف".to_string(), Value::Str(target_s)),
+        ("ملفات".to_string(), Value::Number(entries.len() as f64)),
+        ("حجم".to_string(), Value::Number(bytes.len() as f64)),
+    ]))
+}
+
+fn b5_sz_list(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أرشيف.اسرد_7z";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا واحدا لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let (data, _) = b6_read_archive_source(ctx, &args[0], DISPLAY, line, col)?;
+    let entries = b6_sz_list(&data)
+        .map_err(|e| RioError::runtime(format!("الدالة {} {}", DISPLAY, e), line, col))?;
+    Ok(Value::List(entries.iter().map(b6_fmt_dict).collect()))
+}
+
+fn b5_sz_extract(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أرشيف.استخرج_7z";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let (data, _) = b6_read_archive_source(ctx, &args[0], DISPLAY, line, col)?;
+    let mut target_s = ".".to_string();
+    if args.len() >= 2 {
+        if let Value::Str(s) = &args[1] {
+            target_s = s.clone();
+        }
+    }
+    let files = b6_sz_parse(&data)
+        .map_err(|e| RioError::runtime(format!("الدالة {} {}", DISPLAY, e), line, col))?;
+    let dst_root = search_resolve_path(ctx, &target_s);
+    let _ = std::fs::create_dir_all(&dst_root);
+    let mut extracted = 0i64;
+    let mut skipped = 0i64;
+    let total = files.len() as i64;
+    for f in files {
+        b6_fmt_write_file(
+            &dst_root, &f.name, &f.data, f.kind, f.mtime, DISPLAY, line, col, &mut extracted,
+            &mut skipped,
+        )?;
+    }
+    Ok(Value::Dict(vec![
+        ("هدف".to_string(), Value::Str(target_s)),
+        ("ملفات".to_string(), Value::Number(total as f64)),
+        ("مستخرج".to_string(), Value::Number(extracted as f64)),
+        ("متخطى".to_string(), Value::Number(skipped as f64)),
+    ]))
+}
+
+
+// لينكس6-د3ب-صيغ.
+
+// لينكس6-د3ب-إصلاح-حقل.
+
+// لينكس6-د3ب-إصلاح-إزاحات.
+
+// ===== لينكس6-هـ1: وحدة سطور (§1–§2) =====
+
+/// دخل سطور: نص مباشر، أو مسار ملف موجود بلا سطر جديد (الملف يفوز).
+fn b6_lines_input(
+    ctx: &mut dyn HandlerCaller,
+    v: &Value,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    let s = need_string(display, v, line, col)?;
+    if !s.contains('\n') {
+        let fs = search_resolve_path(ctx, &s);
+        if fs.is_file() {
+            let raw = std::fs::read(&fs).map_err(|_| {
+                RioError::runtime(
+                    format!("الدالة {} تعذر قراءة {}", display, s),
+                    line,
+                    col,
+                )
+            })?;
+            return Ok(String::from_utf8_lossy(&raw).to_string());
+        }
+    }
+    Ok(s)
+}
+
+/// تقسيم نص إلى سطور (يتحمل \r\n؛ السطر الفارغ الأخير من سطر جديد أخير لا يُحسب).
+fn b6_split_lines(text: &str) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let mut v: Vec<String> = text
+        .split('\n')
+        .map(|l| l.strip_suffix('\r').unwrap_or(l).to_string())
+        .collect();
+    if text.ends_with('\n') {
+        v.pop();
+    }
+    v
+}
+
+fn b6_join_lines(lines: &[String]) -> String {
+    lines.join("\n")
+}
+
+/// عدد اختياري (معامل في موضع) بقيمة افتراضية.
+fn b6_lines_n(
+    args: &[Value],
+    idx: usize,
+    default: i64,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<i64> {
+    match args.get(idx) {
+        Some(v) => need_integer(display, v, line, col),
+        None => Ok(default),
+    }
+}
+
+/// نص اختياري (معامل في موضع) بقيمة افتراضية.
+fn b6_lines_s(
+    args: &[Value],
+    idx: usize,
+    default: &str,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    match args.get(idx) {
+        Some(v) => need_string(display, v, line, col),
+        None => Ok(default.to_string()),
+    }
+}
+
+/// تحليل مواصفة نطاقات "1-3" أو "2" أو "1,3" (واحد-الأساس، شاملة) — مرتبة بلا تكرار.
+fn b6_parse_ranges(spec: &str, display: &str, line: usize, col: usize) -> RioResult<Vec<(usize, usize)>> {
+    let mut out: Vec<(usize, usize)> = Vec::new();
+    for part in spec.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((a, b)) = part.split_once('-') {
+            let lo: usize = a.trim().parse().map_err(|_| {
+                RioError::runtime(
+                    format!("الدالة {} مواصفة نطاق غير صالحة: {}", display, spec),
+                    line,
+                    col,
+                )
+            })?;
+            let hi: usize = b.trim().parse().map_err(|_| {
+                RioError::runtime(
+                    format!("الدالة {} مواصفة نطاق غير صالحة: {}", display, spec),
+                    line,
+                    col,
+                )
+            })?;
+            if lo < 1 || hi < lo {
+                return Err(RioError::runtime(
+                    format!("الدالة {} مواصفة نطاق غير صالحة: {}", display, spec),
+                    line,
+                    col,
+                ));
+            }
+            out.push((lo, hi));
+        } else {
+            let n: usize = part.parse().map_err(|_| {
+                RioError::runtime(
+                    format!("الدالة {} مواصفة نطاق غير صالحة: {}", display, spec),
+                    line,
+                    col,
+                )
+            })?;
+            if n < 1 {
+                return Err(RioError::runtime(
+                    format!("الدالة {} مواصفة نطاق غير صالحة: {}", display, spec),
+                    line,
+                    col,
+                ));
+            }
+            out.push((n, n));
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+/// هل موضع (واحد-الأساس) داخل النطاقات؟
+fn b6_in_ranges(pos: usize, ranges: &[(usize, usize)]) -> bool {
+    ranges.iter().any(|(lo, hi)| pos >= *lo && pos <= *hi)
+}
+
+// ----- §1 -----
+
+fn b6_lines_number(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.رقم_السطور";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let lines = b6_split_lines(&text);
+    let out: Vec<String> = lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| format!("{}: {}", i + 1, l))
+        .collect();
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b6_lines_squeeze_blank(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.اضغط_الفراغات";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let lines = b6_split_lines(&text);
+    let mut out: Vec<String> = Vec::new();
+    let mut prev_blank = false;
+    for l in lines {
+        if l.is_empty() {
+            if prev_blank {
+                continue;
+            }
+            prev_blank = true;
+        } else {
+            prev_blank = false;
+        }
+        out.push(l);
+    }
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b6_lines_reverse(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.اعكس_السطور";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let mut lines = b6_split_lines(&text);
+    lines.reverse();
+    Ok(Value::Str(b6_join_lines(&lines)))
+}
+
+fn b6_lines_head(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.أول_السطور";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let n = b6_lines_n(args, 1, 10, DISPLAY, line, col)?;
+    if n < 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} العدد لا سالب", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let lines = b6_split_lines(&text);
+    let take = (n as usize).min(lines.len());
+    Ok(Value::Str(b6_join_lines(&lines[..take])))
+}
+
+fn b6_lines_tail(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.آخر_السطور";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let n = b6_lines_n(args, 1, 10, DISPLAY, line, col)?;
+    if n < 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} العدد لا سالب", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let lines = b6_split_lines(&text);
+    let skip = lines.len().saturating_sub(n as usize);
+    Ok(Value::Str(b6_join_lines(&lines[skip..])))
+}
+
+fn b6_lines_hexdump(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.ست_عشري";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let data: Vec<u8> = match &args[0] {
+        Value::List(_) => b5_need_bytes(DISPLAY, &args[0], line, col)?,
+        _ => b6_lines_input(ctx, &args[0], DISPLAY, line, col)?
+            .into_bytes(),
+    };
+    let mut out = String::new();
+    for (off, chunk) in data.chunks(16).enumerate() {
+        let mut hex = String::new();
+        for (i, b) in chunk.iter().enumerate() {
+            if i == 8 {
+                hex.push(' ');
+            }
+            hex.push_str(&format!("{:02x} ", b));
+        }
+        while hex.len() < 49 {
+            hex.push(' ');
+        }
+        let ascii: String = chunk
+            .iter()
+            .map(|b| {
+                if (0x20..0x7F).contains(b) {
+                    *b as char
+                } else {
+                    '.'
+                }
+            })
+            .collect();
+        out.push_str(&format!("{:08x}  {} |{}|\n", off * 16, hex, ascii));
+    }
+    Ok(Value::Str(out.trim_end_matches('\n').to_string()))
+}
+
+fn b6_lines_escape(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.نص_مع_هروب";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let mut out = String::new();
+    for ch in text.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            '\r' => out.push_str("\\r"),
+            '"' => out.push_str("\\\""),
+            c if (c as u32) >= 0x20 && (c as u32) != 0x7F => out.push(c),
+            c => out.push_str(&format!("\\x{:02x}", c as u32)),
+        }
+    }
+    Ok(Value::Str(out))
+}
+
+fn b6_lines_nl(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.ترقيم";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let lines = b6_split_lines(&text);
+    let mut out: Vec<String> = Vec::new();
+    let mut n = 0usize;
+    for l in lines {
+        if l.is_empty() {
+            out.push(l);
+        } else {
+            n += 1;
+            out.push(format!("{}: {}", n, l));
+        }
+    }
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+// ----- §2 -----
+
+fn b6_lines_sort(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.فرز";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let mut lines = b6_split_lines(&text);
+    lines.sort();
+    Ok(Value::Str(b6_join_lines(&lines)))
+}
+
+fn b6_lines_sort_rev(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.فرز_عكسي";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let mut lines = b6_split_lines(&text);
+    lines.sort();
+    lines.reverse();
+    Ok(Value::Str(b6_join_lines(&lines)))
+}
+
+fn b6_lines_sort_num(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.فرز_عددي";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let mut lines = b6_split_lines(&text);
+    lines.sort_by(|a, b| {
+        let na: f64 = a.trim().parse().unwrap_or(0.0);
+        let nb: f64 = b.trim().parse().unwrap_or(0.0);
+        na.partial_cmp(&nb).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Ok(Value::Str(b6_join_lines(&lines)))
+}
+
+fn b6_lines_sort_fold(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.فرز_بلا_حالة";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let mut lines = b6_split_lines(&text);
+    lines.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    Ok(Value::Str(b6_join_lines(&lines)))
+}
+
+fn b6_lines_sort_field(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.فرز_بحقل";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let field = need_integer(DISPLAY, &args[1], line, col)?;
+    if field < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} الحقل يبدأ من 1", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let delim = match args.get(2) {
+        Some(v) => Some(need_string(DISPLAY, v, line, col)?),
+        None => None,
+    };
+    let key = |l: &str| -> String {
+        let idx = (field - 1) as usize;
+        match &delim {
+            Some(d) => l
+                .split(d.as_str())
+                .nth(idx)
+                .unwrap_or("")
+                .to_string(),
+            None => l.split_whitespace().nth(idx).unwrap_or("").to_string(),
+        }
+    };
+    let mut lines = b6_split_lines(&text);
+    lines.sort_by(|a, b| key(a).cmp(&key(b)));
+    Ok(Value::Str(b6_join_lines(&lines)))
+}
+
+fn b6_lines_sort_uniq(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.فرز_فريد";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let mut lines = b6_split_lines(&text);
+    lines.sort();
+    lines.dedup();
+    Ok(Value::Str(b6_join_lines(&lines)))
+}
+
+fn b6_lines_uniq_adj(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.أزل_مكرر_متتال";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let mut lines = b6_split_lines(&text);
+    lines.dedup();
+    Ok(Value::Str(b6_join_lines(&lines)))
+}
+
+/// مجموعات متتالية: (السطر، عدد التكرار المتتالي).
+fn b6_lines_runs(lines: &[String]) -> Vec<(String, usize)> {
+    let mut runs: Vec<(String, usize)> = Vec::new();
+    for l in lines {
+        if let Some(last) = runs.last_mut() {
+            if last.0 == *l {
+                last.1 += 1;
+                continue;
+            }
+        }
+        runs.push((l.clone(), 1));
+    }
+    runs
+}
+
+fn b6_lines_count_runs(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.عد_تكرار";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let lines = b6_split_lines(&text);
+    let out: Vec<Value> = b6_lines_runs(&lines)
+        .into_iter()
+        .map(|(s, n)| {
+            Value::Dict(vec![
+                ("سطر".to_string(), Value::Str(s)),
+                ("عدد".to_string(), Value::Number(n as f64)),
+            ])
+        })
+        .collect();
+    Ok(Value::List(out))
+}
+
+fn b6_lines_dup_only(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.مكرر_فقط";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let lines = b6_split_lines(&text);
+    let out: Vec<String> = b6_lines_runs(&lines)
+        .into_iter()
+        .filter(|(_, n)| *n > 1)
+        .map(|(s, _)| s)
+        .collect();
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b6_lines_uniq_only(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.فريد_فقط";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let lines = b6_split_lines(&text);
+    let out: Vec<String> = b6_lines_runs(&lines)
+        .into_iter()
+        .filter(|(_, n)| *n == 1)
+        .map(|(s, _)| s)
+        .collect();
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b6_lines_common(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.مشترك";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let a = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let b = b6_lines_input(ctx, &args[1], DISPLAY, line, col)?;
+    let mut la = b6_split_lines(&a);
+    let mut lb = b6_split_lines(&b);
+    la.sort();
+    lb.sort();
+    la.dedup();
+    lb.dedup();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    let mut j = 0usize;
+    while i < la.len() && j < lb.len() {
+        match la[i].cmp(&lb[j]) {
+            std::cmp::Ordering::Equal => {
+                out.push(la[i].clone());
+                i += 1;
+                j += 1;
+            }
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+        }
+    }
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b6_lines_join_field(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.ادمج_بحقل";
+    if args.len() < 2 || args.len() > 4 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع معاملين إلى أربعة لكن أعطيت {}",
+                DISPLAY,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let a = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let b = b6_lines_input(ctx, &args[1], DISPLAY, line, col)?;
+    let field = b6_lines_n(args, 2, 1, DISPLAY, line, col)?;
+    if field < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} الحقل يبدأ من 1", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let delim = b6_lines_s(args, 3, " ", DISPLAY, line, col)?;
+    let split = |l: &str| -> Vec<String> {
+        if delim == " " {
+            l.split_whitespace().map(|s| s.to_string()).collect()
+        } else {
+            l.split(delim.as_str()).map(|s| s.to_string()).collect()
+        }
+    };
+    let idx = (field - 1) as usize;
+    let mut out: Vec<String> = Vec::new();
+    for la in b6_split_lines(&a) {
+        let fa = split(&la);
+        let key = fa.get(idx).cloned().unwrap_or_default();
+        for lb in b6_split_lines(&b) {
+            let fb = split(&lb);
+            if fb.get(idx).cloned().unwrap_or_default() == key {
+                let rest_a: Vec<String> = fa
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != idx)
+                    .map(|(_, s)| s.clone())
+                    .collect();
+                let rest_b: Vec<String> = fb
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != idx)
+                    .map(|(_, s)| s.clone())
+                    .collect();
+                let mut parts = vec![key.clone()];
+                parts.extend(rest_a);
+                parts.extend(rest_b);
+                out.push(parts.join(&delim));
+                break;
+            }
+        }
+    }
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b6_lines_paste(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.الصق";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let a = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let b = b6_lines_input(ctx, &args[1], DISPLAY, line, col)?;
+    let delim = b6_lines_s(args, 2, "\t", DISPLAY, line, col)?;
+    let la = b6_split_lines(&a);
+    let lb = b6_split_lines(&b);
+    let n = la.len().max(lb.len());
+    let mut out: Vec<String> = Vec::new();
+    for i in 0..n {
+        let x = la.get(i).cloned().unwrap_or_default();
+        let y = lb.get(i).cloned().unwrap_or_default();
+        out.push(format!("{}{}{}", x, delim, y));
+    }
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b6_lines_split_n(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.قسّم_بسطور";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let n = need_integer(DISPLAY, &args[1], line, col)?;
+    if n < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} العدد يبدأ من 1", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let lines = b6_split_lines(&text);
+    let mut out: Vec<Value> = Vec::new();
+    for chunk in lines.chunks(n as usize) {
+        out.push(Value::Str(b6_join_lines(chunk)));
+    }
+    Ok(Value::List(out))
+}
+
+fn b6_lines_split_bytes(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.قسّم_ببايتات";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let n = need_integer(DISPLAY, &args[1], line, col)?;
+    if n < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} العدد يبدأ من 1", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let bytes = text.as_bytes();
+    let mut out: Vec<Value> = Vec::new();
+    for chunk in bytes.chunks(n as usize) {
+        out.push(Value::Str(String::from_utf8_lossy(chunk).to_string()));
+    }
+    Ok(Value::List(out))
+}
+
+
+// لينكس6-هـ1-سطور.
+
+// ===== لينكس6-هـ1ب: وحدة سطور (§3–§4) =====
+
+fn b6_lines_cut_fields(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.قص_حقول";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let spec = need_string(DISPLAY, &args[1], line, col)?;
+    let ranges = b6_parse_ranges(&spec, DISPLAY, line, col)?;
+    let delim = b6_lines_s(args, 2, "\t", DISPLAY, line, col)?;
+    let out: Vec<String> = b6_split_lines(&text)
+        .iter()
+        .map(|l| {
+            let fields: Vec<&str> = l.split(delim.as_str()).collect();
+            let mut keep: Vec<&str> = Vec::new();
+            for (i, f) in fields.iter().enumerate() {
+                if b6_in_ranges(i + 1, &ranges) {
+                    keep.push(f);
+                }
+            }
+            keep.join(&delim)
+        })
+        .collect();
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b6_lines_cut_chars(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.قص_حروف";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let spec = need_string(DISPLAY, &args[1], line, col)?;
+    let ranges = b6_parse_ranges(&spec, DISPLAY, line, col)?;
+    let out: Vec<String> = b6_split_lines(&text)
+        .iter()
+        .map(|l| {
+            l.chars()
+                .enumerate()
+                .filter(|(i, _)| b6_in_ranges(i + 1, &ranges))
+                .map(|(_, c)| c)
+                .collect()
+        })
+        .collect();
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b6_lines_tr(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.استبدل_حروف";
+    if args.len() != 3 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع ثلاثة معاملات لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let from = need_string(DISPLAY, &args[1], line, col)?;
+    let to = need_string(DISPLAY, &args[2], line, col)?;
+    if to.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} المجموعة الثانية فارغة", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let from_chars: Vec<char> = from.chars().collect();
+    let to_chars: Vec<char> = to.chars().collect();
+    let out: String = text
+        .chars()
+        .map(|c| match from_chars.iter().position(|f| *f == c) {
+            Some(i) => to_chars[i.min(to_chars.len() - 1)],
+            None => c,
+        })
+        .collect();
+    Ok(Value::Str(out))
+}
+
+fn b6_lines_delete_chars(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.احذف_حروف";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let set = need_string(DISPLAY, &args[1], line, col)?;
+    let set_chars: Vec<char> = set.chars().collect();
+    let out: String = text
+        .chars()
+        .filter(|c| !set_chars.contains(c))
+        .collect();
+    Ok(Value::Str(out))
+}
+
+fn b6_lines_squeeze_chars(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.اضغط_حروف";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let set = need_string(DISPLAY, &args[1], line, col)?;
+    let set_chars: Vec<char> = set.chars().collect();
+    let mut out = String::new();
+    let mut prev: Option<char> = None;
+    for c in text.chars() {
+        if set_chars.contains(&c) && prev == Some(c) {
+            continue;
+        }
+        prev = Some(c);
+        out.push(c);
+    }
+    Ok(Value::Str(out))
+}
+
+fn b6_lines_case(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.حوّل_حالة";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let dir = need_string(DISPLAY, &args[1], line, col)?;
+    let out = match dir.as_str() {
+        "كبير" => text.to_uppercase(),
+        "صغير" => text.to_lowercase(),
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} الاتجاه كبير أو صغير", DISPLAY),
+                line,
+                col,
+            ))
+        }
+    };
+    Ok(Value::Str(out))
+}
+
+fn b6_lines_fold(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.اطوِ";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let width = b6_lines_n(args, 1, 80, DISPLAY, line, col)?;
+    if width < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} العرض يبدأ من 1", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let w = width as usize;
+    let mut out: Vec<String> = Vec::new();
+    for l in b6_split_lines(&text) {
+        let chars: Vec<char> = l.chars().collect();
+        if chars.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        for chunk in chars.chunks(w) {
+            out.push(chunk.iter().collect());
+        }
+    }
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b6_lines_expand_tabs(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.وسّع_تبويبات";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let width = b6_lines_n(args, 1, 8, DISPLAY, line, col)?;
+    if width < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} العرض يبدأ من 1", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let w = width as usize;
+    let mut out = String::new();
+    let mut col = 0usize;
+    for ch in text.chars() {
+        match ch {
+            '\t' => {
+                let spaces = w - (col % w);
+                for _ in 0..spaces {
+                    out.push(' ');
+                }
+                col += spaces;
+            }
+            '\n' => {
+                out.push('\n');
+                col = 0;
+            }
+            c => {
+                out.push(c);
+                col += 1;
+            }
+        }
+    }
+    Ok(Value::Str(out))
+}
+
+fn b6_lines_columns(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.أعمدة";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let width = need_integer(DISPLAY, &args[1], line, col)?;
+    if width < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} العرض يبدأ من 1", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let lines = b6_split_lines(&text);
+    if lines.is_empty() {
+        return Ok(Value::Str(String::new()));
+    }
+    let max_len = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let cell = max_len + 2;
+    let ncols = ((width as usize) / cell).max(1);
+    let mut out: Vec<String> = Vec::new();
+    for row in lines.chunks(ncols) {
+        let mut s = String::new();
+        for (i, c) in row.iter().enumerate() {
+            if i + 1 == row.len() {
+                s.push_str(c);
+            } else {
+                s.push_str(c);
+                for _ in c.chars().count()..cell {
+                    s.push(' ');
+                }
+            }
+        }
+        out.push(s);
+    }
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+// ----- §4 -----
+
+fn b6_lines_wc(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.عدّ";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let lines = b6_split_lines(&text).len() as f64;
+    let words = text.split_whitespace().count() as f64;
+    let chars = text.chars().count() as f64;
+    Ok(Value::Dict(vec![
+        ("سطور".to_string(), Value::Number(lines)),
+        ("كلمات".to_string(), Value::Number(words)),
+        ("حروف".to_string(), Value::Number(chars)),
+    ]))
+}
+
+fn b6_lines_count_lines(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.عد_سطور";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    Ok(Value::Number(b6_split_lines(&text).len() as f64))
+}
+
+fn b6_lines_count_words(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.عد_كلمات";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    Ok(Value::Number(text.split_whitespace().count() as f64))
+}
+
+fn b6_lines_count_chars(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.عد_حروف";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    Ok(Value::Number(text.chars().count() as f64))
+}
+
+fn b6_lines_shuffle(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.اخلط";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let mut state: u64 = match args.get(1) {
+        Some(v) => need_integer(DISPLAY, v, line, col)? as u64,
+        None => {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            nanos ^ ((std::process::id() as u64) << 32) ^ 0x9E3779B97F4A7C15
+        }
+    };
+    if state == 0 {
+        state = 0x9E3779B97F4A7C15;
+    }
+    let mut lines = b6_split_lines(&text);
+    for i in (1..lines.len()).rev() {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        let r = state.wrapping_mul(0x2545F4914F6CDD1D);
+        let j = (r % ((i + 1) as u64)) as usize;
+        lines.swap(i, j);
+    }
+    Ok(Value::Str(b6_join_lines(&lines)))
+}
+
+fn b6_lines_tee(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.انسخ_لملف_وشاشة";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let path = need_string(DISPLAY, &args[1], line, col)?;
+    println!("{}", text);
+    let fs = search_resolve_path(ctx, &path);
+    std::fs::write(&fs, text.as_bytes()).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر الكتابة في {}", DISPLAY, path),
+            line,
+            col,
+        )
+    })?;
+    Ok(Value::Str(text))
+}
+
+fn lines_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("رقم_السطور", native("رقم_السطور", b6_lines_number)),
+        ("اضغط_الفراغات", native("اضغط_الفراغات", b6_lines_squeeze_blank)),
+        ("اعكس_السطور", native("اعكس_السطور", b6_lines_reverse)),
+        ("أول_السطور", native("أول_السطور", b6_lines_head)),
+        ("آخر_السطور", native("آخر_السطور", b6_lines_tail)),
+        ("ست_عشري", native("ست_عشري", b6_lines_hexdump)),
+        ("نص_مع_هروب", native("نص_مع_هروب", b6_lines_escape)),
+        ("ترقيم", native("ترقيم", b6_lines_nl)),
+        ("فرز", native("فرز", b6_lines_sort)),
+        ("فرز_عكسي", native("فرز_عكسي", b6_lines_sort_rev)),
+        ("فرز_عددي", native("فرز_عددي", b6_lines_sort_num)),
+        ("فرز_بلا_حالة", native("فرز_بلا_حالة", b6_lines_sort_fold)),
+        ("فرز_بحقل", native("فرز_بحقل", b6_lines_sort_field)),
+        ("فرز_فريد", native("فرز_فريد", b6_lines_sort_uniq)),
+        ("أزل_مكرر_متتال", native("أزل_مكرر_متتال", b6_lines_uniq_adj)),
+        ("عد_تكرار", native("عد_تكرار", b6_lines_count_runs)),
+        ("مكرر_فقط", native("مكرر_فقط", b6_lines_dup_only)),
+        ("فريد_فقط", native("فريد_فقط", b6_lines_uniq_only)),
+        ("مشترك", native("مشترك", b6_lines_common)),
+        ("ادمج_بحقل", native("ادمج_بحقل", b6_lines_join_field)),
+        ("الصق", native("الصق", b6_lines_paste)),
+        ("قسم_بسطور", native("قسم_بسطور", b6_lines_split_n)),
+        ("قسم_ببايتات", native("قسم_ببايتات", b6_lines_split_bytes)),
+        ("قص_حقول", native("قص_حقول", b6_lines_cut_fields)),
+        ("قص_حروف", native("قص_حروف", b6_lines_cut_chars)),
+        ("استبدل_حروف", native("استبدل_حروف", b6_lines_tr)),
+        ("احذف_حروف", native("احذف_حروف", b6_lines_delete_chars)),
+        ("اضغط_حروف", native("اضغط_حروف", b6_lines_squeeze_chars)),
+        ("حول_حالة", native("حول_حالة", b6_lines_case)),
+        ("اطو", native("اطو", b6_lines_fold)),
+        ("وسع_تبويبات", native("وسع_تبويبات", b6_lines_expand_tabs)),
+        ("أعمدة", native("أعمدة", b6_lines_columns)),
+        ("عد", native("عد", b6_lines_wc)),
+        ("عد_سطور", native("عد_سطور", b6_lines_count_lines)),
+        ("عد_كلمات", native("عد_كلمات", b6_lines_count_words)),
+        ("عد_حروف", native("عد_حروف", b6_lines_count_chars)),
+        ("اخلط", native("اخلط", b6_lines_shuffle)),
+        ("انسخ_لملف_وشاشة", native("انسخ_لملف_وشاشة", b6_lines_tee)),
+    ]
+}
+
+
+// لينكس6-هـ1ب-سطور.
+// لينكس6-إصلاح-مفاتيح-تشكيل.
+
+// ===== لينكس6-هـ2: تمديد الوحدات (رياضيات/تشفير/أسس) =====
+
+/// تنسيق بشري عربي: 1500 ← "1.5 ألف"؛ دون 1000 ← العدد نفسه.
+fn b6_human_ar(n: f64) -> String {
+    let neg = n < 0.0;
+    let a = n.abs();
+    let units: [(f64, &str); 4] = [
+        (1e12, "تريليون"),
+        (1e9, "مليار"),
+        (1e6, "مليون"),
+        (1e3, "ألف"),
+    ];
+    let mut s = String::new();
+    if neg {
+        s.push('-');
+    }
+    for (v, name) in units {
+        if a >= v {
+            let q = a / v;
+            let qs = if (q.fract()).abs() < 1e-9 {
+                format!("{}", q as i64)
+            } else {
+                let t = format!("{:.1}", q);
+                t.trim_end_matches('0').trim_end_matches('.').to_string()
+            };
+            s.push_str(&format!("{} {}", qs, name));
+            return s;
+        }
+    }
+    if a.fract() == 0.0 {
+        s.push_str(&format!("{}", a as i64));
+    } else {
+        s.push_str(&format!("{}", a));
+    }
+    s
+}
+
+/// تنسيق بشري لاتيني: 1500 ← "1.5K".
+fn b6_human_lat(n: f64) -> String {
+    let neg = n < 0.0;
+    let a = n.abs();
+    let units: [(f64, &str); 4] = [(1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")];
+    let mut s = String::new();
+    if neg {
+        s.push('-');
+    }
+    for (v, name) in units {
+        if a >= v {
+            let q = a / v;
+            let qs = if (q.fract()).abs() < 1e-9 {
+                format!("{}", q as i64)
+            } else {
+                let t = format!("{:.1}", q);
+                t.trim_end_matches('0').trim_end_matches('.').to_string()
+            };
+            s.push_str(&format!("{}{}", qs, name));
+            return s;
+        }
+    }
+    if a.fract() == 0.0 {
+        s.push_str(&format!("{}", a as i64));
+    } else {
+        s.push_str(&format!("{}", a));
+    }
+    s
+}
+
+fn b6_math_human(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "رياضيات.نسق_بشري";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let n = match &args[0] {
+        Value::Number(x) => *x,
+        _ => {
+            return Err(RioError::typ(
+                format!("الدالة {} تتوقع عددا لكن أعطيت {}", DISPLAY, args[0].type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    let style = match args.get(1) {
+        Some(v) => need_string(DISPLAY, v, line, col)?,
+        None => "عربي".to_string(),
+    };
+    let out = match style.as_str() {
+        "عربي" => b6_human_ar(n),
+        "لاتيني" => b6_human_lat(n),
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} الصيغة عربي أو لاتيني", DISPLAY),
+                line,
+                col,
+            ))
+        }
+    };
+    Ok(Value::Str(out))
+}
+
+enum B6Num {
+    I(i64),
+    F(f64),
+}
+
+impl B6Num {
+    fn as_f64(&self) -> f64 {
+        match self {
+            B6Num::I(v) => *v as f64,
+            B6Num::F(v) => *v,
+        }
+    }
+}
+
+struct B6Expr {
+    chars: Vec<char>,
+    pos: usize,
+}
+
+impl B6Expr {
+    fn peek(&self) -> Option<char> {
+        self.chars.get(self.pos).copied()
+    }
+
+    fn skip_ws(&mut self) {
+        while matches!(self.peek(), Some(c) if c.is_whitespace()) {
+            self.pos += 1;
+        }
+    }
+
+    fn eat(&mut self, c: char) -> bool {
+        self.skip_ws();
+        if self.peek() == Some(c) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn eat_str(&mut self, s: &str) -> bool {
+        self.skip_ws();
+        let want: Vec<char> = s.chars().collect();
+        if self.chars[self.pos..]
+            .iter()
+            .zip(want.iter())
+            .all(|(a, b)| a == b)
+            && self.chars.len() - self.pos >= want.len()
+        {
+            self.pos += want.len();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn err<T>(&self, msg: &str, line: usize, col: usize) -> RioResult<T> {
+        Err(RioError::runtime(
+            format!("الدالة رياضيات.احسب_تعبير {}", msg),
+            line,
+            col,
+        ))
+    }
+
+    fn parse_expr(&mut self, line: usize, col: usize) -> RioResult<B6Num> {
+        let mut left = self.parse_add(line, col)?;
+        loop {
+            self.skip_ws();
+            let op = if self.eat_str("<=") {
+                "<="
+            } else if self.eat_str(">=") {
+                ">="
+            } else if self.eat_str("==") {
+                "=="
+            } else if self.eat_str("!=") {
+                "!="
+            } else if self.eat('<') {
+                "<"
+            } else if self.eat('>') {
+                ">"
+            } else {
+                break;
+            };
+            let right = self.parse_add(line, col)?;
+            let a = left.as_f64();
+            let b = right.as_f64();
+            let r = match op {
+                "<" => a < b,
+                ">" => a > b,
+                "<=" => a <= b,
+                ">=" => a >= b,
+                "==" => a == b,
+                _ => a != b,
+            };
+            left = B6Num::I(if r { 1 } else { 0 });
+        }
+        Ok(left)
+    }
+
+    fn parse_add(&mut self, line: usize, col: usize) -> RioResult<B6Num> {
+        let mut left = self.parse_mul(line, col)?;
+        loop {
+            self.skip_ws();
+            if self.eat('+') {
+                let right = self.parse_mul(line, col)?;
+                left = b6_num_add(left, right, line, col)?;
+            } else if self.eat('-') {
+                let right = self.parse_mul(line, col)?;
+                left = b6_num_sub(left, right, line, col)?;
+            } else {
+                break;
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_mul(&mut self, line: usize, col: usize) -> RioResult<B6Num> {
+        let mut left = self.parse_unary(line, col)?;
+        loop {
+            self.skip_ws();
+            if self.eat('*') {
+                let right = self.parse_unary(line, col)?;
+                left = b6_num_mul(left, right, line, col)?;
+            } else if self.eat('/') {
+                let right = self.parse_unary(line, col)?;
+                left = b6_num_div(left, right, line, col)?;
+            } else if self.eat('%') {
+                let right = self.parse_unary(line, col)?;
+                left = b6_num_rem(left, right, line, col)?;
+            } else {
+                break;
+            }
+        }
+        Ok(left)
+    }
+
+    fn parse_unary(&mut self, line: usize, col: usize) -> RioResult<B6Num> {
+        self.skip_ws();
+        if self.eat('-') {
+            let v = self.parse_unary(line, col)?;
+            return Ok(match v {
+                B6Num::I(x) => B6Num::I(x.checked_neg().ok_or_else(|| {
+                    RioError::runtime("الدالة رياضيات.احسب_تعبير تجاوز عددي", line, col)
+                })?),
+                B6Num::F(x) => B6Num::F(-x),
+            });
+        }
+        if self.eat('+') {
+            return self.parse_unary(line, col);
+        }
+        self.parse_primary(line, col)
+    }
+
+    fn parse_primary(&mut self, line: usize, col: usize) -> RioResult<B6Num> {
+        self.skip_ws();
+        if self.eat('(') {
+            let v = self.parse_expr(line, col)?;
+            if !self.eat(')') {
+                return self.err("قوس غير مغلق", line, col);
+            }
+            return Ok(v);
+        }
+        self.parse_number(line, col)
+    }
+
+    fn parse_number(&mut self, line: usize, col: usize) -> RioResult<B6Num> {
+        self.skip_ws();
+        let start = self.pos;
+        let mut is_float = false;
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() {
+                self.pos += 1;
+            } else if c == '.' && !is_float {
+                is_float = true;
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+        if self.pos == start {
+            return self.err("تعبير غير صالح", line, col);
+        }
+        if matches!(self.peek(), Some('e') | Some('E')) {
+            is_float = true;
+            self.pos += 1;
+            if matches!(self.peek(), Some('+') | Some('-')) {
+                self.pos += 1;
+            }
+            let ds = self.pos;
+            while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                self.pos += 1;
+            }
+            if self.pos == ds {
+                return self.err("تعبير غير صالح", line, col);
+            }
+        }
+        let text: String = self.chars[start..self.pos].iter().collect();
+        if is_float {
+            text.parse::<f64>()
+                .map(B6Num::F)
+                .map_err(|_| RioError::runtime("الدالة رياضيات.احسب_تعبير عدد غير صالح", line, col))
+        } else {
+            match text.parse::<i64>() {
+                Ok(v) => Ok(B6Num::I(v)),
+                Err(_) => text
+                    .parse::<f64>()
+                    .map(B6Num::F)
+                    .map_err(|_| {
+                        RioError::runtime("الدالة رياضيات.احسب_تعبير عدد غير صالح", line, col)
+                    }),
+            }
+        }
+    }
+}
+
+fn b6_num_bin(
+    a: B6Num,
+    b: B6Num,
+    f: fn(i64, i64) -> Option<i64>,
+    g: fn(f64, f64) -> f64,
+    line: usize,
+    col: usize,
+) -> RioResult<B6Num> {
+    match (a, b) {
+        (B6Num::I(x), B6Num::I(y)) => match f(x, y) {
+            Some(v) => Ok(B6Num::I(v)),
+            None => Err(RioError::runtime(
+                "الدالة رياضيات.احسب_تعبير تجاوز عددي",
+                line,
+                col,
+            )),
+        },
+        (x, y) => Ok(B6Num::F(g(x.as_f64(), y.as_f64()))),
+    }
+}
+
+fn b6_num_add(a: B6Num, b: B6Num, line: usize, col: usize) -> RioResult<B6Num> {
+    b6_num_bin(a, b, |x, y| x.checked_add(y), |x, y| x + y, line, col)
+}
+
+fn b6_num_sub(a: B6Num, b: B6Num, line: usize, col: usize) -> RioResult<B6Num> {
+    b6_num_bin(a, b, |x, y| x.checked_sub(y), |x, y| x - y, line, col)
+}
+
+fn b6_num_mul(a: B6Num, b: B6Num, line: usize, col: usize) -> RioResult<B6Num> {
+    b6_num_bin(a, b, |x, y| x.checked_mul(y), |x, y| x * y, line, col)
+}
+
+fn b6_num_div(a: B6Num, b: B6Num, line: usize, col: usize) -> RioResult<B6Num> {
+    if b.as_f64() == 0.0 {
+        return Err(RioError::runtime(
+            "الدالة رياضيات.احسب_تعبير قسمة على صفر",
+            line,
+            col,
+        ));
+    }
+    b6_num_bin(a, b, |x, y| x.checked_div(y), |x, y| x / y, line, col)
+}
+
+fn b6_num_rem(a: B6Num, b: B6Num, line: usize, col: usize) -> RioResult<B6Num> {
+    if b.as_f64() == 0.0 {
+        return Err(RioError::runtime(
+            "الدالة رياضيات.احسب_تعبير باقي قسمة على صفر",
+            line,
+            col,
+        ));
+    }
+    b6_num_bin(
+        a,
+        b,
+        |x, y| x.checked_rem(y),
+        |x, y| x % y,
+        line,
+        col,
+    )
+}
+
+fn b6_math_expr(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "رياضيات.احسب_تعبير";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    if text.trim().is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تعبير فارغ", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let mut p = B6Expr {
+        chars: text.chars().collect(),
+        pos: 0,
+    };
+    let v = p.parse_expr(line, col)?;
+    p.skip_ws();
+    if p.pos != p.chars.len() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تعبير غير صالح", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Number(match v {
+        B6Num::I(x) => x as f64,
+        B6Num::F(x) => x,
+    }))
+}
+
+fn b6_math_seq(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "رياضيات.تسلسل";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let (start, end) = if args.len() == 1 {
+        (1i64, need_integer(DISPLAY, &args[0], line, col)?)
+    } else {
+        (
+            need_integer(DISPLAY, &args[0], line, col)?,
+            need_integer(DISPLAY, &args[1], line, col)?,
+        )
+    };
+    if end < start {
+        return Ok(Value::List(Vec::new()));
+    }
+    if end - start >= 100_000 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تسلسل طويل جدا (الحد 100000)", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::List(
+        (start..=end).map(|n| Value::Number(n as f64)).collect(),
+    ))
+}
+
+fn b6_math_seq_step(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "رياضيات.تسلسل_بخطوة";
+    if args.len() != 2 && args.len() != 3 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let (start, end, step) = if args.len() == 2 {
+        (
+            1i64,
+            need_integer(DISPLAY, &args[0], line, col)?,
+            need_integer(DISPLAY, &args[1], line, col)?,
+        )
+    } else {
+        (
+            need_integer(DISPLAY, &args[0], line, col)?,
+            need_integer(DISPLAY, &args[1], line, col)?,
+            need_integer(DISPLAY, &args[2], line, col)?,
+        )
+    };
+    if step == 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} الخطوة لا صفر", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let mut out: Vec<Value> = Vec::new();
+    let mut cur = start;
+    loop {
+        if (step > 0 && cur > end) || (step < 0 && cur < end) {
+            break;
+        }
+        out.push(Value::Number(cur as f64));
+        if out.len() >= 100_000 {
+            return Err(RioError::runtime(
+                format!("الدالة {} تسلسل طويل جدا (الحد 100000)", DISPLAY),
+                line,
+                col,
+            ));
+        }
+        match cur.checked_add(step) {
+            Some(v) => cur = v,
+            None => break,
+        }
+    }
+    Ok(Value::List(out))
+}
+
+// ----- تشفير -----
+
+fn b6_crypto_fast_hash(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تشفير.بصمة_سريعة";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let data: Vec<u8> = match &args[0] {
+        Value::List(_) => b5_need_bytes(DISPLAY, &args[0], line, col)?,
+        Value::Str(s) => {
+            let fs = search_resolve_path(ctx, s);
+            std::fs::read(&fs).map_err(|_| {
+                RioError::runtime(
+                    format!("الدالة {} الملف غير موجود: {}", DISPLAY, s),
+                    line,
+                    col,
+                )
+            })?
+        }
+        _ => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع مسارا أو بايتات لكن أعطيت {}",
+                    DISPLAY,
+                    args[0].type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    Ok(Value::Dict(vec![
+        ("بصمة".to_string(), Value::Str(format!("{:08x}", crc32(&data)))),
+        ("حجم".to_string(), Value::Number(data.len() as f64)),
+    ]))
+}
+
+fn b6_crypto_verify_hashes(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تشفير.تحقق_بصمات";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let items = match &args[0] {
+        Value::List(items) => items.clone(),
+        _ => {
+            return Err(RioError::typ(
+                format!("الدالة {} تتوقع قائمة لكن أعطيت {}", DISPLAY, args[0].type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    let mut out: Vec<Value> = Vec::new();
+    for it in &items {
+        let (path, want) = match it {
+            Value::Dict(ps) => {
+                let p = match dict_get(ps, "ملف") {
+                    Some(Value::Str(s)) => s.clone(),
+                    _ => {
+                        return Err(RioError::runtime(
+                            format!("الدالة {} كل عنصر قاموس {{ملف، بصمة}}", DISPLAY),
+                            line,
+                            col,
+                        ))
+                    }
+                };
+                let h = match dict_get(ps, "بصمة") {
+                    Some(Value::Str(s)) => s.clone(),
+                    _ => {
+                        return Err(RioError::runtime(
+                            format!("الدالة {} كل عنصر قاموس {{ملف، بصمة}}", DISPLAY),
+                            line,
+                            col,
+                        ))
+                    }
+                };
+                (p, h)
+            }
+            _ => {
+                return Err(RioError::typ(
+                    format!("الدالة {} تتوقع قواميس لكن أعطيت {}", DISPLAY, it.type_name()),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let fs = search_resolve_path(ctx, &path);
+        let ok = match std::fs::read(&fs) {
+            Ok(data) => crate::crypto::sha256_hex(&data).to_lowercase() == want.to_lowercase(),
+            Err(_) => false,
+        };
+        out.push(Value::Dict(vec![
+            ("ملف".to_string(), Value::Str(path)),
+            ("صالح".to_string(), Value::Bool(ok)),
+        ]));
+    }
+    Ok(Value::List(out))
+}
+
+// ----- أسس (base64) -----
+
+const B6_B64_ALPHABET: &[u8; 64] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn b6_b64_encode(data: &[u8]) -> String {
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(B6_B64_ALPHABET[(n >> 18) as usize & 63] as char);
+        out.push(B6_B64_ALPHABET[(n >> 12) as usize & 63] as char);
+        if chunk.len() > 1 {
+            out.push(B6_B64_ALPHABET[(n >> 6) as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(B6_B64_ALPHABET[n as usize & 63] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+fn b6_b64_decode(s: &str, display: &str, line: usize, col: usize) -> RioResult<Vec<u8>> {
+    let clean: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    if clean.len() % 4 != 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} صيغة base64 فاسدة", display),
+            line,
+            col,
+        ));
+    }
+    let val = |b: u8| -> RioResult<u8> {
+        match b {
+            b'A'..=b'Z' => Ok(b - b'A'),
+            b'a'..=b'z' => Ok(b - b'a' + 26),
+            b'0'..=b'9' => Ok(b - b'0' + 52),
+            b'+' => Ok(62),
+            b'/' => Ok(63),
+            b'=' => Ok(0),
+            _ => Err(RioError::runtime(
+                format!("الدالة {} صيغة base64 فاسدة", display),
+                line,
+                col,
+            )),
+        }
+    };
+    let mut out: Vec<u8> = Vec::new();
+    for chunk in clean.chunks(4) {
+        let v0 = val(chunk[0])?;
+        let v1 = val(chunk[1])?;
+        let v2 = val(chunk[2])?;
+        let v3 = val(chunk[3])?;
+        if chunk[2] == b'=' && chunk[3] != b'=' {
+            return Err(RioError::runtime(
+                format!("الدالة {} صيغة base64 فاسدة", display),
+                line,
+                col,
+            ));
+        }
+        let n = ((v0 as u32) << 18) | ((v1 as u32) << 12) | ((v2 as u32) << 6) | v3 as u32;
+        out.push((n >> 16) as u8);
+        if chunk[2] != b'=' {
+            out.push((n >> 8) as u8);
+        }
+        if chunk[3] != b'=' {
+            out.push(n as u8);
+        }
+    }
+    Ok(out)
+}
+
+fn b6_bases_b64encode(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أسس.ترميز_قاعدة64";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let data: Vec<u8> = match &args[0] {
+        Value::List(_) => b5_need_bytes(DISPLAY, &args[0], line, col)?,
+        Value::Str(s) => s.as_bytes().to_vec(),
+        _ => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع نصا أو بايتات لكن أعطيت {}",
+                    DISPLAY,
+                    args[0].type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let _ = ctx;
+    Ok(Value::Str(b6_b64_encode(&data)))
+}
+
+fn b6_bases_b64decode(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أسس.فك_قاعدة64";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let data = b6_b64_decode(&text, DISPLAY, line, col)?;
+    Ok(Value::Str(String::from_utf8_lossy(&data).to_string()))
+}
+
+// ===== لينكس6-هـ2: تمديد الوحدات (ملفات/نص/تقويم/عمليات) =====
+
+fn b6_files_access(fs: &std::path::Path, bits: u32) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        match std::fs::metadata(fs) {
+            Ok(m) => m.permissions().mode() & bits != 0,
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        match bits {
+            0o444 | 0o222 => std::fs::metadata(fs)
+                .map(|m| !m.permissions().readonly())
+                .unwrap_or(false),
+            _ => matches!(
+                fs.extension().and_then(|e| e.to_str()),
+                Some("exe") | Some("bat") | Some("cmd") | Some("com")
+            ),
+        }
+    }
+}
+
+fn b6_files_test(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.اختبر";
+    let (flag, path) = if args.len() == 1 {
+        let expr = need_string(DISPLAY, &args[0], line, col)?;
+        let mut it = expr.splitn(2, ' ');
+        let f = it.next().unwrap_or("").to_string();
+        let p = it.next().unwrap_or("").to_string();
+        if p.is_empty() {
+            return Err(RioError::runtime(
+                format!("الدالة {} التعبير علم ومسار (مثال -e ملف)", DISPLAY),
+                line,
+                col,
+            ));
+        }
+        (f, p)
+    } else if args.len() == 2 {
+        let a = need_string(DISPLAY, &args[0], line, col)?;
+        let b = need_string(DISPLAY, &args[1], line, col)?;
+        if a.starts_with('-') {
+            (a, b)
+        } else {
+            (b, a)
+        }
+    } else {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    };
+    let fs = search_resolve_path(ctx, &path);
+    let flag = flag.trim_start_matches('-');
+    let ok = match flag {
+        "e" => std::fs::symlink_metadata(&fs).is_ok(),
+        "d" => fs.is_dir(),
+        "f" => fs.is_file(),
+        "L" => std::fs::symlink_metadata(&fs)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false),
+        "s" => std::fs::metadata(&fs).map(|m| m.len() > 0).unwrap_or(false),
+        "r" => b6_files_access(&fs, 0o444),
+        "w" => b6_files_access(&fs, 0o222),
+        "x" => b6_files_access(&fs, 0o111),
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} علم غير معروف: {}", DISPLAY, flag),
+                line,
+                col,
+            ))
+        }
+    };
+    Ok(Value::Bool(ok))
+}
+
+fn b6_files_basename(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.اسم_الملف";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let _ = ctx;
+    let name = std::path::Path::new(&path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    Ok(Value::Str(name))
+}
+
+fn b6_files_stem(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.اسم_بلا_لاحقة";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let _ = ctx;
+    let base = std::path::Path::new(&path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let out = match args.get(1) {
+        Some(v) => {
+            let suf = need_string(DISPLAY, v, line, col)?;
+            base.strip_suffix(suf.as_str()).unwrap_or(&base).to_string()
+        }
+        None => std::path::Path::new(&base)
+            .file_stem()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or(base),
+    };
+    Ok(Value::Str(out))
+}
+
+fn b6_files_dirname(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.اسم_المجلد";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let _ = ctx;
+    let p = std::path::Path::new(&path);
+    let out = match p.parent() {
+        Some(par) if !par.as_os_str().is_empty() => par.to_string_lossy().to_string(),
+        Some(_) => ".".to_string(),
+        None => "/".to_string(),
+    };
+    Ok(Value::Str(out))
+}
+
+fn b6_files_readlink(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.اقرأ_الرابط";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let fs = search_resolve_path(ctx, &path);
+    let target = std::fs::read_link(&fs).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} ليس رابطا رمزيا: {}", DISPLAY, path),
+            line,
+            col,
+        )
+    })?;
+    Ok(Value::Str(target.to_string_lossy().to_string()))
+}
+
+fn b6_files_realpath(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.مسار_حقيقي";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let fs = search_resolve_path(ctx, &path);
+    let real = std::fs::canonicalize(&fs).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} المسار غير موجود: {}", DISPLAY, path),
+            line,
+            col,
+        )
+    })?;
+    Ok(Value::Str(real.to_string_lossy().to_string()))
+}
+
+fn b6_rand_state() -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let s = nanos ^ ((std::process::id() as u64) << 32) ^ 0x9E3779B97F4A7C15;
+    if s == 0 {
+        0x9E3779B97F4A7C15
+    } else {
+        s
+    }
+}
+
+fn b6_rand_next(state: &mut u64) -> u64 {
+    *state ^= *state >> 12;
+    *state ^= *state << 25;
+    *state ^= *state >> 27;
+    *state = state.wrapping_mul(0x2545F4914F6CDD1D);
+    *state
+}
+
+fn b6_files_tempfile(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.ملف_مؤقت";
+    if args.len() > 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا على الأكثر لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let pattern = match args.first() {
+        Some(v) => need_string(DISPLAY, v, line, col)?,
+        None => "نيفا-مؤقت".to_string(),
+    };
+    let dir = std::env::temp_dir();
+    let mut state = b6_rand_state();
+    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+    for _ in 0..10 {
+        let mut suffix = String::new();
+        for _ in 0..6 {
+            suffix.push(CHARS[(b6_rand_next(&mut state) % 36) as usize] as char);
+        }
+        let name = if pattern.contains("XXXXXX") {
+            pattern.replacen("XXXXXX", &suffix, 1)
+        } else {
+            format!("{}-{}", pattern, suffix)
+        };
+        let fs = dir.join(&name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&fs)
+        {
+            Ok(_) => return Ok(Value::Str(fs.to_string_lossy().to_string())),
+            Err(_) => continue,
+        }
+    }
+    Err(RioError::runtime(
+        format!("الدالة {} تعذر إنشاء ملف مؤقت", DISPLAY),
+        line,
+        col,
+    ))
+}
+
+fn b6_files_rmdir(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.احذف_مجلد";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let fs = search_resolve_path(ctx, &path);
+    std::fs::remove_dir(&fs).map_err(|_| {
+        RioError::runtime(
+            format!(
+                "الدالة {} المجلد غير فارغ أو غير موجود: {}",
+                DISPLAY, path
+            ),
+            line,
+            col,
+        )
+    })?;
+    Ok(Value::Bool(true))
+}
+
+fn b6_files_chmod(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.غيّر_أذونات";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let mode: u32 = match &args[1] {
+        Value::Number(n) => *n as u32,
+        Value::Str(s) => u32::from_str_radix(s.trim(), 8).map_err(|_| {
+            RioError::runtime(
+                format!("الدالة {} أذونات ثمانية غير صالحة: {}", DISPLAY, s),
+                line,
+                col,
+            )
+        })?,
+        _ => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع نصا ثمانيا أو عددا لكن أعطيت {}",
+                    DISPLAY,
+                    args[1].type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let fs = search_resolve_path(ctx, &path);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fs, std::fs::Permissions::from_mode(mode)).map_err(|_| {
+            RioError::runtime(
+                format!("الدالة {} تعذر تغيير أذونات {}", DISPLAY, path),
+                line,
+                col,
+            )
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut perms = std::fs::metadata(&fs)
+            .map_err(|_| {
+                RioError::runtime(
+                    format!("الدالة {} الملف غير موجود: {}", DISPLAY, path),
+                    line,
+                    col,
+                )
+            })?
+            .permissions();
+        perms.set_readonly(mode & 0o222 == 0);
+        std::fs::set_permissions(&fs, perms).map_err(|_| {
+            RioError::runtime(
+                format!("الدالة {} تعذر تغيير أذونات {}", DISPLAY, path),
+                line,
+                col,
+            )
+        })?;
+    }
+    Ok(Value::Bool(true))
+}
+
+fn b6_files_pwd(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.المجلد_الحالي";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع بلا معاملات لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let cwd = std::env::current_dir().map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر قراءة المجلد الحالي", DISPLAY),
+            line,
+            col,
+        )
+    })?;
+    Ok(Value::Str(cwd.to_string_lossy().to_string()))
+}
+
+fn b6_files_dir_size_bytes(
+    ctx: &mut dyn HandlerCaller,
+    path: &str,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<u64> {
+    let fs = search_resolve_path(ctx, path);
+    if std::fs::metadata(&fs).is_err() {
+        return Err(RioError::runtime(
+            format!("الدالة {} المسار غير موجود: {}", display, path),
+            line,
+            col,
+        ));
+    }
+    let mut total: u64 = 0;
+    let mut stack: Vec<std::path::PathBuf> = vec![fs];
+    while let Some(d) = stack.pop() {
+        let md = match std::fs::symlink_metadata(&d) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if md.is_dir() {
+            if let Ok(rd) = std::fs::read_dir(&d) {
+                for e in rd.flatten() {
+                    stack.push(e.path());
+                }
+            }
+        } else if md.is_file() {
+            total += md.len();
+        }
+    }
+    Ok(total)
+}
+
+fn b6_files_dir_size(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.حجم_مجلد";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let total = b6_files_dir_size_bytes(ctx, &path, DISPLAY, line, col)?;
+    Ok(Value::Number(total as f64))
+}
+
+fn b6_files_dir_size_human(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.حجم_مجلد_بشري";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let total = b6_files_dir_size_bytes(ctx, &path, DISPLAY, line, col)?;
+    Ok(Value::Str(b6_human_ar(total as f64)))
+}
+
+fn b6_files_disk_usage(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(u64, u64, u64)> {
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", display, args.len()),
+            line,
+            col,
+        ));
+    }
+    let path = need_string(display, &args[0], line, col)?;
+    let fs = search_resolve_path(ctx, &path);
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let c = std::ffi::CString::new(fs.as_os_str().as_bytes()).map_err(|_| {
+            RioError::runtime(
+                format!("الدالة {} مسار غير صالح: {}", display, path),
+                line,
+                col,
+            )
+        })?;
+        let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+            return Err(RioError::runtime(
+                format!("الدالة {} تعذر قراءة مساحة {}", display, path),
+                line,
+                col,
+            ));
+        }
+        let total = st.f_blocks as u64 * st.f_frsize as u64;
+        let free = st.f_bfree as u64 * st.f_frsize as u64;
+        let used = total.saturating_sub(free);
+        Ok((total, used, free))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = fs;
+        Err(RioError::runtime(
+            format!("الدالة {} مساحة القرص غير مدعومة على هذه المنصة", display),
+            line,
+            col,
+        ))
+    }
+}
+
+fn b6_files_disk(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.مساحة_قرص";
+    let (total, used, free) = b6_files_disk_usage(ctx, args, DISPLAY, line, col)?;
+    Ok(Value::Dict(vec![
+        ("كلي".to_string(), Value::Number(total as f64)),
+        ("مستخدم".to_string(), Value::Number(used as f64)),
+        ("حر".to_string(), Value::Number(free as f64)),
+    ]))
+}
+
+fn b6_files_disk_human(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.مساحة_قرص_بشرية";
+    let (total, used, free) = b6_files_disk_usage(ctx, args, DISPLAY, line, col)?;
+    Ok(Value::Dict(vec![
+        ("كلي".to_string(), Value::Str(b6_human_ar(total as f64))),
+        ("مستخدم".to_string(), Value::Str(b6_human_ar(used as f64))),
+        ("حر".to_string(), Value::Str(b6_human_ar(free as f64))),
+    ]))
+}
+
+// ----- نص: نسق بمواصفات (printf) -----
+
+fn b6_printf_int_arg(
+    args: &[Value],
+    ai: &mut usize,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<i64> {
+    let v = args.get(*ai).ok_or_else(|| {
+        RioError::runtime(
+            format!("الدالة {} مواصفة بلا معامل", display),
+            line,
+            col,
+        )
+    })?;
+    *ai += 1;
+    match v {
+        Value::Number(n) => Ok(*n as i64),
+        _ => Err(RioError::typ(
+            format!("الدالة {} تتوقع عددا لكن أعطيت {}", display, v.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
+fn b6_printf_value_str(v: &Value, display: &str, line: usize, col: usize) -> RioResult<String> {
+    match v {
+        Value::Str(s) => Ok(s.clone()),
+        Value::Number(n) => {
+            if n.fract() == 0.0 && n.abs() < 9e15 {
+                Ok(format!("{}", *n as i64))
+            } else {
+                Ok(format!("{}", n))
+            }
+        }
+        Value::Bool(b) => Ok(if *b { "صحيح".to_string() } else { "خطأ".to_string() }),
+        Value::Nil => Ok("لاشيء".to_string()),
+        _ => Err(RioError::typ(
+            format!(
+                "الدالة {} القيمة لا تنسق كسلسلة: {}",
+                display,
+                v.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+fn b6_apply_width(core: String, width: Option<usize>, left: bool, zero: bool) -> String {
+    let w = width.unwrap_or(0);
+    let len = core.chars().count();
+    if len >= w {
+        return core;
+    }
+    let pad = w - len;
+    if left {
+        format!("{}{}", core, " ".repeat(pad))
+    } else if zero {
+        let mut it = core.chars();
+        let first = it.next().unwrap_or(' ');
+        if first == '-' || first == '+' || first == ' ' {
+            format!("{}{}{}", first, "0".repeat(pad), it.collect::<String>())
+        } else if core.starts_with("0x") || core.starts_with("0X") {
+            format!("{}0{}{}", &core[..2], "0".repeat(pad), &core[2..])
+        } else {
+            format!("{}{}", "0".repeat(pad), core)
+        }
+    } else {
+        format!("{}{}", " ".repeat(pad), core)
+    }
+}
+
+fn b6_printf_g(x: f64, prec: usize) -> String {
+    if x == 0.0 {
+        return "0".to_string();
+    }
+    let p = if prec == 0 { 1 } else { prec };
+    let exp = x.abs().log10().floor() as i64;
+    if (-4..(p as i64)).contains(&exp) {
+        let decimals = (p as i64 - 1 - exp).max(0) as usize;
+        let s = format!("{:.*}", decimals, x);
+        let s = s.trim_end_matches('0').trim_end_matches('.');
+        s.to_string()
+    } else {
+        let s = format!("{:.*e}", p - 1, x);
+        b6_printf_fix_exp(&s)
+    }
+}
+
+fn b6_printf_fix_exp(s: &str) -> String {
+    match s.find('e') {
+        Some(i) => {
+            let (mant, exp) = s.split_at(i);
+            let e: i64 = exp[1..].parse().unwrap_or(0);
+            let mant = mant.trim_end_matches('0').trim_end_matches('.');
+            format!("{}e{:+03}", mant, e)
+        }
+        None => s.to_string(),
+    }
+}
+
+fn b6_text_printf(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "نص.نسق_بمواصفات";
+    if args.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا على الأقل", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let fmt = need_string(DISPLAY, &args[0], line, col)?;
+    let mut out = String::new();
+    let mut ai = 1usize;
+    let mut chars = fmt.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'%') {
+            chars.next();
+            out.push('%');
+            continue;
+        }
+        let mut left = false;
+        let mut plus = false;
+        let mut space = false;
+        let mut zero = false;
+        let mut alt = false;
+        loop {
+            match chars.peek() {
+                Some('-') => {
+                    left = true;
+                    chars.next();
+                }
+                Some('+') => {
+                    plus = true;
+                    chars.next();
+                }
+                Some(' ') => {
+                    space = true;
+                    chars.next();
+                }
+                Some('0') => {
+                    zero = true;
+                    chars.next();
+                }
+                Some('#') => {
+                    alt = true;
+                    chars.next();
+                }
+                _ => break,
+            }
+        }
+        let mut width: Option<usize> = None;
+        if chars.peek() == Some(&'*') {
+            chars.next();
+            let w = b6_printf_int_arg(args, &mut ai, DISPLAY, line, col)?;
+            if w < 0 {
+                left = true;
+                width = Some((-w) as usize);
+            } else {
+                width = Some(w as usize);
+            }
+        } else {
+            let mut w = String::new();
+            while let Some(d) = chars.peek() {
+                if d.is_ascii_digit() {
+                    w.push(*d);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            if !w.is_empty() {
+                width = Some(w.parse().unwrap_or(0));
+            }
+        }
+        let mut prec: Option<usize> = None;
+        if chars.peek() == Some(&'.') {
+            chars.next();
+            if chars.peek() == Some(&'*') {
+                chars.next();
+                let p = b6_printf_int_arg(args, &mut ai, DISPLAY, line, col)?;
+                if p >= 0 {
+                    prec = Some(p as usize);
+                }
+            } else {
+                let mut p = String::new();
+                while let Some(d) = chars.peek() {
+                    if d.is_ascii_digit() {
+                        p.push(*d);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                prec = Some(p.parse().unwrap_or(0));
+            }
+        }
+        let spec = chars.next().ok_or_else(|| {
+            RioError::runtime(
+                format!("الدالة {} مواصفة ناقصة في آخر النسق", DISPLAY),
+                line,
+                col,
+            )
+        })?;
+        let v = args.get(ai).ok_or_else(|| {
+            RioError::runtime(
+                format!("الدالة {} مواصفة %{} بلا معامل", DISPLAY, spec),
+                line,
+                col,
+            )
+        })?;
+        ai += 1;
+        let core = match spec {
+            'd' | 'i' => {
+                let n = match v {
+                    Value::Number(x) => *x as i64,
+                    Value::Bool(b) => {
+                        if *b {
+                            1
+                        } else {
+                            0
+                        }
+                    }
+                    _ => {
+                        return Err(RioError::typ(
+                            format!(
+                                "الدالة {} %{} تتوقع عددا لكن أعطيت {}",
+                                DISPLAY,
+                                spec,
+                                v.type_name()
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                };
+                let sign = if n < 0 {
+                    "-"
+                } else if plus {
+                    "+"
+                } else if space {
+                    " "
+                } else {
+                    ""
+                };
+                let digits = format!("{}", n.unsigned_abs());
+                let digits = match prec {
+                    Some(p) if digits.len() < p => {
+                        format!("{}{}", "0".repeat(p - digits.len()), digits)
+                    }
+                    _ => digits,
+                };
+                format!("{}{}", sign, digits)
+            }
+            'u' => {
+                let n = match v {
+                    Value::Number(x) => *x as i64,
+                    _ => {
+                        return Err(RioError::typ(
+                            format!(
+                                "الدالة {} %u تتوقع عددا لكن أعطيت {}",
+                                DISPLAY,
+                                v.type_name()
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                };
+                if n < 0 {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} %u لا يقبل سالبا", DISPLAY),
+                        line,
+                        col,
+                    ));
+                }
+                let digits = format!("{}", n as u64);
+                match prec {
+                    Some(p) if digits.len() < p => {
+                        format!("{}{}", "0".repeat(p - digits.len()), digits)
+                    }
+                    _ => digits,
+                }
+            }
+            'x' | 'X' | 'o' => {
+                let n = match v {
+                    Value::Number(x) => *x as i64,
+                    _ => {
+                        return Err(RioError::typ(
+                            format!(
+                                "الدالة {} %{} تتوقع عددا لكن أعطيت {}",
+                                DISPLAY,
+                                spec,
+                                v.type_name()
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                };
+                if n < 0 {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} %{} لا يقبل سالبا", DISPLAY, spec),
+                        line,
+                        col,
+                    ));
+                }
+                let digits = match spec {
+                    'x' => format!("{:x}", n as u64),
+                    'X' => format!("{:X}", n as u64),
+                    _ => format!("{:o}", n as u64),
+                };
+                let digits = match prec {
+                    Some(p) if digits.len() < p => {
+                        format!("{}{}", "0".repeat(p - digits.len()), digits)
+                    }
+                    _ => digits,
+                };
+                let prefix = if alt {
+                    match spec {
+                        'x' => "0x",
+                        'X' => "0X",
+                        _ => "0",
+                    }
+                } else {
+                    ""
+                };
+                format!("{}{}", prefix, digits)
+            }
+            'f' | 'F' => {
+                let x = match v {
+                    Value::Number(n) => *n,
+                    _ => {
+                        return Err(RioError::typ(
+                            format!(
+                                "الدالة {} %f تتوقع عددا لكن أعطيت {}",
+                                DISPLAY,
+                                v.type_name()
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                };
+                let p = prec.unwrap_or(6);
+                let mut s = format!("{:.*}", p, x.abs());
+                if x < 0.0 {
+                    s = format!("-{}", s);
+                } else if plus {
+                    s = format!("+{}", s);
+                } else if space {
+                    s = format!(" {}", s);
+                }
+                s
+            }
+            'e' | 'E' => {
+                let x = match v {
+                    Value::Number(n) => *n,
+                    _ => {
+                        return Err(RioError::typ(
+                            format!(
+                                "الدالة {} %e تتوقع عددا لكن أعطيت {}",
+                                DISPLAY,
+                                v.type_name()
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                };
+                let p = prec.unwrap_or(6);
+                let mut s = format!("{:.*e}", p, x.abs());
+                s = b6_printf_fix_exp(&s);
+                if spec == 'E' {
+                    s = s.replace('e', "E");
+                }
+                if x < 0.0 {
+                    s = format!("-{}", s);
+                } else if plus {
+                    s = format!("+{}", s);
+                } else if space {
+                    s = format!(" {}", s);
+                }
+                s
+            }
+            'g' | 'G' => {
+                let x = match v {
+                    Value::Number(n) => *n,
+                    _ => {
+                        return Err(RioError::typ(
+                            format!(
+                                "الدالة {} %g تتوقع عددا لكن أعطيت {}",
+                                DISPLAY,
+                                v.type_name()
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                };
+                let p = prec.unwrap_or(6);
+                let mut s = b6_printf_g(x.abs(), p);
+                if spec == 'G' {
+                    s = s.replace('e', "E");
+                }
+                if x < 0.0 {
+                    s = format!("-{}", s);
+                } else if plus {
+                    s = format!("+{}", s);
+                } else if space {
+                    s = format!(" {}", s);
+                }
+                s
+            }
+            's' => {
+                let s = b6_printf_value_str(v, DISPLAY, line, col)?;
+                match prec {
+                    Some(p) => s.chars().take(p).collect(),
+                    None => s,
+                }
+            }
+            'c' => match v {
+                Value::Number(n) => {
+                    let c = char::from_u32(*n as u32).ok_or_else(|| {
+                        RioError::runtime(
+                            format!("الدالة {} %c بمحرف غير صالح", DISPLAY),
+                            line,
+                            col,
+                        )
+                    })?;
+                    c.to_string()
+                }
+                Value::Str(s) => {
+                    let mut it = s.chars();
+                    match (it.next(), it.next()) {
+                        (Some(c), None) => c.to_string(),
+                        _ => {
+                            return Err(RioError::runtime(
+                                format!("الدالة {} %c تتوقع محرفا واحدا", DISPLAY),
+                                line,
+                                col,
+                            ))
+                        }
+                    }
+                }
+                _ => {
+                    return Err(RioError::typ(
+                        format!(
+                            "الدالة {} %c تتوقع عددا أو نصا لكن أعطيت {}",
+                            DISPLAY,
+                            v.type_name()
+                        ),
+                        line,
+                        col,
+                    ))
+                }
+            },
+            _ => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} مواصفة غير مدعومة: %{}", DISPLAY, spec),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let zero_pad = zero && !left && (spec == 'd' || spec == 'i' || spec == 'u' || spec == 'x' || spec == 'X' || spec == 'o' || spec == 'f' || spec == 'F' || spec == 'e' || spec == 'E' || spec == 'g' || spec == 'G') && prec.is_none();
+        out.push_str(&b6_apply_width(core, width, left, zero_pad));
+    }
+    Ok(Value::Str(out))
+}
+
+// ----- تقويم: اعرض شهري -----
+
+fn b6_cal_monthly(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تقويم.اعرض_شهري";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let y = need_integer(DISPLAY, &args[0], line, col)?;
+    let m = need_integer(DISPLAY, &args[1], line, col)?;
+    if !(1..=9999).contains(&y) || !(1..=12).contains(&m) {
+        return Err(RioError::runtime(
+            format!("الدالة {} سنة 1..9999 وشهر 1..12", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let names = [
+        "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر",
+        "أكتوبر", "نوفمبر", "ديسمبر",
+    ];
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days: i64 = match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ => {
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+    };
+    let first_wd = (crate::time::days_from_civil(y, m as u32, 1) + 4).rem_euclid(7);
+    let mut out = format!("{} {}\n", names[(m - 1) as usize], y);
+    out.push_str("ح  ن  ث  ر  خ  ج  س\n");
+    let mut cells: Vec<String> = vec!["   ".to_string(); first_wd as usize];
+    for d in 1..=days {
+        cells.push(format!("{:>3}", d));
+    }
+    while cells.len() % 7 != 0 {
+        cells.push("   ".to_string());
+    }
+    for row in cells.chunks(7) {
+        out.push_str(&row.join(" "));
+        out.push('\n');
+    }
+    Ok(Value::Str(out.trim_end().to_string()))
+}
+
+// ----- عمليات: سرد العمليات (لينكس فقط) -----
+
+#[cfg(target_os = "linux")]
+fn b6_proc_one(pid: i64, full: bool) -> Option<Value> {
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    let open = stat.find('(')?;
+    let close = stat.rfind(')')?;
+    let comm = stat[open + 1..close].to_string();
+    let rest = &stat[close + 2..];
+    let state = rest.split_whitespace().next()?;
+    let state_ar = match state {
+        "R" => "تعمل",
+        "S" => "نائمة",
+        "D" => "قرص",
+        "Z" => "زومبي",
+        "T" => "متوقفة",
+        "t" => "متتبعة",
+        "X" | "x" => "ميتة",
+        "I" => "خاملة",
+        _ => state,
+    };
+    let mut dict: Vec<(String, Value)> = vec![
+        ("معرف".to_string(), Value::Number(pid as f64)),
+        ("اسم".to_string(), Value::Str(comm)),
+        ("حالة".to_string(), Value::Str(state_ar.to_string())),
+    ];
+    if full {
+        let cmd = std::fs::read(format!("/proc/{}/cmdline", pid)).unwrap_or_default();
+        let cmdline = cmd
+            .split(|b| *b == 0)
+            .map(|s| String::from_utf8_lossy(s))
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        dict.push(("أمر".to_string(), Value::Str(cmdline)));
+    }
+    Some(Value::Dict(dict))
+}
+
+#[cfg(target_os = "linux")]
+fn b6_proc_list(full: bool, display: &str, line: usize, col: usize) -> RioResult<Vec<Value>> {
+    let rd = std::fs::read_dir("/proc").map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر قراءة ‎/proc‎", display),
+            line,
+            col,
+        )
+    })?;
+    let mut items: Vec<(i64, Value)> = Vec::new();
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if let Ok(pid) = name.parse::<i64>() {
+            if let Some(d) = b6_proc_one(pid, full) {
+                items.push((pid, d));
+            }
+        }
+    }
+    items.sort_by_key(|(pid, _)| *pid);
+    Ok(items.into_iter().map(|(_, v)| v).collect())
+}
+
+fn b6_proc_list_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.سرد_العمليات";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع بلا معاملات لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Value::List(b6_proc_list(false, DISPLAY, line, col)?))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(RioError::runtime(
+            format!("الدالة {} سرد العمليات مدعوم على لينكس فقط في هذه الدفعة", DISPLAY),
+            line,
+            col,
+        ))
+    }
+}
+
+fn b6_proc_list_full_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.سرد_كامل";
+    if !args.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع بلا معاملات لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Ok(Value::List(b6_proc_list(true, DISPLAY, line, col)?))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(RioError::runtime(
+            format!("الدالة {} سرد العمليات مدعوم على لينكس فقط في هذه الدفعة", DISPLAY),
+            line,
+            col,
+        ))
+    }
+}
+
+fn b6_proc_by_pid(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.عملية_بمعرف";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let pid = need_integer(DISPLAY, &args[0], line, col)?;
+    #[cfg(target_os = "linux")]
+    {
+        Ok(b6_proc_one(pid, true).unwrap_or(Value::Nil))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(RioError::runtime(
+            format!("الدالة {} سرد العمليات مدعوم على لينكس فقط في هذه الدفعة", DISPLAY),
+            line,
+            col,
+        ))
+    }
+}
+
+
+// لينكس6-هـ2-تمديد.
+
+// لينكس6-هـ2-إصلاح-قرص.
+
+// لينكس6-هـ2-إصلاح-قرص-ب.
