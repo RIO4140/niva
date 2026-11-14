@@ -1644,6 +1644,8 @@ fn display_entries() -> Vec<(&'static str, Value)> {
         ("سرد_اللغات", native("سرد_اللغات", display_list_langs)),
         ("سرد_السمات", native("سرد_السمات", display_list_themes)),
         ("أزل_الألوان", native("أزل_الألوان", display_strip_ansi)),
+        // لينكس7-ز7: اطبع_بلا_سطر.
+        ("اطبع_بلا_سطر", native("اطبع_بلا_سطر", b7_display_print_no_nl)),
     ]
 }
 // END لينكس4-نص مداخل عرض Rust
@@ -2577,6 +2579,11 @@ fn math_entries() -> Vec<(&'static str, Value)> {
         ("تسلسل", native("تسلسل", b6_math_seq)),
         ("تسلسل_بخطوة", native("تسلسل_بخطوة", b6_math_seq_step)),
         ("نسق_بشري", native("نسق_بشري", b6_math_human)),
+        // لينكس7-ز7: قارن/خلط_نطاق/من_حجم_بشري/نسّق_عدد.
+        ("قارن", native("قارن", b7_math_compare)),
+        ("خلط_نطاق", native("خلط_نطاق", b7_math_shuffle_range)),
+        ("من_حجم_بشري", native("من_حجم_بشري", b7_math_from_human)),
+        ("نسق_عدد", native("نسّق_عدد", b7_math_format_num)),
 // == مولّد-دفعة2-مداخل-رياضيات: نهاية ==
     ]
 }
@@ -11851,6 +11858,897 @@ fn net_local_port(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col
 
 // --- عمليات (catalog task 10, from kernel/) ---
 
+// BEGIN لينكس7-ز5-عمليات Rust
+
+/// صف عملية من ‎/proc‎: معرف، أب، اسم، حالة عربية، زمن معالج (نبضات)، مستخدم.
+struct B7ProcRow {
+    pid: i64,
+    ppid: i64,
+    name: String,
+    state: String,
+    cpu: i64,
+    start: i64,
+    user: String,
+}
+
+/// اسم حالة العملية عربيا.
+fn b7_proc_state_ar(state: &str) -> String {
+    match state {
+        "R" => "تعمل".to_string(),
+        "S" => "نائمة".to_string(),
+        "D" => "قرص".to_string(),
+        "Z" => "زومبي".to_string(),
+        "T" => "متوقفة".to_string(),
+        "t" => "متتبعة".to_string(),
+        "X" | "x" => "ميتة".to_string(),
+        "I" => "خاملة".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// مستخدم عملية من ‎/proc/PID/status‎ (Uid) ثم ‎/etc/passwd‎؛ الرقم نصا عند غياب الاسم.
+fn b7_proc_user(pid: i64) -> Option<String> {
+    let status = std::fs::read_to_string(format!("/proc/{}/status", pid)).ok()?;
+    let mut uid: Option<i64> = None;
+    for l in status.lines() {
+        if let Some(rest) = l.strip_prefix("Uid:") {
+            uid = rest.split_whitespace().next().and_then(|s| s.parse().ok());
+            break;
+        }
+    }
+    let uid = uid?;
+    if let Ok(passwd) = std::fs::read_to_string("/etc/passwd") {
+        for l in passwd.lines() {
+            let mut it = l.split(':');
+            if let (Some(name), Some(_), Some(u)) = (it.next(), it.next(), it.next()) {
+                if u.parse::<i64>().ok() == Some(uid) {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    Some(uid.to_string())
+}
+
+/// ذاكرة مقيمة (بايتات) من ‎/proc/PID/status‎ (VmRSS).
+fn b7_proc_rss(pid: i64) -> i64 {
+    let status = match std::fs::read_to_string(format!("/proc/{}/status", pid)) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    for l in status.lines() {
+        if let Some(rest) = l.strip_prefix("VmRSS:") {
+            if let Some(n) = rest.split_whitespace().next().and_then(|s| s.parse::<i64>().ok()) {
+                return n * 1024;
+            }
+        }
+    }
+    0
+}
+
+/// كل صفوف العمليات (لينكس فقط) مرتبة بالمعرف.
+fn b7_proc_rows(display: &str, line: usize, col: usize) -> RioResult<Vec<B7ProcRow>> {
+    let rd = std::fs::read_dir("/proc").map_err(|_| {
+        RioError::runtime(format!("الدالة {} تعذر قراءة ‎/proc‎", display), line, col)
+    })?;
+    let mut rows: Vec<B7ProcRow> = Vec::new();
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if let Ok(pid) = name.parse::<i64>() {
+            let stat = match std::fs::read_to_string(format!("/proc/{}/stat", pid)) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let open = match stat.find('(') {
+                Some(o) => o,
+                None => continue,
+            };
+            let close = match stat.rfind(')') {
+                Some(c) => c,
+                None => continue,
+            };
+            let comm = stat[open + 1..close].to_string();
+            let rest = &stat[close + 2..];
+            let f: Vec<&str> = rest.split_whitespace().collect();
+            if f.len() < 20 {
+                continue;
+            }
+            let state = b7_proc_state_ar(f[0]);
+            let ppid: i64 = f[1].parse().unwrap_or(0);
+            let utime: i64 = f[11].parse().unwrap_or(0);
+            let stime: i64 = f[12].parse().unwrap_or(0);
+            let start: i64 = f[19].parse().unwrap_or(0);
+            let user = b7_proc_user(pid).unwrap_or_default();
+            rows.push(B7ProcRow {
+                pid,
+                ppid,
+                name: comm,
+                state,
+                cpu: utime + stime,
+                start,
+                user,
+            });
+        }
+    }
+    rows.sort_by_key(|r| r.pid);
+    Ok(rows)
+}
+
+/// قاموس عملية أساسي {معرف، اسم، حالة}.
+fn b7_proc_base_dict(row: &B7ProcRow) -> Vec<(String, Value)> {
+    vec![
+        ("معرف".to_string(), Value::Number(row.pid as f64)),
+        ("اسم".to_string(), Value::Str(row.name.clone())),
+        ("حالة".to_string(), Value::Str(row.state.clone())),
+    ]
+}
+
+/// ترشيح قاموس بأعمدة مطلوبة (بالترتيب المطلوب).
+fn b7_filter_cols(dict: Vec<(String, Value)>, cols: &[String]) -> Vec<(String, Value)> {
+    let mut out = Vec::new();
+    for c in cols {
+        if let Some((_, v)) = dict.iter().find(|(k, _)| k == c) {
+            out.push((c.clone(), v.clone()));
+        }
+    }
+    out
+}
+
+/// بناء شجرة عمليات من الصفوف: عقد {معرف، أب، أبناء}.
+fn b7_proc_tree(rows: &[B7ProcRow]) -> Vec<Value> {
+    use std::collections::HashMap;
+    let pids: std::collections::HashSet<i64> = rows.iter().map(|r| r.pid).collect();
+    let mut children: HashMap<i64, Vec<i64>> = HashMap::new();
+    for r in rows {
+        children.entry(r.ppid).or_default().push(r.pid);
+    }
+    for v in children.values_mut() {
+        v.sort();
+    }
+    fn node(pid: i64, ppid: i64, children: &HashMap<i64, Vec<i64>>) -> Value {
+        let mut kids: Vec<Value> = Vec::new();
+        if let Some(list) = children.get(&pid) {
+            for c in list {
+                kids.push(node(*c, pid, children));
+            }
+        }
+        Value::Dict(vec![
+            ("معرف".to_string(), Value::Number(pid as f64)),
+            ("أب".to_string(), Value::Number(ppid as f64)),
+            ("أبناء".to_string(), Value::List(kids)),
+        ])
+    }
+    let mut roots: Vec<Value> = Vec::new();
+    for r in rows {
+        if r.ppid == 0 || !pids.contains(&r.ppid) {
+            roots.push(node(r.pid, r.ppid, &children));
+        }
+    }
+    roots
+}
+
+/// عمليات.سرد_بموارد — البند 231.
+fn b7_proc_res(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.سرد_بموارد";
+    need_args(DISPLAY, args, 0, line, col)?;
+    #[cfg(target_os = "linux")]
+    {
+        let rows = b7_proc_rows(DISPLAY, line, col)?;
+        let list: Vec<Value> = rows
+            .iter()
+            .map(|r| {
+                Value::Dict(vec![
+                    ("معرف".to_string(), Value::Number(r.pid as f64)),
+                    ("اسم".to_string(), Value::Str(r.name.clone())),
+                    ("مستخدم".to_string(), Value::Str(r.user.clone())),
+                    ("ذاكرة".to_string(), Value::Number(b7_proc_rss(r.pid) as f64)),
+                    ("معالج".to_string(), Value::Number(r.cpu as f64 / 100.0)),
+                ])
+            })
+            .collect();
+        Ok(Value::List(list))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(RioError::runtime(
+            format!("الدالة {} مدعومة على لينكس فقط في هذه الدفعة", DISPLAY),
+            line,
+            col,
+        ))
+    }
+}
+
+/// عمليات.خريطة_ذاكرة — البند 240.
+fn b7_proc_maps(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.خريطة_ذاكرة";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pid = need_integer(DISPLAY, &args[0], line, col)?;
+    #[cfg(target_os = "linux")]
+    {
+        let text = std::fs::read_to_string(format!("/proc/{}/maps", pid)).map_err(|_| {
+            RioError::runtime(format!("الدالة {} لا خريطة للعملية {}", DISPLAY, pid), line, col)
+        })?;
+        let mut list: Vec<Value> = Vec::new();
+        for l in text.lines() {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            if f.len() < 5 {
+                continue;
+            }
+            let (start_s, end_s) = match f[0].split_once('-') {
+                Some((a, b)) => (a, b),
+                None => continue,
+            };
+            let start = i64::from_str_radix(start_s, 16).unwrap_or(0);
+            let end = i64::from_str_radix(end_s, 16).unwrap_or(0);
+            let path = if f.len() > 5 { f[5..].join(" ") } else { String::new() };
+            list.push(Value::Dict(vec![
+                ("بداية".to_string(), Value::Number(start as f64)),
+                ("نهاية".to_string(), Value::Number(end as f64)),
+                ("أذونات".to_string(), Value::Str(f[1].to_string())),
+                ("إزاحة".to_string(), Value::Number(i64::from_str_radix(f[2], 16).unwrap_or(0) as f64)),
+                ("جهاز".to_string(), Value::Str(f[3].to_string())),
+                ("عقدة".to_string(), Value::Number(f[4].parse::<i64>().unwrap_or(0) as f64)),
+                ("مسار".to_string(), Value::Str(path)),
+            ]));
+        }
+        Ok(Value::List(list))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(RioError::runtime(
+            format!("الدالة {} مدعومة على لينكس فقط في هذه الدفعة", DISPLAY),
+            line,
+            col,
+        ))
+    }
+}
+
+/// عمليات.مجلد_عملية — البند 241.
+fn b7_proc_cwd(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.مجلد_عملية";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let pid = need_integer(DISPLAY, &args[0], line, col)?;
+    #[cfg(target_os = "linux")]
+    {
+        let p = std::fs::read_link(format!("/proc/{}/cwd", pid)).map_err(|_| {
+            RioError::runtime(format!("الدالة {} لا مجلد للعملية {}", DISPLAY, pid), line, col)
+        })?;
+        Ok(Value::Str(p.to_string_lossy().into_owned()))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(RioError::runtime(
+            format!("الدالة {} مدعومة على لينكس فقط في هذه الدفعة", DISPLAY),
+            line,
+            col,
+        ))
+    }
+}
+
+/// عمليات.ابحث_عملية — البنود 245/246/247/248.
+fn b7_proc_find(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.ابحث_عملية";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let name = need_string(DISPLAY, &args[0], line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["أقدم_أو_أحدث", "مستخدم", "عد"], line, col)?;
+    let oldest_newest = b5_opt_str(DISPLAY, pairs, "أقدم_أو_أحدث", line, col)?;
+    let user_filter = b5_opt_str(DISPLAY, pairs, "مستخدم", line, col)?;
+    let count_only = b5_opt_bool(DISPLAY, pairs, "عد", false, line, col)?;
+    if let Some(ref v) = oldest_newest {
+        if v != "أقدم" && v != "أحدث" {
+            return Err(RioError::runtime(
+                format!("الدالة {} أقدم_أو_أحدث تتوقع «أقدم» أو «أحدث»", DISPLAY),
+                line,
+                col,
+            ));
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let rows = b7_proc_rows(DISPLAY, line, col)?;
+        let mut hits: Vec<&B7ProcRow> = rows
+            .iter()
+            .filter(|r| r.name.contains(name.as_str()))
+            .collect();
+        if let Some(ref u) = user_filter {
+            hits.retain(|r| &r.user == u);
+        }
+        if count_only {
+            return Ok(Value::Number(hits.len() as f64));
+        }
+        if let Some(ref v) = oldest_newest {
+            if hits.is_empty() {
+                return Err(RioError::runtime(
+                    format!("الدالة {} لا عملية بالاسم {}", DISPLAY, name),
+                    line,
+                    col,
+                ));
+            }
+            let picked = if v == "أقدم" {
+                hits.iter().min_by_key(|r| r.start).unwrap()
+            } else {
+                hits.iter().max_by_key(|r| r.start).unwrap()
+            };
+            return Ok(Value::Number(picked.pid as f64));
+        }
+        Ok(Value::List(
+            hits.iter().map(|r| Value::Number(r.pid as f64)).collect(),
+        ))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(RioError::runtime(
+            format!("الدالة {} مدعومة على لينكس فقط في هذه الدفعة", DISPLAY),
+            line,
+            col,
+        ))
+    }
+}
+
+/// رقم إشارة من اسمها أو رقمها.
+fn b7_signal_num(v: &Value, display: &str, line: usize, col: usize) -> RioResult<i32> {
+    let s = match v {
+        Value::Str(s) => s.clone(),
+        Value::Number(n) => format!("{}", *n as i64),
+        other => {
+            return Err(RioError::typ(
+                format!("الدالة {} تتوقع اسم إشارة أو رقمها لكن أعطيت {}", display, other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    let n = match s.as_str() {
+        "HUP" | "1" => 1,
+        "INT" | "2" => 2,
+        "QUIT" | "3" => 3,
+        "ILL" | "4" => 4,
+        "TRAP" | "5" => 5,
+        "ABRT" | "6" => 6,
+        "BUS" | "7" => 7,
+        "FPE" | "8" => 8,
+        "KILL" | "9" => 9,
+        "USR1" | "10" => 10,
+        "SEGV" | "11" => 11,
+        "USR2" | "12" => 12,
+        "PIPE" | "13" => 13,
+        "ALRM" | "14" => 14,
+        "TERM" | "15" => 15,
+        "CHLD" | "17" => 17,
+        "CONT" | "18" => 18,
+        "STOP" | "19" => 19,
+        "TSTP" | "20" => 20,
+        "TTIN" | "21" => 21,
+        "TTOU" | "22" => 22,
+        "URG" | "23" => 23,
+        "XCPU" | "24" => 24,
+        "XFSZ" | "25" => 25,
+        "VTALRM" | "26" => 26,
+        "PROF" | "27" => 27,
+        "WINCH" | "28" => 28,
+        "IO" | "29" => 29,
+        "PWR" | "30" => 30,
+        "SYS" | "31" => 31,
+        other => match other.parse::<i32>() {
+            Ok(n) if (1..=64).contains(&n) => n,
+            _ => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} إشارة غير معروفة: {}", display, s),
+                    line,
+                    col,
+                ))
+            }
+        },
+    };
+    Ok(n)
+}
+
+/// عمليات.أنه_باسم — البنود 249/250.
+fn b7_proc_killname(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.أنه_باسم";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let name = need_string(DISPLAY, &args[0], line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["إشارة"], line, col)?;
+    let mut sig = 15i32;
+    if let Some(v) = dict_get(pairs, "إشارة") {
+        sig = b7_signal_num(v, DISPLAY, line, col)?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let rows = b7_proc_rows(DISPLAY, line, col)?;
+        let mut killed = 0i64;
+        for r in rows {
+            if r.name.contains(name.as_str()) {
+                let rc = unsafe { libc::kill(r.pid as libc::pid_t, sig) };
+                if rc == 0 {
+                    killed += 1;
+                }
+            }
+        }
+        Ok(Value::Number(killed as f64))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(RioError::runtime(
+            format!("الدالة {} مدعومة على لينكس فقط في هذه الدفعة", DISPLAY),
+            line,
+            col,
+        ))
+    }
+}
+
+/// عمليات.سرد_الإشارات — البند 254.
+fn b7_proc_signals(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.سرد_الإشارات";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let names = [
+        "HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "BUS", "FPE", "KILL", "USR1", "SEGV",
+        "USR2", "PIPE", "ALRM", "TERM", "STKFLT", "CHLD", "CONT", "STOP", "TSTP", "TTIN",
+        "TTOU", "URG", "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "IO", "PWR", "SYS",
+    ];
+    Ok(Value::List(
+        names.iter().map(|n| Value::Str(n.to_string())).collect(),
+    ))
+}
+
+/// عمليات.غيّر_أولوية — البند 256.
+fn b7_proc_renice(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.غيّر_أولوية";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let pid = need_integer(DISPLAY, &args[0], line, col)?;
+    let nice = need_integer(DISPLAY, &args[1], line, col)?;
+    if nice < -20 || nice > 19 {
+        return Err(RioError::runtime(
+            format!("الدالة {} الأولوية بين -20 و19", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    #[cfg(unix)]
+    {
+        let rc = unsafe { libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, nice as libc::c_int) };
+        if rc != 0 {
+            return Err(RioError::runtime(
+                format!("الدالة {} تعذر تغيير أولوية العملية {}", DISPLAY, pid),
+                line,
+                col,
+            ));
+        }
+        Ok(Value::Bool(true))
+    }
+    #[cfg(not(unix))]
+    {
+        Err(RioError::runtime(
+            format!("الدالة {} غير مدعومة على ويندوز", DISPLAY),
+            line,
+            col,
+        ))
+    }
+}
+
+/// تشغيل أمر عبر باني السياسة والتقاط مخرجاته؛ يعيد (رمز، مخرجات).
+#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "windows")))]
+fn b7_run_cmd_capture(display: &str, cmd_text: &str, line: usize, col: usize) -> RioResult<(i64, String)> {
+    use std::process::Stdio;
+    let (mut cmd, _disp) = crate::processes::build_spawn_command(cmd_text, line, col)?;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let out = cmd.output().map_err(|_| {
+        RioError::runtime(format!("الدالة {} تعذر تشغيل الأمر", display), line, col)
+    })?;
+    Ok((
+        out.status.code().unwrap_or(-1) as i64,
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn b7_run_cmd_capture(display: &str, _cmd_text: &str, _line: usize, _col: usize) -> RioResult<(i64, String)> {
+    Err(RioError::runtime(
+        format!("الدالة {} غير مدعومة على ويندوز", display),
+        _line,
+        _col,
+    ))
+}
+
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+fn b7_run_cmd_capture(display: &str, _cmd_text: &str, line: usize, col: usize) -> RioResult<(i64, String)> {
+    Err(RioError::runtime(
+        format!("الدالة {} غير مدعومة في هذه البيئة", display),
+        line,
+        col,
+    ))
+}
+
+/// عمليات.شغل_بأولوية_منخفضة — البند 257 (nice +10 عبر pre_exec).
+fn b7_proc_lowprio(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.شغل_بأولوية_منخفضة";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let cmd_text = need_string(DISPLAY, &args[0], line, col)?;
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "windows")))]
+    {
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        let (mut cmd, _disp) = crate::processes::build_spawn_command(&cmd_text, line, col)?;
+        unsafe {
+            cmd.pre_exec(|| {
+                let rc = libc::setpriority(libc::PRIO_PROCESS, 0, 10);
+                if rc != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let out = cmd.output().map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر تشغيل الأمر", DISPLAY), line, col)
+        })?;
+        Ok(Value::Dict(vec![
+            ("رمز".to_string(), Value::Number(out.status.code().unwrap_or(-1) as f64)),
+            (
+                "مخرجات".to_string(),
+                Value::Str(String::from_utf8_lossy(&out.stdout).into_owned()),
+            ),
+        ]))
+    }
+    #[cfg(any(target_arch = "wasm32", target_os = "android", target_os = "windows"))]
+    {
+        let _ = b7_run_cmd_capture(DISPLAY, &cmd_text, line, col)?;
+        Ok(Value::Nil)
+    }
+}
+
+/// عمليات.شغل_بأولوية_إدخال — البند 258 (ioprio_set؛ لينكس فقط).
+fn b7_proc_ioprio(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.شغل_بأولوية_إدخال";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let cmd_text = need_string(DISPLAY, &args[0], line, col)?;
+    let class = if args.len() == 2 {
+        need_string(DISPLAY, &args[1], line, col)?
+    } else {
+        "أفضل جهد".to_string()
+    };
+    let class_num: i64 = match class.as_str() {
+        "خامل" => 3,
+        "أفضل جهد" => 2,
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} الفئة «خامل» أو «أفضل جهد»", DISPLAY),
+                line,
+                col,
+            ))
+        }
+    };
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        let (mut cmd, _disp) = crate::processes::build_spawn_command(&cmd_text, line, col)?;
+        unsafe {
+            cmd.pre_exec(move || {
+                let rc = libc::syscall(
+                    libc::SYS_ioprio_set,
+                    1i64,
+                    0i64,
+                    (class_num << 13) | 0i64,
+                );
+                if rc != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let out = cmd.output().map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر تشغيل الأمر", DISPLAY), line, col)
+        })?;
+        Ok(Value::Dict(vec![
+            ("رمز".to_string(), Value::Number(out.status.code().unwrap_or(-1) as f64)),
+            (
+                "مخرجات".to_string(),
+                Value::Str(String::from_utf8_lossy(&out.stdout).into_owned()),
+            ),
+        ]))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (cmd_text, class_num);
+        Err(RioError::runtime(
+            format!("الدالة {} غير مدعومة على هذه المنصة", DISPLAY),
+            line,
+            col,
+        ))
+    }
+}
+
+/// عمليات.شغل_بمهلة — البنود 262/263.
+fn b7_proc_timeout(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.شغل_بمهلة";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let cmd_text = need_string(DISPLAY, &args[0], line, col)?;
+    let timeout = need_number(DISPLAY, &args[1], line, col)?;
+    if timeout < 0.0 || !timeout.is_finite() {
+        return Err(RioError::runtime(
+            format!("الدالة {} المهلة غير صالحة", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["مهلة_قتل"], line, col)?;
+    let grace = match b5_opt_int(DISPLAY, pairs, "مهلة_قتل", line, col)? {
+        Some(g) => g as f64,
+        None => 2.0,
+    };
+    if grace < 0.0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} مهلة_قتل غير صالحة", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "windows")))]
+    {
+        use std::process::Stdio;
+        use std::time::{Duration, Instant};
+        let (mut cmd, _disp) = crate::processes::build_spawn_command(&cmd_text, line, col)?;
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = cmd.spawn().map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر تشغيل الأمر", DISPLAY), line, col)
+        })?;
+        let deadline = Instant::now() + Duration::from_secs_f64(timeout);
+        let mut timed_out = false;
+        loop {
+            match child.try_wait().map_err(|_| {
+                RioError::runtime(format!("الدالة {} تعذر انتظار الأمر", DISPLAY), line, col)
+            })? {
+                Some(_) => break,
+                None => {
+                    if Instant::now() >= deadline {
+                        timed_out = true;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+        if timed_out {
+            unsafe {
+                libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+            }
+            let grace_deadline = Instant::now() + Duration::from_secs_f64(grace);
+            loop {
+                match child.try_wait().map_err(|_| {
+                    RioError::runtime(format!("الدالة {} تعذر انتظار الأمر", DISPLAY), line, col)
+                })? {
+                    Some(_) => break,
+                    None => {
+                        if Instant::now() >= grace_deadline {
+                            let _ = child.kill();
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+            }
+        }
+        let out = child.wait_with_output().map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر قراءة مخرجات الأمر", DISPLAY), line, col)
+        })?;
+        Ok(Value::Dict(vec![
+            ("رمز".to_string(), Value::Number(out.status.code().unwrap_or(-1) as f64)),
+            (
+                "مخرجات".to_string(),
+                Value::Str(String::from_utf8_lossy(&out.stdout).into_owned()),
+            ),
+            ("مهلة".to_string(), Value::Bool(timed_out)),
+        ]))
+    }
+    #[cfg(any(target_arch = "wasm32", target_os = "android", target_os = "windows"))]
+    {
+        let _ = b7_run_cmd_capture(DISPLAY, &cmd_text, line, col)?;
+        Ok(Value::Nil)
+    }
+}
+
+/// عمليات.شغل_متجاهل_إغلاق — البند 264 (منفصل: SIGHUP مهمل + setsid + إخراج إلى ملف).
+fn b7_proc_nohup(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.شغل_متجاهل_إغلاق";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let cmd_text = need_string(DISPLAY, &args[0], line, col)?;
+    let file = need_string(DISPLAY, &args[1], line, col)?;
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "windows")))]
+    {
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+        let (mut cmd, _disp) = crate::processes::build_spawn_command(&cmd_text, line, col)?;
+        let f = std::fs::File::create(&file).map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر إنشاء ملف الإخراج {}", DISPLAY, file), line, col)
+        })?;
+        let f2 = f.try_clone().map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر إنشاء ملف الإخراج {}", DISPLAY, file), line, col)
+        })?;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::signal(libc::SIGHUP, libc::SIG_IGN);
+                libc::setsid();
+                Ok(())
+            });
+        }
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::from(f))
+            .stderr(Stdio::from(f2));
+        let child = cmd.spawn().map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر تشغيل الأمر", DISPLAY), line, col)
+        })?;
+        Ok(Value::Number(child.id() as f64))
+    }
+    #[cfg(any(target_arch = "wasm32", target_os = "android", target_os = "windows"))]
+    {
+        let _ = &file;
+        let _ = b7_run_cmd_capture(DISPLAY, &cmd_text, line, col)?;
+        Ok(Value::Nil)
+    }
+}
+
+/// عمليات.نفّذ_دوريا — البنود 265/266/267.
+fn b7_proc_repeat(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.نفّذ_دوريا";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let cmd_text = need_string(DISPLAY, &args[0], line, col)?;
+    let count = need_integer(DISPLAY, &args[1], line, col)?;
+    if count < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} العدد يبدأ من 1", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["فاصل", "ميّز_التغييرات"], line, col)?;
+    let interval = match b5_opt_int(DISPLAY, pairs, "فاصل", line, col)? {
+        Some(v) => v as f64,
+        None => 0.0,
+    };
+    if interval < 0.0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} الفاصل غير صالح", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let mark = b5_opt_bool(DISPLAY, pairs, "ميّز_التغييرات", false, line, col)?;
+    let mut outs: Vec<String> = Vec::new();
+    for i in 0..count {
+        if i > 0 && interval > 0.0 {
+            std::thread::sleep(std::time::Duration::from_secs_f64(interval));
+        }
+        let (code, text) = b7_run_cmd_capture(DISPLAY, &cmd_text, line, col)?;
+        let _ = code;
+        outs.push(text);
+    }
+    if mark {
+        let mut marked: Vec<String> = Vec::new();
+        let mut prev: Vec<String> = Vec::new();
+        for (i, out) in outs.iter().enumerate() {
+            if i == 0 {
+                marked.push(out.clone());
+            } else {
+                let lines: Vec<&str> = out.lines().collect();
+                let mut buf = String::new();
+                for (j, l) in lines.iter().enumerate() {
+                    if j >= prev.len() || prev[j] != *l {
+                        buf.push_str("≠ ");
+                    }
+                    buf.push_str(l);
+                    buf.push('\n');
+                }
+                marked.push(buf);
+            }
+            prev = out.lines().map(|s| s.to_string()).collect();
+        }
+        outs = marked;
+    }
+    Ok(Value::List(outs.into_iter().map(Value::Str).collect()))
+}
+
+/// عمليات.شغل_بإخراج_مخزن — البند 295 (stdbuf عند توفره، وإلا مباشر).
+fn b7_proc_bufout(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "عمليات.شغل_بإخراج_مخزن";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let cmd_text = need_string(DISPLAY, &args[0], line, col)?;
+    let mode = if args.len() == 2 {
+        need_string(DISPLAY, &args[1], line, col)?
+    } else {
+        "سطر".to_string()
+    };
+    let flag = match mode.as_str() {
+        "سطر" => "-oL",
+        "كتلة" => "-oB",
+        "بلا" => "-o0",
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} الوضع «سطر» أو «كتلة» أو «بلا»", DISPLAY),
+                line,
+                col,
+            ))
+        }
+    };
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "windows")))]
+    {
+        use std::process::Stdio;
+        let (cmd, _disp) = crate::processes::build_spawn_command(&cmd_text, line, col)?;
+        let prog = cmd.get_program().to_string_lossy().into_owned();
+        let cargs: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let mut wrapped = std::process::Command::new("stdbuf");
+        wrapped.arg(flag).arg(&prog).args(&cargs);
+        wrapped.stdout(Stdio::piped()).stderr(Stdio::piped());
+        match wrapped.output() {
+            Ok(out) => Ok(Value::Dict(vec![
+                ("رمز".to_string(), Value::Number(out.status.code().unwrap_or(-1) as f64)),
+                (
+                    "مخرجات".to_string(),
+                    Value::Str(String::from_utf8_lossy(&out.stdout).into_owned()),
+                ),
+            ])),
+            Err(_) => {
+                let (code, text) = b7_run_cmd_capture(DISPLAY, &cmd_text, line, col)?;
+                Ok(Value::Dict(vec![
+                    ("رمز".to_string(), Value::Number(code as f64)),
+                    ("مخرجات".to_string(), Value::Str(text)),
+                ]))
+            }
+        }
+    }
+    #[cfg(any(target_arch = "wasm32", target_os = "android", target_os = "windows"))]
+    {
+        let _ = flag;
+        let _ = b7_run_cmd_capture(DISPLAY, &cmd_text, line, col)?;
+        Ok(Value::Nil)
+    }
+}
+// END لينكس7-ز5-عمليات Rust
+
 fn processes_entries() -> Vec<(&'static str, Value)> {
     // The stored key for أنشئ is its normalized spelling
     // "انشي": the lexer turns أنشئ into Keyword::Create, and
@@ -11882,6 +12780,19 @@ fn processes_entries() -> Vec<(&'static str, Value)> {
         ("سرد_العمليات", native("سرد_العمليات", b6_proc_list_fn)),
         ("سرد_كامل", native("سرد_كامل", b6_proc_list_full_fn)),
         ("عملية_بمعرف", native("عملية_بمعرف", b6_proc_by_pid)),
+        ("سرد_بموارد", native("سرد_بموارد", b7_proc_res)),
+        ("خريطة_ذاكرة", native("خريطة_ذاكرة", b7_proc_maps)),
+        ("مجلد_عملية", native("مجلد_عملية", b7_proc_cwd)),
+        ("ابحث_عملية", native("ابحث_عملية", b7_proc_find)),
+        ("أنه_باسم", native("أنه_باسم", b7_proc_killname)),
+        ("سرد_الإشارات", native("سرد_الإشارات", b7_proc_signals)),
+        ("غير_أولوية", native("غيّر_أولوية", b7_proc_renice)),
+        ("شغل_بأولوية_منخفضة", native("شغل_بأولوية_منخفضة", b7_proc_lowprio)),
+        ("شغل_بأولوية_إدخال", native("شغل_بأولوية_إدخال", b7_proc_ioprio)),
+        ("شغل_بمهلة", native("شغل_بمهلة", b7_proc_timeout)),
+        ("شغل_متجاهل_إغلاق", native("شغل_متجاهل_إغلاق", b7_proc_nohup)),
+        ("نفذ_دوريا", native("نفّذ_دوريا", b7_proc_repeat)),
+        ("شغل_بإخراج_مخزن", native("شغل_بإخراج_مخزن", b7_proc_bufout)),
     ]
 }
 
@@ -12091,6 +13002,13 @@ fn crypto_entries() -> Vec<(&'static str, Value)> {
         // لينكس6-هـ2: بصمة_سريعة/تحقق_بصمات.
         ("بصمة_سريعة", native("بصمة_سريعة", b6_crypto_fast_hash)),
         ("تحقق_بصمات", native("تحقق_بصمات", b6_crypto_verify_hashes)),
+        // لينكس7-ز7: بصمات.
+        ("بصمة_إم_دي_5", native("بصمة_إم_دي_5", b7_crypto_md5)),
+        ("بصمة_شا_1", native("بصمة_شا_1", b7_crypto_sha1)),
+        ("بصمة_شا_512", native("بصمة_شا_512", b7_crypto_sha512)),
+        ("بصمة_شا_224", native("بصمة_شا_224", b7_crypto_sha224)),
+        ("بصمة_شا_384", native("بصمة_شا_384", b7_crypto_sha384)),
+        ("بصمة_بليك_2", native("بصمة_بليك_2", b7_crypto_blake2b)),
     ]
 }
 
@@ -12341,6 +13259,20 @@ fn files_entries() -> Vec<(&'static str, Value)> {
         ("حجم_مجلد_بشري", native("حجم_مجلد_بشري", b6_files_dir_size_human)),
         ("مساحة_قرص", native("مساحة_قرص", b6_files_disk)),
         ("مساحة_قرص_بشرية", native("مساحة_قرص_بشرية", b6_files_disk_human)),
+        // لينكس7-ز6: ملفات — 13 دالة جديدة.
+        ("اقفل_ملفا", native("اقفل_ملفا", b7_files_lock)),
+        ("أعد_تسمية_بنمط", native("أعد_تسمية_بنمط", b7_files_rename_pattern)),
+        ("أحدث_من", native("أحدث_من", b7_files_newer)),
+        ("تحقق_مسار", native("تحقق_مسار", b7_files_validate_path)),
+        ("ثبت_ملفا", native("ثبّت_ملفا", b7_files_install)),
+        ("أنشئ_رابط_صلب", native("أنشئ_رابط_صلب", b7_files_hardlink)),
+        ("احذف_ملفا", native("احذف_ملفا", b7_files_remove_file)),
+        ("صفر_ملفا", native("صفّر_ملفا", b7_files_truncate_zero)),
+        ("غير_حجم_ملف", native("غيّر_حجم_ملف", b7_files_resize)),
+        ("زامن_القرص", native("زامن_القرص", b7_files_sync)),
+        ("انسخ_منخفض_المستوى", native("انسخ_منخفض_المستوى", b7_files_copy_lowlevel)),
+        ("احجز_مساحة", native("احجز_مساحة", b7_files_reserve)),
+        ("اعرض_اسم_حقيقي", native("اعرض_اسم_حقيقي", b7_files_realname)),
     ]
 }
 
@@ -12411,6 +13343,1335 @@ fn file_saf_list_trees(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize
 
 // --- نظام (catalog task 14, from arch/*/entry/syscalls) ---
 
+// BEGIN لينكس7-ز3-نظام Rust
+
+/// قراءة ملف ‎/proc‎ نصا؛ خطأ موثق "لينكس فقط" على غير لينكس.
+#[cfg(target_os = "linux")]
+fn b7_proc_text(path: &str, display: &str, line: usize, col: usize) -> RioResult<String> {
+    std::fs::read_to_string(path).map_err(|_| {
+        RioError::runtime(format!("الدالة {} تعذر قراءة {}", display, path), line, col)
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn b7_proc_text(_path: &str, display: &str, line: usize, col: usize) -> RioResult<String> {
+    Err(RioError::runtime(
+        format!("الدالة {} مدعومة على لينكس فقط في هذه الدفعة", display),
+        line,
+        col,
+    ))
+}
+
+/// تشغيل أمر ثابت الاسم والتقاط مخرجاته؛ خطأ موثق على ويندوز وWASM.
+#[cfg(target_os = "windows")]
+fn b7_run_capture(
+    _prog: &str,
+    _args: &[&str],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    Err(RioError::runtime(
+        format!("الدالة {} غير مدعومة على ويندوز", display),
+        line,
+        col,
+    ))
+}
+
+#[cfg(all(not(target_os = "windows"), target_arch = "wasm32"))]
+fn b7_run_capture(
+    _prog: &str,
+    _args: &[&str],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    Err(RioError::runtime(
+        format!("الدالة {} غير مدعومة في متصفح الويب", display),
+        line,
+        col,
+    ))
+}
+
+#[cfg(all(not(target_os = "windows"), not(target_arch = "wasm32")))]
+fn b7_run_capture(
+    prog: &str,
+    args: &[&str],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    let out = std::process::Command::new(prog)
+        .args(args)
+        .output()
+        .map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر تشغيل {}", display, prog), line, col)
+        })?;
+    if !out.status.success() {
+        return Err(RioError::runtime(
+            format!("الدالة {} فشل الأمر {}", display, prog),
+            line,
+            col,
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// تنسيق بايتات بصيغة بشرية: "1.2 غ"؛ والبايتات وحدها عددا ونص "ب".
+fn b7_human_bytes(n: f64) -> String {
+    let units = ["ب", "ك", "م", "غ", "ت"];
+    let mut v = n;
+    let mut u = 0usize;
+    while v >= 1024.0 && u < 4 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{} ب", n as i64)
+    } else {
+        format!("{:.1} {}", v, units[u])
+    }
+}
+
+/// تحويل قيمة إلى نص جسون.
+fn b7_json_str(v: &Value, line: usize, col: usize) -> RioResult<Value> {
+    let mut s = String::new();
+    json_write_value(v, &mut s, 0).map_err(|e| RioError::runtime(e, line, col))?;
+    Ok(Value::Str(s))
+}
+
+/// قراءة ‎/proc/meminfo‎ أزواج (مفتاح، كيلوبايت).
+fn b7_meminfo(display: &str, line: usize, col: usize) -> RioResult<Vec<(String, i64)>> {
+    let text = b7_proc_text("/proc/meminfo", display, line, col)?;
+    let mut out = Vec::new();
+    for l in text.lines() {
+        if let Some((k, rest)) = l.split_once(':') {
+            let num: i64 = rest
+                .trim()
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            out.push((k.trim().to_string(), num));
+        }
+    }
+    Ok(out)
+}
+
+fn b7_mem_get(info: &[(String, i64)], key: &str) -> i64 {
+    info.iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| *v)
+        .unwrap_or(0)
+}
+
+/// قاموس ذاكرة واحد من ‎/proc/meminfo‎ (بايتات).
+fn b7_mem_dict(display: &str, line: usize, col: usize) -> RioResult<Vec<(String, Value)>> {
+    let info = b7_meminfo(display, line, col)?;
+    let total = b7_mem_get(&info, "MemTotal");
+    let free = b7_mem_get(&info, "MemFree");
+    let buffers = b7_mem_get(&info, "Buffers");
+    let cached = b7_mem_get(&info, "Cached");
+    let shmem = b7_mem_get(&info, "Shmem");
+    let sreclaim = b7_mem_get(&info, "SReclaimable");
+    let used = total - free - buffers - cached;
+    Ok(vec![
+        ("كلية".to_string(), Value::Number(total as f64 * 1024.0)),
+        (
+            "مستخدمة".to_string(),
+            Value::Number(used.max(0) as f64 * 1024.0),
+        ),
+        ("حرة".to_string(), Value::Number(free as f64 * 1024.0)),
+        ("مشتركة".to_string(), Value::Number(shmem as f64 * 1024.0)),
+        (
+            "مخزنة".to_string(),
+            Value::Number((buffers + cached + sreclaim) as f64 * 1024.0),
+        ),
+    ])
+}
+
+/// نظام.ذاكرة — البنود 235/236/237/374.
+fn b7_sys_mem(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.ذاكرة";
+    let pairs = b5_opts(DISPLAY, args, 0, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["بشرية", "عينات", "جسون"], line, col)?;
+    let human = b5_opt_bool(DISPLAY, pairs, "بشرية", false, line, col)?;
+    let samples = b5_opt_int(DISPLAY, pairs, "عينات", line, col)?;
+    let as_json = b5_opt_bool(DISPLAY, pairs, "جسون", false, line, col)?;
+    if let Some(n) = samples {
+        if n < 1 {
+            return Err(RioError::runtime(
+                format!("الدالة {} عينات تبدأ من 1", DISPLAY),
+                line,
+                col,
+            ));
+        }
+        let mut list: Vec<Value> = Vec::new();
+        for i in 0..n {
+            if i > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            list.push(Value::Dict(b7_mem_dict(DISPLAY, line, col)?));
+        }
+        let v = Value::List(list);
+        if as_json {
+            return b7_json_str(&v, line, col);
+        }
+        return Ok(v);
+    }
+    let mut dict = b7_mem_dict(DISPLAY, line, col)?;
+    if human {
+        for (_, v) in dict.iter_mut() {
+            if let Value::Number(n) = v {
+                *v = Value::Str(b7_human_bytes(*n));
+            }
+        }
+    }
+    let v = Value::Dict(dict);
+    if as_json {
+        return b7_json_str(&v, line, col);
+    }
+    Ok(v)
+}
+
+/// قراءة ‎/proc/cpuinfo‎ أول كتلة معالج.
+fn b7_cpu_first(display: &str, line: usize, col: usize) -> RioResult<Vec<(String, String)>> {
+    let text = b7_proc_text("/proc/cpuinfo", display, line, col)?;
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut nproc = 0i64;
+    for l in text.lines() {
+        if l.trim().is_empty() {
+            if !out.is_empty() {
+                break;
+            }
+            continue;
+        }
+        if let Some((k, v)) = l.split_once(':') {
+            let key = k.trim().to_string();
+            if key == "processor" {
+                nproc += 1;
+            }
+            if out.iter().all(|(ek, _)| *ek != key) {
+                out.push((key, v.trim().to_string()));
+            }
+        }
+    }
+    let _ = nproc;
+    Ok(out)
+}
+
+fn b7_cpu_get(fields: &[(String, String)], key: &str) -> String {
+    fields
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default()
+}
+
+/// عدد المعالجات من ‎/proc/cpuinfo‎ (عدد أسطر processor).
+fn b7_cpu_count(display: &str, line: usize, col: usize) -> RioResult<i64> {
+    let text = b7_proc_text("/proc/cpuinfo", display, line, col)?;
+    Ok(text
+        .lines()
+        .filter(|l| l.trim_start().starts_with("processor"))
+        .count() as i64)
+}
+
+/// نظام.معلومات_المعالج — البنود 284/285/372.
+fn b7_sys_cpu(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.معلومات_المعالج";
+    let pairs = b5_opts(DISPLAY, args, 0, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["طوبولوجيا", "جسون"], line, col)?;
+    let topo = b5_opt_bool(DISPLAY, pairs, "طوبولوجيا", false, line, col)?;
+    let as_json = b5_opt_bool(DISPLAY, pairs, "جسون", false, line, col)?;
+    let mut dict: Vec<(String, Value)> = Vec::new();
+    #[cfg(target_os = "linux")]
+    {
+        let fields = b7_cpu_first(DISPLAY, line, col)?;
+        let cores = b7_cpu_count(DISPLAY, line, col)?;
+        let model = b7_cpu_get(&fields, "model name");
+        let mhz: f64 = b7_cpu_get(&fields, "cpu MHz").parse().unwrap_or(0.0);
+        let cache = b7_cpu_get(&fields, "cache size");
+        dict.push((
+            "طراز".to_string(),
+            Value::Str(if model.is_empty() {
+                "غير معروف".to_string()
+            } else {
+                model
+            }),
+        ));
+        dict.push(("أنوية".to_string(), Value::Number(cores as f64)));
+        dict.push(("سرعة".to_string(), Value::Number(mhz)));
+        dict.push(("ذاكرة_مخبأة".to_string(), Value::Str(cache)));
+        if topo {
+            let text = b7_proc_text("/proc/cpuinfo", DISPLAY, line, col)?;
+            let mut sockets: Vec<String> = Vec::new();
+            let mut core_ids: Vec<String> = Vec::new();
+            for l in text.lines() {
+                if let Some((k, v)) = l.split_once(':') {
+                    let key = k.trim();
+                    let val = v.trim().to_string();
+                    if key == "physical id" && !sockets.contains(&val) {
+                        sockets.push(val.clone());
+                    }
+                    if key == "core id" && !core_ids.contains(&val) {
+                        core_ids.push(val);
+                    }
+                }
+            }
+            dict.push((
+                "مقبس".to_string(),
+                Value::Number(if sockets.is_empty() { 1 } else { sockets.len() as i64 } as f64),
+            ));
+            dict.push((
+                "نواة".to_string(),
+                Value::Number(if core_ids.is_empty() { cores } else { core_ids.len() as i64 } as f64),
+            ));
+            dict.push(("خيط".to_string(), Value::Number(cores as f64)));
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get() as i64)
+            .unwrap_or(1);
+        dict.push((
+            "طراز".to_string(),
+            Value::Str(std::env::consts::ARCH.to_string()),
+        ));
+        dict.push(("أنوية".to_string(), Value::Number(cores as f64)));
+        dict.push(("سرعة".to_string(), Value::Number(0.0)));
+        dict.push(("ذاكرة_مخبأة".to_string(), Value::Str(String::new())));
+        if topo {
+            dict.push(("مقبس".to_string(), Value::Number(1.0)));
+            dict.push(("نواة".to_string(), Value::Number(cores as f64)));
+            dict.push(("خيط".to_string(), Value::Number(cores as f64)));
+        }
+    }
+    let v = Value::Dict(dict);
+    if as_json {
+        return b7_json_str(&v, line, col);
+    }
+    Ok(v)
+}
+
+/// نظام.عدد_المعالجات — البند 283.
+fn b7_sys_ncpu(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.عدد_المعالجات";
+    need_args(DISPLAY, args, 0, line, col)?;
+    Ok(Value::Number(
+        std::thread::available_parallelism()
+            .map(|n| n.get() as i64)
+            .unwrap_or(1) as f64,
+    ))
+}
+
+/// نظام.معمارية_الجهاز — البند 289.
+fn b7_sys_arch(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.معمارية_الجهاز";
+    need_args(DISPLAY, args, 0, line, col)?;
+    Ok(Value::Str(std::env::consts::ARCH.to_string()))
+}
+
+/// تعيين اسم نظام التشغيل: GNU/Linux وDarwin وWindows.
+fn b7_os_name() -> String {
+    match std::env::consts::OS {
+        "linux" => "GNU/Linux".to_string(),
+        "macos" => "Darwin".to_string(),
+        "windows" => "Windows".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// نظام.اسم_نظام_التشغيل — البند 290.
+fn b7_sys_osname(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.اسم_نظام_التشغيل";
+    need_args(DISPLAY, args, 0, line, col)?;
+    Ok(Value::Str(b7_os_name()))
+}
+
+/// نظام.وقت_التشغيل — البند 168.
+fn b7_sys_uptime(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.وقت_التشغيل";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let text = b7_proc_text("/proc/uptime", DISPLAY, line, col)?;
+    let secs: f64 = text
+        .split_whitespace()
+        .next()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| {
+            RioError::runtime(format!("الدالة {} تعذر تحليل مدة التشغيل", DISPLAY), line, col)
+        })?;
+    Ok(Value::Number(secs))
+}
+
+/// نظام.متوسط_الحمل — البند 169.
+fn b7_sys_load(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.متوسط_الحمل";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let text = b7_proc_text("/proc/loadavg", DISPLAY, line, col)?;
+    let mut out: Vec<Value> = Vec::new();
+    for part in text.split_whitespace().take(3) {
+        let v: f64 = part.parse().map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر تحليل متوسط الحمل", DISPLAY), line, col)
+        })?;
+        out.push(Value::Number(v));
+    }
+    if out.len() < 3 {
+        return Err(RioError::runtime(
+            format!("الدالة {} متوسط الحمل ناقص", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::List(out))
+}
+
+/// نظام.إحصاءات_افتراضية — البنود 238/239.
+fn b7_sys_vmstat(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.إحصاءات_افتراضية";
+    let pairs = b5_opts(DISPLAY, args, 0, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["قرص"], line, col)?;
+    let disk = b5_opt_bool(DISPLAY, pairs, "قرص", false, line, col)?;
+    if disk {
+        let text = b7_proc_text("/proc/diskstats", DISPLAY, line, col)?;
+        let mut list: Vec<Value> = Vec::new();
+        for l in text.lines() {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            if f.len() < 14 {
+                continue;
+            }
+            let num = |i: usize| -> i64 { f[i].parse().unwrap_or(0) };
+            list.push(Value::Dict(vec![
+                ("جهاز".to_string(), Value::Str(f[2].to_string())),
+                ("قراءات".to_string(), Value::Number(num(3) as f64)),
+                ("قطاعات_مقروءة".to_string(), Value::Number(num(5) as f64)),
+                ("كتابات".to_string(), Value::Number(num(7) as f64)),
+                ("قطاعات_مكتوبة".to_string(), Value::Number(num(9) as f64)),
+            ]));
+        }
+        return Ok(Value::List(list));
+    }
+    let text = b7_proc_text("/proc/vmstat", DISPLAY, line, col)?;
+    let mut dict: Vec<(String, Value)> = Vec::new();
+    for l in text.lines() {
+        let mut it = l.split_whitespace();
+        if let (Some(k), Some(v)) = (it.next(), it.next()) {
+            let n: i64 = v.parse().unwrap_or(0);
+            dict.push((k.to_string(), Value::Number(n as f64)));
+        }
+    }
+    Ok(Value::Dict(dict))
+}
+
+/// نظام.نطاقات_الذاكرة — البند 286.
+fn b7_sys_memblocks(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.نطاقات_الذاكرة";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let rd = std::fs::read_dir("/sys/devices/system/memory").map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر قراءة نطاقات الذاكرة", DISPLAY),
+            line,
+            col,
+        )
+    })?;
+    let mut names: Vec<(i64, String)> = Vec::new();
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if let Some(rest) = name.strip_prefix("memory") {
+            if let Ok(n) = rest.parse::<i64>() {
+                names.push((n, name));
+            }
+        }
+    }
+    names.sort();
+    let mut list: Vec<Value> = Vec::new();
+    for (_, name) in names {
+        let state = std::fs::read_to_string(format!("/sys/devices/system/memory/{}/state", name))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "غير معروف".to_string());
+        list.push(Value::Dict(vec![
+            ("نطاق".to_string(), Value::Str(name)),
+            ("حالة".to_string(), Value::Str(state)),
+        ]));
+    }
+    Ok(Value::List(list))
+}
+
+/// نظام.معلومات_النظام_الكاملة — البند 287.
+fn b7_sys_full(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.معلومات_النظام_الكاملة";
+    need_args(DISPLAY, args, 0, line, col)?;
+    #[cfg(target_os = "linux")]
+    {
+        let ostype = b7_proc_text("/proc/sys/kernel/ostype", DISPLAY, line, col)?;
+        let host = b7_proc_text("/proc/sys/kernel/hostname", DISPLAY, line, col)?;
+        let version = b7_proc_text("/proc/sys/kernel/version", DISPLAY, line, col)?;
+        let release = b7_proc_text("/proc/sys/kernel/osrelease", DISPLAY, line, col)?;
+        let os = match ostype.trim() {
+            "Linux" => "GNU/Linux".to_string(),
+            "Darwin" => "Darwin".to_string(),
+            other => other.to_string(),
+        };
+        Ok(Value::Dict(vec![
+            ("نظام".to_string(), Value::Str(os.clone())),
+            ("عقدة".to_string(), Value::Str(host.trim().to_string())),
+            ("إصدار".to_string(), Value::Str(version.trim().to_string())),
+            ("نواة".to_string(), Value::Str(release.trim().to_string())),
+            (
+                "معمارية".to_string(),
+                Value::Str(std::env::consts::ARCH.to_string()),
+            ),
+            ("نظام_تشغيل".to_string(), Value::Str(os)),
+        ]))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let os = b7_os_name();
+        Ok(Value::Dict(vec![
+            ("نظام".to_string(), Value::Str(os.clone())),
+            ("عقدة".to_string(), Value::Str("غير معروف".to_string())),
+            ("إصدار".to_string(), Value::Str(String::new())),
+            ("نواة".to_string(), Value::Str(String::new())),
+            (
+                "معمارية".to_string(),
+                Value::Str(std::env::consts::ARCH.to_string()),
+            ),
+            ("نظام_تشغيل".to_string(), Value::Str(os)),
+        ]))
+    }
+}
+
+/// نظام.اسم_المستخدم_المسجل — البند 217.
+fn b7_sys_login(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.اسم_المستخدم_المسجل";
+    need_args(DISPLAY, args, 0, line, col)?;
+    for key in ["USER", "LOGNAME"] {
+        if let Ok(v) = std::env::var(key) {
+            if !v.trim().is_empty() {
+                return Ok(Value::Str(v));
+            }
+        }
+    }
+    Err(RioError::runtime(
+        format!("الدالة {} لا اسم مستخدم مسجل", DISPLAY),
+        line,
+        col,
+    ))
+}
+
+/// نظام.معلومات_المستخدم — البند 219.
+fn b7_sys_userinfo(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.معلومات_المستخدم";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let user = std::env::var("USER")
+        .or_else(|_| std::env::var("LOGNAME"))
+        .or_else(|_| std::env::var("USERNAME"))
+        .unwrap_or_else(|_| "غير معروف".to_string());
+    #[cfg(target_os = "linux")]
+    {
+        let status = b7_proc_text("/proc/self/status", DISPLAY, line, col)?;
+        let mut uid = 0i64;
+        let mut gid = 0i64;
+        let mut groups: Vec<Value> = Vec::new();
+        for l in status.lines() {
+            if let Some(rest) = l.strip_prefix("Uid:") {
+                uid = rest.split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            } else if let Some(rest) = l.strip_prefix("Gid:") {
+                gid = rest.split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(0);
+            } else if let Some(rest) = l.strip_prefix("Groups:") {
+                for part in rest.split_whitespace() {
+                    if let Ok(n) = part.parse::<i64>() {
+                        groups.push(Value::Number(n as f64));
+                    }
+                }
+            }
+        }
+        Ok(Value::Dict(vec![
+            ("مستخدم".to_string(), Value::Str(user)),
+            ("معرف".to_string(), Value::Number(uid as f64)),
+            ("مجموعة".to_string(), Value::Number(gid as f64)),
+            ("مجموعات".to_string(), Value::List(groups)),
+        ]))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(Value::Dict(vec![
+            ("مستخدم".to_string(), Value::Str(user)),
+            ("معرف".to_string(), Value::Number(0.0)),
+            ("مجموعة".to_string(), Value::Number(0.0)),
+            ("مجموعات".to_string(), Value::List(vec![])),
+        ]))
+    }
+}
+
+/// نظام.حدّد_مكان_أمر — البند 280.
+fn b7_sys_which(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.حدّد_مكان_أمر";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let cmd = need_string(DISPLAY, &args[0], line, col)?;
+    if cmd.trim().is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} الأمر فارغ", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let is_exec = |p: &std::path::Path| -> bool {
+        if !p.is_file() {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(p)
+                .map(|m| m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false)
+        }
+        #[cfg(not(unix))]
+        {
+            true
+        }
+    };
+    let mut dirs: Vec<String> = Vec::new();
+    if cmd.contains('/') || cmd.contains('\\') {
+        dirs.push(String::new());
+    } else if let Ok(path) = std::env::var("PATH") {
+        #[cfg(target_os = "windows")]
+        let sep = ';';
+        #[cfg(not(target_os = "windows"))]
+        let sep = ':';
+        for d in path.split(sep) {
+            dirs.push(d.to_string());
+        }
+    }
+    for d in dirs {
+        let cand = if d.is_empty() {
+            std::path::PathBuf::from(&cmd)
+        } else {
+            std::path::PathBuf::from(&d).join(&cmd)
+        };
+        #[cfg(target_os = "windows")]
+        let cands = [cand.clone(), cand.with_extension("exe")];
+        #[cfg(not(target_os = "windows"))]
+        let cands = [cand.clone()];
+        for c in cands {
+            if is_exec(&c) {
+                let dir = c
+                    .parent()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                return Ok(Value::Dict(vec![
+                    ("ثنائي".to_string(), Value::Str(c.to_string_lossy().into_owned())),
+                    ("دليل".to_string(), Value::Str(dir)),
+                    ("مصدر".to_string(), Value::Str("PATH".to_string())),
+                ]));
+            }
+        }
+    }
+    Err(RioError::runtime(
+        format!("الدالة {} الأمر {} غير موجود", DISPLAY, cmd),
+        line,
+        col,
+    ))
+}
+
+/// نظام.حلل_الخيارات — البنود 296/297 (طويلة مفتاح موثق بلا أثر: الطويلة مدعومة أصلا).
+fn b7_sys_parseopts(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.حلل_الخيارات";
+    if args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["طويلة"], line, col)?;
+    let _ = b5_opt_bool(DISPLAY, pairs, "طويلة", false, line, col)?;
+    let items = match args.first() {
+        Some(Value::List(items)) => items.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!("الدالة {} تتوقع قائمة نصوص لكن أعطيت {}", DISPLAY, other.type_name()),
+                line,
+                col,
+            ))
+        }
+        None => Vec::new(),
+    };
+    let mut tokens: Vec<String> = Vec::new();
+    for it in &items {
+        tokens.push(need_string(DISPLAY, it, line, col)?);
+    }
+    let mut opts: Vec<(String, Value)> = Vec::new();
+    let mut positional: Vec<Value> = Vec::new();
+    let mut i = 0usize;
+    let mut only_pos = false;
+    while i < tokens.len() {
+        let t = tokens[i].clone();
+        if only_pos {
+            positional.push(Value::Str(t));
+            i += 1;
+            continue;
+        }
+        if t == "--" {
+            only_pos = true;
+            i += 1;
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix("--") {
+            if let Some((k, v)) = rest.split_once('=') {
+                opts.push((k.to_string(), Value::Str(v.to_string())));
+            } else {
+                opts.push((rest.to_string(), Value::Bool(true)));
+            }
+            i += 1;
+            continue;
+        }
+        if t.starts_with('-') && t.len() > 1 {
+            let body = &t[1..];
+            if let Some((k, v)) = body.split_once('=') {
+                opts.push((k.to_string(), Value::Str(v.to_string())));
+                i += 1;
+                continue;
+            }
+            if body.chars().count() == 1 {
+                let k = body.to_string();
+                if i + 1 < tokens.len() && !tokens[i + 1].starts_with('-') {
+                    opts.push((k, Value::Str(tokens[i + 1].clone())));
+                    i += 2;
+                    continue;
+                }
+                opts.push((k, Value::Bool(true)));
+                i += 1;
+                continue;
+            }
+            for ch in body.chars() {
+                opts.push((ch.to_string(), Value::Bool(true)));
+            }
+            i += 1;
+            continue;
+        }
+        positional.push(Value::Str(t));
+        i += 1;
+    }
+    Ok(Value::Dict(vec![
+        ("خيارات".to_string(), Value::Dict(opts)),
+        ("موضعية".to_string(), Value::List(positional)),
+    ]))
+}
+
+/// قراءة ‎/proc/mounts‎ أزواج (جهاز، نقطة، نوع).
+fn b7_mounts(display: &str, line: usize, col: usize) -> RioResult<Vec<(String, String, String)>> {
+    let text = b7_proc_text("/proc/mounts", display, line, col)?;
+    let mut out = Vec::new();
+    for l in text.lines() {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        if f.len() >= 3 {
+            out.push((f[0].to_string(), f[1].to_string(), f[2].to_string()));
+        }
+    }
+    Ok(out)
+}
+
+/// نظام.نقاط_التركيب — البند 307.
+fn b7_sys_mounts(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.نقاط_التركيب";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mounts = b7_mounts(DISPLAY, line, col)?;
+    let list: Vec<Value> = mounts
+        .into_iter()
+        .map(|(dev, point, fst)| {
+            Value::Dict(vec![
+                ("جهاز".to_string(), Value::Str(dev)),
+                ("نقطة".to_string(), Value::Str(point)),
+                ("نوع".to_string(), Value::Str(fst)),
+            ])
+        })
+        .collect();
+    Ok(Value::List(list))
+}
+
+/// نظام.تحقق_تركيب — البند 308.
+fn b7_sys_ismount(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.تحقق_تركيب";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let mounts = b7_mounts(DISPLAY, line, col)?;
+    if mounts.iter().any(|(_, point, _)| *point == path) {
+        Ok(Value::Bool(true))
+    } else {
+        Err(RioError::runtime(
+            format!("الدالة {} المسار {} ليس نقطة تركيب", DISPLAY, path),
+            line,
+            col,
+        ))
+    }
+}
+
+/// قراءة رابط رمزي هدفه (نص الهدف الخام).
+fn b7_readlink_target(path: &std::path::Path) -> Option<String> {
+    std::fs::read_link(path)
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// نظام.اعرض_الأقراص — البنود 301/302/303/304/371.
+fn b7_sys_disks(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.اعرض_الأقراص";
+    let pairs = b5_opts(DISPLAY, args, 0, line, col)?;
+    b5_no_unknown(
+        DISPLAY,
+        pairs,
+        &["أنظمة_ملفات", "أقراص_فقط", "أعمدة", "جسون"],
+        line,
+        col,
+    )?;
+    let with_fs = b5_opt_bool(DISPLAY, pairs, "أنظمة_ملفات", false, line, col)?;
+    let disks_only = b5_opt_bool(DISPLAY, pairs, "أقراص_فقط", false, line, col)?;
+    let cols = b5_opt_strs(DISPLAY, pairs, "أعمدة", line, col)?;
+    let as_json = b5_opt_bool(DISPLAY, pairs, "جسون", false, line, col)?;
+    let mounts = b7_mounts(DISPLAY, line, col)?;
+    let mut names: Vec<String> = Vec::new();
+    let rd = std::fs::read_dir("/sys/block").map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر قراءة أجهزة التخزين", DISPLAY),
+            line,
+            col,
+        )
+    })?;
+    for e in rd.flatten() {
+        names.push(e.file_name().to_string_lossy().into_owned());
+    }
+    names.sort();
+    let mount_of = |dev: &str| -> (String, String) {
+        for (d, point, fst) in &mounts {
+            if d == &format!("/dev/{}", dev) {
+                return (point.clone(), fst.clone());
+            }
+        }
+        (String::new(), String::new())
+    };
+    let label_of = |dev: &str| -> (String, String) {
+        let mut label = String::new();
+        let mut uuid = String::new();
+        if let Ok(rd) = std::fs::read_dir("/dev/disk/by-label") {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if let Some(t) = b7_readlink_target(&e.path()) {
+                    if t.contains(dev) && label.is_empty() {
+                        label = name;
+                    }
+                }
+            }
+        }
+        if let Ok(rd) = std::fs::read_dir("/dev/disk/by-uuid") {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if let Some(t) = b7_readlink_target(&e.path()) {
+                    if t.contains(dev) && uuid.is_empty() {
+                        uuid = name;
+                    }
+                }
+            }
+        }
+        (label, uuid)
+    };
+    let mut list: Vec<Value> = Vec::new();
+    for dev in &names {
+        let size_sectors: i64 = std::fs::read_to_string(format!("/sys/block/{}/size", dev))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
+        let (point, fst) = mount_of(dev);
+        let mut dict: Vec<(String, Value)> = vec![
+            ("اسم".to_string(), Value::Str(dev.clone())),
+            ("حجم".to_string(), Value::Number(size_sectors as f64 * 512.0)),
+            ("نوع".to_string(), Value::Str("قرص".to_string())),
+            ("تركيب".to_string(), Value::Str(point)),
+        ];
+        if with_fs {
+            let (label, uuid) = label_of(dev);
+            dict.push(("نوع_النظام".to_string(), Value::Str(fst)));
+            dict.push(("تسمية".to_string(), Value::Str(label)));
+            dict.push(("معرف".to_string(), Value::Str(uuid)));
+        }
+        list.push(Value::Dict(dict));
+        if disks_only {
+            continue;
+        }
+        let mut parts: Vec<String> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir(format!("/sys/block/{}", dev)) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name.starts_with(dev.as_str())
+                    && name.len() > dev.len()
+                    && name[dev.len()..].chars().all(|c| c.is_ascii_digit())
+                {
+                    parts.push(name);
+                }
+            }
+        }
+        parts.sort();
+        for part in parts {
+            let psize: i64 = std::fs::read_to_string(format!("/sys/block/{}/{}/size", dev, part))
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0);
+            let (ppoint, pfst) = mount_of(&part);
+            let mut pdict: Vec<(String, Value)> = vec![
+                ("اسم".to_string(), Value::Str(part.clone())),
+                ("حجم".to_string(), Value::Number(psize as f64 * 512.0)),
+                ("نوع".to_string(), Value::Str("قسم".to_string())),
+                ("تركيب".to_string(), Value::Str(ppoint)),
+            ];
+            if with_fs {
+                let (label, uuid) = label_of(&part);
+                pdict.push(("نوع_النظام".to_string(), Value::Str(pfst)));
+                pdict.push(("تسمية".to_string(), Value::Str(label)));
+                pdict.push(("معرف".to_string(), Value::Str(uuid)));
+            }
+            list.push(Value::Dict(pdict));
+        }
+    }
+    if !cols.is_empty() {
+        let mut filtered: Vec<Value> = Vec::new();
+        for item in list {
+            if let Value::Dict(d) = item {
+                let mut nd: Vec<(String, Value)> = Vec::new();
+                for c in &cols {
+                    if let Some((_, v)) = d.iter().find(|(k, _)| k == c) {
+                        nd.push((c.clone(), v.clone()));
+                    }
+                }
+                filtered.push(Value::Dict(nd));
+            }
+        }
+        list = filtered;
+    }
+    let v = Value::List(list);
+    if as_json {
+        return b7_json_str(&v, line, col);
+    }
+    Ok(v)
+}
+
+/// نظام.معرف_جهاز — البند 305.
+fn b7_sys_devid(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.معرف_جهاز";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let dev = need_string(DISPLAY, &args[0], line, col)?;
+    let _ = b7_proc_text("/proc/mounts", DISPLAY, line, col)?;
+    let rd = std::fs::read_dir("/dev/disk/by-uuid").map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر قراءة معرفات الأجهزة", DISPLAY),
+            line,
+            col,
+        )
+    })?;
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if let Some(t) = b7_readlink_target(&e.path()) {
+            if t.contains(dev.as_str()) {
+                return Ok(Value::Dict(vec![
+                    ("معرف".to_string(), Value::Str(name)),
+                    ("نوع".to_string(), Value::Str("uuid".to_string())),
+                ]));
+            }
+        }
+    }
+    Err(RioError::runtime(
+        format!("الدالة {} لا معرف للجهاز {}", DISPLAY, dev),
+        line,
+        col,
+    ))
+}
+
+/// نظام.ابحث_جهاز_بنوع — البند 306.
+fn b7_sys_finddev(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.ابحث_جهاز_بنوع";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let q = need_string(DISPLAY, &args[0], line, col)?;
+    let _ = b7_proc_text("/proc/mounts", DISPLAY, line, col)?;
+    for dir in ["/dev/disk/by-uuid", "/dev/disk/by-label"] {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name == q {
+                    if let Some(t) = b7_readlink_target(&e.path()) {
+                        let base = t.rsplit('/').next().unwrap_or(&t).to_string();
+                        return Ok(Value::Str(format!("/dev/{}", base)));
+                    }
+                    return Ok(Value::Str(format!("{}/{}", dir, name)));
+                }
+            }
+        }
+    }
+    let mounts = b7_mounts(DISPLAY, line, col)?;
+    for (dev, _, fst) in mounts {
+        if fst == q {
+            return Ok(Value::Str(dev));
+        }
+    }
+    Err(RioError::runtime(
+        format!("الدالة {} لا جهاز بالنوع {}", DISPLAY, q),
+        line,
+        col,
+    ))
+}
+
+/// نظام.رسائل_النواة — البنود 317/319.
+fn b7_sys_dmesg(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.رسائل_النواة";
+    let pairs = b5_opts(DISPLAY, args, 0, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["تابع"], line, col)?;
+    let follow = b5_opt_bool(DISPLAY, pairs, "تابع", false, line, col)?;
+    let read_lines = |display: &str| -> RioResult<Vec<String>> {
+        if let Ok(text) = std::fs::read_to_string("/var/log/dmesg") {
+            return Ok(text.lines().map(|s| s.to_string()).collect());
+        }
+        let out = b7_run_capture("dmesg", &[], display, line, col)?;
+        Ok(out.lines().map(|s| s.to_string()).collect())
+    };
+    let first = read_lines(DISPLAY)?;
+    if !follow {
+        return Ok(Value::List(
+            first.into_iter().map(Value::Str).collect(),
+        ));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let second = read_lines(DISPLAY)?;
+    let n_new = second.len().saturating_sub(first.len());
+    let total = second.len();
+    let tail: Vec<Value> = second
+        .into_iter()
+        .skip(total - n_new)
+        .map(Value::Str)
+        .collect();
+    Ok(Value::List(tail))
+}
+
+/// بايتات عشوائية: ‎/dev/urandom‎ على يونكس؛ احتياطي زمني على غيرها.
+fn b7_rand_bytes(buf: &mut [u8]) {
+    #[cfg(unix)]
+    {
+        if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+            use std::io::Read;
+            if f.read_exact(buf).is_ok() {
+                return;
+            }
+        }
+    }
+    let mut state = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x9E3779B97F4A7C15)
+        ^ (std::process::id() as u64) << 32
+        ^ 0x9E3779B97F4A7C15;
+    for chunk in buf.chunks_mut(8) {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        let r = state.wrapping_mul(0x2545F4914F6CDD1D);
+        for (i, b) in chunk.iter_mut().enumerate() {
+            *b = (r >> (i * 8)) as u8;
+        }
+    }
+}
+
+/// نظام.معرف_فريد — البند 322 (UUID v4).
+fn b7_sys_uuid(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.معرف_فريد";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut b = [0u8; 16];
+    b7_rand_bytes(&mut b);
+    b[6] = (b[6] & 0x0F) | 0x40;
+    b[8] = (b[8] & 0x3F) | 0x80;
+    let h = |x: u8| -> String { format!("{:02x}", x) };
+    let mut s = String::new();
+    for i in 0..16 {
+        if i == 4 || i == 6 || i == 8 || i == 10 {
+            s.push('-');
+        }
+        s.push_str(&h(b[i]));
+    }
+    Ok(Value::Str(s))
+}
+
+/// نظام.حلّل_معرف — البند 323.
+fn b7_sys_parse_uuid(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.حلّل_معرف";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let s = need_string(DISPLAY, &args[0], line, col)?;
+    let valid = s.len() == 36
+        && s.chars().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        });
+    if !valid {
+        return Err(RioError::runtime(
+            format!("الدالة {} معرف غير صالح", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let version = s
+        .chars()
+        .nth(14)
+        .and_then(|c| c.to_digit(16))
+        .unwrap_or(0) as i64;
+    let variant = match s.chars().nth(19) {
+        Some('8') | Some('9') | Some('a') | Some('b') | Some('A') | Some('B') => "قياسي",
+        _ => "آخر",
+    };
+    Ok(Value::Dict(vec![
+        ("صالح".to_string(), Value::Bool(true)),
+        ("نسخة".to_string(), Value::Number(version as f64)),
+        ("متغير".to_string(), Value::Str(variant.to_string())),
+    ]))
+}
+
+/// نظام.كلمة_عشوائية_آمنة — البند 324 (32 حرفا ست عشرية).
+fn b7_sys_randword(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.كلمة_عشوائية_آمنة";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut b = [0u8; 16];
+    b7_rand_bytes(&mut b);
+    let mut s = String::new();
+    for x in b {
+        s.push_str(&format!("{:02x}", x));
+    }
+    Ok(Value::Str(s))
+}
+
+/// نظام.أقفال_الملفات — البند 353.
+fn b7_sys_locks(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.أقفال_الملفات";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let text = b7_proc_text("/proc/locks", DISPLAY, line, col)?;
+    let mut list: Vec<Value> = Vec::new();
+    for l in text.lines() {
+        let body = match l.split_once(':') {
+            Some((_, rest)) => rest.trim(),
+            None => continue,
+        };
+        let f: Vec<&str> = body.split_whitespace().collect();
+        if f.len() < 7 {
+            continue;
+        }
+        let pid: i64 = f[3].parse().unwrap_or(-1);
+        list.push(Value::Dict(vec![
+            ("نوع".to_string(), Value::Str(f[0].to_string())),
+            ("نمط".to_string(), Value::Str(f[1].to_string())),
+            ("معرف_العملية".to_string(), Value::Number(pid as f64)),
+            ("بدء".to_string(), Value::Str(f[5].to_string())),
+            ("نهاية".to_string(), Value::Str(f[6].to_string())),
+        ]));
+    }
+    Ok(Value::List(list))
+}
+
+/// نظام.مقاطعات — البند 355.
+fn b7_sys_irqs(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.مقاطعات";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let text = b7_proc_text("/proc/interrupts", DISPLAY, line, col)?;
+    let mut list: Vec<Value> = Vec::new();
+    for l in text.lines() {
+        let (num_part, rest) = match l.split_once(':') {
+            Some((a, b)) => (a.trim(), b),
+            None => continue,
+        };
+        let num: i64 = match num_part.parse() {
+            Ok(n) => n,
+            Err(_) => continue,
+        };
+        let parts: Vec<&str> = rest.split_whitespace().collect();
+        let mut count = 0i64;
+        let mut di = 0usize;
+        for (i, p) in parts.iter().enumerate() {
+            match p.parse::<i64>() {
+                Ok(n) => {
+                    count += n;
+                    di = i + 1;
+                }
+                Err(_) => break,
+            }
+        }
+        let desc = parts[di..].join(" ");
+        list.push(Value::Dict(vec![
+            ("رقم".to_string(), Value::Number(num as f64)),
+            ("عدد".to_string(), Value::Number(count as f64)),
+            ("وصف".to_string(), Value::Str(desc)),
+        ]));
+    }
+    Ok(Value::List(list))
+}
+
+/// نظام.قنوات_الاتصال — البند 356.
+fn b7_sys_ipc(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.قنوات_الاتصال";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let count = |path: &str| -> RioResult<i64> {
+        let text = b7_proc_text(path, DISPLAY, line, col)?;
+        Ok(text.lines().count().saturating_sub(1) as i64)
+    };
+    Ok(Value::Dict(vec![
+        (
+            "رسائل".to_string(),
+            Value::Number(count("/proc/sysvipc/msg")? as f64),
+        ),
+        (
+            "إشارات".to_string(),
+            Value::Number(count("/proc/sysvipc/sem")? as f64),
+        ),
+        (
+            "ذاكرة_مشتركة".to_string(),
+            Value::Number(count("/proc/sysvipc/shm")? as f64),
+        ),
+    ]))
+}
+
+/// نظام.ساعات_النظام — البند 357.
+fn b7_sys_clocks(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.ساعات_النظام";
+    need_args(DISPLAY, args, 0, line, col)?;
+    Ok(Value::List(vec![
+        Value::Str("حقيقي".to_string()),
+        Value::Str("أحادي".to_string()),
+        Value::Str("عملية".to_string()),
+        Value::Str("خيط".to_string()),
+    ]))
+}
+
+/// نظام.سجّل_رسالة — البند 359 (يونكس عبر logger).
+fn b7_sys_log(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.سجّل_رسالة";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let msg = need_string(DISPLAY, &args[0], line, col)?;
+    #[cfg(target_os = "windows")]
+    {
+        let _ = msg;
+        return Err(RioError::runtime(
+            format!("الدالة {} غير مدعومة على ويندوز", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = msg;
+        return Err(RioError::runtime(
+            format!("الدالة {} غير مدعومة في متصفح الويب", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_arch = "wasm32")))]
+    {
+        let status = std::process::Command::new("logger")
+            .arg(&msg)
+            .status()
+            .map_err(|_| {
+                RioError::runtime(format!("الدالة {} تعذر تشغيل logger", DISPLAY), line, col)
+            })?;
+        if !status.success() {
+            return Err(RioError::runtime(
+                format!("الدالة {} فشل تسجيل الرسالة", DISPLAY),
+                line,
+                col,
+            ));
+        }
+        Ok(Value::Nil)
+    }
+}
+
+/// حجم نافذة الطرفية: stty size ثم COLUMNS/LINES ثم 24/80.
+fn b7_term_size(display: &str, line: usize, col: usize) -> RioResult<(i64, i64)> {
+    if let Ok(out) = b7_run_capture("stty", &["size"], display, line, col) {
+        let mut it = out.split_whitespace();
+        if let (Some(r), Some(c)) = (it.next(), it.next()) {
+            if let (Ok(rows), Ok(cols)) = (r.parse::<i64>(), c.parse::<i64>()) {
+                return Ok((rows, cols));
+            }
+        }
+    }
+    let rows = std::env::var("LINES")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(24);
+    let cols = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(80);
+    Ok((rows, cols))
+}
+
+/// نظام.حجم_نافذة_الطرفية — البند 292.
+fn b7_sys_termsize(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.حجم_نافذة_الطرفية";
+    need_args(DISPLAY, args, 0, line, col)?;
+    #[cfg(target_os = "windows")]
+    {
+        return Err(RioError::runtime(
+            format!("الدالة {} غير مدعومة على ويندوز", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let (rows, cols) = b7_term_size(DISPLAY, line, col)?;
+        Ok(Value::Dict(vec![
+            ("صفوف".to_string(), Value::Number(rows as f64)),
+            ("أعمدة".to_string(), Value::Number(cols as f64)),
+        ]))
+    }
+}
+
+/// نظام.إعدادات_الطرفية — البند 291.
+fn b7_sys_termsettings(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "نظام.إعدادات_الطرفية";
+    need_args(DISPLAY, args, 0, line, col)?;
+    #[cfg(target_os = "windows")]
+    {
+        return Err(RioError::runtime(
+            format!("الدالة {} غير مدعومة على ويندوز", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut speed = "غير معروف".to_string();
+        let mut rows = 24i64;
+        let mut cols = 80i64;
+        if let Ok(out) = b7_run_capture("stty", &["-a"], DISPLAY, line, col) {
+            for part in out.split(';') {
+                let p = part.trim();
+                if let Some(rest) = p.strip_prefix("speed ") {
+                    speed = rest.split_whitespace().next().unwrap_or("غير معروف").to_string();
+                } else if let Some(rest) = p.strip_prefix("rows ") {
+                    rows = rest.split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(24);
+                } else if let Some(rest) = p.strip_prefix("columns ") {
+                    cols = rest.split_whitespace().next().and_then(|s| s.parse().ok()).unwrap_or(80);
+                }
+            }
+        } else {
+            let (r, c) = b7_term_size(DISPLAY, line, col)?;
+            rows = r;
+            cols = c;
+        }
+        Ok(Value::Dict(vec![
+            ("سرعة".to_string(), Value::Str(speed)),
+            ("صفوف".to_string(), Value::Number(rows as f64)),
+            ("أعمدة".to_string(), Value::Number(cols as f64)),
+        ]))
+    }
+}
+// END لينكس7-ز3-نظام Rust
+
 fn system_entries() -> Vec<(&'static str, Value)> {
     vec![
         ("اسم_النداء", native("اسم_النداء", sys_name)),
@@ -12419,6 +14680,36 @@ fn system_entries() -> Vec<(&'static str, Value)> {
         ("اسم_النظام", native("اسم_النظام", sys_os)),
         ("معرف_المستخدم", native("معرف_المستخدم", sys_uid)),
         ("معرف_المجموعة", native("معرف_المجموعة", sys_gid)),
+        ("ذاكرة", native("ذاكرة", b7_sys_mem)),
+        ("معلومات_المعالج", native("معلومات_المعالج", b7_sys_cpu)),
+        ("عدد_المعالجات", native("عدد_المعالجات", b7_sys_ncpu)),
+        ("معمارية_الجهاز", native("معمارية_الجهاز", b7_sys_arch)),
+        ("اسم_نظام_التشغيل", native("اسم_نظام_التشغيل", b7_sys_osname)),
+        ("وقت_التشغيل", native("وقت_التشغيل", b7_sys_uptime)),
+        ("متوسط_الحمل", native("متوسط_الحمل", b7_sys_load)),
+        ("إحصاءات_افتراضية", native("إحصاءات_افتراضية", b7_sys_vmstat)),
+        ("نطاقات_الذاكرة", native("نطاقات_الذاكرة", b7_sys_memblocks)),
+        ("معلومات_النظام_الكاملة", native("معلومات_النظام_الكاملة", b7_sys_full)),
+        ("اسم_المستخدم_المسجل", native("اسم_المستخدم_المسجل", b7_sys_login)),
+        ("معلومات_المستخدم", native("معلومات_المستخدم", b7_sys_userinfo)),
+        ("حدد_مكان_أمر", native("حدّد_مكان_أمر", b7_sys_which)),
+        ("حلل_الخيارات", native("حلل_الخيارات", b7_sys_parseopts)),
+        ("نقاط_التركيب", native("نقاط_التركيب", b7_sys_mounts)),
+        ("تحقق_تركيب", native("تحقق_تركيب", b7_sys_ismount)),
+        ("اعرض_الأقراص", native("اعرض_الأقراص", b7_sys_disks)),
+        ("معرف_جهاز", native("معرف_جهاز", b7_sys_devid)),
+        ("ابحث_جهاز_بنوع", native("ابحث_جهاز_بنوع", b7_sys_finddev)),
+        ("رسائل_النواة", native("رسائل_النواة", b7_sys_dmesg)),
+        ("معرف_فريد", native("معرف_فريد", b7_sys_uuid)),
+        ("حلل_معرف", native("حلّل_معرف", b7_sys_parse_uuid)),
+        ("كلمة_عشوائية_آمنة", native("كلمة_عشوائية_آمنة", b7_sys_randword)),
+        ("أقفال_الملفات", native("أقفال_الملفات", b7_sys_locks)),
+        ("مقاطعات", native("مقاطعات", b7_sys_irqs)),
+        ("قنوات_الاتصال", native("قنوات_الاتصال", b7_sys_ipc)),
+        ("ساعات_النظام", native("ساعات_النظام", b7_sys_clocks)),
+        ("سجل_رسالة", native("سجّل_رسالة", b7_sys_log)),
+        ("حجم_نافذة_الطرفية", native("حجم_نافذة_الطرفية", b7_sys_termsize)),
+        ("إعدادات_الطرفية", native("إعدادات_الطرفية", b7_sys_termsettings)),
     ]
 }
 
@@ -12506,6 +14797,11 @@ fn time_entries() -> Vec<(&'static str, Value)> {
         ("أضف", native("أضف", time_add)),
         // باقي J14 — البند 205: تنسيق التاريخ/الوقت.
         ("نسق", native("نسق", time_format_custom)),// BEGIN لينكس4-نص مداخل وقت
+        // لينكس7-ز7: تاريخ_دولي/حلّل_تاريخ/تاريخ_بعد_أيام/من_طابع.
+        ("تاريخ_دولي", native("تاريخ_دولي", b7_time_iso_today)),
+        ("حلل_تاريخ", native("حلّل_تاريخ", b7_time_parse_date)),
+        ("تاريخ_بعد_أيام", native("تاريخ_بعد_أيام", b7_time_date_after)),
+        ("من_طابع", native("من_طابع", b7_time_from_stamp)),
         ("حلل_بصيغة", native("حلل_بصيغة", time_parse_format)),
 // END لينكس4-نص مداخل وقت
 
@@ -13947,6 +16243,10 @@ fn text_scan_pattern(
 fn text_entries() -> Vec<(&'static str, Value)> {
     vec![
         ("نسق", native("نسق", text_format)),
+        // لينكس7-ز7: جزء_بفهارس/غير_فارغ/فسّر_هروب.
+        ("جزء_بفهارس", native("جزء_بفهارس", b7_text_slice)),
+        ("غير_فارغ", native("غير_فارغ", b7_text_nonempty)),
+        ("فسر_هروب", native("فسّر_هروب", b7_text_unescape)),
         ("يبدأ_ب", native("يبدأ_ب", text_starts_with)),
         ("ينتهي_ب", native("ينتهي_ب", text_ends_with)),
         ("قسم_كلمات", native("قسم_كلمات", text_split_words)),
@@ -14240,7 +16540,16 @@ fn text_format(
     line: usize,
     col: usize,
 ) -> RioResult<Value> {
-    need_args("نص.نسق", args, 2, line, col)?;
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!("الدالة نص.نسق تتوقع معاملين أو ثلاثة لكن أعطيت {}", args.len()),
+            line,
+            col,
+        ));
+    }
+    let align_pairs = b5_opts("نص.نسق", args, 2, line, col)?;
+    b5_no_unknown("نص.نسق", align_pairs, &["محاذاة"], line, col)?;
+    let align = b5_opt_bool("نص.نسق", align_pairs, "محاذاة", false, line, col)?;
     let tpl = need_string("نص.نسق", &args[0], line, col)?;
     if tpl.chars().count() > 100000 {
         return Err(RioError::runtime("قالب التنسيق كبير جدا", line, col));
@@ -14330,20 +16639,36 @@ fn text_format(
             };
             match spec {
                 None => out.push_str(&value.fmt_value()),
-                Some(sp) => match value {
-                    Value::Number(n) => {
-                        let s = text_format_number(*n, &sp)
-                            .map_err(|e| RioError::runtime(e, line, col))?;
-                        out.push_str(&s);
+                Some(sp) => {
+                    let (align_left, width, rest) = if align {
+                        b7_text_align_prefix(&sp)
+                    } else {
+                        (None, None, sp.as_str())
+                    };
+                    match value {
+                        Value::Number(n) => {
+                            let s = text_format_number(*n, rest)
+                                .map_err(|e| RioError::runtime(e, line, col))?;
+                            match width {
+                                Some(w) => {
+                                    out.push_str(&b7_text_align_pad(&s, w, align_left.unwrap_or(false)))
+                                }
+                                None => out.push_str(&s),
+                            }
+                        }
+                        _ => {
+                            if width.is_none() || !rest.is_empty() {
+                                return Err(RioError::runtime(
+                                    "مواصفة تنسيق لغير عدد",
+                                    line,
+                                    col,
+                                ));
+                            }
+                            let s = value.fmt_value();
+                            out.push_str(&b7_text_align_pad(&s, width.unwrap(), align_left.unwrap_or(false)));
+                        }
                     }
-                    _ => {
-                        return Err(RioError::runtime(
-                            "مواصفة تنسيق لغير عدد",
-                            line,
-                            col,
-                        ))
-                    }
-                },
+                }
             }
             i = j + 1;
             continue;
@@ -14378,6 +16703,9 @@ fn bases_entries() -> Vec<(&'static str, Value)> {
         // لينكس6-هـ2: ترميز_قاعدة64/فك_قاعدة64.
         ("ترميز_قاعدة64", native("ترميز_قاعدة64", b6_bases_b64encode)),
         ("فك_قاعدة64", native("فك_قاعدة64", b6_bases_b64decode)),
+        // لينكس7-ز7: قاعدة32.
+        ("ترميز_قاعدة32", native("ترميز_قاعدة32", b7_bases_b32encode)),
+        ("فك_قاعدة32", native("فك_قاعدة32", b7_bases_b32decode)),
     ]
 }
 
@@ -40448,6 +42776,42 @@ fn b6_lines_tail(
     Ok(Value::Str(b6_join_lines(&lines[skip..])))
 }
 
+/// تحليل عدد بشري: بادئة رقمية اختيارية مع لاحقة K/M/G/T (أساس 1024).
+fn b7_parse_human_num(s: &str) -> Option<f64> {
+    let t = s.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let (num_part, mult) = match t.chars().last() {
+        Some('K') | Some('k') => (&t[..t.len() - 1], 1024.0),
+        Some('M') | Some('m') => (&t[..t.len() - 1], 1024.0 * 1024.0),
+        Some('G') | Some('g') => (&t[..t.len() - 1], 1024.0 * 1024.0 * 1024.0),
+        Some('T') | Some('t') => (&t[..t.len() - 1], 1024.0 * 1024.0 * 1024.0 * 1024.0),
+        _ => (t, 1.0),
+    };
+    num_part.trim().parse::<f64>().ok().map(|v| v * mult)
+}
+
+/// مفتاح أخف_عمود: عدد أو قائمة أعداد (1..=3).
+fn b7_hide_columns(pairs: &[(String, Value)], display: &str, line: usize, col: usize) -> RioResult<Option<Vec<i64>>> {
+    match dict_get(pairs, "أخف_عمود") {
+        None => Ok(None),
+        Some(Value::Number(n)) => Ok(Some(vec![*n as i64])),
+        Some(Value::List(items)) => {
+            let mut out = Vec::new();
+            for it in items {
+                out.push(need_integer(display, it, line, col)?);
+            }
+            Ok(Some(out))
+        }
+        Some(other) => Err(RioError::typ(
+            format!("الدالة {} تتوقع عددا أو قائمة أعداد للخيار أخف_عمود لكن أعطيت {}", display, other.type_name()),
+            line,
+            col,
+        )),
+    }
+}
+
 fn b6_lines_hexdump(
     ctx: &mut dyn HandlerCaller,
     args: &[Value],
@@ -40455,28 +42819,54 @@ fn b6_lines_hexdump(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "سطور.ست_عشري";
-    if args.len() != 1 {
+    if args.is_empty() || args.len() > 2 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
     }
-    let data: Vec<u8> = match &args[0] {
+    let data_full: Vec<u8> = match &args[0] {
         Value::List(_) => b5_need_bytes(DISPLAY, &args[0], line, col)?,
         _ => b6_lines_input(ctx, &args[0], DISPLAY, line, col)?
             .into_bytes(),
     };
+    let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
+    let width = b5_opt_int(DISPLAY, pairs, "عرض_سطر", line, col)?.unwrap_or(16);
+    let offset = b5_opt_int(DISPLAY, pairs, "إزاحة", line, col)?.unwrap_or(0);
+    let length = b5_opt_int(DISPLAY, pairs, "طول", line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["عرض_سطر", "إزاحة", "طول"], line, col)?;
+    if width < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} عرض_سطر موجب", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    if offset < 0 || length.map(|l| l < 0).unwrap_or(false) {
+        return Err(RioError::runtime(
+            format!("الدالة {} الإزاحة والطول لا سالبان", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let start = (offset as usize).min(data_full.len());
+    let end = match length {
+        Some(l) => (start + l as usize).min(data_full.len()),
+        None => data_full.len(),
+    };
+    let data = &data_full[start..end];
+    let w = width as usize;
     let mut out = String::new();
-    for (off, chunk) in data.chunks(16).enumerate() {
+    for (off, chunk) in data.chunks(w).enumerate() {
         let mut hex = String::new();
         for (i, b) in chunk.iter().enumerate() {
-            if i == 8 {
+            if i == w / 2 && w > 1 {
                 hex.push(' ');
             }
             hex.push_str(&format!("{:02x} ", b));
         }
-        while hex.len() < 49 {
+        while hex.len() < w * 3 + 1 {
             hex.push(' ');
         }
         let ascii: String = chunk
@@ -40489,7 +42879,7 @@ fn b6_lines_hexdump(
                 }
             })
             .collect();
-        out.push_str(&format!("{:08x}  {} |{}|\n", off * 16, hex, ascii));
+        out.push_str(&format!("{:08x}  {} |{}|\n", start + off * w, hex, ascii));
     }
     Ok(Value::Str(out.trim_end_matches('\n').to_string()))
 }
@@ -40531,23 +42921,40 @@ fn b6_lines_nl(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "سطور.ترقيم";
-    if args.len() != 1 {
+    if args.is_empty() || args.len() > 2 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
     }
     let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
+    let num_width = b5_opt_int(DISPLAY, pairs, "عرض_رقم", line, col)?.unwrap_or(0);
+    let sep = b5_opt_str(DISPLAY, pairs, "فاصل", line, col)?.unwrap_or_else(|| ": ".to_string());
+    let start_at = b5_opt_int(DISPLAY, pairs, "رقم_بداية", line, col)?.unwrap_or(1);
+    b5_no_unknown(DISPLAY, pairs, &["عرض_رقم", "فاصل", "رقم_بداية"], line, col)?;
+    if num_width < 0 || start_at < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} عرض_رقم لا سالب ورقم_بداية يبدأ من 1", DISPLAY),
+            line,
+            col,
+        ));
+    }
     let lines = b6_split_lines(&text);
     let mut out: Vec<String> = Vec::new();
-    let mut n = 0usize;
+    let mut n = start_at;
     for l in lines {
         if l.is_empty() {
             out.push(l);
         } else {
+            let num = if num_width > 0 {
+                format!("{:0>width$}", n, width = num_width as usize)
+            } else {
+                format!("{}", n)
+            };
+            out.push(format!("{}{}{}", num, sep, l));
             n += 1;
-            out.push(format!("{}: {}", n, l));
         }
     }
     Ok(Value::Str(b6_join_lines(&out)))
@@ -40562,16 +42969,39 @@ fn b6_lines_sort(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "سطور.فرز";
-    if args.len() != 1 {
+    if args.is_empty() || args.len() > 2 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
     }
     let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
+    let human = b5_opt_bool(DISPLAY, pairs, "بشري", false, line, col)?;
+    let _stable = b5_opt_bool(DISPLAY, pairs, "مستقر", false, line, col)?;
+    let ignore_blanks = b5_opt_bool(DISPLAY, pairs, "تجاهل_مسافات_بادئة", false, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["بشري", "مستقر", "تجاهل_مسافات_بادئة"], line, col)?;
+    let key = |l: &str| -> String {
+        if ignore_blanks {
+            l.trim_start().to_string()
+        } else {
+            l.to_string()
+        }
+    };
     let mut lines = b6_split_lines(&text);
-    lines.sort();
+    lines.sort_by(|a, b| {
+        let ka = key(a);
+        let kb = key(b);
+        if human {
+            match (b7_parse_human_num(&ka), b7_parse_human_num(&kb)) {
+                (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
+                _ => ka.cmp(&kb),
+            }
+        } else {
+            ka.cmp(&kb)
+        }
+    });
     Ok(Value::Str(b6_join_lines(&lines)))
 }
 
@@ -40711,17 +43141,52 @@ fn b6_lines_uniq_adj(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "سطور.أزل_مكرر_متتال";
-    if args.len() != 1 {
+    if args.is_empty() || args.len() > 2 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
     }
     let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
-    let mut lines = b6_split_lines(&text);
-    lines.dedup();
-    Ok(Value::Str(b6_join_lines(&lines)))
+    let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
+    let fold = b5_opt_bool(DISPLAY, pairs, "بلا_حالة", false, line, col)?;
+    let cmp_chars = b5_opt_int(DISPLAY, pairs, "قارن_حروف", line, col)?;
+    let skip_fields = b5_opt_int(DISPLAY, pairs, "تخط_حقول", line, col)?.unwrap_or(0);
+    let skip_chars = b5_opt_int(DISPLAY, pairs, "تخط_حروف", line, col)?.unwrap_or(0);
+    b5_no_unknown(DISPLAY, pairs, &["بلا_حالة", "قارن_حروف", "تخط_حقول", "تخط_حروف"], line, col)?;
+    if skip_fields < 0 || skip_chars < 0 || cmp_chars.map(|c| c < 0).unwrap_or(false) {
+        return Err(RioError::runtime(
+            format!("الدالة {} أعداد التخطي والمقارنة لا سالبة", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let ckey = |l: &str| -> String {
+        let mut s = l.to_string();
+        if skip_fields > 0 {
+            s = s.split_whitespace().skip(skip_fields as usize).collect::<Vec<_>>().join(" ");
+        }
+        if skip_chars > 0 {
+            s = s.chars().skip(skip_chars as usize).collect();
+        }
+        if let Some(n) = cmp_chars {
+            s = s.chars().take(n as usize).collect();
+        }
+        if fold {
+            s = s.to_lowercase();
+        }
+        s
+    };
+    let lines = b6_split_lines(&text);
+    let mut out: Vec<String> = Vec::new();
+    for l in lines {
+        if out.last().map(|p| ckey(p) == ckey(&l)).unwrap_or(false) {
+            continue;
+        }
+        out.push(l);
+    }
+    Ok(Value::Str(b6_join_lines(&out)))
 }
 
 /// مجموعات متتالية: (السطر، عدد التكرار المتتالي).
@@ -40822,15 +43287,18 @@ fn b6_lines_common(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "سطور.مشترك";
-    if args.len() != 2 {
+    if args.len() < 2 || args.len() > 3 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
     }
     let a = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
     let b = b6_lines_input(ctx, &args[1], DISPLAY, line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    let hide = b7_hide_columns(pairs, DISPLAY, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["أخف_عمود"], line, col)?;
     let mut la = b6_split_lines(&a);
     let mut lb = b6_split_lines(&b);
     la.sort();
@@ -40840,15 +43308,50 @@ fn b6_lines_common(
     let mut out: Vec<String> = Vec::new();
     let mut i = 0usize;
     let mut j = 0usize;
-    while i < la.len() && j < lb.len() {
-        match la[i].cmp(&lb[j]) {
-            std::cmp::Ordering::Equal => {
-                out.push(la[i].clone());
-                i += 1;
-                j += 1;
+    match &hide {
+        None => {
+            while i < la.len() && j < lb.len() {
+                match la[i].cmp(&lb[j]) {
+                    std::cmp::Ordering::Equal => {
+                        out.push(la[i].clone());
+                        i += 1;
+                        j += 1;
+                    }
+                    std::cmp::Ordering::Less => i += 1,
+                    std::cmp::Ordering::Greater => j += 1,
+                }
             }
-            std::cmp::Ordering::Less => i += 1,
-            std::cmp::Ordering::Greater => j += 1,
+        }
+        Some(hidden) => {
+            for c in hidden {
+                if *c < 1 || *c > 3 {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} أخف_عمود 1 أو 2 أو 3", DISPLAY),
+                        line,
+                        col,
+                    ));
+                }
+            }
+            let show = |c: i64| !hidden.contains(&c);
+            while i < la.len() || j < lb.len() {
+                if j >= lb.len() || (i < la.len() && la[i] < lb[j]) {
+                    if show(1) {
+                        out.push(la[i].clone());
+                    }
+                    i += 1;
+                } else if i >= la.len() || lb[j] < la[i] {
+                    if show(2) {
+                        out.push(format!("\t{}", lb[j]));
+                    }
+                    j += 1;
+                } else {
+                    if show(3) {
+                        out.push(format!("\t\t{}", la[i]));
+                    }
+                    i += 1;
+                    j += 1;
+                }
+            }
         }
     }
     Ok(Value::Str(b6_join_lines(&out)))
@@ -40861,10 +43364,10 @@ fn b6_lines_join_field(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "سطور.ادمج_بحقل";
-    if args.len() < 2 || args.len() > 4 {
+    if args.len() < 2 || args.len() > 5 {
         return Err(RioError::runtime(
             format!(
-                "الدالة {} تتوقع معاملين إلى أربعة لكن أعطيت {}",
+                "الدالة {} تتوقع معاملين إلى خمسة لكن أعطيت {}",
                 DISPLAY,
                 args.len()
             ),
@@ -40883,6 +43386,18 @@ fn b6_lines_join_field(
         ));
     }
     let delim = b6_lines_s(args, 3, " ", DISPLAY, line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 4, line, col)?;
+    let show_unmatched = b5_opt_bool(DISPLAY, pairs, "أظهر_بلا_مقابل", false, line, col)?;
+    let default_val = b5_opt_str(DISPLAY, pairs, "قيمة_افتراضية", line, col)?.unwrap_or_default();
+    let field_b = b5_opt_int(DISPLAY, pairs, "حقل_ثان", line, col)?.unwrap_or(field);
+    b5_no_unknown(DISPLAY, pairs, &["أظهر_بلا_مقابل", "قيمة_افتراضية", "حقل_ثان"], line, col)?;
+    if field_b < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} حقل_ثان يبدأ من 1", DISPLAY),
+            line,
+            col,
+        ));
+    }
     let split = |l: &str| -> Vec<String> {
         if delim == " " {
             l.split_whitespace().map(|s| s.to_string()).collect()
@@ -40891,13 +43406,17 @@ fn b6_lines_join_field(
         }
     };
     let idx = (field - 1) as usize;
+    let idx_b = (field_b - 1) as usize;
+    let lb_lines = b6_split_lines(&b);
+    let max_b_fields = lb_lines.iter().map(|l| split(l).len()).max().unwrap_or(0);
     let mut out: Vec<String> = Vec::new();
     for la in b6_split_lines(&a) {
         let fa = split(&la);
         let key = fa.get(idx).cloned().unwrap_or_default();
-        for lb in b6_split_lines(&b) {
-            let fb = split(&lb);
-            if fb.get(idx).cloned().unwrap_or_default() == key {
+        let mut matched = false;
+        for lb in &lb_lines {
+            let fb = split(lb);
+            if fb.get(idx_b).cloned().unwrap_or_default() == key {
                 let rest_a: Vec<String> = fa
                     .iter()
                     .enumerate()
@@ -40907,15 +43426,29 @@ fn b6_lines_join_field(
                 let rest_b: Vec<String> = fb
                     .iter()
                     .enumerate()
-                    .filter(|(i, _)| *i != idx)
+                    .filter(|(i, _)| *i != idx_b)
                     .map(|(_, s)| s.clone())
                     .collect();
                 let mut parts = vec![key.clone()];
                 parts.extend(rest_a);
                 parts.extend(rest_b);
                 out.push(parts.join(&delim));
+                matched = true;
                 break;
             }
+        }
+        if !matched && show_unmatched {
+            let rest_a: Vec<String> = fa
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| *i != idx)
+                .map(|(_, s)| s.clone())
+                .collect();
+            let rest_b: Vec<String> = vec![default_val.clone(); max_b_fields.saturating_sub(1)];
+            let mut parts = vec![key.clone()];
+            parts.extend(rest_a);
+            parts.extend(rest_b);
+            out.push(parts.join(&delim));
         }
     }
     Ok(Value::Str(b6_join_lines(&out)))
@@ -40928,9 +43461,9 @@ fn b6_lines_paste(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "سطور.الصق";
-    if args.len() < 2 || args.len() > 3 {
+    if args.len() < 2 || args.len() > 4 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملين إلى أربعة لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
@@ -40938,8 +43471,17 @@ fn b6_lines_paste(
     let a = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
     let b = b6_lines_input(ctx, &args[1], DISPLAY, line, col)?;
     let delim = b6_lines_s(args, 2, "\t", DISPLAY, line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 3, line, col)?;
+    let serial = b5_opt_bool(DISPLAY, pairs, "تتابعي", false, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["تتابعي"], line, col)?;
     let la = b6_split_lines(&a);
     let lb = b6_split_lines(&b);
+    if serial {
+        return Ok(Value::Str(b6_join_lines(&[
+            la.join(&delim),
+            lb.join(&delim),
+        ])));
+    }
     let n = la.len().max(lb.len());
     let mut out: Vec<String> = Vec::new();
     for i in 0..n {
@@ -40957,9 +43499,9 @@ fn b6_lines_split_n(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "سطور.قسّم_بسطور";
-    if args.len() != 2 {
+    if args.len() < 2 || args.len() > 3 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
@@ -40973,10 +43515,34 @@ fn b6_lines_split_n(
             col,
         ));
     }
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    let nparts = b5_opt_int(DISPLAY, pairs, "عدد_أجزاء", line, col)?;
+    let _numeric_suffix = b5_opt_bool(DISPLAY, pairs, "لاحقة_رقمية", false, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["عدد_أجزاء", "لاحقة_رقمية"], line, col)?;
     let lines = b6_split_lines(&text);
     let mut out: Vec<Value> = Vec::new();
-    for chunk in lines.chunks(n as usize) {
-        out.push(Value::Str(b6_join_lines(chunk)));
+    match nparts {
+        Some(p) => {
+            if p < 1 {
+                return Err(RioError::runtime(
+                    format!("الدالة {} عدد_أجزاء يبدأ من 1", DISPLAY),
+                    line,
+                    col,
+                ));
+            }
+            let total = lines.len();
+            let p = p as usize;
+            for i in 0..p {
+                let s = i * total / p;
+                let e = (i + 1) * total / p;
+                out.push(Value::Str(b6_join_lines(&lines[s..e])));
+            }
+        }
+        None => {
+            for chunk in lines.chunks(n as usize) {
+                out.push(Value::Str(b6_join_lines(chunk)));
+            }
+        }
     }
     Ok(Value::List(out))
 }
@@ -41024,9 +43590,9 @@ fn b6_lines_cut_fields(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "سطور.قص_حقول";
-    if args.len() < 2 || args.len() > 3 {
+    if args.len() < 2 || args.len() > 4 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملين إلى أربعة لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
@@ -41035,19 +43601,25 @@ fn b6_lines_cut_fields(
     let spec = need_string(DISPLAY, &args[1], line, col)?;
     let ranges = b6_parse_ranges(&spec, DISPLAY, line, col)?;
     let delim = b6_lines_s(args, 2, "\t", DISPLAY, line, col)?;
-    let out: Vec<String> = b6_split_lines(&text)
-        .iter()
-        .map(|l| {
-            let fields: Vec<&str> = l.split(delim.as_str()).collect();
-            let mut keep: Vec<&str> = Vec::new();
-            for (i, f) in fields.iter().enumerate() {
-                if b6_in_ranges(i + 1, &ranges) {
-                    keep.push(f);
-                }
+    let pairs = b5_opts(DISPLAY, args, 3, line, col)?;
+    let skip_no_delim = b5_opt_bool(DISPLAY, pairs, "تخط_بلا_محدد", false, line, col)?;
+    let complement = b5_opt_bool(DISPLAY, pairs, "مكمل", false, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["تخط_بلا_محدد", "مكمل"], line, col)?;
+    let mut out: Vec<String> = Vec::new();
+    for l in b6_split_lines(&text) {
+        if skip_no_delim && !l.contains(delim.as_str()) {
+            continue;
+        }
+        let fields: Vec<&str> = l.split(delim.as_str()).collect();
+        let mut keep: Vec<&str> = Vec::new();
+        for (i, f) in fields.iter().enumerate() {
+            let selected = b6_in_ranges(i + 1, &ranges);
+            if selected != complement {
+                keep.push(f);
             }
-            keep.join(&delim)
-        })
-        .collect();
+        }
+        out.push(keep.join(&delim));
+    }
     Ok(Value::Str(b6_join_lines(&out)))
 }
 
@@ -41058,9 +43630,9 @@ fn b6_lines_cut_chars(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "سطور.قص_حروف";
-    if args.len() != 2 {
+    if args.len() < 2 || args.len() > 3 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
@@ -41068,14 +43640,28 @@ fn b6_lines_cut_chars(
     let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
     let spec = need_string(DISPLAY, &args[1], line, col)?;
     let ranges = b6_parse_ranges(&spec, DISPLAY, line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    let by_bytes = b5_opt_bool(DISPLAY, pairs, "بايتات", false, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["بايتات"], line, col)?;
     let out: Vec<String> = b6_split_lines(&text)
         .iter()
         .map(|l| {
-            l.chars()
-                .enumerate()
-                .filter(|(i, _)| b6_in_ranges(i + 1, &ranges))
-                .map(|(_, c)| c)
-                .collect()
+            if by_bytes {
+                let bytes = l.as_bytes();
+                let picked: Vec<u8> = bytes
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| b6_in_ranges(i + 1, &ranges))
+                    .map(|(_, b)| *b)
+                    .collect();
+                String::from_utf8_lossy(&picked).to_string()
+            } else {
+                l.chars()
+                    .enumerate()
+                    .filter(|(i, _)| b6_in_ranges(i + 1, &ranges))
+                    .map(|(_, c)| c)
+                    .collect()
+            }
         })
         .collect();
     Ok(Value::Str(b6_join_lines(&out)))
@@ -41088,9 +43674,9 @@ fn b6_lines_tr(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "سطور.استبدل_حروف";
-    if args.len() != 3 {
+    if args.len() < 3 || args.len() > 4 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع ثلاثة معاملات لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع ثلاثة معاملات أو أربعة لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
@@ -41107,13 +43693,28 @@ fn b6_lines_tr(
     }
     let from_chars: Vec<char> = from.chars().collect();
     let to_chars: Vec<char> = to.chars().collect();
-    let out: String = text
-        .chars()
-        .map(|c| match from_chars.iter().position(|f| *f == c) {
-            Some(i) => to_chars[i.min(to_chars.len() - 1)],
-            None => c,
-        })
-        .collect();
+    let pairs = b5_opts(DISPLAY, args, 3, line, col)?;
+    let complement = b5_opt_bool(DISPLAY, pairs, "مكمل", false, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["مكمل"], line, col)?;
+    let out: String = if complement {
+        let last = *to_chars.last().unwrap();
+        text.chars()
+            .map(|c| {
+                if from_chars.contains(&c) {
+                    c
+                } else {
+                    last
+                }
+            })
+            .collect()
+    } else {
+        text.chars()
+            .map(|c| match from_chars.iter().position(|f| *f == c) {
+                Some(i) => to_chars[i.min(to_chars.len() - 1)],
+                None => c,
+            })
+            .collect()
+    };
     Ok(Value::Str(out))
 }
 
@@ -41207,9 +43808,9 @@ fn b6_lines_fold(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "سطور.اطوِ";
-    if args.is_empty() || args.len() > 2 {
+    if args.is_empty() || args.len() > 3 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملا إلى ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
@@ -41223,16 +43824,48 @@ fn b6_lines_fold(
             col,
         ));
     }
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    let at_words = b5_opt_bool(DISPLAY, pairs, "عند_الكلمات", false, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["عند_الكلمات"], line, col)?;
     let w = width as usize;
     let mut out: Vec<String> = Vec::new();
     for l in b6_split_lines(&text) {
-        let chars: Vec<char> = l.chars().collect();
-        if chars.is_empty() {
+        if !at_words {
+            let chars: Vec<char> = l.chars().collect();
+            if chars.is_empty() {
+                out.push(String::new());
+                continue;
+            }
+            for chunk in chars.chunks(w) {
+                out.push(chunk.iter().collect());
+            }
+            continue;
+        }
+        // عند الكلمات: اكسر بعد آخر مسافة قبل العرض؛ والكلمة الأطول تُقطع.
+        if l.is_empty() {
             out.push(String::new());
             continue;
         }
-        for chunk in chars.chunks(w) {
-            out.push(chunk.iter().collect());
+        let mut cur = String::new();
+        for word in l.split(' ') {
+            if cur.is_empty() {
+                cur.push_str(word);
+            } else if cur.chars().count() + 1 + word.chars().count() <= w {
+                cur.push(' ');
+                cur.push_str(word);
+            } else {
+                out.push(std::mem::take(&mut cur));
+                cur.push_str(word);
+            }
+            while cur.chars().count() > w {
+                let cut: String = cur.chars().take(w).collect();
+                let rest: String = cur.chars().skip(w).collect();
+                out.push(cut);
+                cur = rest;
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
         }
     }
     Ok(Value::Str(b6_join_lines(&out)))
@@ -41245,9 +43878,9 @@ fn b6_lines_expand_tabs(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "سطور.وسّع_تبويبات";
-    if args.is_empty() || args.len() > 2 {
+    if args.is_empty() || args.len() > 3 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملا إلى ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
@@ -41261,13 +43894,58 @@ fn b6_lines_expand_tabs(
             col,
         ));
     }
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    let mut stops: Vec<i64> = Vec::new();
+    if let Some(v) = dict_get(pairs, "مواضع_توقف") {
+        match v {
+            Value::List(items) => {
+                for it in items {
+                    stops.push(need_integer(DISPLAY, it, line, col)?);
+                }
+            }
+            other => {
+                return Err(RioError::typ(
+                    format!("الدالة {} تتوقع قائمة أعداد للخيار مواضع_توقف لكن أعطيت {}", DISPLAY, other.type_name()),
+                    line,
+                    col,
+                ))
+            }
+        }
+    }
+    b5_no_unknown(DISPLAY, pairs, &["مواضع_توقف"], line, col)?;
+    stops.sort();
+    stops.dedup();
+    for s in &stops {
+        if *s < 1 {
+            return Err(RioError::runtime(
+                format!("الدالة {} مواضع_توقف تبدأ من 1", DISPLAY),
+                line,
+                col,
+            ));
+        }
+    }
     let w = width as usize;
     let mut out = String::new();
     let mut col = 0usize;
     for ch in text.chars() {
         match ch {
             '\t' => {
-                let spaces = w - (col % w);
+                let spaces = if stops.is_empty() {
+                    w - (col % w)
+                } else {
+                    let cur1 = col + 1;
+                    match stops.iter().find(|s| **s as usize > cur1) {
+                        Some(s) => (*s as usize) - cur1,
+                        None => {
+                            let last = *stops.last().unwrap() as usize;
+                            let mut next = last + w;
+                            while next <= cur1 {
+                                next += w;
+                            }
+                            next - cur1
+                        }
+                    }
+                };
                 for _ in 0..spaces {
                     out.push(' ');
                 }
@@ -41422,15 +44100,22 @@ fn b6_lines_shuffle(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "سطور.اخلط";
-    if args.is_empty() || args.len() > 2 {
+    if args.is_empty() || args.len() > 3 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملا إلى ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
     }
     let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
     let mut state: u64 = match args.get(1) {
+        Some(Value::Dict(_)) => {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+            nanos ^ ((std::process::id() as u64) << 32) ^ 0x9E3779B97F4A7C15
+        }
         Some(v) => need_integer(DISPLAY, v, line, col)? as u64,
         None => {
             let nanos = std::time::SystemTime::now()
@@ -41440,6 +44125,17 @@ fn b6_lines_shuffle(
             nanos ^ ((std::process::id() as u64) << 32) ^ 0x9E3779B97F4A7C15
         }
     };
+    let opt_at = if args.len() > 1 && matches!(args.get(1), Some(Value::Dict(_))) { 1 } else { 2 };
+    let pairs = b5_opts(DISPLAY, args, opt_at, line, col)?;
+    let take_n = b5_opt_int(DISPLAY, pairs, "عدد", line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["عدد"], line, col)?;
+    if take_n.map(|n| n < 0).unwrap_or(false) {
+        return Err(RioError::runtime(
+            format!("الدالة {} العدد لا سالب", DISPLAY),
+            line,
+            col,
+        ));
+    }
     if state == 0 {
         state = 0x9E3779B97F4A7C15;
     }
@@ -41452,6 +44148,9 @@ fn b6_lines_shuffle(
         let j = (r % ((i + 1) as u64)) as usize;
         lines.swap(i, j);
     }
+    if let Some(n) = take_n {
+        lines.truncate(n as usize);
+    }
     Ok(Value::Str(b6_join_lines(&lines)))
 }
 
@@ -41462,6 +44161,129 @@ fn b6_lines_tee(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "سطور.انسخ_لملف_وشاشة";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let path = need_string(DISPLAY, &args[1], line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    let extra = b5_opt_strs(DISPLAY, pairs, "ملفات", line, col)?;
+    let append = b5_opt_bool(DISPLAY, pairs, "إلحاق", false, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["ملفات", "إلحاق"], line, col)?;
+    println!("{}", text);
+    let mut targets = vec![path.clone()];
+    targets.extend(extra);
+    for p in targets {
+        let fs = search_resolve_path(ctx, &p);
+        let write_res = if append {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&fs)
+                .and_then(|mut f| f.write_all(text.as_bytes()))
+        } else {
+            std::fs::write(&fs, text.as_bytes())
+        };
+        write_res.map_err(|_| {
+            RioError::runtime(
+                format!("الدالة {} تعذر الكتابة في {}", DISPLAY, p),
+                line,
+                col,
+            )
+        })?;
+    }
+    Ok(Value::Str(text))
+}
+
+// BEGIN لينكس7-ز1-سطور-جديد.
+// لينكس7-ز2-سطور-مفاتيح.
+// الدفعة 7 — دوال سطور الجديدة (نظام §1–§4 صفراء).
+
+fn b7_lines_show_eol(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.أظهر_نهايات_السطور";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let lines = b6_split_lines(&text);
+    let out: Vec<String> = lines.iter().map(|l| format!("{}$", l)).collect();
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b7_lines_show_tabs(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.أظهر_التبويبات";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    Ok(Value::Str(text.replace('\t', "^I")))
+}
+
+fn b7_lines_show_nonprint(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.أظهر_غير_المطبوع";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    Ok(Value::Str(b7_show_nonprint(&text)))
+}
+
+/// عرض الحروف غير المطبوعة كرموز ^X (التبويب والسطر الجديد يبقيان كما هما).
+fn b7_show_nonprint(text: &str) -> String {
+    let mut out = String::new();
+    for ch in text.chars() {
+        let c = ch as u32;
+        if c < 0x20 && ch != '\n' && ch != '\t' {
+            out.push('^');
+            out.push((b'@' + c as u8) as char);
+        } else if c == 0x7F {
+            out.push_str("^?");
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn b7_lines_first_bytes(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.أول_البايتات";
     if args.len() != 2 {
         return Err(RioError::runtime(
             format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
@@ -41469,19 +44291,645 @@ fn b6_lines_tee(
             col,
         ));
     }
-    let text = need_string(DISPLAY, &args[0], line, col)?;
-    let path = need_string(DISPLAY, &args[1], line, col)?;
-    println!("{}", text);
-    let fs = search_resolve_path(ctx, &path);
-    std::fs::write(&fs, text.as_bytes()).map_err(|_| {
-        RioError::runtime(
-            format!("الدالة {} تعذر الكتابة في {}", DISPLAY, path),
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let n = need_integer(DISPLAY, &args[1], line, col)?;
+    if n < 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} العدد لا سالب", DISPLAY),
             line,
             col,
-        )
-    })?;
-    Ok(Value::Str(text))
+        ));
+    }
+    let take = (n as usize).min(text.len());
+    Ok(Value::Str(String::from_utf8_lossy(&text.as_bytes()[..take]).to_string()))
 }
+
+fn b7_lines_head_except_last(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.أول_السطور_إلا_آخر";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let n = b6_lines_n(args, 1, 1, DISPLAY, line, col)?;
+    if n < 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} العدد لا سالب", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let lines = b6_split_lines(&text);
+    let keep = lines.len().saturating_sub(n as usize);
+    Ok(Value::Str(b6_join_lines(&lines[..keep])))
+}
+
+fn b7_lines_last_bytes(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.آخر_البايتات";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let n = need_integer(DISPLAY, &args[1], line, col)?;
+    if n < 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} العدد لا سالب", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let take = (n as usize).min(text.len());
+    let start = text.len() - take;
+    Ok(Value::Str(String::from_utf8_lossy(&text.as_bytes()[start..]).to_string()))
+}
+
+fn b7_lines_tail_from(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.آخر_السطور_من";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let n = need_integer(DISPLAY, &args[1], line, col)?;
+    if n < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} رقم السطر يبدأ من 1", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let lines = b6_split_lines(&text);
+    let skip = ((n - 1) as usize).min(lines.len());
+    Ok(Value::Str(b6_join_lines(&lines[skip..])))
+}
+
+/// عرض بايتات كأعداد ثمانية أو عشرية (سطر لكل 16 بايتا) — قلب od.
+fn b7_lines_dump_radix(
+    data: &[u8],
+    radix: u32,
+    width: usize,
+) -> String {
+    let mut out = String::new();
+    for (off, chunk) in data.chunks(16).enumerate() {
+        let mut vals = String::new();
+        for b in chunk {
+            match radix {
+                8 => vals.push_str(&format!("{:03o} ", b)),
+                _ => vals.push_str(&format!("{:03} ", b)),
+            }
+        }
+        while vals.len() < width {
+            vals.push(' ');
+        }
+        let ascii: String = chunk
+            .iter()
+            .map(|b| {
+                if (0x20..0x7F).contains(b) {
+                    *b as char
+                } else {
+                    '.'
+                }
+            })
+            .collect();
+        out.push_str(&format!("{:07o}  {} |{}|\n", off * 16, vals, ascii));
+    }
+    out.trim_end_matches('\n').to_string()
+}
+
+fn b7_lines_octal(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.اعرض_ثماني";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let data: Vec<u8> = match &args[0] {
+        Value::List(_) => b5_need_bytes(DISPLAY, &args[0], line, col)?,
+        _ => b6_lines_input(ctx, &args[0], DISPLAY, line, col)?.into_bytes(),
+    };
+    Ok(Value::Str(b7_lines_dump_radix(&data, 8, 64)))
+}
+
+fn b7_lines_decimal(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.اعرض_عشري";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let data: Vec<u8> = match &args[0] {
+        Value::List(_) => b5_need_bytes(DISPLAY, &args[0], line, col)?,
+        _ => b6_lines_input(ctx, &args[0], DISPLAY, line, col)?.into_bytes(),
+    };
+    Ok(Value::Str(b7_lines_dump_radix(&data, 10, 64)))
+}
+
+fn b7_lines_paginate(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.اعرض_بصفحات";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let per = b6_lines_n(args, 1, 56, DISPLAY, line, col)?;
+    if per < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} عدد سطور الصفحة موجب", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let lines = b6_split_lines(&text);
+    let mut out: Vec<String> = Vec::new();
+    let mut page = 1usize;
+    for chunk in lines.chunks(per as usize) {
+        out.push(format!("صفحة {}", page));
+        out.extend(chunk.iter().cloned());
+        out.push(String::new());
+        page += 1;
+    }
+    if out.last().map(|s| s.is_empty()) == Some(true) {
+        out.pop();
+    }
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b7_lines_reverse_chars(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.اعكس_الحروف";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let lines = b6_split_lines(&text);
+    let out: Vec<String> = lines
+        .iter()
+        .map(|l| l.chars().rev().collect())
+        .collect();
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b7_lines_show_all(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.أظهر_كل_العلامات";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let lines = b6_split_lines(&text);
+    let out: Vec<String> = lines
+        .iter()
+        .map(|l| format!("{}$", b7_show_nonprint(&l.replace('\t', "^I"))))
+        .collect();
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b7_lines_is_sorted(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.تحقق_فرز";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let lines = b6_split_lines(&text);
+    Ok(Value::Bool(lines.windows(2).all(|w| w[0] <= w[1])))
+}
+
+/// مقارنة إصدارين: مقاطع رقمية عدديا، وغير الرقمية معجميا، والأقصر أولا.
+fn b7_cmp_version(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let pa: Vec<&str> = a.split('.').collect();
+    let pb: Vec<&str> = b.split('.').collect();
+    for (x, y) in pa.iter().zip(pb.iter()) {
+        let ord = match (x.parse::<i64>(), y.parse::<i64>()) {
+            (Ok(nx), Ok(ny)) => nx.cmp(&ny),
+            _ => x.cmp(y),
+        };
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+    pa.len().cmp(&pb.len())
+}
+
+fn b7_lines_sort_versions(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.فرز_إصدارات";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let mut lines = b6_split_lines(&text);
+    lines.sort_by(|a, b| b7_cmp_version(a, b));
+    Ok(Value::Str(b6_join_lines(&lines)))
+}
+
+fn b7_lines_split_pattern(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.قسّم_بنمط";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    if pattern.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} النمط لا فارغ", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let lines = b6_split_lines(&text);
+    let mut chunks: Vec<Value> = Vec::new();
+    let mut cur: Vec<String> = Vec::new();
+    for l in lines {
+        if l.contains(&pattern) && !cur.is_empty() {
+            chunks.push(Value::Str(b6_join_lines(&cur)));
+            cur = Vec::new();
+        }
+        cur.push(l);
+    }
+    chunks.push(Value::Str(b6_join_lines(&cur)));
+    Ok(Value::List(chunks))
+}
+
+fn b7_lines_toposort(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.رتب_طوبولوجيا";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let pairs = match &args[0] {
+        Value::List(items) => items,
+        other => {
+            return Err(RioError::typ(
+                format!("الدالة {} تتوقع قائمة أزواج لكن أعطيت {}", DISPLAY, other.type_name()),
+                line,
+                col,
+            ))
+        }
+    };
+    let mut nodes: Vec<String> = Vec::new();
+    let mut edges: Vec<(String, String)> = Vec::new();
+    for item in pairs {
+        let d = match item {
+            Value::Dict(p) => p,
+            other => {
+                return Err(RioError::typ(
+                    format!("الدالة {} تتوقع قواميس {{قبل، بعد}} لكن أعطيت {}", DISPLAY, other.type_name()),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let before = match dict_get(d, "قبل") {
+            Some(Value::Str(s)) => s.clone(),
+            _ => {
+                return Err(RioError::typ(
+                    format!("الدالة {} كل زوج يحتاج مفتاح قبل نصا", DISPLAY),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let after = match dict_get(d, "بعد") {
+            Some(Value::Str(s)) => s.clone(),
+            _ => {
+                return Err(RioError::typ(
+                    format!("الدالة {} كل زوج يحتاج مفتاح بعد نصا", DISPLAY),
+                    line,
+                    col,
+                ))
+            }
+        };
+        for n in [&before, &after] {
+            if !nodes.contains(n) {
+                nodes.push(n.clone());
+            }
+        }
+        edges.push((before, after));
+    }
+    let mut order: Vec<String> = Vec::new();
+    let mut remaining: Vec<String> = nodes.clone();
+    loop {
+        let mut progress = false;
+        let mut i = 0;
+        while i < remaining.len() {
+            let n = &remaining[i];
+            let blocked = edges.iter().any(|(b, a)| a == n && remaining.contains(b));
+            if !blocked {
+                order.push(remaining.remove(i));
+                progress = true;
+            } else {
+                i += 1;
+            }
+        }
+        if remaining.is_empty() {
+            break;
+        }
+        if !progress {
+            return Err(RioError::runtime(
+                format!("الدالة {} دورة في الاعتماديات", DISPLAY),
+                line,
+                col,
+            ));
+        }
+    }
+    Ok(Value::List(order.into_iter().map(Value::Str).collect()))
+}
+
+fn b7_lines_unexpand(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.ضغط_تبويبات";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let width = b6_lines_n(args, 1, 8, DISPLAY, line, col)?;
+    if width < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} عرض التبويب موجب", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let lines = b6_split_lines(&text);
+    let out: Vec<String> = lines
+        .iter()
+        .map(|l| {
+            let spaces = l.chars().take_while(|c| *c == ' ').count();
+            let tabs = spaces / width as usize;
+            let rest = spaces % width as usize;
+            let mut s = "\t".repeat(tabs);
+            s.push_str(&" ".repeat(rest));
+            s.push_str(&l[spaces..]);
+            s
+        })
+        .collect();
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b7_lines_format_paras(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.نسّق_فقرات";
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
+    let width = b5_opt_int(DISPLAY, pairs, "عرض", line, col)?.unwrap_or(72);
+    let uniform = b5_opt_bool(DISPLAY, pairs, "مسافات_موحدة", false, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["عرض", "مسافات_موحدة"], line, col)?;
+    if width < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} العرض موجب", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let lines = b6_split_lines(&text);
+    let mut paras: Vec<Vec<String>> = Vec::new();
+    let mut cur: Vec<String> = Vec::new();
+    for l in lines {
+        if l.trim().is_empty() {
+            if !cur.is_empty() {
+                paras.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(l);
+        }
+    }
+    if !cur.is_empty() {
+        paras.push(cur);
+    }
+    let mut out: Vec<String> = Vec::new();
+    for para in paras {
+        let joined = para.join(" ");
+        let words: Vec<&str> = joined.split_whitespace().collect();
+        let mut cur_line = String::new();
+        for w in words {
+            if cur_line.is_empty() {
+                cur_line.push_str(w);
+            } else if cur_line.chars().count() + 1 + w.chars().count() <= width as usize {
+                cur_line.push(' ');
+                cur_line.push_str(w);
+            } else {
+                out.push(std::mem::take(&mut cur_line));
+                cur_line.push_str(w);
+            }
+        }
+        if !cur_line.is_empty() {
+            out.push(cur_line);
+        }
+        out.push(String::new());
+    }
+    if out.last().map(|s| s.is_empty()) == Some(true) {
+        out.pop();
+    }
+    // مسافات_موحدة: مسافتان بعد علامة نهاية الجملة، ومسافة واحدة بين الكلمات.
+    if uniform {
+        for l in out.iter_mut() {
+            if l.is_empty() {
+                continue;
+            }
+            let mut fixed = String::new();
+            let chars: Vec<char> = l.chars().collect();
+            let mut i = 0;
+            while i < chars.len() {
+                let ch = chars[i];
+                fixed.push(ch);
+                if matches!(ch, '.' | '!' | '؟' | '?' | '؛') && i + 1 < chars.len() && chars[i + 1] == ' ' {
+                    fixed.push(' ');
+                }
+                i += 1;
+            }
+            *l = fixed;
+        }
+    }
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b7_lines_delete_cols(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.احذف_أعمدة";
+    if args.len() != 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let spec = need_string(DISPLAY, &args[1], line, col)?;
+    let ranges = b6_parse_ranges(&spec, DISPLAY, line, col)?;
+    let lines = b6_split_lines(&text);
+    let out: Vec<String> = lines
+        .iter()
+        .map(|l| {
+            l.chars()
+                .enumerate()
+                .filter(|(i, _)| !b6_in_ranges(i + 1, &ranges))
+                .map(|(_, c)| c)
+                .collect()
+        })
+        .collect();
+    Ok(Value::Str(b6_join_lines(&out)))
+}
+
+fn b7_lines_count_bytes(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.عد_بايتات";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    Ok(Value::Number(text.len() as f64))
+}
+
+fn b7_lines_longest(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "سطور.أطول_سطر";
+    if args.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let text = b6_lines_input(ctx, &args[0], DISPLAY, line, col)?;
+    let lines = b6_split_lines(&text);
+    let max = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    Ok(Value::Number(max as f64))
+}
+
+// END لينكس7-ز1-سطور-جديد.
 
 fn lines_entries() -> Vec<(&'static str, Value)> {
     vec![
@@ -41523,6 +44971,27 @@ fn lines_entries() -> Vec<(&'static str, Value)> {
         ("عد_حروف", native("عد_حروف", b6_lines_count_chars)),
         ("اخلط", native("اخلط", b6_lines_shuffle)),
         ("انسخ_لملف_وشاشة", native("انسخ_لملف_وشاشة", b6_lines_tee)),
+        ("أظهر_نهايات_السطور", native("أظهر_نهايات_السطور", b7_lines_show_eol)),
+        ("أظهر_التبويبات", native("أظهر_التبويبات", b7_lines_show_tabs)),
+        ("أظهر_غير_المطبوع", native("أظهر_غير_المطبوع", b7_lines_show_nonprint)),
+        ("أول_البايتات", native("أول_البايتات", b7_lines_first_bytes)),
+        ("أول_السطور_إلا_آخر", native("أول_السطور_إلا_آخر", b7_lines_head_except_last)),
+        ("آخر_البايتات", native("آخر_البايتات", b7_lines_last_bytes)),
+        ("آخر_السطور_من", native("آخر_السطور_من", b7_lines_tail_from)),
+        ("اعرض_ثماني", native("اعرض_ثماني", b7_lines_octal)),
+        ("اعرض_عشري", native("اعرض_عشري", b7_lines_decimal)),
+        ("اعرض_بصفحات", native("اعرض_بصفحات", b7_lines_paginate)),
+        ("اعكس_الحروف", native("اعكس_الحروف", b7_lines_reverse_chars)),
+        ("أظهر_كل_العلامات", native("أظهر_كل_العلامات", b7_lines_show_all)),
+        ("تحقق_فرز", native("تحقق_فرز", b7_lines_is_sorted)),
+        ("فرز_إصدارات", native("فرز_إصدارات", b7_lines_sort_versions)),
+        ("قسم_بنمط", native("قسّم_بنمط", b7_lines_split_pattern)),
+        ("رتب_طوبولوجيا", native("رتب_طوبولوجيا", b7_lines_toposort)),
+        ("ضغط_تبويبات", native("ضغط_تبويبات", b7_lines_unexpand)),
+        ("نسق_فقرات", native("نسّق_فقرات", b7_lines_format_paras)),
+        ("احذف_أعمدة", native("احذف_أعمدة", b7_lines_delete_cols)),
+        ("عد_بايتات", native("عد_بايتات", b7_lines_count_bytes)),
+        ("أطول_سطر", native("أطول_سطر", b7_lines_longest)),
     ]
 }
 
@@ -41957,6 +45426,892 @@ fn b6_math_expr(
     }))
 }
 
+// ----- لينكس7-ز7: تشفير/أسس/رياضيات/نص/وقت/عرض/تقويم — 20 دالة جديدة -----
+
+/// بصمة ملف أو نص؛ مفتاح ملف: صحيح يعامل الوسيط مسارا ويبصم محتواه (حد 64 ميغا).
+fn b7_hash_bytes(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<u8>> {
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", display, args.len()),
+            line,
+            col,
+        ));
+    }
+    let input = need_string(display, &args[0], line, col)?;
+    let pairs = b5_opts(display, args, 1, line, col)?;
+    b5_no_unknown(display, pairs, &["ملف"], line, col)?;
+    let as_file = b5_opt_bool(display, pairs, "ملف", false, line, col)?;
+    let bytes: Vec<u8> = if as_file {
+        let fs = search_resolve_path(ctx, &input);
+        std::fs::read(&fs).map_err(|_| {
+            RioError::runtime(
+                format!("الدالة {} الملف غير موجود: {}", display, input),
+                line,
+                col,
+            )
+        })?
+    } else {
+        input.into_bytes()
+    };
+    if bytes.len() > 64 * 1024 * 1024 {
+        return Err(RioError::runtime(
+            format!("الدالة {} الملف كبير جدا (الحد 64 ميغا)", display),
+            line,
+            col,
+        ));
+    }
+    Ok(bytes)
+}
+
+fn b7_crypto_md5(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تشفير.بصمة_إم_دي_5";
+    let bytes = b7_hash_bytes(ctx, args, DISPLAY, line, col)?;
+    Ok(Value::Str(crate::crypto::md5_hex(&bytes)))
+}
+
+fn b7_crypto_sha1(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تشفير.بصمة_شا_1";
+    let bytes = b7_hash_bytes(ctx, args, DISPLAY, line, col)?;
+    Ok(Value::Str(crate::crypto::sha1_hex(&bytes)))
+}
+
+fn b7_crypto_sha512(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تشفير.بصمة_شا_512";
+    let bytes = b7_hash_bytes(ctx, args, DISPLAY, line, col)?;
+    Ok(Value::Str(crate::crypto::sha512_hex(&bytes)))
+}
+
+fn b7_crypto_sha224(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تشفير.بصمة_شا_224";
+    let bytes = b7_hash_bytes(ctx, args, DISPLAY, line, col)?;
+    Ok(Value::Str(crate::crypto::sha224_hex(&bytes)))
+}
+
+fn b7_crypto_sha384(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تشفير.بصمة_شا_384";
+    let bytes = b7_hash_bytes(ctx, args, DISPLAY, line, col)?;
+    Ok(Value::Str(crate::crypto::sha384_hex(&bytes)))
+}
+
+fn b7_crypto_blake2b(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "تشفير.بصمة_بليك_2";
+    let bytes = b7_hash_bytes(ctx, args, DISPLAY, line, col)?;
+    Ok(Value::Str(crate::crypto::blake2b_hex(&bytes)))
+}
+
+/// ترميز قاعدة 32 (RFC 4648) بأبجدية A-Z2-7 وحشو «=».
+fn b7_bases_b32encode(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أسس.ترميز_قاعدة32";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    const ALPHA: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let data = text.as_bytes();
+    let mut out = String::new();
+    let mut i = 0usize;
+    while i < data.len() {
+        let chunk = &data[i..std::cmp::min(i + 5, data.len())];
+        let mut buf = [0u8; 5];
+        buf[..chunk.len()].copy_from_slice(chunk);
+        let n = chunk.len();
+        let bits: [u8; 8] = [
+            buf[0] >> 3,
+            ((buf[0] & 0x07) << 2) | (buf[1] >> 6),
+            (buf[1] >> 1) & 0x1F,
+            ((buf[1] & 0x01) << 4) | (buf[2] >> 4),
+            ((buf[2] & 0x0F) << 1) | (buf[3] >> 7),
+            (buf[3] >> 2) & 0x1F,
+            ((buf[3] & 0x03) << 3) | (buf[4] >> 5),
+            buf[4] & 0x1F,
+        ];
+        let keep = match n {
+            1 => 2,
+            2 => 4,
+            3 => 5,
+            4 => 7,
+            _ => 8,
+        };
+        for k in 0..8 {
+            if k < keep {
+                out.push(ALPHA[bits[k] as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+        i += 5;
+    }
+    Ok(Value::Str(out))
+}
+
+/// فك قاعدة 32 (يقبل بحشو أو بلا حشو).
+fn b7_bases_b32decode(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "أسس.فك_قاعدة32";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let clean: String = text.chars().filter(|c| *c != '=').collect();
+    let n = clean.len();
+    if !matches!(n % 8, 0 | 2 | 4 | 5 | 7) {
+        return Err(RioError::runtime(
+            format!("الدالة {} نص قاعدة32 غير صالح", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let mut vals: Vec<u8> = Vec::with_capacity(n);
+    for c in clean.chars() {
+        let v = match c {
+            'A'..='Z' => c as u8 - b'A',
+            '2'..='7' => c as u8 - b'2' + 26,
+            _ => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} محرف غير صالح في قاعدة32: {}", DISPLAY, c),
+                    line,
+                    col,
+                ))
+            }
+        };
+        vals.push(v);
+    }
+    let mut out: Vec<u8> = Vec::new();
+    let mut i = 0usize;
+    while i < vals.len() {
+        let rem = vals.len() - i;
+        let take = std::cmp::min(rem, 8);
+        let mut b = [0u8; 8];
+        b[..take].copy_from_slice(&vals[i..i + take]);
+        let bytes = match take {
+            2 => vec![(b[0] << 3) | (b[1] >> 2)],
+            4 => vec![
+                (b[0] << 3) | (b[1] >> 2),
+                ((b[1] & 0x03) << 6) | (b[2] << 1) | (b[3] >> 4),
+            ],
+            5 => vec![
+                (b[0] << 3) | (b[1] >> 2),
+                ((b[1] & 0x03) << 6) | (b[2] << 1) | (b[3] >> 4),
+                ((b[3] & 0x0F) << 4) | (b[4] >> 1),
+            ],
+            7 => vec![
+                (b[0] << 3) | (b[1] >> 2),
+                ((b[1] & 0x03) << 6) | (b[2] << 1) | (b[3] >> 4),
+                ((b[3] & 0x0F) << 4) | (b[4] >> 1),
+                ((b[4] & 0x01) << 7) | (b[5] << 2) | (b[6] >> 3),
+            ],
+            8 => vec![
+                (b[0] << 3) | (b[1] >> 2),
+                ((b[1] & 0x03) << 6) | (b[2] << 1) | (b[3] >> 4),
+                ((b[3] & 0x0F) << 4) | (b[4] >> 1),
+                ((b[4] & 0x01) << 7) | (b[5] << 2) | (b[6] >> 3),
+                ((b[6] & 0x07) << 5) | b[7],
+            ],
+            _ => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} نص قاعدة32 غير صالح", DISPLAY),
+                    line,
+                    col,
+                ))
+            }
+        };
+        out.extend_from_slice(&bytes);
+        i += take;
+    }
+    let text = String::from_utf8_lossy(&out).to_string();
+    Ok(Value::Str(text))
+}
+
+/// مقارنة ثلاثية: -1 أو 0 أو 1 (عددية ونصية).
+fn b7_math_compare(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "رياضيات.قارن";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let ord = match (&args[0], &args[1]) {
+        (Value::Number(a), Value::Number(b)) => a.partial_cmp(b),
+        (Value::Str(a), Value::Str(b)) => Some(a.cmp(b)),
+        _ => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع عددين أو نصين لكن أعطيت {} و{}",
+                    DISPLAY,
+                    args[0].type_name(),
+                    args[1].type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let ord = match ord {
+        Some(o) => o,
+        None => {
+            return Err(RioError::runtime(
+                format!("الدالة {} لا تقارن قيما غير عددية", DISPLAY),
+                line,
+                col,
+            ))
+        }
+    };
+    Ok(Value::Number(match ord {
+        std::cmp::Ordering::Less => -1.0,
+        std::cmp::Ordering::Equal => 0.0,
+        std::cmp::Ordering::Greater => 1.0,
+    }))
+}
+
+/// قائمة أعداد النطاق مخلوطة عشوائيا (Fisher-Yates).
+fn b7_math_shuffle_range(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "رياضيات.خلط_نطاق";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let start = need_integer(DISPLAY, &args[0], line, col)?;
+    let end = need_integer(DISPLAY, &args[1], line, col)?;
+    if end < start {
+        return Ok(Value::List(Vec::new()));
+    }
+    if end - start >= 100_000 {
+        return Err(RioError::runtime(
+            format!("الدالة {} نطاق طويل جدا (الحد 100000)", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let mut v: Vec<i64> = (start..=end).collect();
+    let mut state = b6_rand_state();
+    let mut i = v.len();
+    while i > 1 {
+        i -= 1;
+        let j = (b6_rand_next(&mut state) % ((i + 1) as u64)) as usize;
+        v.swap(i, j);
+    }
+    Ok(Value::List(
+        v.into_iter().map(|n| Value::Number(n as f64)).collect(),
+    ))
+}
+
+/// فسّر «1K/2.5M/3G» إلى عدد بايتات (أساس 1024؛ لاحقة B اختيارية).
+fn b7_math_from_human(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "رياضيات.من_حجم_بشري";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let s = need_string(DISPLAY, &args[0], line, col)?;
+    let t = s.trim();
+    let norm: String = t
+        .chars()
+        .map(|c| match c {
+            '٠'..='٩' => ((c as u32 - '٠' as u32) as u8 + b'0') as char,
+            '٫' => '.',
+            other => other,
+        })
+        .collect();
+    let mut cut = norm.len();
+    for (i, c) in norm.char_indices() {
+        if !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+') {
+            cut = i;
+            break;
+        }
+    }
+    let (num_part, suf_part) = norm.split_at(cut);
+    if num_part.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} حجم بشري غير صالح: {}", DISPLAY, s),
+            line,
+            col,
+        ));
+    }
+    let value: f64 = num_part.parse().map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} حجم بشري غير صالح: {}", DISPLAY, s),
+            line,
+            col,
+        )
+    })?;
+    let suf = suf_part.trim().to_ascii_uppercase();
+    let suf = suf.strip_suffix('B').unwrap_or(&suf);
+    let mult: f64 = match suf {
+        "" => 1.0,
+        "K" => 1024.0,
+        "M" => 1024.0 * 1024.0,
+        "G" => 1024.0 * 1024.0 * 1024.0,
+        "T" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        "P" => 1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} لاحقة حجم غير معروفة: {}", DISPLAY, suf_part.trim()),
+                line,
+                col,
+            ))
+        }
+    };
+    let result = value * mult;
+    if !result.is_finite() {
+        return Err(RioError::runtime(
+            format!("الدالة {} حجم بشري غير صالح: {}", DISPLAY, s),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Number(result))
+}
+
+/// نسّق عددا بعدد كسور ثابت (تقريب).
+fn b7_math_format_num(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "رياضيات.نسّق_عدد";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let n = need_number(DISPLAY, &args[0], line, col)?;
+    let prec = need_integer(DISPLAY, &args[1], line, col)?;
+    if !(0..=20).contains(&prec) {
+        return Err(RioError::runtime(
+            format!("الدالة {} الكسور بين 0 و20", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let s = format!("{:.*}", prec as usize, n);
+    Ok(Value::Str(arabicize_number(&s)))
+}
+
+/// تنسيق عدد بصيغة printf مختصرة: %[أعلام][عرض][.دقة][dfe g].
+fn b7_fmt_num(
+    fmt: &str,
+    n: f64,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    let mut rest = match fmt.strip_prefix('%') {
+        Some(r) => r,
+        None => {
+            return Err(RioError::runtime(
+                format!("الدالة {} صيغة غير صالحة: {}", display, fmt),
+                line,
+                col,
+            ))
+        }
+    };
+    let mut left = false;
+    let mut zero = false;
+    let mut plus = false;
+    loop {
+        match rest.chars().next() {
+            Some('-') => {
+                left = true;
+                rest = &rest[1..];
+            }
+            Some('0') => {
+                zero = true;
+                rest = &rest[1..];
+            }
+            Some('+') => {
+                plus = true;
+                rest = &rest[1..];
+            }
+            Some(' ') => {
+                rest = &rest[1..];
+            }
+            _ => break,
+        }
+    }
+    let mut width = 0usize;
+    while let Some(c) = rest.chars().next() {
+        if c.is_ascii_digit() {
+            width = width * 10 + (c as usize - '0' as usize);
+            rest = &rest[1..];
+        } else {
+            break;
+        }
+    }
+    let mut prec: Option<usize> = None;
+    if let Some(r) = rest.strip_prefix('.') {
+        rest = r;
+        let mut p = 0usize;
+        let mut any = false;
+        while let Some(c) = rest.chars().next() {
+            if c.is_ascii_digit() {
+                p = p * 10 + (c as usize - '0' as usize);
+                rest = &rest[1..];
+                any = true;
+            } else {
+                break;
+            }
+        }
+        if !any {
+            return Err(RioError::runtime(
+                format!("الدالة {} صيغة غير صالحة: {}", display, fmt),
+                line,
+                col,
+            ));
+        }
+        prec = Some(p);
+    }
+    let conv = match rest.chars().next() {
+        Some(c) => c,
+        None => {
+            return Err(RioError::runtime(
+                format!("الدالة {} صيغة غير صالحة: {}", display, fmt),
+                line,
+                col,
+            ))
+        }
+    };
+    if rest.len() != 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} صيغة غير صالحة: {}", display, fmt),
+            line,
+            col,
+        ));
+    }
+    let mut s = match conv {
+        'd' => format!("{}", n as i64),
+        'f' => format!("{:.*}", prec.unwrap_or(6), n),
+        'e' => format!("{:.*e}", prec.unwrap_or(6), n),
+        'g' => match prec {
+            Some(p) => format!("{:.*}", p, n),
+            None => plain_number(n),
+        },
+        _ => {
+            return Err(RioError::runtime(
+                format!("الدالة {} صيغة غير صالحة: {}", display, fmt),
+                line,
+                col,
+            ))
+        }
+    };
+    if plus && !s.starts_with('-') {
+        s = format!("+{}", s);
+    }
+    if width > s.chars().count() {
+        let pad = width - s.chars().count();
+        if left {
+            s.push_str(&" ".repeat(pad));
+        } else if zero {
+            if let Some(b) = s.strip_prefix('-') {
+                s = format!("-{}{}", "0".repeat(pad), b);
+            } else if let Some(b) = s.strip_prefix('+') {
+                s = format!("+{}{}", "0".repeat(pad), b);
+            } else {
+                s = format!("{}{}", "0".repeat(pad), s);
+            }
+        } else {
+            s = format!("{}{}", " ".repeat(pad), s);
+        }
+    }
+    Ok(arabicize_number(&s))
+}
+
+/// جزء النص من الفهرس بطول معين (فهارس من 1).
+fn b7_text_slice(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "نص.جزء_بفهارس";
+    need_args(DISPLAY, args, 3, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let start = need_integer(DISPLAY, &args[1], line, col)?;
+    let len = need_integer(DISPLAY, &args[2], line, col)?;
+    if start < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} الفهرس يبدأ من 1", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    if len < 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} الطول غير صالح", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let s = (start - 1) as usize;
+    if s >= chars.len() {
+        return Ok(Value::Str(String::new()));
+    }
+    let e = std::cmp::min(s + len as usize, chars.len());
+    Ok(Value::Str(chars[s..e].iter().collect()))
+}
+
+/// صحيح إن كان النص غير فارغ وإلا خطأ.
+fn b7_text_nonempty(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "نص.غير_فارغ";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    if text.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} النص فارغ", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Bool(true))
+}
+
+/// فسّر \n و\t و\r و\\ و\0 و\xHH في النص.
+fn b7_text_unescape(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "نص.فسّر_هروب";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let mut out = String::new();
+    let mut it = text.chars().peekable();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let e = match it.next() {
+            Some('n') => '\n',
+            Some('t') => '\t',
+            Some('r') => '\r',
+            Some('\\') => '\\',
+            Some('0') => '\0',
+            Some('x') => {
+                let h1 = it.next().ok_or_else(|| {
+                    RioError::runtime(
+                        format!("الدالة {} تسلسل هروب غير مكتمل", DISPLAY),
+                        line,
+                        col,
+                    )
+                })?;
+                let h2 = it.next().ok_or_else(|| {
+                    RioError::runtime(
+                        format!("الدالة {} تسلسل هروب غير مكتمل", DISPLAY),
+                        line,
+                        col,
+                    )
+                })?;
+                let v = u32::from_str_radix(&format!("{}{}", h1, h2), 16).map_err(|_| {
+                    RioError::runtime(
+                        format!("الدالة {} تسلسل هروب غير صالح", DISPLAY),
+                        line,
+                        col,
+                    )
+                })?;
+                char::from_u32(v).unwrap_or('\u{FFFD}')
+            }
+            Some(other) => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} تسلسل هروب غير معروف: \\{}", DISPLAY, other),
+                    line,
+                    col,
+                ))
+            }
+            None => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} شرطة مائلة في النهاية", DISPLAY),
+                    line,
+                    col,
+                ))
+            }
+        };
+        out.push(e);
+    }
+    Ok(Value::Str(out))
+}
+
+/// تاريخ اليوم بصيغة ISO (أرقام مشرقية كسائر نصوص التاريخ).
+fn b7_time_iso_today(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "وقت.تاريخ_دولي";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let epoch = now_epoch();
+    let dt = crate::time::datetime_from_epoch(epoch, false, DISPLAY, line, col)?;
+    Ok(Value::Str(crate::time::format_date(&dt)))
+}
+
+/// حلّل نص تاريخ (ISO وشائع) إلى قاموس {سنة، شهر، يوم، ساعة، دقيقة}.
+fn b7_time_parse_date(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "وقت.حلّل_تاريخ";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let (y, mo, d, h, mi) = b7_parse_date_text(&text, DISPLAY, line, col)?;
+    Ok(Value::Dict(vec![
+        ("سنة".to_string(), Value::Number(y as f64)),
+        ("شهر".to_string(), Value::Number(mo as f64)),
+        ("يوم".to_string(), Value::Number(d as f64)),
+        ("ساعة".to_string(), Value::Number(h as f64)),
+        ("دقيقة".to_string(), Value::Number(mi as f64)),
+    ]))
+}
+
+fn b7_parse_date_text(
+    text: &str,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(i64, i64, i64, i64, i64)> {
+    let bad = || {
+        RioError::runtime(
+            format!("الدالة {} تاريخ غير صالح: {}", display, text),
+            line,
+            col,
+        )
+    };
+    let t = text.trim();
+    let (date_part, time_part) = match t.find([' ', 'T']) {
+        Some(i) => (&t[..i], Some(&t[i + 1..])),
+        None => (t, None),
+    };
+    let sep = if date_part.contains('-') {
+        '-'
+    } else if date_part.contains('/') {
+        '/'
+    } else {
+        return Err(bad());
+    };
+    let fields: Vec<&str> = date_part.split(sep).collect();
+    if fields.len() != 3 {
+        return Err(bad());
+    }
+    let nums: Vec<i64> = fields
+        .iter()
+        .map(|f| f.parse::<i64>().map_err(|_| bad()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (y, mo, d) = if fields[0].len() == 4 {
+        (nums[0], nums[1], nums[2])
+    } else if fields[2].len() == 4 {
+        (nums[2], nums[1], nums[0])
+    } else {
+        return Err(bad());
+    };
+    let (mut h, mut mi) = (0i64, 0i64);
+    if let Some(tp) = time_part {
+        let tfields: Vec<&str> = tp.split(':').collect();
+        if tfields.len() < 2 || tfields.len() > 3 {
+            return Err(bad());
+        }
+        h = tfields[0].parse().map_err(|_| bad())?;
+        mi = tfields[1].parse().map_err(|_| bad())?;
+        if tfields.len() == 3 {
+            let _s: i64 = tfields[2].parse().map_err(|_| bad())?;
+        }
+    }
+    if !(1..=9999).contains(&y) || !(1..=12).contains(&mo) {
+        return Err(bad());
+    }
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let dim: i64 = match mo {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ => {
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+    };
+    if d < 1 || d > dim || !(0..=23).contains(&h) || !(0..=59).contains(&mi) {
+        return Err(bad());
+    }
+    Ok((y, mo, d, h, mi))
+}
+
+/// تاريخ بعد N يوما من اليوم بصيغة YYYY-MM-DD (أرقام مشرقية).
+fn b7_time_date_after(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "وقت.تاريخ_بعد_أيام";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = need_integer(DISPLAY, &args[0], line, col)?;
+    let epoch = now_epoch();
+    let dt = crate::time::datetime_from_epoch(epoch, false, DISPLAY, line, col)?;
+    let days = crate::time::days_from_civil(dt.year, dt.month, dt.day) + n;
+    let (y, mo, d) = crate::time::civil_from_days(days);
+    Ok(Value::Str(arabicize_number(&format!(
+        "{:04}-{:02}-{:02}",
+        y, mo, d
+    ))))
+}
+
+/// حوّل طابعا زمنيا (ثوان منذ العصر، UTC) إلى تاريخ منسق.
+fn b7_time_from_stamp(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "وقت.من_طابع";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let epoch = need_integer(DISPLAY, &args[0], line, col)?;
+    let dt = crate::time::datetime_from_epoch(epoch, true, DISPLAY, line, col)?;
+    Ok(Value::Str(crate::time::format_datetime(&dt)))
+}
+
+/// اطبع النص بلا سطر جديد في النهاية؛ يعيد النص.
+fn b7_display_print_no_nl(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "عرض.اطبع_بلا_سطر";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    print!("{}", text);
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    Ok(Value::Str(text))
+}
+
+/// بادئة محاذاة في مواصفة نسق: «-» يسار ثم عرض؛ أو عرض بلا «-» يمين.
+/// يعيد (يسار؟، العرض، باقي المواصفة)؛ بلا بادئة يعيد الأصل كما هو.
+/// «03» القديمة (تصفير) لا تُمس.
+fn b7_text_align_prefix(spec: &str) -> (Option<bool>, Option<usize>, &str) {
+    let mut rest = spec;
+    let mut left = None;
+    if let Some(r) = rest.strip_prefix('-') {
+        left = Some(true);
+        rest = r;
+    }
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return (None, None, spec);
+    }
+    if left.is_none() && digits.starts_with('0') {
+        return (None, None, spec);
+    }
+    let width: usize = digits.parse().unwrap_or(0);
+    (left, Some(width), &rest[digits.len()..])
+}
+
+/// حشو نص إلى عرض بالمسافات (يسار: إلحاق؛ يمين: إدراج).
+fn b7_text_align_pad(s: &str, width: usize, left: bool) -> String {
+    let n = s.chars().count();
+    if n >= width {
+        return s.to_string();
+    }
+    let pad = " ".repeat(width - n);
+    if left {
+        format!("{}{}", s, pad)
+    } else {
+        format!("{}{}", pad, s)
+    }
+}
+
+/// شهر واحد منسق نصا (مساعد مشترك لمفاتيح اعرض_شهري).
+fn b7_cal_month_str(y: i64, m: i64, monday_first: bool) -> String {
+    let names = [
+        "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر",
+        "أكتوبر", "نوفمبر", "ديسمبر",
+    ];
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let days: i64 = match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        _ => {
+            if leap {
+                29
+            } else {
+                28
+            }
+        }
+    };
+    let shift = if monday_first { 3 } else { 4 };
+    let first_wd = (crate::time::days_from_civil(y, m as u32, 1) + shift).rem_euclid(7);
+    let mut out = format!("{} {}\n", names[(m - 1) as usize], y);
+    if monday_first {
+        out.push_str("ن  ث  ر  خ  ج  س  ح\n");
+    } else {
+        out.push_str("ح  ن  ث  ر  خ  ج  س\n");
+    }
+    let mut cells: Vec<String> = vec!["   ".to_string(); first_wd as usize];
+    for d in 1..=days {
+        cells.push(format!("{:>3}", d));
+    }
+    while cells.len() % 7 != 0 {
+        cells.push("   ".to_string());
+    }
+    for row in cells.chunks(7) {
+        out.push_str(&row.join(" "));
+        out.push('\n');
+    }
+    out.trim_end().to_string()
+}
+
 fn b6_math_seq(
     _ctx: &mut dyn HandlerCaller,
     args: &[Value],
@@ -41964,22 +46319,48 @@ fn b6_math_seq(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "رياضيات.تسلسل";
-    if args.is_empty() || args.len() > 2 {
+    if args.is_empty() || args.len() > 3 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملا إلى ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
     }
-    let (start, end) = if args.len() == 1 {
-        (1i64, need_integer(DISPLAY, &args[0], line, col)?)
+    let (start, end, opt_at) = if args.len() == 1 {
+        (
+            1i64,
+            need_integer(DISPLAY, &args[0], line, col)?,
+            1,
+        )
+    } else if args.len() == 2 {
+        if matches!(&args[1], Value::Dict(_)) {
+            (
+                1i64,
+                need_integer(DISPLAY, &args[0], line, col)?,
+                1,
+            )
+        } else {
+            (
+                need_integer(DISPLAY, &args[0], line, col)?,
+                need_integer(DISPLAY, &args[1], line, col)?,
+                2,
+            )
+        }
     } else {
         (
             need_integer(DISPLAY, &args[0], line, col)?,
             need_integer(DISPLAY, &args[1], line, col)?,
+            2,
         )
     };
+    let pairs = b5_opts(DISPLAY, args, opt_at, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["صيغة", "فاصل"], line, col)?;
+    let fmt = b5_opt_str(DISPLAY, pairs, "صيغة", line, col)?;
+    let sep = b5_opt_str(DISPLAY, pairs, "فاصل", line, col)?;
     if end < start {
+        if fmt.is_some() || sep.is_some() {
+            return Ok(Value::Str(String::new()));
+        }
         return Ok(Value::List(Vec::new()));
     }
     if end - start >= 100_000 {
@@ -41988,6 +46369,18 @@ fn b6_math_seq(
             line,
             col,
         ));
+    }
+    if fmt.is_some() || sep.is_some() {
+        let sep = sep.unwrap_or_else(|| " ".to_string());
+        let mut parts: Vec<String> = Vec::new();
+        for n in start..=end {
+            let s = match &fmt {
+                Some(f) => b7_fmt_num(f, n as f64, DISPLAY, line, col)?,
+                None => arabicize_number(&plain_number(n as f64)),
+            };
+            parts.push(s);
+        }
+        return Ok(Value::Str(parts.join(&sep)));
     }
     Ok(Value::List(
         (start..=end).map(|n| Value::Number(n as f64)).collect(),
@@ -42534,6 +46927,905 @@ fn b6_rand_next(state: &mut u64) -> u64 {
     *state
 }
 
+// ----- لينكس7-ز6: ملفات — 13 دالة جديدة -----
+
+/// قفل استشاري حصري عبر ملف قفل O_EXCL (محمول؛ موثق مبسط):
+/// يُنشأ `<المسار>.قفل`؛ يُحرَّر بحذف ملف القفل (ملفات.احذف_ملفا).
+/// مهلة: ثواني الانتظار قبل الفشل (افتراضي 0).
+fn b7_files_lock(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.اقفل_ملفا";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["مهلة"], line, col)?;
+    let mut timeout = 0.0f64;
+    if let Some(v) = dict_get(pairs, "مهلة") {
+        timeout = need_number(DISPLAY, v, line, col)?;
+    }
+    if timeout < 0.0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} مهلة غير صالحة", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let fs = search_resolve_path(ctx, &path);
+    let mut lock_os = fs.as_os_str().to_owned();
+    lock_os.push(".قفل");
+    let lock_fs = std::path::PathBuf::from(lock_os);
+    let start = std::time::Instant::now();
+    loop {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_fs)
+        {
+            Ok(mut f) => {
+                use std::io::Write;
+                let _ = writeln!(f, "{}", std::process::id());
+                return Ok(Value::Bool(true));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if start.elapsed().as_secs_f64() >= timeout {
+                    return Err(RioError::runtime(
+                        format!("الدالة {} تعذر قفل الملف: {}", DISPLAY, path),
+                        line,
+                        col,
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(_) => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} تعذر قفل الملف: {}", DISPLAY, path),
+                    line,
+                    col,
+                ));
+            }
+        }
+    }
+}
+
+/// التقاط نجمة واحدة من نمط بسيط: يعيد الجزء الملتقط أو لاشيء عند عدم المطابقة.
+fn b7_glob_capture(pattern: &str, name: &str) -> Option<String> {
+    match pattern.find('*') {
+        None => {
+            if pattern == name {
+                Some(String::new())
+            } else {
+                None
+            }
+        }
+        Some(i) => {
+            let (pre, post) = (&pattern[..i], &pattern[i + 1..]);
+            if name.len() < pre.len() + post.len() {
+                return None;
+            }
+            if !name.starts_with(pre) || !name.ends_with(post) {
+                return None;
+            }
+            Some(name[pre.len()..name.len() - post.len()].to_string())
+        }
+    }
+}
+
+fn b7_files_rename_pattern(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.أعد_تسمية_بنمط";
+    need_args(DISPLAY, args, 3, line, col)?;
+    let dir = need_string(DISPLAY, &args[0], line, col)?;
+    let pattern = need_string(DISPLAY, &args[1], line, col)?;
+    let replacement = need_string(DISPLAY, &args[2], line, col)?;
+    if pattern.matches('*').count() > 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} النمط يحوي أكثر من نجمة", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let fs = search_resolve_path(ctx, &dir);
+    let rd = std::fs::read_dir(&fs).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر قراءة المجلد: {}", DISPLAY, dir),
+            line,
+            col,
+        )
+    })?;
+    let mut names: Vec<String> = Vec::new();
+    for e in rd.flatten() {
+        if let Ok(ft) = e.file_type() {
+            if ft.is_file() {
+                names.push(e.file_name().to_string_lossy().to_string());
+            }
+        }
+    }
+    names.sort();
+    let mut out: Vec<Value> = Vec::new();
+    for old in names {
+        let captured = match b7_glob_capture(&pattern, &old) {
+            Some(c) => c,
+            None => continue,
+        };
+        let new_name = if replacement.contains('*') {
+            replacement.replacen('*', &captured, 1)
+        } else {
+            replacement.clone()
+        };
+        if new_name == old {
+            continue;
+        }
+        let from = fs.join(&old);
+        let to = fs.join(&new_name);
+        if to.exists() {
+            return Err(RioError::runtime(
+                format!("الدالة {} الاسم الجديد موجود: {}", DISPLAY, new_name),
+                line,
+                col,
+            ));
+        }
+        std::fs::rename(&from, &to).map_err(|_| {
+            RioError::runtime(
+                format!("الدالة {} تعذر إعادة تسمية {}", DISPLAY, old),
+                line,
+                col,
+            )
+        })?;
+        out.push(Value::Dict(vec![
+            ("قديم".to_string(), Value::Str(old)),
+            ("جديد".to_string(), Value::Str(new_name)),
+        ]));
+    }
+    Ok(Value::List(out))
+}
+
+fn b7_files_newer(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.أحدث_من";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let p1 = need_string(DISPLAY, &args[0], line, col)?;
+    let p2 = need_string(DISPLAY, &args[1], line, col)?;
+    let fs1 = search_resolve_path(ctx, &p1);
+    let fs2 = search_resolve_path(ctx, &p2);
+    let m1 = std::fs::metadata(&fs1)
+        .map_err(|_| {
+            RioError::runtime(
+                format!("الدالة {} الملف غير موجود: {}", DISPLAY, p1),
+                line,
+                col,
+            )
+        })?
+        .modified()
+        .map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر قراءة وقت {}", DISPLAY, p1), line, col)
+        })?;
+    let m2 = std::fs::metadata(&fs2)
+        .map_err(|_| {
+            RioError::runtime(
+                format!("الدالة {} الملف غير موجود: {}", DISPLAY, p2),
+                line,
+                col,
+            )
+        })?
+        .modified()
+        .map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر قراءة وقت {}", DISPLAY, p2), line, col)
+        })?;
+    Ok(Value::Bool(m1 > m2))
+}
+
+fn b7_files_validate_path(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.تحقق_مسار";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let mut errs: Vec<Value> = Vec::new();
+    if path.is_empty() {
+        errs.push(Value::Str("المسار فارغ".to_string()));
+    }
+    if path.len() > 4096 {
+        errs.push(Value::Str("المسار أطول من 4096 بايتا".to_string()));
+    }
+    if path.contains("//") {
+        errs.push(Value::Str("يحوي فاصلا مزدوجا".to_string()));
+    }
+    if path.contains('\\') {
+        errs.push(Value::Str("يحوي شرطة مائلة عكسية غير محمولة".to_string()));
+    }
+    let bad = path
+        .chars()
+        .find(|c| matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*'));
+    if let Some(c) = bad {
+        errs.push(Value::Str(format!(
+            "يحوي محرفا غير صالح على ويندوز: {}",
+            c
+        )));
+    }
+    for comp in path.split('/') {
+        if comp.len() > 255 {
+            errs.push(Value::Str("مكون أطول من 255 بايتا".to_string()));
+            break;
+        }
+    }
+    Ok(Value::List(errs))
+}
+
+fn b7_files_install(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.ثبّت_ملفا";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let src = need_string(DISPLAY, &args[0], line, col)?;
+    let dst = need_string(DISPLAY, &args[1], line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["أنشئ_الدليل"], line, col)?;
+    let mkdir = b5_opt_bool(DISPLAY, pairs, "أنشئ_الدليل", false, line, col)?;
+    let fs_src = search_resolve_path(ctx, &src);
+    let fs_dst = search_resolve_path(ctx, &dst);
+    if !fs_src.is_file() {
+        return Err(RioError::runtime(
+            format!("الدالة {} المصدر ليس ملفا: {}", DISPLAY, src),
+            line,
+            col,
+        ));
+    }
+    if mkdir {
+        if let Some(parent) = fs_dst.parent() {
+            std::fs::create_dir_all(parent).map_err(|_| {
+                RioError::runtime(
+                    format!("الدالة {} تعذر إنشاء المجلد الأب", DISPLAY),
+                    line,
+                    col,
+                )
+            })?;
+        }
+    }
+    std::fs::copy(&fs_src, &fs_dst).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر تثبيت الملف: {}", DISPLAY, src),
+            line,
+            col,
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fs_dst, std::fs::Permissions::from_mode(0o755)).map_err(
+            |_| {
+                RioError::runtime(
+                    format!("الدالة {} تعذر ضبط أذونات {}", DISPLAY, dst),
+                    line,
+                    col,
+                )
+            },
+        )?;
+    }
+    Ok(Value::Bool(true))
+}
+
+fn b7_files_hardlink(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.أنشئ_رابط_صلب";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let from = need_string(DISPLAY, &args[0], line, col)?;
+    let to = need_string(DISPLAY, &args[1], line, col)?;
+    let fs_from = search_resolve_path(ctx, &from);
+    let fs_to = search_resolve_path(ctx, &to);
+    #[cfg(unix)]
+    {
+        std::fs::hard_link(&fs_from, &fs_to).map_err(|_| {
+            RioError::runtime(
+                format!("الدالة {} تعذر إنشاء رابط صلب", DISPLAY),
+                line,
+                col,
+            )
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        return Err(RioError::runtime(
+            format!("الدالة {} غير مدعومة على ويندوز", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Bool(true))
+}
+
+fn b7_files_remove_file(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.احذف_ملفا";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let fs = search_resolve_path(ctx, &path);
+    let md = std::fs::symlink_metadata(&fs).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} الملف غير موجود: {}", DISPLAY, path),
+            line,
+            col,
+        )
+    })?;
+    if md.is_dir() {
+        return Err(RioError::runtime(
+            format!("الدالة {} مجلد وليس ملفا: {}", DISPLAY, path),
+            line,
+            col,
+        ));
+    }
+    std::fs::remove_file(&fs).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر حذف {}", DISPLAY, path),
+            line,
+            col,
+        )
+    })?;
+    Ok(Value::Bool(true))
+}
+
+fn b7_files_truncate_zero(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.صفّر_ملفا";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let fs = search_resolve_path(ctx, &path);
+    let f = std::fs::OpenOptions::new().write(true).open(&fs).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} الملف غير موجود: {}", DISPLAY, path),
+            line,
+            col,
+        )
+    })?;
+    f.set_len(0).map_err(|_| {
+        RioError::runtime(format!("الدالة {} تعذر تصفير {}", DISPLAY, path), line, col)
+    })?;
+    Ok(Value::Bool(true))
+}
+
+fn b7_files_resize(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.غيّر_حجم_ملف";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let n = need_integer(DISPLAY, &args[1], line, col)?;
+    if n < 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} الحجم غير صالح", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["أضف"], line, col)?;
+    let add = b5_opt_bool(DISPLAY, pairs, "أضف", false, line, col)?;
+    let fs = search_resolve_path(ctx, &path);
+    let f = std::fs::OpenOptions::new().write(true).open(&fs).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} الملف غير موجود: {}", DISPLAY, path),
+            line,
+            col,
+        )
+    })?;
+    let target = if add {
+        f.metadata()
+            .map_err(|_| {
+                RioError::runtime(
+                    format!("الدالة {} تعذر قراءة حجم {}", DISPLAY, path),
+                    line,
+                    col,
+                )
+            })?
+            .len()
+            .saturating_add(n as u64)
+    } else {
+        n as u64
+    };
+    f.set_len(target).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر تغيير حجم {}", DISPLAY, path),
+            line,
+            col,
+        )
+    })?;
+    Ok(Value::Bool(true))
+}
+
+fn b7_files_sync(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.زامن_القرص";
+    need_args(DISPLAY, args, 0, line, col)?;
+    #[cfg(unix)]
+    {
+        unsafe { libc::sync() };
+    }
+    #[cfg(not(unix))]
+    {
+        return Err(RioError::runtime(
+            format!("الدالة {} غير مدعومة على ويندوز", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Bool(true))
+}
+
+fn b7_files_copy_lowlevel(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.انسخ_منخفض_المستوى";
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let src = need_string(DISPLAY, &args[0], line, col)?;
+    let dst = need_string(DISPLAY, &args[1], line, col)?;
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["حجم_كتلة", "عدد_كتل"], line, col)?;
+    let mut block: i64 = 512;
+    if let Some(v) = b5_opt_int(DISPLAY, pairs, "حجم_كتلة", line, col)? {
+        block = v;
+    }
+    let mut blocks: Option<i64> = None;
+    if let Some(v) = b5_opt_int(DISPLAY, pairs, "عدد_كتل", line, col)? {
+        blocks = Some(v);
+    }
+    if block <= 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} حجم_كتلة غير صالح", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    if let Some(b) = blocks {
+        if b < 0 {
+            return Err(RioError::runtime(
+                format!("الدالة {} عدد_كتل غير صالح", DISPLAY),
+                line,
+                col,
+            ));
+        }
+    }
+    let fs_src = search_resolve_path(ctx, &src);
+    let fs_dst = search_resolve_path(ctx, &dst);
+    let mut r = std::fs::File::open(&fs_src).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} المصدر غير موجود: {}", DISPLAY, src),
+            line,
+            col,
+        )
+    })?;
+    let mut w = std::fs::File::create(&fs_dst).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر إنشاء الهدف: {}", DISPLAY, dst),
+            line,
+            col,
+        )
+    })?;
+    let mut buf = vec![0u8; block as usize];
+    let mut copied: u64 = 0;
+    let mut done_blocks: i64 = 0;
+    use std::io::{Read, Write};
+    loop {
+        if let Some(b) = blocks {
+            if done_blocks >= b {
+                break;
+            }
+        }
+        let n = r.read(&mut buf).map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر قراءة {}", DISPLAY, src), line, col)
+        })?;
+        if n == 0 {
+            break;
+        }
+        w.write_all(&buf[..n]).map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر كتابة {}", DISPLAY, dst), line, col)
+        })?;
+        copied += n as u64;
+        done_blocks += 1;
+    }
+    Ok(Value::Number(copied as f64))
+}
+
+fn b7_files_reserve(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.احجز_مساحة";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let n = need_integer(DISPLAY, &args[1], line, col)?;
+    if n < 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} الحجم غير صالح", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let fs = search_resolve_path(ctx, &path);
+    let f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(&fs)
+        .map_err(|_| {
+            RioError::runtime(
+                format!("الدالة {} تعذر إنشاء {}", DISPLAY, path),
+                line,
+                col,
+            )
+        })?;
+    f.set_len(n as u64).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} تعذر حجز مساحة {}", DISPLAY, path),
+            line,
+            col,
+        )
+    })?;
+    Ok(Value::Bool(true))
+}
+
+fn b7_files_realname(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    const DISPLAY: &str = "ملفات.اعرض_اسم_حقيقي";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let path = need_string(DISPLAY, &args[0], line, col)?;
+    let fs = search_resolve_path(ctx, &path);
+    let mut out: Vec<Value> = Vec::new();
+    let mut prefix = std::path::PathBuf::new();
+    for comp in fs.components() {
+        use std::path::Component;
+        let name = match comp {
+            Component::RootDir => {
+                prefix = std::path::PathBuf::from("/");
+                "/".to_string()
+            }
+            Component::Normal(os) => {
+                prefix.push(os);
+                os.to_string_lossy().to_string()
+            }
+            Component::CurDir => ".".to_string(),
+            Component::ParentDir => {
+                prefix.pop();
+                "..".to_string()
+            }
+            Component::Prefix(pr) => {
+                prefix.push(pr.as_os_str());
+                pr.as_os_str().to_string_lossy().to_string()
+            }
+        };
+        let probe = if prefix.as_os_str().is_empty() {
+            std::path::PathBuf::from(".")
+        } else {
+            prefix.clone()
+        };
+        let (kind, target) = match std::fs::symlink_metadata(&probe) {
+            Ok(md) => {
+                let ft = md.file_type();
+                if ft.is_symlink() {
+                    let t = std::fs::read_link(&probe)
+                        .map(|t| t.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    ("رابط", Value::Str(t))
+                } else if ft.is_dir() {
+                    ("مجلد", Value::Nil)
+                } else if ft.is_file() {
+                    ("ملف", Value::Nil)
+                } else {
+                    ("أخرى", Value::Nil)
+                }
+            }
+            Err(_) => ("غير موجود", Value::Nil),
+        };
+        out.push(Value::Dict(vec![
+            ("مكون".to_string(), Value::Str(name)),
+            ("نوع".to_string(), Value::Str(kind.to_string())),
+            ("هدف".to_string(), target),
+        ]));
+    }
+    Ok(Value::List(out))
+}
+
+/// ضبط أذونات مسار واحد (يونكس: النمط الثماني؛ غير يونكس: للقراءة فقط).
+fn b7_files_set_mode(
+    fs: &std::path::Path,
+    mode: u32,
+    display: &str,
+    path: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(fs, std::fs::Permissions::from_mode(mode)).map_err(|_| {
+            RioError::runtime(
+                format!("الدالة {} تعذر تغيير أذونات {}", display, path),
+                line,
+                col,
+            )
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut perms = std::fs::metadata(fs)
+            .map_err(|_| {
+                RioError::runtime(
+                    format!("الدالة {} الملف غير موجود: {}", display, path),
+                    line,
+                    col,
+                )
+            })?
+            .permissions();
+        perms.set_readonly(mode & 0o222 == 0);
+        std::fs::set_permissions(fs, perms).map_err(|_| {
+            RioError::runtime(
+                format!("الدالة {} تعذر تغيير أذونات {}", display, path),
+                line,
+                col,
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// فسّر نمطا رمزيا مثل «u+x» أو «a=rw» أو «u=rwx,go=rx» فوق الأذونات الحالية.
+fn b7_parse_sym_mode(
+    pat: &str,
+    cur: u32,
+    is_dir: bool,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<u32> {
+    let mut mode = cur & 0o7777;
+    for clause in pat.split(',') {
+        let clause = clause.trim();
+        if clause.is_empty() {
+            continue;
+        }
+        let bytes = clause.as_bytes();
+        let mut i = 0usize;
+        let mut who = 0u32;
+        while i < bytes.len() && matches!(bytes[i], b'u' | b'g' | b'o' | b'a') {
+            match bytes[i] {
+                b'u' => who |= 1,
+                b'g' => who |= 2,
+                b'o' => who |= 4,
+                b'a' => who |= 7,
+                _ => {}
+            }
+            i += 1;
+        }
+        if who == 0 {
+            who = 7;
+        }
+        if i >= bytes.len() || !matches!(bytes[i], b'+' | b'-' | b'=') {
+            return Err(RioError::runtime(
+                format!("الدالة {} نمط رمزي غير صالح: {}", display, clause),
+                line,
+                col,
+            ));
+        }
+        let op = bytes[i];
+        i += 1;
+        let mut perm_bits = 0u32;
+        let mut has_s = false;
+        let mut has_t = false;
+        let mut has_x_cond = false;
+        while i < bytes.len() && matches!(bytes[i], b'r' | b'w' | b'x' | b'X' | b's' | b't') {
+            match bytes[i] {
+                b'r' => perm_bits |= 4,
+                b'w' => perm_bits |= 2,
+                b'x' => perm_bits |= 1,
+                b'X' => has_x_cond = true,
+                b's' => has_s = true,
+                b't' => has_t = true,
+                _ => {}
+            }
+            i += 1;
+        }
+        if i != bytes.len() {
+            return Err(RioError::runtime(
+                format!("الدالة {} نمط رمزي غير صالح: {}", display, clause),
+                line,
+                col,
+            ));
+        }
+        let exec_ok = is_dir || (cur & 0o111) != 0;
+        let mut bits = 0u32;
+        if who & 1 != 0 {
+            bits |= perm_bits << 6;
+            if has_x_cond && exec_ok {
+                bits |= 0o100;
+            }
+            if has_s {
+                bits |= 0o4000;
+            }
+        }
+        if who & 2 != 0 {
+            bits |= perm_bits << 3;
+            if has_x_cond && exec_ok {
+                bits |= 0o010;
+            }
+            if has_s {
+                bits |= 0o2000;
+            }
+        }
+        if who & 4 != 0 {
+            bits |= perm_bits;
+            if has_x_cond && exec_ok {
+                bits |= 0o001;
+            }
+        }
+        if has_t {
+            bits |= 0o1000;
+        }
+        let mut mask = 0u32;
+        if who & 1 != 0 {
+            mask |= 0o700 | 0o4000;
+        }
+        if who & 2 != 0 {
+            mask |= 0o070 | 0o2000;
+        }
+        if who & 4 != 0 {
+            mask |= 0o007;
+        }
+        if has_t {
+            mask |= 0o1000;
+        }
+        match op {
+            b'+' => mode |= bits,
+            b'-' => mode &= !bits,
+            b'=' => {
+                mode &= !mask;
+                mode |= bits;
+            }
+            _ => unreachable!(),
+        }
+    }
+    Ok(mode)
+}
+
+/// معلومات statvfs الكاملة: (كلي، مستخدم، حر، عقد_كلي، عقد_مستخدم، عقد_حر، نوع_نظام).
+#[cfg(unix)]
+fn b7_files_statvfs_full(
+    ctx: &mut dyn HandlerCaller,
+    path: &str,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(u64, u64, u64, u64, u64, u64, String)> {
+    let fs = search_resolve_path(ctx, path);
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(fs.as_os_str().as_bytes()).map_err(|_| {
+        RioError::runtime(
+            format!("الدالة {} مسار غير صالح: {}", display, path),
+            line,
+            col,
+        )
+    })?;
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تعذر قراءة مساحة {}", display, path),
+            line,
+            col,
+        ));
+    }
+    let total = st.f_blocks as u64 * st.f_frsize as u64;
+    let free = st.f_bfree as u64 * st.f_frsize as u64;
+    let used = total.saturating_sub(free);
+    let itotal = st.f_files as u64;
+    let ifree = st.f_ffree as u64;
+    let iused = itotal.saturating_sub(ifree);
+    #[cfg(target_os = "macos")]
+    let fstype = {
+        let raw = &st.f_fstypename;
+        let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+        String::from_utf8_lossy(&raw[..end]).to_string()
+    };
+    #[cfg(not(target_os = "macos"))]
+    let fstype = match st.f_type as u64 {
+        0xEF53 => "ext4".to_string(),
+        0x01021994 => "tmpfs".to_string(),
+        0x794C7630 => "overlayfs".to_string(),
+        0x9123683E => "btrfs".to_string(),
+        0x58465342 => "xfs".to_string(),
+        0x6969 => "nfs".to_string(),
+        0x9FA0 => "proc".to_string(),
+        0x1CD1 => "devtmpfs".to_string(),
+        0x62656572 => "sysfs".to_string(),
+        0x4D44 => "vfat".to_string(),
+        0x2011BAB0 => "exfat".to_string(),
+        0xF2F52010 => "f2fs".to_string(),
+        0x65735546 => "fuse".to_string(),
+        _ => "غير معروف".to_string(),
+    };
+    Ok((total, used, free, itotal, iused, ifree, fstype))
+}
+
+#[cfg(not(unix))]
+fn b7_files_statvfs_full(
+    _ctx: &mut dyn HandlerCaller,
+    _path: &str,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(u64, u64, u64, u64, u64, u64, String)> {
+    Err(RioError::runtime(
+        format!("الدالة {} مساحة القرص غير مدعومة على هذه المنصة", display),
+        line,
+        col,
+    ))
+}
+
 fn b6_files_tempfile(
     _ctx: &mut dyn HandlerCaller,
     args: &[Value],
@@ -42541,9 +47833,9 @@ fn b6_files_tempfile(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "ملفات.ملف_مؤقت";
-    if args.len() > 1 {
+    if args.len() > 2 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملا واحدا على الأكثر لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملين على الأكثر لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
@@ -42552,6 +47844,9 @@ fn b6_files_tempfile(
         Some(v) => need_string(DISPLAY, v, line, col)?,
         None => "نيفا-مؤقت".to_string(),
     };
+    let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["مجلد"], line, col)?;
+    let as_dir = b5_opt_bool(DISPLAY, pairs, "مجلد", false, line, col)?;
     let dir = std::env::temp_dir();
     let mut state = b6_rand_state();
     const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
@@ -42566,13 +47861,17 @@ fn b6_files_tempfile(
             format!("{}-{}", pattern, suffix)
         };
         let fs = dir.join(&name);
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&fs)
-        {
-            Ok(_) => return Ok(Value::Str(fs.to_string_lossy().to_string())),
-            Err(_) => continue,
+        let made = if as_dir {
+            std::fs::create_dir(&fs).is_ok()
+        } else {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&fs)
+                .is_ok()
+        };
+        if made {
+            return Ok(Value::Str(fs.to_string_lossy().to_string()));
         }
     }
     Err(RioError::runtime(
@@ -42618,66 +47917,102 @@ fn b6_files_chmod(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "ملفات.غيّر_أذونات";
-    if args.len() != 2 {
+    if args.len() < 2 || args.len() > 3 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
     }
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["رمزي", "تكراري"], line, col)?;
+    let symbolic = b5_opt_bool(DISPLAY, pairs, "رمزي", false, line, col)?;
+    let recursive = b5_opt_bool(DISPLAY, pairs, "تكراري", false, line, col)?;
     let path = need_string(DISPLAY, &args[0], line, col)?;
-    let mode: u32 = match &args[1] {
-        Value::Number(n) => *n as u32,
-        Value::Str(s) => u32::from_str_radix(s.trim(), 8).map_err(|_| {
-            RioError::runtime(
-                format!("الدالة {} أذونات ثمانية غير صالحة: {}", DISPLAY, s),
-                line,
-                col,
-            )
-        })?,
-        _ => {
-            return Err(RioError::typ(
-                format!(
-                    "الدالة {} تتوقع نصا ثمانيا أو عددا لكن أعطيت {}",
-                    DISPLAY,
-                    args[1].type_name()
-                ),
-                line,
-                col,
-            ))
-        }
-    };
     let fs = search_resolve_path(ctx, &path);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fs, std::fs::Permissions::from_mode(mode)).map_err(|_| {
-            RioError::runtime(
-                format!("الدالة {} تعذر تغيير أذونات {}", DISPLAY, path),
+    let mode: u32 = if symbolic {
+        let pat = match &args[1] {
+            Value::Str(s) => s.clone(),
+            _ => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع نمطا رمزيا نصا لكن أعطيت {}",
+                        DISPLAY,
+                        args[1].type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let cur = std::fs::metadata(&fs)
+                .map_err(|_| {
+                    RioError::runtime(
+                        format!("الدالة {} الملف غير موجود: {}", DISPLAY, path),
+                        line,
+                        col,
+                    )
+                })?
+                .permissions()
+                .mode();
+            b7_parse_sym_mode(&pat, cur, fs.is_dir(), DISPLAY, line, col)?
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = pat;
+            return Err(RioError::runtime(
+                format!("الدالة {} النمط الرمزي غير مدعوم على هذه المنصة", DISPLAY),
                 line,
                 col,
-            )
-        })?;
-    }
-    #[cfg(not(unix))]
-    {
-        let mut perms = std::fs::metadata(&fs)
-            .map_err(|_| {
+            ));
+        }
+    } else {
+        match &args[1] {
+            Value::Number(n) => *n as u32,
+            Value::Str(s) => u32::from_str_radix(s.trim(), 8).map_err(|_| {
                 RioError::runtime(
-                    format!("الدالة {} الملف غير موجود: {}", DISPLAY, path),
+                    format!("الدالة {} أذونات ثمانية غير صالحة: {}", DISPLAY, s),
                     line,
                     col,
                 )
-            })?
-            .permissions();
-        perms.set_readonly(mode & 0o222 == 0);
-        std::fs::set_permissions(&fs, perms).map_err(|_| {
-            RioError::runtime(
-                format!("الدالة {} تعذر تغيير أذونات {}", DISPLAY, path),
-                line,
-                col,
-            )
-        })?;
+            })?,
+            _ => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع نصا ثمانيا أو عددا لكن أعطيت {}",
+                        DISPLAY,
+                        args[1].type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        }
+    };
+    if recursive {
+        let mut stack: Vec<std::path::PathBuf> = vec![fs.clone()];
+        while let Some(p) = stack.pop() {
+            let md = match std::fs::symlink_metadata(&p) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if md.file_type().is_symlink() {
+                continue;
+            }
+            if md.is_dir() {
+                if let Ok(rd) = std::fs::read_dir(&p) {
+                    for e in rd.flatten() {
+                        stack.push(e.path());
+                    }
+                }
+            }
+            b7_files_set_mode(&p, mode, DISPLAY, &path, line, col)?;
+        }
+    } else {
+        b7_files_set_mode(&fs, mode, DISPLAY, &path, line, col)?;
     }
     Ok(Value::Bool(true))
 }
@@ -42748,14 +48083,69 @@ fn b6_files_dir_size(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "ملفات.حجم_مجلد";
-    if args.len() != 1 {
+    if args.len() < 1 || args.len() > 2 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["كل_ملف", "مجموع_فقط"], line, col)?;
+    let per_file = b5_opt_bool(DISPLAY, pairs, "كل_ملف", false, line, col)?;
+    let total_only = b5_opt_bool(DISPLAY, pairs, "مجموع_فقط", false, line, col)?;
+    if per_file && total_only {
+        return Err(RioError::runtime(
+            format!("الدالة {} لا يجوز الجمع بين كل_ملف ومجموع_فقط", DISPLAY),
             line,
             col,
         ));
     }
     let path = need_string(DISPLAY, &args[0], line, col)?;
+    if per_file {
+        let fs = search_resolve_path(ctx, &path);
+        let mut out: Vec<(String, u64)> = Vec::new();
+        let mut stack: Vec<(std::path::PathBuf, String)> = vec![(fs.clone(), String::new())];
+        while let Some((d, rel)) = stack.pop() {
+            let md = match std::fs::symlink_metadata(&d) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if md.is_dir() {
+                if let Ok(rd) = std::fs::read_dir(&d) {
+                    for e in rd.flatten() {
+                        let name = e.file_name().to_string_lossy().to_string();
+                        let r = if rel.is_empty() {
+                            name
+                        } else {
+                            format!("{}/{}", rel, name)
+                        };
+                        stack.push((e.path(), r));
+                    }
+                }
+            } else if md.is_file() {
+                let name = if rel.is_empty() {
+                    d.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                } else {
+                    rel
+                };
+                out.push((name, md.len()));
+            }
+        }
+        out.sort();
+        return Ok(Value::List(
+            out.into_iter()
+                .map(|(p, s)| {
+                    Value::Dict(vec![
+                        ("مسار".to_string(), Value::Str(p)),
+                        ("حجم".to_string(), Value::Number(s as f64)),
+                    ])
+                })
+                .collect(),
+        ));
+    }
     let total = b6_files_dir_size_bytes(ctx, &path, DISPLAY, line, col)?;
     Ok(Value::Number(total as f64))
 }
@@ -42786,7 +48176,7 @@ fn b6_files_disk_usage(
     line: usize,
     col: usize,
 ) -> RioResult<(u64, u64, u64)> {
-    if args.len() != 1 {
+    if args.len() < 1 || args.len() > 2 {
         return Err(RioError::runtime(
             format!("الدالة {} تتوقع معاملا واحدا لكن أعطيت {}", display, args.len()),
             line,
@@ -42836,6 +48226,48 @@ fn b6_files_disk(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "ملفات.مساحة_قرص";
+    if args.len() < 1 || args.len() > 2 {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع معاملا أو معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            line,
+            col,
+        ));
+    }
+    let pairs = b5_opts(DISPLAY, args, 1, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["نوع", "عقد"], line, col)?;
+    let fstype_want = b5_opt_str(DISPLAY, pairs, "نوع", line, col)?;
+    let inodes = b5_opt_bool(DISPLAY, pairs, "عقد", false, line, col)?;
+    if fstype_want.is_some() && inodes {
+        return Err(RioError::runtime(
+            format!("الدالة {} لا يجوز الجمع بين نوع وعقد", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    if inodes {
+        let path = need_string(DISPLAY, &args[0], line, col)?;
+        let (_, _, _, itotal, iused, ifree, _) =
+            b7_files_statvfs_full(ctx, &path, DISPLAY, line, col)?;
+        return Ok(Value::Dict(vec![
+            ("كلي".to_string(), Value::Number(itotal as f64)),
+            ("مستخدم".to_string(), Value::Number(iused as f64)),
+            ("حر".to_string(), Value::Number(ifree as f64)),
+        ]));
+    }
+    if let Some(want) = fstype_want {
+        let path = need_string(DISPLAY, &args[0], line, col)?;
+        let (_, _, _, _, _, _, actual) = b7_files_statvfs_full(ctx, &path, DISPLAY, line, col)?;
+        if actual != want {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} نوع نظام الملفات «{}» لا يطابق «{}»",
+                    DISPLAY, actual, want
+                ),
+                line,
+                col,
+            ));
+        }
+    }
     let (total, used, free) = b6_files_disk_usage(ctx, args, DISPLAY, line, col)?;
     Ok(Value::Dict(vec![
         ("كلي".to_string(), Value::Number(total as f64)),
@@ -43350,9 +48782,9 @@ fn b6_cal_monthly(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "تقويم.اعرض_شهري";
-    if args.len() != 2 {
+    if args.len() < 2 || args.len() > 3 {
         return Err(RioError::runtime(
-            format!("الدالة {} تتوقع معاملين لكن أعطيت {}", DISPLAY, args.len()),
+            format!("الدالة {} تتوقع معاملين أو ثلاثة لكن أعطيت {}", DISPLAY, args.len()),
             line,
             col,
         ));
@@ -43366,37 +48798,43 @@ fn b6_cal_monthly(
             col,
         ));
     }
-    let names = [
-        "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر",
-        "أكتوبر", "نوفمبر", "ديسمبر",
-    ];
-    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    let days: i64 = match m {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        _ => {
-            if leap {
-                29
-            } else {
-                28
-            }
+    let pairs = b5_opts(DISPLAY, args, 2, line, col)?;
+    b5_no_unknown(DISPLAY, pairs, &["سنة", "ثلاثة_أشهر", "يبدأ_الاثنين"], line, col)?;
+    let year_all = b5_opt_bool(DISPLAY, pairs, "سنة", false, line, col)?;
+    let three = b5_opt_bool(DISPLAY, pairs, "ثلاثة_أشهر", false, line, col)?;
+    let monday = b5_opt_bool(DISPLAY, pairs, "يبدأ_الاثنين", false, line, col)?;
+    if year_all && three {
+        return Err(RioError::runtime(
+            format!("الدالة {} لا يجوز الجمع بين سنة وثلاثة_أشهر", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    if year_all {
+        let mut parts: Vec<String> = Vec::new();
+        for mm in 1..=12 {
+            parts.push(b7_cal_month_str(y, mm, monday));
         }
-    };
-    let first_wd = (crate::time::days_from_civil(y, m as u32, 1) + 4).rem_euclid(7);
-    let mut out = format!("{} {}\n", names[(m - 1) as usize], y);
-    out.push_str("ح  ن  ث  ر  خ  ج  س\n");
-    let mut cells: Vec<String> = vec!["   ".to_string(); first_wd as usize];
-    for d in 1..=days {
-        cells.push(format!("{:>3}", d));
+        return Ok(Value::Str(parts.join("\n\n")));
     }
-    while cells.len() % 7 != 0 {
-        cells.push("   ".to_string());
+    if three {
+        let (py, pm) = if m == 1 { (y - 1, 12) } else { (y, m - 1) };
+        let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+        if py < 1 || ny > 9999 {
+            return Err(RioError::runtime(
+                format!("الدالة {} ثلاثة_أشهر خارج نطاق السنة", DISPLAY),
+                line,
+                col,
+            ));
+        }
+        let parts = vec![
+            b7_cal_month_str(py, pm, monday),
+            b7_cal_month_str(y, m, monday),
+            b7_cal_month_str(ny, nm, monday),
+        ];
+        return Ok(Value::Str(parts.join("\n\n")));
     }
-    for row in cells.chunks(7) {
-        out.push_str(&row.join(" "));
-        out.push('\n');
-    }
-    Ok(Value::Str(out.trim_end().to_string()))
+    Ok(Value::Str(b7_cal_month_str(y, m, monday)))
 }
 
 // ----- عمليات: سرد العمليات (لينكس فقط) -----
@@ -43467,16 +48905,59 @@ fn b6_proc_list_fn(
     col: usize,
 ) -> RioResult<Value> {
     const DISPLAY: &str = "عمليات.سرد_العمليات";
-    if !args.is_empty() {
-        return Err(RioError::runtime(
-            format!("الدالة {} تتوقع بلا معاملات لكن أعطيت {}", DISPLAY, args.len()),
-            line,
-            col,
-        ));
-    }
+    // لينكس7-ز5: مفاتيح شجري/مستخدم/رتب_بمعالج/أعمدة/جسون.
+    let pairs = b5_opts(DISPLAY, args, 0, line, col)?;
+    b5_no_unknown(
+        DISPLAY,
+        pairs,
+        &["شجري", "مستخدم", "رتب_بمعالج", "أعمدة", "جسون"],
+        line,
+        col,
+    )?;
+    let tree = b5_opt_bool(DISPLAY, pairs, "شجري", false, line, col)?;
+    let user_filter = b5_opt_str(DISPLAY, pairs, "مستخدم", line, col)?;
+    let by_cpu = b5_opt_bool(DISPLAY, pairs, "رتب_بمعالج", false, line, col)?;
+    let cols = b5_opt_strs(DISPLAY, pairs, "أعمدة", line, col)?;
+    let as_json = b5_opt_bool(DISPLAY, pairs, "جسون", false, line, col)?;
     #[cfg(target_os = "linux")]
     {
-        Ok(Value::List(b6_proc_list(false, DISPLAY, line, col)?))
+        let mut rows = b7_proc_rows(DISPLAY, line, col)?;
+        if let Some(ref u) = user_filter {
+            rows.retain(|r| &r.user == u);
+        }
+        if by_cpu {
+            rows.sort_by(|a, b| b.cpu.cmp(&a.cpu).then(a.pid.cmp(&b.pid)));
+        }
+        if tree {
+            let mut trees = b7_proc_tree(&rows);
+            if !cols.is_empty() {
+                trees = trees
+                    .into_iter()
+                    .map(|v| match v {
+                        Value::Dict(d) => Value::Dict(b7_filter_cols(d, &cols)),
+                        other => other,
+                    })
+                    .collect();
+            }
+            let v = Value::List(trees);
+            if as_json {
+                return b7_json_str(&v, line, col);
+            }
+            return Ok(v);
+        }
+        let list: Vec<Value> = rows
+            .iter()
+            .map(|r| {
+                let d = b7_proc_base_dict(r);
+                let d = if cols.is_empty() { d } else { b7_filter_cols(d, &cols) };
+                Value::Dict(d)
+            })
+            .collect();
+        let v = Value::List(list);
+        if as_json {
+            return b7_json_str(&v, line, col);
+        }
+        Ok(v)
     }
     #[cfg(not(target_os = "linux"))]
     {

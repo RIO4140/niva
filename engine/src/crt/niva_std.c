@@ -21,6 +21,10 @@
 #endif
 #include <errno.h>
 #include <fcntl.h>
+#ifndef _WIN32
+#include <sys/resource.h> // setpriority
+#include <sys/syscall.h> // SYS_ioprio_set
+#endif
 #include <limits.h>
 #include <stdint.h>
 #ifdef _WIN32
@@ -1562,27 +1566,81 @@ static NvValue b6_math_expr_fn(NvValue *args, int nargs, int line, int col) {
     return nv_num(v.is_float ? v.f : (double)v.i);
 }
 
+/* لينكس7-ز7ج-تصريحات-مسبقة (تسلسل/رياضيات). */
+static NvDict *b7_opts_dict_c(NvValue *args, int nargs, int at, const char *display, int line, int col);
+static void b7_no_unknown_c(NvDict *d, const char **allowed, size_t nallowed, const char *display, int line, int col);
+static const char *b5_opt_str_c(NvDict *d, const char *key, const char *display, int line, int col);
+static char *b7_fmt_num_c(const char *fmt, double n, const char *display, int line, int col);
+static char *b7_plain_num_ar_c(double n);
+
 static NvValue b6_math_seq_fn(NvValue *args, int nargs, int line, int col) {
     const char *D = "رياضيات.تسلسل";
-    if (nargs < 1 || nargs > 2) {
-        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", D, nargs);
+    if (nargs < 1 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا إلى ثلاثة لكن أعطيت %d", D, nargs);
     }
     long long start = 1;
     long long end = 0;
+    int opt_at = 1;
     if (nargs == 1) {
         end = nv_std_need_integer(D, args[0], line, col);
+    } else if (nargs == 2) {
+        if (args[1].tag == NV_DICT) {
+            end = nv_std_need_integer(D, args[0], line, col);
+            opt_at = 1;
+        } else {
+            start = nv_std_need_integer(D, args[0], line, col);
+            end = nv_std_need_integer(D, args[1], line, col);
+            opt_at = 2;
+        }
     } else {
         start = nv_std_need_integer(D, args[0], line, col);
         end = nv_std_need_integer(D, args[1], line, col);
+        opt_at = 2;
+    }
+    NvDict *opts = b7_opts_dict_c(args, nargs, opt_at, D, line, col);
+    const char *allowed[] = { "صيغة", "فاصل" };
+    b7_no_unknown_c(opts, allowed, 2, D, line, col);
+    const char *fmt = b5_opt_str_c(opts, "صيغة", D, line, col);
+    const char *sep = b5_opt_str_c(opts, "فاصل", D, line, col);
+    if (end < start) {
+        if (fmt || sep) return nv_str_cstr("");
+        return nv_list_new();
+    }
+    if ((long double)end - (long double)start >= 100000.0L) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تسلسل طويل جدا (الحد 100000)", D);
+    }
+    if (fmt || sep) {
+        if (!sep) sep = " ";
+        size_t seplen = strlen(sep);
+        char *buf = NULL;
+        size_t len = 0, cap = 0;
+        for (long long n = start; ; n++) {
+            char *piece = NULL;
+            if (fmt) piece = b7_fmt_num_c(fmt, (double)n, D, line, col);
+            else piece = b7_plain_num_ar_c((double)n);
+            size_t plen = strlen(piece);
+            size_t need = len + plen + (len > 0 ? seplen : 0) + 1;
+            if (need > cap) {
+                size_t ncap = cap == 0 ? 256 : cap * 2;
+                while (ncap < need) ncap *= 2;
+                buf = (char *)realloc(buf, ncap);
+                cap = ncap;
+            }
+            if (len > 0) { memcpy(buf + len, sep, seplen); len += seplen; }
+            memcpy(buf + len, piece, plen);
+            len += plen;
+            buf[len] = '\0';
+            free(piece);
+            if (n == end || n == LLONG_MAX) break;
+        }
+        NvValue v = nv_str_new(buf, len);
+        free(buf);
+        return v;
     }
     NvValue out = nv_list_new();
     size_t ridx = nv_root_push_idx();
     *nv_root_slot(ridx) = out;
-    if (end >= start) {
-        if ((long double)end - (long double)start >= 100000.0L) {
-            nv_root_pop();
-            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تسلسل طويل جدا (الحد 100000)", D);
-        }
+    {
         long long n = 0;
         for (n = start; n <= end; n++) {
             nv_list_push_raw(out.u.list, nv_num((double)n));
@@ -1631,6 +1689,12 @@ static NvValue b6_math_seq_step_fn(NvValue *args, int nargs, int line, int col) 
     return out;
 }
 /* لينكس6-هـ2أ-رياضيات-نهاية. */
+
+/* لينكس7-ز7ج-تصريحات-مسبقة (رياضيات). */
+static NvValue b7_math_compare_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_math_shuffle_range_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_math_from_human_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_math_format_num_fn(NvValue *args, int nargs, int line, int col);
 
 void nv_std_math_fill(NvDict *d) {
     nv_std_add_fn(d, "جذر", nv_std_math_sqrt);
@@ -1691,6 +1755,11 @@ void nv_std_math_fill(NvDict *d) {
     /* لينكس6-هـ2أ-رياضيات-تسجيل. */
     nv_std_add_fn(d, "احسب_تعبير", b6_math_expr_fn);
     nv_std_add_fn(d, "تسلسل", b6_math_seq_fn);
+    /* لينكس7-ز7ج-متنوع. */
+    nv_std_add_fn(d, "قارن", b7_math_compare_fn);
+    nv_std_add_fn(d, "خلط_نطاق", b7_math_shuffle_range_fn);
+    nv_std_add_fn(d, "من_حجم_بشري", b7_math_from_human_fn);
+    nv_std_add_fn(d, "نسق_عدد", b7_math_format_num_fn);
     nv_std_add_fn(d, "تسلسل_بخطوة", b6_math_seq_step_fn);
     nv_std_add_fn(d, "نسق_بشري", b6_math_human_fn);
 }
@@ -1955,6 +2024,446 @@ static NvValue nv_std_crypto_hash(NvValue *args, int nargs, int line, int col) {
     return nv_str_cstr(hex);
 }
 
+/* لينكس7-ز7ج-تشفير. */
+/* تصريحات مسبقة لمساعدات معرّفة لاحقا في الملف. */
+static NvDict *b7_opts_dict_c(NvValue *args, int nargs, int at, const char *display, int line, int col);
+static void b7_no_unknown_c(NvDict *d, const char **allowed, size_t nallowed, const char *display, int line, int col);
+static int b5_opt_bool_c(NvDict *d, const char *key, int def, const char *display, int line, int col);
+static char *b6_resolve_plain_c(const char *path);
+static char *b5_read_file_c(const char *path, size_t *len_out);
+
+static uint32_t b7_rotr32_c(uint32_t x, unsigned n) { return (x >> n) | (x << (32u - n)); }
+static uint32_t b7_rotl32_c(uint32_t x, unsigned n) { return (x << n) | (x >> (32u - n)); }
+static uint64_t b7_rotr64_c(uint64_t x, unsigned n) { return (x >> n) | (x << (64u - n)); }
+
+static const uint64_t b7_k512_c[80] = {
+    0x428a2f98d728ae22ULL, 0x7137449123ef65cdULL, 0xb5c0fbcfec4d3b2fULL, 0xe9b5dba58189dbbcULL,
+    0x3956c25bf348b538ULL, 0x59f111f1b605d019ULL, 0x923f82a4af194f9bULL, 0xab1c5ed5da6d8118ULL,
+    0xd807aa98a3030242ULL, 0x12835b0145706fbeULL, 0x243185be4ee4b28cULL, 0x550c7dc3d5ffb4e2ULL,
+    0x72be5d74f27b896fULL, 0x80deb1fe3b1696b1ULL, 0x9bdc06a725c71235ULL, 0xc19bf174cf692694ULL,
+    0xe49b69c19ef14ad2ULL, 0xefbe4786384f25e3ULL, 0x0fc19dc68b8cd5b5ULL, 0x240ca1cc77ac9c65ULL,
+    0x2de92c6f592b0275ULL, 0x4a7484aa6ea6e483ULL, 0x5cb0a9dcbd41fbd4ULL, 0x76f988da831153b5ULL,
+    0x983e5152ee66dfabULL, 0xa831c66d2db43210ULL, 0xb00327c898fb213fULL, 0xbf597fc7beef0ee4ULL,
+    0xc6e00bf33da88fc2ULL, 0xd5a79147930aa725ULL, 0x06ca6351e003826fULL, 0x142929670a0e6e70ULL,
+    0x27b70a8546d22ffcULL, 0x2e1b21385c26c926ULL, 0x4d2c6dfc5ac42aedULL, 0x53380d139d95b3dfULL,
+    0x650a73548baf63deULL, 0x766a0abb3c77b2a8ULL, 0x81c2c92e47edaee6ULL, 0x92722c851482353bULL,
+    0xa2bfe8a14cf10364ULL, 0xa81a664bbc423001ULL, 0xc24b8b70d0f89791ULL, 0xc76c51a30654be30ULL,
+    0xd192e819d6ef5218ULL, 0xd69906245565a910ULL, 0xf40e35855771202aULL, 0x106aa07032bbd1b8ULL,
+    0x19a4c116b8d2d0c8ULL, 0x1e376c085141ab53ULL, 0x2748774cdf8eeb99ULL, 0x34b0bcb5e19b48a8ULL,
+    0x391c0cb3c5c95a63ULL, 0x4ed8aa4ae3418acbULL, 0x5b9cca4f7763e373ULL, 0x682e6ff3d6b2b8a3ULL,
+    0x748f82ee5defb2fcULL, 0x78a5636f43172f60ULL, 0x84c87814a1f0ab72ULL, 0x8cc702081a6439ecULL,
+    0x90befffa23631e28ULL, 0xa4506cebde82bde9ULL, 0xbef9a3f7b2c67915ULL, 0xc67178f2e372532bULL,
+    0xca273eceea26619cULL, 0xd186b8c721c0c207ULL, 0xeada7dd6cde0eb1eULL, 0xf57d4f7fee6ed178ULL,
+    0x06f067aa72176fbaULL, 0x0a637dc5a2c898a6ULL, 0x113f9804bef90daeULL, 0x1b710b35131c471bULL,
+    0x28db77f523047d84ULL, 0x32caab7b40c72493ULL, 0x3c9ebe0a15c9bebcULL, 0x431d67c49c100d4cULL,
+    0x4cc5d4becb3e42b6ULL, 0x597f299cfc657e2aULL, 0x5fcb6fab3ad6faecULL, 0x6c44198c4a475817ULL,
+};
+
+static const uint32_t b7_md5_k_c[64] = {
+    0xd76aa478u, 0xe8c7b756u, 0x242070dbu, 0xc1bdceeeu,
+    0xf57c0fafu, 0x4787c62au, 0xa8304613u, 0xfd469501u,
+    0x698098d8u, 0x8b44f7afu, 0xffff5bb1u, 0x895cd7beu,
+    0x6b901122u, 0xfd987193u, 0xa679438eu, 0x49b40821u,
+    0xf61e2562u, 0xc040b340u, 0x265e5a51u, 0xe9b6c7aau,
+    0xd62f105du, 0x02441453u, 0xd8a1e681u, 0xe7d3fbc8u,
+    0x21e1cde6u, 0xc33707d6u, 0xf4d50d87u, 0x455a14edu,
+    0xa9e3e905u, 0xfcefa3f8u, 0x676f02d9u, 0x8d2a4c8au,
+    0xfffa3942u, 0x8771f681u, 0x6d9d6122u, 0xfde5380cu,
+    0xa4beea44u, 0x4bdecfa9u, 0xf6bb4b60u, 0xbebfbc70u,
+    0x289b7ec6u, 0xeaa127fau, 0xd4ef3085u, 0x04881d05u,
+    0xd9d4d039u, 0xe6db99e5u, 0x1fa27cf8u, 0xc4ac5665u,
+    0xf4292244u, 0x432aff97u, 0xab9423a7u, 0xfc93a039u,
+    0x655b59c3u, 0x8f0ccc92u, 0xffeff47du, 0x85845dd1u,
+    0x6fa87e4fu, 0xfe2ce6e0u, 0xa3014314u, 0x4e0811a1u,
+    0xf7537e82u, 0xbd3af235u, 0x2ad7d2bbu, 0xeb86d391u,
+};
+
+static const uint32_t b7_md5_s_c[64] = {
+    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+};
+
+static const uint32_t b7_h224_c[8] = {
+    0xc1059ed8u, 0x367cd507u, 0x3070dd17u, 0xf70e5939u,
+    0xffc00b31u, 0x68581511u, 0x64f98fa7u, 0xbefa4fa4u,
+};
+
+static const uint64_t b7_h512_c[8] = {
+    0x6a09e667f3bcc908ULL, 0xbb67ae8584caa73bULL, 0x3c6ef372fe94f82bULL, 0xa54ff53a5f1d36f1ULL,
+    0x510e527fade682d1ULL, 0x9b05688c2b3e6c1fULL, 0x1f83d9abfb41bd6bULL, 0x5be0cd19137e2179ULL,
+};
+
+static const uint64_t b7_h384_c[8] = {
+    0xcbbb9d5dc1059ed8ULL, 0x629a292a367cd507ULL, 0x9159015a3070dd17ULL, 0x152fecd8f70e5939ULL,
+    0x67332667ffc00b31ULL, 0x8eb44a8768581511ULL, 0xdb0c2e0d64f98fa7ULL, 0x47b5481dbefa4fa4ULL,
+};
+
+static const uint64_t b7_blake2b_iv_c[8] = {
+    0x6a09e667f3bcc908ULL, 0xbb67ae8584caa73bULL, 0x3c6ef372fe94f82bULL, 0xa54ff53a5f1d36f1ULL,
+    0x510e527fade682d1ULL, 0x9b05688c2b3e6c1fULL, 0x1f83d9abfb41bd6bULL, 0x5be0cd19137e2179ULL,
+};
+
+static const unsigned b7_blake2b_sigma_c[12][16] = {
+    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+    {14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3},
+    {11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4},
+    {7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8},
+    {9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13},
+    {2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9},
+    {12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11},
+    {13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10},
+    {6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5},
+    {10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0},
+    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15},
+    {14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3}
+};
+
+/* MD5 (RFC 1321) — مرآة crypto.rs. */
+static void b7_md5_c(const unsigned char *data, size_t len, unsigned char out[16]) {
+    uint64_t bit_len = (uint64_t)len * 8u;
+    size_t total = len + 72;
+    unsigned char *msg = (unsigned char *)malloc(total);
+    memcpy(msg, data, len);
+    msg[len] = 0x80;
+    size_t mlen = len + 1;
+    while (mlen % 64 != 56) msg[mlen++] = 0;
+    for (int i = 0; i < 8; i++) msg[mlen++] = (unsigned char)(bit_len >> (8 * i));
+    uint32_t a0 = 0x67452301u, b0 = 0xefcdab89u, c0 = 0x98badcfeu, d0 = 0x10325476u;
+    for (size_t off = 0; off < mlen; off += 64) {
+        uint32_t m[16];
+        for (int i = 0; i < 16; i++) {
+            m[i] = ((uint32_t)msg[off + 4 * i]) | ((uint32_t)msg[off + 4 * i + 1] << 8) |
+                   ((uint32_t)msg[off + 4 * i + 2] << 16) | ((uint32_t)msg[off + 4 * i + 3] << 24);
+        }
+        uint32_t a = a0, b = b0, c = c0, d = d0;
+        for (int i = 0; i < 64; i++) {
+            uint32_t f = 0;
+            int g = 0;
+            if (i < 16) { f = (b & c) | ((~b) & d); g = i; }
+            else if (i < 32) { f = (d & b) | ((~d) & c); g = (5 * i + 1) % 16; }
+            else if (i < 48) { f = b ^ c ^ d; g = (3 * i + 5) % 16; }
+            else { f = c ^ (b | (~d)); g = (7 * i) % 16; }
+            uint32_t tmp = f + a + b7_md5_k_c[i] + m[g];
+            a = d;
+            d = c;
+            c = b;
+            b = b + b7_rotl32_c(tmp, b7_md5_s_c[i]);
+        }
+        a0 += a; b0 += b; c0 += c; d0 += d;
+    }
+    free(msg);
+    uint32_t words[4] = { a0, b0, c0, d0 };
+    for (int i = 0; i < 4; i++) {
+        out[4 * i] = (unsigned char)(words[i] & 0xFF);
+        out[4 * i + 1] = (unsigned char)((words[i] >> 8) & 0xFF);
+        out[4 * i + 2] = (unsigned char)((words[i] >> 16) & 0xFF);
+        out[4 * i + 3] = (unsigned char)((words[i] >> 24) & 0xFF);
+    }
+}
+
+/* SHA-1 (FIPS 180-4 §6.1) — مرآة crypto.rs. */
+static void b7_sha1_c(const unsigned char *data, size_t len, unsigned char out[20]) {
+    uint64_t bit_len = (uint64_t)len * 8u;
+    size_t total = len + 72;
+    unsigned char *msg = (unsigned char *)malloc(total);
+    memcpy(msg, data, len);
+    msg[len] = 0x80;
+    size_t mlen = len + 1;
+    while (mlen % 64 != 56) msg[mlen++] = 0;
+    for (int i = 7; i >= 0; i--) msg[mlen++] = (unsigned char)(bit_len >> (8 * i));
+    uint32_t h[5] = { 0x67452301u, 0xEFCDAB89u, 0x98BADCFEu, 0x10325476u, 0xC3D2E1F0u };
+    for (size_t off = 0; off < mlen; off += 64) {
+        uint32_t w[80];
+        for (int i = 0; i < 16; i++) {
+            w[i] = ((uint32_t)msg[off + 4 * i] << 24) | ((uint32_t)msg[off + 4 * i + 1] << 16) |
+                   ((uint32_t)msg[off + 4 * i + 2] << 8) | (uint32_t)msg[off + 4 * i + 3];
+        }
+        for (int i = 16; i < 80; i++) {
+            w[i] = b7_rotl32_c(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+        }
+        uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4];
+        for (int i = 0; i < 80; i++) {
+            uint32_t f = 0, k = 0;
+            if (i < 20) { f = (b & c) | ((~b) & d); k = 0x5A827999u; }
+            else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1u; }
+            else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDCu; }
+            else { f = b ^ c ^ d; k = 0xCA62C1D6u; }
+            uint32_t tmp = b7_rotl32_c(a, 5) + f + e + k + w[i];
+            e = d;
+            d = c;
+            c = b7_rotl32_c(b, 30);
+            b = a;
+            a = tmp;
+        }
+        h[0] += a; h[1] += b; h[2] += c; h[3] += d; h[4] += e;
+    }
+    free(msg);
+    for (int i = 0; i < 5; i++) {
+        out[4 * i] = (unsigned char)((h[i] >> 24) & 0xFF);
+        out[4 * i + 1] = (unsigned char)((h[i] >> 16) & 0xFF);
+        out[4 * i + 2] = (unsigned char)((h[i] >> 8) & 0xFF);
+        out[4 * i + 3] = (unsigned char)(h[i] & 0xFF);
+    }
+}
+
+/* SHA-256 core عبر كتلة التجزئة القائمة؛ SHA-224 أول 28 بايتا بقيمها الأولية. */
+static void b7_sha256_core_c(const unsigned char *data, size_t len, const uint32_t h_init[8], uint32_t h_out[8]) {
+    uint64_t bit_len = (uint64_t)len * 8u;
+    size_t total = len + 72;
+    unsigned char *msg = (unsigned char *)malloc(total);
+    memcpy(msg, data, len);
+    msg[len] = 0x80;
+    size_t mlen = len + 1;
+    while (mlen % 64 != 56) msg[mlen++] = 0;
+    for (int i = 7; i >= 0; i--) msg[mlen++] = (unsigned char)(bit_len >> (8 * i));
+    uint32_t h[8];
+    for (int i = 0; i < 8; i++) h[i] = h_init[i];
+    for (size_t off = 0; off < mlen; off += 64) {
+        nv_std_crypto_sha256_block(h, msg + off);
+    }
+    free(msg);
+    for (int i = 0; i < 8; i++) h_out[i] = h[i];
+}
+
+/* SHA-512 core؛ SHA-384 أول 48 بايتا بقيمها الأولية. */
+static void b7_sha512_core_c(const unsigned char *data, size_t len, const uint64_t h_init[8], uint64_t h_out[8]) {
+    size_t total = len + 144;
+    unsigned char *msg = (unsigned char *)malloc(total);
+    memcpy(msg, data, len);
+    msg[len] = 0x80;
+    size_t mlen = len + 1;
+    while (mlen % 128 != 112) msg[mlen++] = 0;
+    for (int i = 0; i < 8; i++) msg[mlen++] = 0;
+    uint64_t bit_len = (uint64_t)len * 8u;
+    for (int i = 7; i >= 0; i--) msg[mlen++] = (unsigned char)(bit_len >> (8 * i));
+    uint64_t h[8];
+    for (int i = 0; i < 8; i++) h[i] = h_init[i];
+    for (size_t off = 0; off < mlen; off += 128) {
+        uint64_t w[80];
+        for (int i = 0; i < 16; i++) {
+            uint64_t v = 0;
+            for (int j = 0; j < 8; j++) v = (v << 8) | msg[off + 8 * i + j];
+            w[i] = v;
+        }
+        for (int i = 16; i < 80; i++) {
+            uint64_t s0 = b7_rotr64_c(w[i - 15], 1) ^ b7_rotr64_c(w[i - 15], 8) ^ (w[i - 15] >> 7);
+            uint64_t s1 = b7_rotr64_c(w[i - 2], 19) ^ b7_rotr64_c(w[i - 2], 61) ^ (w[i - 2] >> 6);
+            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+        }
+        uint64_t a = h[0], b = h[1], c = h[2], d = h[3];
+        uint64_t e = h[4], f = h[5], g = h[6], hh = h[7];
+        for (int i = 0; i < 80; i++) {
+            uint64_t s1 = b7_rotr64_c(e, 14) ^ b7_rotr64_c(e, 18) ^ b7_rotr64_c(e, 41);
+            uint64_t ch = (e & f) ^ ((~e) & g);
+            uint64_t temp1 = hh + s1 + ch + b7_k512_c[i] + w[i];
+            uint64_t s0 = b7_rotr64_c(a, 28) ^ b7_rotr64_c(a, 34) ^ b7_rotr64_c(a, 39);
+            uint64_t maj = (a & b) ^ (a & c) ^ (b & c);
+            uint64_t temp2 = s0 + maj;
+            hh = g;
+            g = f;
+            f = e;
+            e = d + temp1;
+            d = c;
+            c = b;
+            b = a;
+            a = temp1 + temp2;
+        }
+        h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+        h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+    }
+    free(msg);
+    for (int i = 0; i < 8; i++) h_out[i] = h[i];
+}
+
+/* BLAKE2b-512 (RFC 7693) — مرآة crypto.rs. */
+static void b7_blake2b_g_c(uint64_t v[16], int a, int b, int c, int d, uint64_t x, uint64_t y) {
+    v[a] = v[a] + v[b] + x;
+    v[d] = b7_rotr64_c(v[d] ^ v[a], 32);
+    v[c] = v[c] + v[d];
+    v[b] = b7_rotr64_c(v[b] ^ v[c], 24);
+    v[a] = v[a] + v[b] + y;
+    v[d] = b7_rotr64_c(v[d] ^ v[a], 16);
+    v[c] = v[c] + v[d];
+    v[b] = b7_rotr64_c(v[b] ^ v[c], 63);
+}
+
+static void b7_blake2b_c(const unsigned char *data, size_t len, unsigned char out[64]) {
+    uint64_t h[8];
+    for (int i = 0; i < 8; i++) h[i] = b7_blake2b_iv_c[i];
+    h[0] ^= 0x01010000ULL ^ 64ULL;
+    size_t nblocks = len / 128 + 1;
+    if (len % 128 == 0 && len > 0) nblocks = len / 128;
+    if (len == 0) nblocks = 1;
+    unsigned long long counter = 0;
+    for (size_t bi = 0; bi < nblocks; bi++) {
+        size_t blen = len - bi * 128;
+        if (blen > 128) blen = 128;
+        int last = (bi == nblocks - 1);
+        counter += blen;
+        unsigned char padded[128] = { 0 };
+        memcpy(padded, data + bi * 128, blen);
+        uint64_t m[16];
+        for (int i = 0; i < 16; i++) {
+            uint64_t v = 0;
+            for (int j = 7; j >= 0; j--) v = (v << 8) | padded[8 * i + j];
+            m[i] = v;
+        }
+        uint64_t v[16];
+        for (int i = 0; i < 8; i++) v[i] = h[i];
+        for (int i = 0; i < 8; i++) v[8 + i] = b7_blake2b_iv_c[i];
+        v[12] ^= (uint64_t)counter;
+        if (last) v[14] = ~v[14];
+        for (int r = 0; r < 12; r++) {
+            const unsigned *s = b7_blake2b_sigma_c[r];
+            b7_blake2b_g_c(v, 0, 4, 8, 12, m[s[0]], m[s[1]]);
+            b7_blake2b_g_c(v, 1, 5, 9, 13, m[s[2]], m[s[3]]);
+            b7_blake2b_g_c(v, 2, 6, 10, 14, m[s[4]], m[s[5]]);
+            b7_blake2b_g_c(v, 3, 7, 11, 15, m[s[6]], m[s[7]]);
+            b7_blake2b_g_c(v, 0, 5, 10, 15, m[s[8]], m[s[9]]);
+            b7_blake2b_g_c(v, 1, 6, 11, 12, m[s[10]], m[s[11]]);
+            b7_blake2b_g_c(v, 2, 7, 8, 13, m[s[12]], m[s[13]]);
+            b7_blake2b_g_c(v, 3, 4, 9, 14, m[s[14]], m[s[15]]);
+        }
+        for (int i = 0; i < 8; i++) h[i] ^= v[i] ^ v[i + 8];
+    }
+    for (int i = 0; i < 8; i++) {
+        for (int j = 0; j < 8; j++) out[8 * i + j] = (unsigned char)((h[i] >> (8 * j)) & 0xFF);
+    }
+}
+
+/* بصمة سداسية عشرية صغيرة. */
+static void b7_hex_c(const unsigned char *digest, size_t n, char *hex_out) {
+    static const char hexd[] = "0123456789abcdef";
+    for (size_t i = 0; i < n; i++) {
+        hex_out[2 * i] = hexd[digest[i] >> 4];
+        hex_out[2 * i + 1] = hexd[digest[i] & 0x0f];
+    }
+    hex_out[2 * n] = '\0';
+}
+
+/* بايتات البصمة: نص أو ملف (مفتاح ملف) — مرآة b7_hash_bytes في Rust. */
+static unsigned char *b7_hash_bytes_c(const char *display, NvValue *args, int nargs, int line, int col, size_t *len_out) {
+    if (nargs < 1 || nargs > 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", display, nargs);
+    }
+    const char *input = nv_std_need_string(display, args[0], line, col);
+    size_t ilen = args[0].u.str->len;
+    NvDict *opts = b7_opts_dict_c(args, nargs, 1, display, line, col);
+    const char *allowed[] = { "ملف" };
+    b7_no_unknown_c(opts, allowed, 1, display, line, col);
+    int as_file = b5_opt_bool_c(opts, "ملف", 0, display, line, col);
+    unsigned char *bytes = NULL;
+    size_t blen = 0;
+    if (as_file) {
+        char *resolved = b6_resolve_plain_c(input);
+        size_t flen = 0;
+        char *content = b5_read_file_c(resolved, &flen);
+        free(resolved);
+        if (!content) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف غير موجود: %s", display, input);
+        }
+        bytes = (unsigned char *)content;
+        blen = flen;
+    } else {
+        bytes = (unsigned char *)malloc(ilen + 1);
+        memcpy(bytes, input, ilen);
+        bytes[ilen] = '\0';
+        blen = ilen;
+    }
+    if (blen > 64u * 1024u * 1024u) {
+        free(bytes);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف كبير جدا (الحد 64 ميغا)", display);
+    }
+    *len_out = blen;
+    return bytes;
+}
+
+static NvValue b7_crypto_md5_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "تشفير.بصمة_إم_دي_5";
+    size_t len = 0;
+    unsigned char *bytes = b7_hash_bytes_c(D, args, nargs, line, col, &len);
+    unsigned char digest[16];
+    b7_md5_c(bytes, len, digest);
+    free(bytes);
+    char hex[33];
+    b7_hex_c(digest, 16, hex);
+    return nv_str_cstr(hex);
+}
+
+static NvValue b7_crypto_sha1_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "تشفير.بصمة_شا_1";
+    size_t len = 0;
+    unsigned char *bytes = b7_hash_bytes_c(D, args, nargs, line, col, &len);
+    unsigned char digest[20];
+    b7_sha1_c(bytes, len, digest);
+    free(bytes);
+    char hex[41];
+    b7_hex_c(digest, 20, hex);
+    return nv_str_cstr(hex);
+}
+
+static NvValue b7_crypto_sha224_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "تشفير.بصمة_شا_224";
+    size_t len = 0;
+    unsigned char *bytes = b7_hash_bytes_c(D, args, nargs, line, col, &len);
+    uint32_t h[8];
+    b7_sha256_core_c(bytes, len, b7_h224_c, h);
+    free(bytes);
+    unsigned char digest[28];
+    for (int i = 0; i < 7; i++) {
+        digest[4 * i] = (unsigned char)((h[i] >> 24) & 0xFF);
+        digest[4 * i + 1] = (unsigned char)((h[i] >> 16) & 0xFF);
+        digest[4 * i + 2] = (unsigned char)((h[i] >> 8) & 0xFF);
+        digest[4 * i + 3] = (unsigned char)(h[i] & 0xFF);
+    }
+    char hex[57];
+    b7_hex_c(digest, 28, hex);
+    return nv_str_cstr(hex);
+}
+
+static NvValue b7_crypto_sha512_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "تشفير.بصمة_شا_512";
+    size_t len = 0;
+    unsigned char *bytes = b7_hash_bytes_c(D, args, nargs, line, col, &len);
+    uint64_t h[8];
+    b7_sha512_core_c(bytes, len, b7_h512_c, h);
+    free(bytes);
+    unsigned char digest[64];
+    for (int i = 0; i < 8; i++) {
+        for (int j = 0; j < 8; j++) digest[8 * i + j] = (unsigned char)((h[i] >> (56 - 8 * j)) & 0xFF);
+    }
+    char hex[129];
+    b7_hex_c(digest, 64, hex);
+    return nv_str_cstr(hex);
+}
+
+static NvValue b7_crypto_sha384_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "تشفير.بصمة_شا_384";
+    size_t len = 0;
+    unsigned char *bytes = b7_hash_bytes_c(D, args, nargs, line, col, &len);
+    uint64_t h[8];
+    b7_sha512_core_c(bytes, len, b7_h384_c, h);
+    free(bytes);
+    unsigned char digest[48];
+    for (int i = 0; i < 6; i++) {
+        for (int j = 0; j < 8; j++) digest[8 * i + j] = (unsigned char)((h[i] >> (56 - 8 * j)) & 0xFF);
+    }
+    char hex[97];
+    b7_hex_c(digest, 48, hex);
+    return nv_str_cstr(hex);
+}
+
+static NvValue b7_crypto_blake2b_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "تشفير.بصمة_بليك_2";
+    size_t len = 0;
+    unsigned char *bytes = b7_hash_bytes_c(D, args, nargs, line, col, &len);
+    unsigned char digest[64];
+    b7_blake2b_c(bytes, len, digest);
+    free(bytes);
+    char hex[129];
+    b7_hex_c(digest, 64, hex);
+    return nv_str_cstr(hex);
+}
+
 // الحد الأعلى للعشوائية الآمنة في الاستدعاء الواحد: 1 ميبيبايت.
 #define NV_STD_CRYPTO_MAX_SECURE 1048576
 
@@ -2125,6 +2634,14 @@ static NvValue b6_crypto_verify_hashes_fn(NvValue *args, int nargs, int line, in
 }
 /* لينكس6-هـ2أ-تشفير-نهاية. */
 
+/* لينكس7-ز7ج-تصريحات-مسبقة (تشفير). */
+static NvValue b7_crypto_md5_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_crypto_sha1_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_crypto_sha224_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_crypto_sha512_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_crypto_sha384_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_crypto_blake2b_fn(NvValue *args, int nargs, int line, int col);
+
 void nv_std_crypto_fill(NvDict *d) {
     nv_std_add_fn(d, "جزئ", nv_std_crypto_hash);
     nv_std_add_fn(d, "عشوائي_آمن", nv_std_crypto_secure_random);
@@ -2133,6 +2650,13 @@ void nv_std_crypto_fill(NvDict *d) {
     /* لينكس6-هـ2أ-تشفير-تسجيل. */
     nv_std_add_fn(d, "بصمة_سريعة", b6_crypto_fast_hash_fn);
     nv_std_add_fn(d, "تحقق_بصمات", b6_crypto_verify_hashes_fn);
+    /* لينكس7-ز7ج-تشفير. */
+    nv_std_add_fn(d, "بصمة_إم_دي_5", b7_crypto_md5_fn);
+    nv_std_add_fn(d, "بصمة_شا_1", b7_crypto_sha1_fn);
+    nv_std_add_fn(d, "بصمة_شا_224", b7_crypto_sha224_fn);
+    nv_std_add_fn(d, "بصمة_شا_512", b7_crypto_sha512_fn);
+    nv_std_add_fn(d, "بصمة_شا_384", b7_crypto_sha384_fn);
+    nv_std_add_fn(d, "بصمة_بليك_2", b7_crypto_blake2b_fn);
 }
 
 // ================= أمن =================
@@ -3221,6 +3745,12 @@ static NvValue nv_std_time_parse_format(NvValue *args, int nargs, int line, int 
     return r;
 }
 /* END لينكس4-نص دوال وقت C */
+/* لينكس7-ز7ج-تصريحات-مسبقة (وقت). */
+static NvValue b7_time_iso_today_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_time_parse_date_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_time_date_after_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_time_from_stamp_fn(NvValue *args, int nargs, int line, int col);
+
 void nv_std_time_fill(NvDict *d) {
     nv_std_add_fn(d, "الآن", nv_std_time_now);
     nv_std_add_fn(d, "نوم", nv_std_time_sleep);
@@ -3236,6 +3766,11 @@ void nv_std_time_fill(NvDict *d) {
     nv_std_add_fn(d, "فرق", nv_std_time_diff);
     nv_std_add_fn(d, "أضف", nv_std_time_add);
     nv_std_add_fn(d, "نسق", nv_std_time_format_custom);/* BEGIN لينكس4-نص ملء وقت */
+    /* لينكس7-ز7ج-متنوع. */
+    nv_std_add_fn(d, "تاريخ_دولي", b7_time_iso_today_fn);
+    nv_std_add_fn(d, "حلل_تاريخ", b7_time_parse_date_fn);
+    nv_std_add_fn(d, "تاريخ_بعد_أيام", b7_time_date_after_fn);
+    nv_std_add_fn(d, "من_طابع", b7_time_from_stamp_fn);
     nv_std_add_fn(d, "حلل_بصيغة", nv_std_time_parse_format);
 /* END لينكس4-نص ملء وقت */
 
@@ -4137,6 +4672,38 @@ static NvValue nv_std_sys_gid(NvValue *args, int nargs, int line, int col) {
 #endif
 }
 
+/* تصريحات مسبقة: دوال نظام الدفعة 7 (تُعرَّف قبل nv_std_lines_fill). */
+static NvValue b7_sys_mem_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_cpu_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_ncpu_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_arch_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_osname_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_uptime_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_load_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_vmstat_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_memblocks_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_full_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_login_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_userinfo_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_which_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_parseopts_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_mounts_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_ismount_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_disks_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_devid_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_finddev_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_dmesg_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_uuid_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_parse_uuid_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_randword_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_locks_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_irqs_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_ipc_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_clocks_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_log_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_termsize_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_sys_termsettings_fn(NvValue *args, int nargs, int line, int col);
+
 void nv_std_system_fill(NvDict *d) {
     nv_std_add_fn(d, "اسم_النداء", nv_std_sys_name);
     nv_std_add_fn(d, "عدد_النداءات", nv_std_sys_count);
@@ -4144,6 +4711,36 @@ void nv_std_system_fill(NvDict *d) {
     nv_std_add_fn(d, "اسم_النظام", nv_std_sys_os);
     nv_std_add_fn(d, "معرف_المستخدم", nv_std_sys_uid);
     nv_std_add_fn(d, "معرف_المجموعة", nv_std_sys_gid);
+    nv_std_add_fn(d, "ذاكرة", b7_sys_mem_fn);
+    nv_std_add_fn(d, "معلومات_المعالج", b7_sys_cpu_fn);
+    nv_std_add_fn(d, "عدد_المعالجات", b7_sys_ncpu_fn);
+    nv_std_add_fn(d, "معمارية_الجهاز", b7_sys_arch_fn);
+    nv_std_add_fn(d, "اسم_نظام_التشغيل", b7_sys_osname_fn);
+    nv_std_add_fn(d, "وقت_التشغيل", b7_sys_uptime_fn);
+    nv_std_add_fn(d, "متوسط_الحمل", b7_sys_load_fn);
+    nv_std_add_fn(d, "إحصاءات_افتراضية", b7_sys_vmstat_fn);
+    nv_std_add_fn(d, "نطاقات_الذاكرة", b7_sys_memblocks_fn);
+    nv_std_add_fn(d, "معلومات_النظام_الكاملة", b7_sys_full_fn);
+    nv_std_add_fn(d, "اسم_المستخدم_المسجل", b7_sys_login_fn);
+    nv_std_add_fn(d, "معلومات_المستخدم", b7_sys_userinfo_fn);
+    nv_std_add_fn(d, "حدد_مكان_أمر", b7_sys_which_fn);
+    nv_std_add_fn(d, "حلل_الخيارات", b7_sys_parseopts_fn);
+    nv_std_add_fn(d, "نقاط_التركيب", b7_sys_mounts_fn);
+    nv_std_add_fn(d, "تحقق_تركيب", b7_sys_ismount_fn);
+    nv_std_add_fn(d, "اعرض_الأقراص", b7_sys_disks_fn);
+    nv_std_add_fn(d, "معرف_جهاز", b7_sys_devid_fn);
+    nv_std_add_fn(d, "ابحث_جهاز_بنوع", b7_sys_finddev_fn);
+    nv_std_add_fn(d, "رسائل_النواة", b7_sys_dmesg_fn);
+    nv_std_add_fn(d, "معرف_فريد", b7_sys_uuid_fn);
+    nv_std_add_fn(d, "حلل_معرف", b7_sys_parse_uuid_fn);
+    nv_std_add_fn(d, "كلمة_عشوائية_آمنة", b7_sys_randword_fn);
+    nv_std_add_fn(d, "أقفال_الملفات", b7_sys_locks_fn);
+    nv_std_add_fn(d, "مقاطعات", b7_sys_irqs_fn);
+    nv_std_add_fn(d, "قنوات_الاتصال", b7_sys_ipc_fn);
+    nv_std_add_fn(d, "ساعات_النظام", b7_sys_clocks_fn);
+    nv_std_add_fn(d, "سجل_رسالة", b7_sys_log_fn);
+    nv_std_add_fn(d, "حجم_نافذة_الطرفية", b7_sys_termsize_fn);
+    nv_std_add_fn(d, "إعدادات_الطرفية", b7_sys_termsettings_fn);
 }
 // قطعة قسم عمليات وذاكرة وملفات — خلفية C (مهمة 29).
 // قطعة لا وحدة ترجمة مستقلة: بلا تضمين وبلا دالة رئيسية.
@@ -4645,6 +5242,56 @@ static NvValue nv_std_proc_current(NvValue *args, int nargs, int line, int col) 
     return nv_num((double)getpid());
 }
 
+/* لينكس7-ز5ج-عمليات. */
+/* تصريحات مسبقة: مساعدات ز1ج/ز2ج/ز3ج (تُعرَّف لاحقا قبل nv_std_lines_fill). */
+static NvDict *b7_opts_dict_c(NvValue *args, int nargs, int at, const char *display, int line, int col);
+static void b7_no_unknown_c(NvDict *d, const char **allowed, size_t nallowed, const char *display, int line, int col);
+static NvValue b7_json_c(NvValue v, const char *display, int line, int col);
+static char *b7_read_text_c(const char *path, size_t *len_out);
+static char *j14_strdup(const char *s);
+static int b5_opt_bool_c(NvDict *d, const char *key, int def, const char *display, int line, int col);
+static int b5_opt_int_c(NvDict *d, const char *key, long long *out, const char *display, int line, int col);
+static const char *b5_opt_str_c(NvDict *d, const char *key, const char *display, int line, int col);
+static char **b5_opt_strs_c(NvDict *d, const char *key, size_t *n_out, const char *display, int line, int col);
+/* صف عملية من ‎/proc‎. */
+typedef struct {
+    long long pid;
+    long long ppid;
+    char *name;
+    char *state;
+    long long cpu;
+    long long start;
+    char *user;
+} B7ProcRowC;
+typedef struct { long long code; char *output; int timed_out; } B7RunResultC;
+static void b7_proc_rows_free_c(B7ProcRowC *rows, size_t n);
+static char *b7_proc_user_c(long long pid);
+static long long b7_proc_rss_c(long long pid);
+static B7ProcRowC *b7_proc_rows_c(size_t *n_out, const char *display, int line, int col);
+static NvValue b7_filter_cols_c(NvValue dict, char **cols, size_t ncols);
+static NvValue b7_proc_node_c(B7ProcRowC *rows, size_t n, long long pid, long long ppid, char **cols, size_t ncols);
+static int b7_proc_cpu_cmp_c(const void *a, const void *b);
+static int b7_signal_num_c(NvValue v, const char *display, int line, int col);
+static char **b7_split_cmd_c(const char *text, int *argc_out);
+static void b7_free_argv_c(char **argv, int argc);
+static B7RunResultC b7_run_argv_c(char **argv, int setup, long long setup_arg, long long timeout_ms, long long grace_ms, const char *display, int line, int col);
+static B7RunResultC b7_run_c(const char *cmd_text, int setup, long long setup_arg, long long timeout_ms, long long grace_ms, const char *display, int line, int col);
+static char **b7_niva_argv_c(char **argv, int *argc_io, const char *display, int line, int col);
+static long long b7_spawn_detached_c(const char *cmd_text, const char *file, const char *display, int line, int col);
+static int b7_find_in_path_c(const char *prog);
+/* مخزن نصي صغير (بديل J14Buf غير المرئي قبل قسم العمليات). */
+static void b7_buf_append_c(char **buf, size_t *len, size_t *cap, const char *s, size_t n) {
+    if (*len + n + 1 > *cap) {
+        size_t ncap = *cap == 0 ? 256 : *cap;
+        while (*len + n + 1 > ncap) ncap *= 2;
+        *buf = (char *)realloc(*buf, ncap);
+        *cap = ncap;
+    }
+    memcpy(*buf + *len, s, n);
+    *len += n;
+    (*buf)[*len] = '\0';
+}
+
 /* لينكس6-هـ2ب-عمليات. */
 #if defined(__linux__)
 /* عملية واحدة من ‎/proc؛ تعيد 1 عند النجاح و0 عند الغياب. */
@@ -4783,12 +5430,68 @@ static NvValue b6_proc_list_c(int full, const char *display, int line, int col) 
 
 static NvValue b6_proc_list_fn(NvValue *args, int nargs, int line, int col) {
     const char *D = "عمليات.سرد_العمليات";
-    (void)args;
-    if (nargs != 0) {
-        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع بلا معاملات لكن أعطيت %d", D, nargs);
-    }
+    /* لينكس7-ز5: مفاتيح شجري/مستخدم/رتب_بمعالج/أعمدة/جسون. */
+    NvDict *opts = b7_opts_dict_c(args, nargs, 0, D, line, col);
+    const char *allowed[] = { "شجري", "مستخدم", "رتب_بمعالج", "أعمدة", "جسون" };
+    b7_no_unknown_c(opts, allowed, 5, D, line, col);
+    int tree = b5_opt_bool_c(opts, "شجري", 0, D, line, col);
+    const char *user_filter = b5_opt_str_c(opts, "مستخدم", D, line, col);
+    int by_cpu = b5_opt_bool_c(opts, "رتب_بمعالج", 0, D, line, col);
+    size_t ncols = 0;
+    char **cols = b5_opt_strs_c(opts, "أعمدة", &ncols, D, line, col);
+    int as_json = b5_opt_bool_c(opts, "جسون", 0, D, line, col);
 #if defined(__linux__)
-    return b6_proc_list_c(0, D, line, col);
+    size_t n = 0;
+    B7ProcRowC *rows = b7_proc_rows_c(&n, D, line, col);
+    if (user_filter) {
+        size_t w = 0;
+        for (size_t i = 0; i < n; i++) {
+            if (strcmp(rows[i].user, user_filter) == 0) {
+                if (w != i) rows[w] = rows[i];
+                w++;
+            } else {
+                free(rows[i].name); free(rows[i].state); free(rows[i].user);
+            }
+        }
+        n = w;
+    }
+    if (by_cpu) qsort(rows, n, sizeof(B7ProcRowC), b7_proc_cpu_cmp_c);
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    if (tree) {
+        for (size_t i = 0; i < n; i++) {
+            int is_root = rows[i].ppid == 0;
+            if (!is_root) {
+                is_root = 1;
+                for (size_t j = 0; j < n; j++) if (rows[j].pid == rows[i].ppid) is_root = 0;
+            }
+            if (is_root) {
+                NvValue node = b7_proc_node_c(rows, n, rows[i].pid, rows[i].ppid, cols, ncols);
+                nv_list_push_raw(out.u.list, node);
+                nv_root_pop_n(2);
+            }
+        }
+    } else {
+        for (size_t i = 0; i < n; i++) {
+            NvValue d = nv_dict_new();
+            nv_dict_set_raw(d.u.dict, "معرف", nv_num((double)rows[i].pid));
+            nv_dict_set_raw(d.u.dict, "اسم", nv_str_cstr(rows[i].name));
+            nv_dict_set_raw(d.u.dict, "حالة", nv_str_cstr(rows[i].state));
+            if (ncols > 0) {
+                NvValue f = b7_filter_cols_c(d, cols, ncols);
+                nv_list_push_raw(out.u.list, f);
+            } else {
+                nv_list_push_raw(out.u.list, d);
+            }
+        }
+    }
+    b7_proc_rows_free_c(rows, n);
+    for (size_t c = 0; c < ncols; c++) free(cols[c]);
+    free(cols);
+    nv_root_pop();
+    if (as_json) return b7_json_c(out, D, line, col);
+    return out;
 #else
     nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s سرد العمليات مدعوم على لينكس فقط في هذه الدفعة", D);
 #endif
@@ -4821,6 +5524,415 @@ static NvValue b6_proc_by_pid_fn(NvValue *args, int nargs, int line, int col) {
     nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s سرد العمليات مدعوم على لينكس فقط في هذه الدفعة", D);
 #endif
 }
+static NvValue b7_proc_res_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "عمليات.سرد_بموارد";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+#if defined(__linux__)
+    size_t n = 0;
+    B7ProcRowC *rows = b7_proc_rows_c(&n, DISPLAY, line, col);
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    for (size_t i = 0; i < n; i++) {
+        NvValue d = nv_dict_new();
+        nv_dict_set_raw(d.u.dict, "معرف", nv_num((double)rows[i].pid));
+        nv_dict_set_raw(d.u.dict, "اسم", nv_str_cstr(rows[i].name));
+        nv_dict_set_raw(d.u.dict, "مستخدم", nv_str_cstr(rows[i].user));
+        nv_dict_set_raw(d.u.dict, "ذاكرة", nv_num((double)b7_proc_rss_c(rows[i].pid)));
+        nv_dict_set_raw(d.u.dict, "معالج", nv_num((double)rows[i].cpu / 100.0));
+        nv_list_push_raw(out.u.list, d);
+    }
+    b7_proc_rows_free_c(rows, n);
+    nv_root_pop();
+    return out;
+#else
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مدعومة على لينكس فقط في هذه الدفعة", DISPLAY);
+    return nv_nil();
+#endif
+}
+
+static NvValue b7_proc_maps_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "عمليات.خريطة_ذاكرة";
+    nv_std_need_args(DISPLAY, args, nargs, 1, line, col);
+    long long pid = nv_std_need_integer(DISPLAY, args[0], line, col);
+#if defined(__linux__)
+    char spath[64];
+    snprintf(spath, sizeof(spath), "/proc/%lld/maps", pid);
+    size_t tlen = 0;
+    char *text = b5_read_file_c(spath, &tlen);
+    if (!text) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا خريطة للعملية %lld", DISPLAY, pid);
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    char *save = NULL;
+    char *l = strtok_r(text, "\n", &save);
+    while (l) {
+        char range[64], perms[16], off[32], dev[32], inode[32];
+        char path[1024] = "";
+        int got = sscanf(l, "%63s %15s %31s %31s %31s %1023[^\n]", range, perms, off, dev, inode, path);
+        if (got >= 5) {
+            char *dash = strchr(range, '-');
+            long long start = 0, end = 0;
+            if (dash) {
+                *dash = '\0';
+                start = strtoll(range, NULL, 16);
+                end = strtoll(dash + 1, NULL, 16);
+            }
+            while (path[0] == ' ' || path[0] == '\t') memmove(path, path + 1, strlen(path));
+            NvValue d = nv_dict_new();
+            nv_dict_set_raw(d.u.dict, "بداية", nv_num((double)start));
+            nv_dict_set_raw(d.u.dict, "نهاية", nv_num((double)end));
+            nv_dict_set_raw(d.u.dict, "أذونات", nv_str_cstr(perms));
+            nv_dict_set_raw(d.u.dict, "إزاحة", nv_num((double)strtoll(off, NULL, 16)));
+            nv_dict_set_raw(d.u.dict, "جهاز", nv_str_cstr(dev));
+            nv_dict_set_raw(d.u.dict, "عقدة", nv_num((double)strtoll(inode, NULL, 10)));
+            nv_dict_set_raw(d.u.dict, "مسار", nv_str_cstr(path));
+            nv_list_push_raw(out.u.list, d);
+        }
+        l = strtok_r(NULL, "\n", &save);
+    }
+    free(text);
+    nv_root_pop();
+    return out;
+#else
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مدعومة على لينكس فقط في هذه الدفعة", DISPLAY);
+    return nv_nil();
+#endif
+}
+
+static NvValue b7_proc_cwd_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "عمليات.مجلد_عملية";
+    nv_std_need_args(DISPLAY, args, nargs, 1, line, col);
+    long long pid = nv_std_need_integer(DISPLAY, args[0], line, col);
+#if defined(__linux__)
+    char spath[64];
+    snprintf(spath, sizeof(spath), "/proc/%lld/cwd", pid);
+    char buf[4096];
+    ssize_t n = readlink(spath, buf, sizeof(buf) - 1);
+    if (n < 0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا مجلد للعملية %lld", DISPLAY, pid);
+    buf[n] = '\0';
+    return nv_str_cstr(buf);
+#else
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مدعومة على لينكس فقط في هذه الدفعة", DISPLAY);
+    return nv_nil();
+#endif
+}
+
+static NvValue b7_proc_find_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "عمليات.ابحث_عملية";
+    if (nargs < 1 || nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", DISPLAY, nargs);
+    const char *name = nv_std_need_string(DISPLAY, args[0], line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 1, DISPLAY, line, col);
+    const char *allowed[] = { "أقدم_أو_أحدث", "مستخدم", "عد" };
+    b7_no_unknown_c(opts, allowed, 3, DISPLAY, line, col);
+    const char *oldest_newest = b5_opt_str_c(opts, "أقدم_أو_أحدث", DISPLAY, line, col);
+    const char *user_filter = b5_opt_str_c(opts, "مستخدم", DISPLAY, line, col);
+    int count_only = b5_opt_bool_c(opts, "عد", 0, DISPLAY, line, col);
+    if (oldest_newest && strcmp(oldest_newest, "أقدم") != 0 && strcmp(oldest_newest, "أحدث") != 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s أقدم_أو_أحدث تتوقع «أقدم» أو «أحدث»", DISPLAY);
+    }
+#if defined(__linux__)
+    size_t n = 0;
+    B7ProcRowC *rows = b7_proc_rows_c(&n, DISPLAY, line, col);
+    long long count = 0;
+    long long picked = -1;
+    long long picked_start = 0;
+    int have_pick = 0;
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    for (size_t i = 0; i < n; i++) {
+        if (!strstr(rows[i].name, name)) continue;
+        if (user_filter && strcmp(rows[i].user, user_filter) != 0) continue;
+        count++;
+        if (oldest_newest) {
+            if (!have_pick) { picked = rows[i].pid; picked_start = rows[i].start; have_pick = 1; }
+            else if (strcmp(oldest_newest, "أقدم") == 0 && rows[i].start < picked_start) { picked = rows[i].pid; picked_start = rows[i].start; }
+            else if (strcmp(oldest_newest, "أحدث") == 0 && rows[i].start > picked_start) { picked = rows[i].pid; picked_start = rows[i].start; }
+        } else {
+            nv_list_push_raw(out.u.list, nv_num((double)rows[i].pid));
+        }
+    }
+    b7_proc_rows_free_c(rows, n);
+    nv_root_pop();
+    if (count_only) return nv_num((double)count);
+    if (oldest_newest) {
+        if (!have_pick) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا عملية بالاسم %s", DISPLAY, name);
+        return nv_num((double)picked);
+    }
+    return out;
+#else
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مدعومة على لينكس فقط في هذه الدفعة", DISPLAY);
+    return nv_nil();
+#endif
+}
+
+static NvValue b7_proc_killname_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "عمليات.أنه_باسم";
+    if (nargs < 1 || nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", DISPLAY, nargs);
+    const char *name = nv_std_need_string(DISPLAY, args[0], line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 1, DISPLAY, line, col);
+    const char *allowed[] = { "إشارة" };
+    b7_no_unknown_c(opts, allowed, 1, DISPLAY, line, col);
+    int sig = 15;
+    if (opts) {
+        int si = nv_dict_find(opts, "إشارة");
+        if (si >= 0) sig = b7_signal_num_c(opts->entries[si].val, DISPLAY, line, col);
+    }
+#if defined(__linux__)
+    size_t n = 0;
+    B7ProcRowC *rows = b7_proc_rows_c(&n, DISPLAY, line, col);
+    long long killed = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (strstr(rows[i].name, name) && kill((pid_t)rows[i].pid, sig) == 0) killed++;
+    }
+    b7_proc_rows_free_c(rows, n);
+    return nv_num((double)killed);
+#else
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مدعومة على لينكس فقط في هذه الدفعة", DISPLAY);
+    return nv_nil();
+#endif
+}
+
+static NvValue b7_proc_signals_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "عمليات.سرد_الإشارات";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    static const char *names[] = {
+        "HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "BUS", "FPE", "KILL", "USR1", "SEGV",
+        "USR2", "PIPE", "ALRM", "TERM", "STKFLT", "CHLD", "CONT", "STOP", "TSTP", "TTIN",
+        "TTOU", "URG", "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "IO", "PWR", "SYS",
+    };
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        nv_list_push_raw(out.u.list, nv_str_cstr(names[i]));
+    }
+    nv_root_pop();
+    return out;
+}
+
+static NvValue b7_proc_renice_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "عمليات.غيّر_أولوية";
+    nv_std_need_args(DISPLAY, args, nargs, 2, line, col);
+    long long pid = nv_std_need_integer(DISPLAY, args[0], line, col);
+    long long nice = nv_std_need_integer(DISPLAY, args[1], line, col);
+    if (nice < -20 || nice > 19) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الأولوية بين -20 و19", DISPLAY);
+#ifdef _WIN32
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على ويندوز", DISPLAY);
+    return nv_nil();
+#else
+    if (setpriority(PRIO_PROCESS, (id_t)pid, (int)nice) != 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تغيير أولوية العملية %lld", DISPLAY, pid);
+    }
+    return nv_bool(1);
+#endif
+}
+
+static NvValue b7_proc_lowprio_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "عمليات.شغل_بأولوية_منخفضة";
+    nv_std_need_args(DISPLAY, args, nargs, 1, line, col);
+    const char *cmd_text = nv_std_need_string(DISPLAY, args[0], line, col);
+#ifdef _WIN32
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على ويندوز", DISPLAY);
+    return nv_nil();
+#else
+    B7RunResultC r = b7_run_c(cmd_text, 1, 0, -1, 0, DISPLAY, line, col);
+    NvValue d = nv_dict_new();
+    nv_dict_set_raw(d.u.dict, "رمز", nv_num((double)r.code));
+    nv_dict_set_raw(d.u.dict, "مخرجات", nv_str_cstr(r.output));
+    free(r.output);
+    return d;
+#endif
+}
+
+static NvValue b7_proc_ioprio_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "عمليات.شغل_بأولوية_إدخال";
+    if (nargs < 1 || nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", DISPLAY, nargs);
+    const char *cmd_text = nv_std_need_string(DISPLAY, args[0], line, col);
+    const char *cls = "أفضل جهد";
+    if (nargs == 2) cls = nv_std_need_string(DISPLAY, args[1], line, col);
+    long long class_num = 2;
+    if (strcmp(cls, "خامل") == 0) class_num = 3;
+    else if (strcmp(cls, "أفضل جهد") == 0) class_num = 2;
+    else nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الفئة «خامل» أو «أفضل جهد»", DISPLAY);
+#ifdef _WIN32
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على ويندوز", DISPLAY);
+    return nv_nil();
+#else
+    B7RunResultC r = b7_run_c(cmd_text, 2, class_num, -1, 0, DISPLAY, line, col);
+    NvValue d = nv_dict_new();
+    nv_dict_set_raw(d.u.dict, "رمز", nv_num((double)r.code));
+    nv_dict_set_raw(d.u.dict, "مخرجات", nv_str_cstr(r.output));
+    free(r.output);
+    return d;
+#endif
+}
+
+static NvValue b7_proc_timeout_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "عمليات.شغل_بمهلة";
+    if (nargs < 2 || nargs > 3) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
+    const char *cmd_text = nv_std_need_string(DISPLAY, args[0], line, col);
+    double timeout = nv_std_need_number(DISPLAY, args[1], line, col);
+    if (timeout < 0.0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s المهلة غير صالحة", DISPLAY);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 2, DISPLAY, line, col);
+    const char *allowed[] = { "مهلة_قتل" };
+    b7_no_unknown_c(opts, allowed, 1, DISPLAY, line, col);
+    double grace = 2.0;
+    long long gv = 0;
+    if (b5_opt_int_c(opts, "مهلة_قتل", &gv, DISPLAY, line, col)) grace = (double)gv;
+    if (grace < 0.0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مهلة_قتل غير صالحة", DISPLAY);
+#ifdef _WIN32
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على ويندوز", DISPLAY);
+    return nv_nil();
+#else
+    B7RunResultC r = b7_run_c(cmd_text, 0, 0, (long long)(timeout * 1000.0), (long long)(grace * 1000.0), DISPLAY, line, col);
+    NvValue d = nv_dict_new();
+    nv_dict_set_raw(d.u.dict, "رمز", nv_num((double)r.code));
+    nv_dict_set_raw(d.u.dict, "مخرجات", nv_str_cstr(r.output));
+    nv_dict_set_raw(d.u.dict, "مهلة", nv_bool(r.timed_out));
+    free(r.output);
+    return d;
+#endif
+}
+
+static NvValue b7_proc_nohup_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "عمليات.شغل_متجاهل_إغلاق";
+    nv_std_need_args(DISPLAY, args, nargs, 2, line, col);
+    const char *cmd_text = nv_std_need_string(DISPLAY, args[0], line, col);
+    const char *file = nv_std_need_string(DISPLAY, args[1], line, col);
+#ifdef _WIN32
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على ويندوز", DISPLAY);
+    return nv_nil();
+#else
+    long long pid = b7_spawn_detached_c(cmd_text, file, DISPLAY, line, col);
+    return nv_num((double)pid);
+#endif
+}
+
+static NvValue b7_proc_repeat_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "عمليات.نفّذ_دوريا";
+    if (nargs < 2 || nargs > 3) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
+    const char *cmd_text = nv_std_need_string(DISPLAY, args[0], line, col);
+    long long count = nv_std_need_integer(DISPLAY, args[1], line, col);
+    if (count < 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العدد يبدأ من 1", DISPLAY);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 2, DISPLAY, line, col);
+    const char *allowed[] = { "فاصل", "ميّز_التغييرات" };
+    b7_no_unknown_c(opts, allowed, 2, DISPLAY, line, col);
+    double interval = 0.0;
+    long long iv = 0;
+    if (b5_opt_int_c(opts, "فاصل", &iv, DISPLAY, line, col)) interval = (double)iv;
+    if (interval < 0.0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الفاصل غير صالح", DISPLAY);
+    int mark = b5_opt_bool_c(opts, "ميّز_التغييرات", 0, DISPLAY, line, col);
+#ifdef _WIN32
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على ويندوز", DISPLAY);
+    return nv_nil();
+#else
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    char *prev = NULL;
+    for (long long i = 0; i < count; i++) {
+        if (i > 0 && interval > 0.0) usleep((useconds_t)(interval * 1000000.0));
+        B7RunResultC r = b7_run_c(cmd_text, 0, 0, -1, 0, DISPLAY, line, col);
+        if (mark && i > 0 && prev) {
+            /* قارن سطرا بسطر مع التشغيل السابق؛ المتغير يُسبق بـ"≠ ". */
+            char *marked = NULL;
+            size_t mlen = 0, mcap = 0;
+            /* سطور السابق. */
+            char *prev_copy = j14_strdup(prev);
+            size_t nprev = 0;
+            char **prev_lines = NULL;
+            size_t pcap = 0;
+            char *save = NULL;
+            char *pl = strtok_r(prev_copy, "\n", &save);
+            while (pl) {
+                if (nprev >= pcap) { pcap = pcap == 0 ? 16 : pcap * 2; prev_lines = (char **)realloc(prev_lines, pcap * sizeof(char *)); }
+                prev_lines[nprev++] = pl;
+                pl = strtok_r(NULL, "\n", &save);
+            }
+            char *cur_copy = j14_strdup(r.output);
+            size_t j = 0;
+            char *save2 = NULL;
+            char *cl = strtok_r(cur_copy, "\n", &save2);
+            if (!cl && r.output[0] == '\0') {
+                /* مخرجات فارغة: بلا سطور. */
+            } else {
+                while (cl) {
+                    int changed = j >= nprev || strcmp(prev_lines[j], cl) != 0;
+                    if (changed) b7_buf_append_c(&marked, &mlen, &mcap, "≠ ", strlen("≠ "));
+                    b7_buf_append_c(&marked, &mlen, &mcap, cl, strlen(cl));
+                    b7_buf_append_c(&marked, &mlen, &mcap, "\n", 1);
+                    j++;
+                    cl = strtok_r(NULL, "\n", &save2);
+                }
+            }
+            free(prev_copy);
+            free(prev_lines);
+            free(cur_copy);
+            free(prev);
+            prev = j14_strdup(r.output);
+            NvValue s = nv_str_new(marked ? marked : "", mlen);
+            free(marked);
+            nv_list_push_raw(out.u.list, s);
+            free(r.output);
+        } else {
+            free(prev);
+            prev = j14_strdup(r.output);
+            nv_list_push_raw(out.u.list, nv_str_cstr(r.output));
+            free(r.output);
+        }
+    }
+    free(prev);
+    nv_root_pop();
+    return out;
+#endif
+}
+
+static NvValue b7_proc_bufout_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "عمليات.شغل_بإخراج_مخزن";
+    if (nargs < 1 || nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", DISPLAY, nargs);
+    const char *cmd_text = nv_std_need_string(DISPLAY, args[0], line, col);
+    const char *mode = "سطر";
+    if (nargs == 2) mode = nv_std_need_string(DISPLAY, args[1], line, col);
+    const char *flag = "-oL";
+    if (strcmp(mode, "سطر") == 0) flag = "-oL";
+    else if (strcmp(mode, "كتلة") == 0) flag = "-oB";
+    else if (strcmp(mode, "بلا") == 0) flag = "-o0";
+    else nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الوضع «سطر» أو «كتلة» أو «بلا»", DISPLAY);
+#ifdef _WIN32
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على ويندوز", DISPLAY);
+    return nv_nil();
+#else
+    int argc = 0;
+    char **argv = b7_split_cmd_c(cmd_text, &argc);
+    if (argc == 0) {
+        b7_free_argv_c(argv, argc);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الأمر فارغ", DISPLAY);
+    }
+    argv = b7_niva_argv_c(argv, &argc, DISPLAY, line, col);
+    B7RunResultC r;
+    if (b7_find_in_path_c("stdbuf")) {
+        int argc2 = argc + 2;
+        char **argv2 = (char **)malloc((argc2 + 1) * sizeof(char *));
+        argv2[0] = (char *)"stdbuf";
+        argv2[1] = (char *)flag;
+        for (int i = 0; i < argc; i++) argv2[2 + i] = argv[i];
+        argv2[argc2] = NULL;
+        r = b7_run_argv_c(argv2, 0, 0, -1, 0, DISPLAY, line, col);
+        free(argv2);
+    } else {
+        r = b7_run_argv_c(argv, 0, 0, -1, 0, DISPLAY, line, col);
+    }
+    b7_free_argv_c(argv, argc);
+    NvValue d = nv_dict_new();
+    nv_dict_set_raw(d.u.dict, "رمز", nv_num((double)r.code));
+    nv_dict_set_raw(d.u.dict, "مخرجات", nv_str_cstr(r.output));
+    free(r.output);
+    return d;
+#endif
+}
+
 /* لينكس6-هـ2ب-عمليات-نهاية. */
 
 void nv_std_processes_fill(NvDict *d) {
@@ -4832,6 +5944,19 @@ void nv_std_processes_fill(NvDict *d) {
     nv_std_add_fn(d, "سرد_العمليات", b6_proc_list_fn);
     nv_std_add_fn(d, "سرد_كامل", b6_proc_list_full_fn);
     nv_std_add_fn(d, "عملية_بمعرف", b6_proc_by_pid_fn);
+    nv_std_add_fn(d, "سرد_بموارد", b7_proc_res_fn);
+    nv_std_add_fn(d, "خريطة_ذاكرة", b7_proc_maps_fn);
+    nv_std_add_fn(d, "مجلد_عملية", b7_proc_cwd_fn);
+    nv_std_add_fn(d, "ابحث_عملية", b7_proc_find_fn);
+    nv_std_add_fn(d, "أنه_باسم", b7_proc_killname_fn);
+    nv_std_add_fn(d, "سرد_الإشارات", b7_proc_signals_fn);
+    nv_std_add_fn(d, "غير_أولوية", b7_proc_renice_fn);
+    nv_std_add_fn(d, "شغل_بأولوية_منخفضة", b7_proc_lowprio_fn);
+    nv_std_add_fn(d, "شغل_بأولوية_إدخال", b7_proc_ioprio_fn);
+    nv_std_add_fn(d, "شغل_بمهلة", b7_proc_timeout_fn);
+    nv_std_add_fn(d, "شغل_متجاهل_إغلاق", b7_proc_nohup_fn);
+    nv_std_add_fn(d, "نفذ_دوريا", b7_proc_repeat_fn);
+    nv_std_add_fn(d, "شغل_بإخراج_مخزن", b7_proc_bufout_fn);
 }
 
 // ---------- ذاكرة ----------
@@ -5613,13 +6738,27 @@ static unsigned long long b6_files_rand_next_c(unsigned long long *state) {
     return *state;
 }
 
+/* لينكس7-ز6ج-ملفات. */
+/* تصريحات مسبقة: مساعدات ز6ج (تُعرَّف قبل نهاية ملفات). */
+typedef struct { char *rel; unsigned long long size; } B7FileSizeC;
+static int b7_filesize_cmp_c(const void *a, const void *b);
+static void b7_files_walk_sizes_c(const char *root, const char *rel, B7FileSizeC **arr, size_t *n, size_t *cap);
+static void b7_files_set_mode_c(const char *resolved, unsigned int mode, const char *display, const char *path, int line, int col);
+static unsigned int b7_parse_sym_mode_c(const char *pat, unsigned int cur, int is_dir, const char *display, int line, int col);
+static void b7_files_chmod_recursive_c(const char *resolved, unsigned int mode, const char *display, const char *path, int line, int col);
+static void b7_files_statvfs_full_c(const char *path, const char *display, int line, int col, unsigned long long *total, unsigned long long *used, unsigned long long *free_out, unsigned long long *itotal, unsigned long long *iused, unsigned long long *ifree_out, char **fstype_out);
+
 static NvValue b6_files_tempfile_fn(NvValue *args, int nargs, int line, int col) {
     const char *D = "ملفات.ملف_مؤقت";
-    if (nargs > 1) {
-        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا على الأكثر لكن أعطيت %d", D, nargs);
+    if (nargs > 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين على الأكثر لكن أعطيت %d", D, nargs);
     }
     const char *pattern = "نيفا-مؤقت";
-    if (nargs == 1) pattern = nv_std_need_string(D, args[0], line, col);
+    if (nargs >= 1) pattern = nv_std_need_string(D, args[0], line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 1, D, line, col);
+    const char *allowed[] = { "مجلد" };
+    b7_no_unknown_c(opts, allowed, 1, D, line, col);
+    int as_dir = b5_opt_bool_c(opts, "مجلد", 0, D, line, col);
     char dir[4096];
 #ifdef _WIN32
     DWORD dl = GetTempPathA(sizeof(dir), dir);
@@ -5667,10 +6806,18 @@ static NvValue b6_files_tempfile_fn(NvValue *args, int nargs, int line, int col)
             snprintf(full, sizeof(full), "%s/%s", dir, name);
         }
 #endif
-        int fd = open(full, O_WRONLY | O_CREAT | O_EXCL, 0600);
-        if (fd >= 0) {
-            close(fd);
-            return nv_str_cstr(full);
+        if (as_dir) {
+#ifdef _WIN32
+            if (CreateDirectoryA(full, NULL)) return nv_str_cstr(full);
+#else
+            if (mkdir(full, 0700) == 0) return nv_str_cstr(full);
+#endif
+        } else {
+            int fd = open(full, O_WRONLY | O_CREAT | O_EXCL, 0600);
+            if (fd >= 0) {
+                close(fd);
+                return nv_str_cstr(full);
+            }
         }
     }
     nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر إنشاء ملف مؤقت", D);
@@ -5702,12 +6849,34 @@ static NvValue b6_files_rmdir_fn(NvValue *args, int nargs, int line, int col) {
 
 static NvValue b6_files_chmod_fn(NvValue *args, int nargs, int line, int col) {
     const char *D = "ملفات.غيّر_أذونات";
-    if (nargs != 2) {
-        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين لكن أعطيت %d", D, nargs);
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", D, nargs);
     }
+    NvDict *opts = b7_opts_dict_c(args, nargs, 2, D, line, col);
+    const char *allowed[] = { "رمزي", "تكراري" };
+    b7_no_unknown_c(opts, allowed, 2, D, line, col);
+    int symbolic = b5_opt_bool_c(opts, "رمزي", 0, D, line, col);
+    int recursive = b5_opt_bool_c(opts, "تكراري", 0, D, line, col);
     const char *path = nv_std_need_string(D, args[0], line, col);
+    char *resolved = b6_resolve_plain_c(path);
     unsigned int mode = 0;
-    if (args[1].tag == NV_NUM) {
+    if (symbolic) {
+        if (args[1].tag != NV_STR) {
+            free(resolved);
+            nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نمطا رمزيا نصا لكن أعطيت %s", D, nv_type_name(args[1]));
+        }
+#ifdef _WIN32
+        free(resolved);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s النمط الرمزي غير مدعوم على هذه المنصة", D);
+#else
+        struct stat st;
+        if (stat(resolved, &st) != 0) {
+            free(resolved);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف غير موجود: %s", D, path);
+        }
+        mode = b7_parse_sym_mode_c(args[1].u.str->data, (unsigned int)st.st_mode, S_ISDIR(st.st_mode), D, line, col);
+#endif
+    } else if (args[1].tag == NV_NUM) {
         mode = b6_f64_to_u32_c(args[1].u.num);
     } else if (args[1].tag == NV_STR) {
         const char *s = args[1].u.str->data;
@@ -5715,6 +6884,7 @@ static NvValue b6_files_chmod_fn(NvValue *args, int nargs, int line, int col) {
         size_t sl = strlen(s);
         while (sl > 0 && (s[sl - 1] == ' ' || s[sl - 1] == '\t' || s[sl - 1] == '\n' || s[sl - 1] == '\r')) sl--;
         if (sl == 0) {
+            free(resolved);
             nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s أذونات ثمانية غير صالحة: %s", D, args[1].u.str->data);
         }
         char *tmp = j14_strndup(s, sl);
@@ -5724,31 +6894,17 @@ static NvValue b6_files_chmod_fn(NvValue *args, int nargs, int line, int col) {
         int bad = (errno != 0 || !end || *end != '\0');
         free(tmp);
         if (bad) {
+            free(resolved);
             nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s أذونات ثمانية غير صالحة: %s", D, args[1].u.str->data);
         }
         mode = (unsigned int)v;
     } else {
+        free(resolved);
         nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع نصا ثمانيا أو عددا لكن أعطيت %s", D, nv_type_name(args[1]));
     }
-    char *resolved = b6_resolve_plain_c(path);
-#ifdef _WIN32
-    struct stat st;
-    if (stat(resolved, &st) != 0) {
-        free(resolved);
-        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف غير موجود: %s", D, path);
-    }
-    int rc = _chmod(resolved, (mode & 0200) ? (_S_IREAD | _S_IWRITE) : _S_IREAD);
+    if (recursive) b7_files_chmod_recursive_c(resolved, mode, D, path, line, col);
+    else b7_files_set_mode_c(resolved, mode, D, path, line, col);
     free(resolved);
-    if (rc != 0) {
-        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تغيير أذونات %s", D, path);
-    }
-#else
-    int rc = chmod(resolved, (mode_t)(mode & 07777));
-    free(resolved);
-    if (rc != 0) {
-        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تغيير أذونات %s", D, path);
-    }
-#endif
     return nv_bool(1);
 }
 
@@ -5856,10 +7012,39 @@ static unsigned long long b6_files_dir_size_bytes_c(const char *path, const char
 
 static NvValue b6_files_dir_size_fn(NvValue *args, int nargs, int line, int col) {
     const char *D = "ملفات.حجم_مجلد";
-    if (nargs != 1) {
-        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", D, nargs);
+    if (nargs < 1 || nargs > 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", D, nargs);
+    }
+    NvDict *opts = b7_opts_dict_c(args, nargs, 1, D, line, col);
+    const char *allowed[] = { "كل_ملف", "مجموع_فقط" };
+    b7_no_unknown_c(opts, allowed, 2, D, line, col);
+    int per_file = b5_opt_bool_c(opts, "كل_ملف", 0, D, line, col);
+    int total_only = b5_opt_bool_c(opts, "مجموع_فقط", 0, D, line, col);
+    if (per_file && total_only) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا يجوز الجمع بين كل_ملف ومجموع_فقط", D);
     }
     const char *path = nv_std_need_string(D, args[0], line, col);
+    if (per_file) {
+        char *resolved = b6_resolve_plain_c(path);
+        B7FileSizeC *arr = NULL;
+        size_t n = 0, cap = 0;
+        b7_files_walk_sizes_c(resolved, "", &arr, &n, &cap);
+        free(resolved);
+        qsort(arr, n, sizeof(B7FileSizeC), b7_filesize_cmp_c);
+        size_t ridx = nv_root_push_idx();
+        NvValue out = nv_list_new();
+        *nv_root_slot(ridx) = out;
+        for (size_t i = 0; i < n; i++) {
+            NvValue item = nv_dict_new();
+            nv_dict_set_raw(item.u.dict, "مسار", nv_str_cstr(arr[i].rel));
+            nv_dict_set_raw(item.u.dict, "حجم", nv_num((double)arr[i].size));
+            nv_list_push_raw(out.u.list, item);
+            free(arr[i].rel);
+        }
+        free(arr);
+        nv_root_pop();
+        return out;
+    }
     unsigned long long total = b6_files_dir_size_bytes_c(path, D, line, col);
     return nv_num((double)total);
 }
@@ -5878,7 +7063,7 @@ static NvValue b6_files_dir_size_human_fn(NvValue *args, int nargs, int line, in
 }
 
 static void b6_files_disk_usage_c(NvValue *args, int nargs, const char *display, int line, int col, unsigned long long *total, unsigned long long *used, unsigned long long *free_out) {
-    if (nargs != 1) {
+    if (nargs < 1 || nargs > 2) {
         nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", display, nargs);
     }
     const char *path = nv_std_need_string(display, args[0], line, col);
@@ -5902,6 +7087,39 @@ static void b6_files_disk_usage_c(NvValue *args, int nargs, const char *display,
 
 static NvValue b6_files_disk_fn(NvValue *args, int nargs, int line, int col) {
     const char *D = "ملفات.مساحة_قرص";
+    if (nargs < 1 || nargs > 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", D, nargs);
+    }
+    NvDict *opts = b7_opts_dict_c(args, nargs, 1, D, line, col);
+    const char *allowed[] = { "نوع", "عقد" };
+    b7_no_unknown_c(opts, allowed, 2, D, line, col);
+    const char *fstype_want = b5_opt_str_c(opts, "نوع", D, line, col);
+    int inodes = b5_opt_bool_c(opts, "عقد", 0, D, line, col);
+    if (fstype_want && inodes) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا يجوز الجمع بين نوع وعقد", D);
+    }
+    const char *path = nv_std_need_string(D, args[0], line, col);
+    if (inodes) {
+        unsigned long long total = 0, used = 0, freeb = 0, itotal = 0, iused = 0, ifree = 0;
+        char *fstype = NULL;
+        b7_files_statvfs_full_c(path, D, line, col, &total, &used, &freeb, &itotal, &iused, &ifree, &fstype);
+        free(fstype);
+        NvValue d = nv_dict_new();
+        nv_dict_set_raw(d.u.dict, "كلي", nv_num((double)itotal));
+        nv_dict_set_raw(d.u.dict, "مستخدم", nv_num((double)iused));
+        nv_dict_set_raw(d.u.dict, "حر", nv_num((double)ifree));
+        return d;
+    }
+    if (fstype_want) {
+        unsigned long long total = 0, used = 0, freeb = 0, itotal = 0, iused = 0, ifree = 0;
+        char *fstype = NULL;
+        b7_files_statvfs_full_c(path, D, line, col, &total, &used, &freeb, &itotal, &iused, &ifree, &fstype);
+        if (strcmp(fstype, fstype_want) != 0) {
+            char *actual = fstype;
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s نوع نظام الملفات «%s» لا يطابق «%s»", D, actual, fstype_want);
+        }
+        free(fstype);
+    }
     unsigned long long total = 0, used = 0, freeb = 0;
     b6_files_disk_usage_c(args, nargs, D, line, col, &total, &used, &freeb);
     NvValue d = nv_dict_new();
@@ -5927,6 +7145,755 @@ static NvValue b6_files_disk_human_fn(NvValue *args, int nargs, int line, int co
     free(f);
     return d;
 }
+/* التقاط نجمة واحدة من نمط بسيط: 1 عند المطابقة مع الجزء الملتقط في cap. */
+static int b7_files_glob_capture_c(const char *pattern, const char *name, char *cap, size_t cap_len) {
+    const char *star = strchr(pattern, '*');
+    if (!star) {
+        if (strcmp(pattern, name) == 0) { cap[0] = '\0'; return 1; }
+        return 0;
+    }
+    size_t pre = (size_t)(star - pattern);
+    const char *post = star + 1;
+    size_t post_len = strlen(post);
+    size_t name_len = strlen(name);
+    if (name_len < pre + post_len) return 0;
+    if (strncmp(name, pattern, pre) != 0) return 0;
+    if (post_len > 0 && strcmp(name + name_len - post_len, post) != 0) return 0;
+    size_t cap_n = name_len - pre - post_len;
+    if (cap_n >= cap_len) cap_n = cap_len - 1;
+    memcpy(cap, name + pre, cap_n);
+    cap[cap_n] = '\0';
+    return 1;
+}
+
+/* ضبط أذونات مسار واحد (يونكس: ثماني؛ ويندوز: للقراءة فقط). */
+static void b7_files_set_mode_c(const char *resolved, unsigned int mode, const char *display, const char *path, int line, int col) {
+#ifdef _WIN32
+    int rc = _chmod(resolved, (mode & 0200) ? (_S_IREAD | _S_IWRITE) : _S_IREAD);
+    if (rc != 0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تغيير أذونات %s", display, path);
+#else
+    if (chmod(resolved, (mode_t)(mode & 07777)) != 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تغيير أذونات %s", display, path);
+    }
+#endif
+}
+
+/* فسّر نمطا رمزيا مثل «u+x» فوق الأذونات الحالية. */
+static unsigned int b7_parse_sym_mode_c(const char *pat, unsigned int cur, int is_dir, const char *display, int line, int col) {
+    unsigned int mode = cur & 07777;
+    const char *p = pat;
+    while (*p) {
+        const char *comma = strchr(p, ',');
+        size_t clen = comma ? (size_t)(comma - p) : strlen(p);
+        while (clen > 0 && (p[0] == ' ' || p[0] == '\t')) { p++; clen--; }
+        while (clen > 0 && (p[clen - 1] == ' ' || p[clen - 1] == '\t')) clen--;
+        if (clen == 0) {
+            if (!comma) break;
+            p = comma + 1;
+            continue;
+        }
+        size_t i = 0;
+        unsigned int who = 0;
+        while (i < clen && (p[i] == 'u' || p[i] == 'g' || p[i] == 'o' || p[i] == 'a')) {
+            if (p[i] == 'u') who |= 1;
+            else if (p[i] == 'g') who |= 2;
+            else if (p[i] == 'o') who |= 4;
+            else who |= 7;
+            i++;
+        }
+        if (who == 0) who = 7;
+        if (i >= clen || (p[i] != '+' && p[i] != '-' && p[i] != '=')) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s نمط رمزي غير صالح: %.*s", display, (int)clen, p);
+        }
+        char op = p[i++];
+        unsigned int perm_bits = 0;
+        int has_s = 0, has_t = 0, has_x_cond = 0;
+        while (i < clen && (p[i] == 'r' || p[i] == 'w' || p[i] == 'x' || p[i] == 'X' || p[i] == 's' || p[i] == 't')) {
+            if (p[i] == 'r') perm_bits |= 4;
+            else if (p[i] == 'w') perm_bits |= 2;
+            else if (p[i] == 'x') perm_bits |= 1;
+            else if (p[i] == 'X') has_x_cond = 1;
+            else if (p[i] == 's') has_s = 1;
+            else has_t = 1;
+            i++;
+        }
+        if (i != clen) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s نمط رمزي غير صالح: %.*s", display, (int)clen, p);
+        }
+        int exec_ok = is_dir || (cur & 0111) != 0;
+        unsigned int bits = 0;
+        if (who & 1) {
+            bits |= perm_bits << 6;
+            if (has_x_cond && exec_ok) bits |= 0100;
+            if (has_s) bits |= 04000;
+        }
+        if (who & 2) {
+            bits |= perm_bits << 3;
+            if (has_x_cond && exec_ok) bits |= 0010;
+            if (has_s) bits |= 02000;
+        }
+        if (who & 4) {
+            bits |= perm_bits;
+            if (has_x_cond && exec_ok) bits |= 0001;
+        }
+        if (has_t) bits |= 01000;
+        unsigned int mask = 0;
+        if (who & 1) mask |= 0700 | 04000;
+        if (who & 2) mask |= 0070 | 02000;
+        if (who & 4) mask |= 0007;
+        if (has_t) mask |= 01000;
+        if (op == '+') mode |= bits;
+        else if (op == '-') mode &= ~bits;
+        else { mode &= ~mask; mode |= bits; }
+        if (!comma) break;
+        p = comma + 1;
+    }
+    return mode;
+}
+
+/* statvfs الكامل: كتل + عقد + نوع نظام الملفات. */
+static void b7_files_statvfs_full_c(const char *path, const char *display, int line, int col,
+                                    unsigned long long *total, unsigned long long *used, unsigned long long *free_out,
+                                    unsigned long long *itotal, unsigned long long *iused, unsigned long long *ifree_out,
+                                    char **fstype_out) {
+    char *resolved = b6_resolve_plain_c(path);
+#ifdef _WIN32
+    (void)resolved;
+    free(resolved);
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مساحة القرص غير مدعومة على هذه المنصة", display);
+#else
+    struct statvfs st;
+    if (statvfs(resolved, &st) != 0) {
+        free(resolved);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر قراءة مساحة %s", display, path);
+    }
+    free(resolved);
+    *total = (unsigned long long)st.f_blocks * (unsigned long long)st.f_frsize;
+    *free_out = (unsigned long long)st.f_bfree * (unsigned long long)st.f_frsize;
+    *used = *total >= *free_out ? *total - *free_out : 0;
+    *itotal = (unsigned long long)st.f_files;
+    *ifree_out = (unsigned long long)st.f_ffree;
+    *iused = *itotal >= *ifree_out ? *itotal - *ifree_out : 0;
+#ifdef __APPLE__
+    *fstype_out = j14_strndup(st.f_fstypename, sizeof(st.f_fstypename));
+#else
+    const char *name = "غير معروف";
+    switch ((unsigned long)st.f_type) {
+        case 0xEF53UL: name = "ext4"; break;
+        case 0x01021994UL: name = "tmpfs"; break;
+        case 0x794C7630UL: name = "overlayfs"; break;
+        case 0x9123683EUL: name = "btrfs"; break;
+        case 0x58465342UL: name = "xfs"; break;
+        case 0x6969UL: name = "nfs"; break;
+        case 0x9FA0UL: name = "proc"; break;
+        case 0x1CD1UL: name = "devtmpfs"; break;
+        case 0x62656572UL: name = "sysfs"; break;
+        case 0x4D44UL: name = "vfat"; break;
+        case 0x2011BAB0UL: name = "exfat"; break;
+        case 0xF2F52010UL: name = "f2fs"; break;
+        case 0x65735546UL: name = "fuse"; break;
+        default: break;
+    }
+    *fstype_out = j14_strdup(name);
+#endif
+#endif
+}
+
+/* إنشاء المجلدات الأب الغائبة (mkdir -p). */
+static void b7_mkdir_parents_c(const char *dir, const char *display, int line, int col) {
+    if (!dir || !dir[0]) return;
+    char buf[4096];
+    size_t len = strlen(dir);
+    if (len >= sizeof(buf)) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مسار طويل جدا", display);
+    }
+    memcpy(buf, dir, len + 1);
+    for (size_t i = 1; i <= len; i++) {
+        if (buf[i] == '/' || buf[i] == '\0') {
+            char save = buf[i];
+            buf[i] = '\0';
+            if (buf[0]) {
+#ifdef _WIN32
+                CreateDirectoryA(buf, NULL);
+#else
+                if (mkdir(buf, 0755) != 0 && errno != EEXIST) {
+                    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر إنشاء المجلد الأب", display);
+                }
+#endif
+            }
+            buf[i] = save;
+            if (save == '\0') break;
+        }
+    }
+}
+
+static int b7_strptr_cmp_c(const void *a, const void *b) {
+    const char * const *x = (const char * const *)a;
+    const char * const *y = (const char * const *)b;
+    return strcmp(*x, *y);
+}
+
+static int b7_filesize_cmp_c(const void *a, const void *b) {
+    const B7FileSizeC *x = (const B7FileSizeC *)a;
+    const B7FileSizeC *y = (const B7FileSizeC *)b;
+    return strcmp(x->rel, y->rel);
+}
+
+/* جمع (مسار نسبي، حجم) لكل ملف تحت جذر؛ بلا اتباع روابط. */
+static void b7_files_walk_sizes_c(const char *root, const char *rel, B7FileSizeC **arr, size_t *n, size_t *cap) {
+    char full[8192];
+    if (rel[0] == '\0') snprintf(full, sizeof(full), "%s", root);
+    else snprintf(full, sizeof(full), "%s/%s", root, rel);
+    struct stat st;
+    if (nv_lstat(full, &st) != 0) return;
+#ifdef S_ISLNK
+    if (S_ISLNK(st.st_mode)) return;
+#endif
+    if (S_ISDIR(st.st_mode)) {
+        DIR *dir = opendir(full);
+        if (!dir) return;
+        struct dirent *e;
+        while ((e = readdir(dir)) != NULL) {
+            if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+            char child_rel[8192];
+            if (rel[0] == '\0') snprintf(child_rel, sizeof(child_rel), "%s", e->d_name);
+            else snprintf(child_rel, sizeof(child_rel), "%s/%s", rel, e->d_name);
+            b7_files_walk_sizes_c(root, child_rel, arr, n, cap);
+        }
+        closedir(dir);
+    } else if (S_ISREG(st.st_mode)) {
+        if (*n >= *cap) {
+            size_t ncap = *cap == 0 ? 32 : *cap * 2;
+            B7FileSizeC *grown = (B7FileSizeC *)realloc(*arr, ncap * sizeof(B7FileSizeC));
+            if (!grown) return;
+            *arr = grown;
+            *cap = ncap;
+        }
+        const char *name = rel[0] ? rel : strrchr(root, '/');
+        if (!rel[0]) name = name ? name + 1 : root;
+        (*arr)[*n].rel = j14_strdup(name);
+        (*arr)[*n].size = (unsigned long long)st.st_size;
+        (*n)++;
+    }
+}
+
+/* تطبيق الأذونات تكراريا (تخطي الروابط). */
+static void b7_files_chmod_recursive_c(const char *resolved, unsigned int mode, const char *display, const char *path, int line, int col) {
+    struct stat st;
+    if (nv_lstat(resolved, &st) != 0) return;
+#ifdef S_ISLNK
+    if (S_ISLNK(st.st_mode)) return;
+#endif
+    if (S_ISDIR(st.st_mode)) {
+        DIR *dir = opendir(resolved);
+        if (dir) {
+            struct dirent *e;
+            while ((e = readdir(dir)) != NULL) {
+                if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+                char child[8192];
+                snprintf(child, sizeof(child), "%s/%s", resolved, e->d_name);
+                b7_files_chmod_recursive_c(child, mode, display, path, line, col);
+            }
+            closedir(dir);
+        }
+    }
+    b7_files_set_mode_c(resolved, mode, display, path, line, col);
+}
+
+static NvValue b7_files_lock_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "ملفات.اقفل_ملفا";
+    if (nargs < 1 || nargs > 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", D, nargs);
+    }
+    const char *path = nv_std_need_string(D, args[0], line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 1, D, line, col);
+    const char *allowed[] = { "مهلة" };
+    b7_no_unknown_c(opts, allowed, 1, D, line, col);
+    double timeout = 0.0;
+    if (opts) {
+        int si = nv_dict_find(opts, "مهلة");
+        if (si >= 0) timeout = nv_std_need_number(D, opts->entries[si].val, line, col);
+    }
+    if (timeout < 0.0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مهلة غير صالحة", D);
+    char *resolved = b6_resolve_plain_c(path);
+    char lockpath[8192];
+    snprintf(lockpath, sizeof(lockpath), "%s.قفل", resolved);
+    free(resolved);
+    long long timeout_ms = (long long)(timeout * 1000.0);
+    long long waited = 0;
+    while (1) {
+        int fd = open(lockpath, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        if (fd >= 0) {
+            char pidbuf[32];
+            int plen = snprintf(pidbuf, sizeof(pidbuf), "%lld\n", (long long)getpid());
+            (void)!write(fd, pidbuf, (size_t)plen);
+            close(fd);
+            return nv_bool(1);
+        }
+        if (errno != EEXIST || waited >= timeout_ms) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر قفل الملف: %s", D, path);
+        }
+#ifdef _WIN32
+        Sleep(100);
+#else
+        usleep(100000);
+#endif
+        waited += 100;
+    }
+}
+
+static NvValue b7_files_rename_pattern_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "ملفات.أعد_تسمية_بنمط";
+    nv_std_need_args(D, args, nargs, 3, line, col);
+    const char *dir = nv_std_need_string(D, args[0], line, col);
+    const char *pattern = nv_std_need_string(D, args[1], line, col);
+    const char *replacement = nv_std_need_string(D, args[2], line, col);
+    if (strchr(pattern, '*') && strchr(strchr(pattern, '*') + 1, '*')) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s النمط يحوي أكثر من نجمة", D);
+    }
+    char *resolved = b6_resolve_plain_c(dir);
+    DIR *d = opendir(resolved);
+    if (!d) {
+        free(resolved);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر قراءة المجلد: %s", D, dir);
+    }
+    size_t n = 0, cap = 0;
+    char **names = NULL;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        char child[8192];
+        snprintf(child, sizeof(child), "%s/%s", resolved, e->d_name);
+        struct stat st;
+        if (nv_lstat(child, &st) != 0) continue;
+        if (!S_ISREG(st.st_mode)) continue;
+        if (n >= cap) {
+            size_t ncap = cap == 0 ? 16 : cap * 2;
+            char **grown = (char **)realloc(names, ncap * sizeof(char *));
+            if (!grown) { closedir(d); free(resolved); nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col); }
+            names = grown;
+            cap = ncap;
+        }
+        names[n++] = j14_strdup(e->d_name);
+    }
+    closedir(d);
+    qsort(names, n, sizeof(char *), b7_strptr_cmp_c);
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    for (size_t i = 0; i < n; i++) {
+        char capbuf[4096];
+        if (!b7_files_glob_capture_c(pattern, names[i], capbuf, sizeof(capbuf))) continue;
+        char new_name[8192];
+        const char *star = strchr(replacement, '*');
+        if (star) {
+            snprintf(new_name, sizeof(new_name), "%.*s%s%s", (int)(star - replacement), replacement, capbuf, star + 1);
+        } else {
+            snprintf(new_name, sizeof(new_name), "%s", replacement);
+        }
+        if (strcmp(new_name, names[i]) == 0) continue;
+        char from[8192], to[8192];
+        snprintf(from, sizeof(from), "%s/%s", resolved, names[i]);
+        snprintf(to, sizeof(to), "%s/%s", resolved, new_name);
+        struct stat tst;
+        if (nv_lstat(to, &tst) == 0) {
+            free(resolved);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الاسم الجديد موجود: %s", D, new_name);
+        }
+        if (rename(from, to) != 0) {
+            free(resolved);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر إعادة تسمية %s", D, names[i]);
+        }
+        NvValue item = nv_dict_new();
+        nv_dict_set_raw(item.u.dict, "قديم", nv_str_cstr(names[i]));
+        nv_dict_set_raw(item.u.dict, "جديد", nv_str_cstr(new_name));
+        nv_list_push_raw(out.u.list, item);
+    }
+    for (size_t i = 0; i < n; i++) free(names[i]);
+    free(names);
+    free(resolved);
+    nv_root_pop();
+    return out;
+}
+
+static NvValue b7_files_newer_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "ملفات.أحدث_من";
+    nv_std_need_args(D, args, nargs, 2, line, col);
+    const char *p1 = nv_std_need_string(D, args[0], line, col);
+    const char *p2 = nv_std_need_string(D, args[1], line, col);
+    char *r1 = b6_resolve_plain_c(p1);
+    char *r2 = b6_resolve_plain_c(p2);
+    struct stat s1, s2;
+    if (stat(r1, &s1) != 0) {
+        free(r1); free(r2);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف غير موجود: %s", D, p1);
+    }
+    if (stat(r2, &s2) != 0) {
+        free(r1); free(r2);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف غير موجود: %s", D, p2);
+    }
+    free(r1); free(r2);
+#if defined(__linux__)
+    long long t1s = (long long)s1.st_mtim.tv_sec, t1n = (long long)s1.st_mtim.tv_nsec;
+    long long t2s = (long long)s2.st_mtim.tv_sec, t2n = (long long)s2.st_mtim.tv_nsec;
+#elif defined(__APPLE__)
+    long long t1s = (long long)s1.st_mtimespec.tv_sec, t1n = (long long)s1.st_mtimespec.tv_nsec;
+    long long t2s = (long long)s2.st_mtimespec.tv_sec, t2n = (long long)s2.st_mtimespec.tv_nsec;
+#else
+    long long t1s = (long long)s1.st_mtime, t1n = 0;
+    long long t2s = (long long)s2.st_mtime, t2n = 0;
+#endif
+    return nv_bool(t1s > t2s || (t1s == t2s && t1n > t2n));
+}
+
+static NvValue b7_files_validate_path_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "ملفات.تحقق_مسار";
+    nv_std_need_args(D, args, nargs, 1, line, col);
+    const char *path = nv_std_need_string(D, args[0], line, col);
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    if (path[0] == '\0') nv_list_push_raw(out.u.list, nv_str_cstr("المسار فارغ"));
+    if (strlen(path) > 4096) nv_list_push_raw(out.u.list, nv_str_cstr("المسار أطول من 4096 بايتا"));
+    if (strstr(path, "//")) nv_list_push_raw(out.u.list, nv_str_cstr("يحوي فاصلا مزدوجا"));
+    if (strchr(path, '\\')) nv_list_push_raw(out.u.list, nv_str_cstr("يحوي شرطة مائلة عكسية غير محمولة"));
+    const char *badchars = "<>:\"|?*";
+    for (const char *p = path; *p; p++) {
+        if (strchr(badchars, *p)) {
+            char msg[128];
+            snprintf(msg, sizeof(msg), "يحوي محرفا غير صالح على ويندوز: %c", *p);
+            nv_list_push_raw(out.u.list, nv_str_cstr(msg));
+            break;
+        }
+    }
+    const char *s = path;
+    while (1) {
+        const char *slash = strchr(s, '/');
+        size_t clen = slash ? (size_t)(slash - s) : strlen(s);
+        if (clen > 255) {
+            nv_list_push_raw(out.u.list, nv_str_cstr("مكون أطول من 255 بايتا"));
+            break;
+        }
+        if (!slash) break;
+        s = slash + 1;
+    }
+    nv_root_pop();
+    return out;
+}
+
+static NvValue b7_files_install_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "ملفات.ثبّت_ملفا";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", D, nargs);
+    }
+    const char *src = nv_std_need_string(D, args[0], line, col);
+    const char *dst = nv_std_need_string(D, args[1], line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 2, D, line, col);
+    const char *allowed[] = { "أنشئ_الدليل" };
+    b7_no_unknown_c(opts, allowed, 1, D, line, col);
+    int mkdir = b5_opt_bool_c(opts, "أنشئ_الدليل", 0, D, line, col);
+    char *rs = b6_resolve_plain_c(src);
+    char *rd = b6_resolve_plain_c(dst);
+    struct stat st;
+    if (stat(rs, &st) != 0 || !S_ISREG(st.st_mode)) {
+        free(rs); free(rd);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s المصدر ليس ملفا: %s", D, src);
+    }
+    if (mkdir) {
+        char *slash = strrchr(rd, '/');
+        if (slash && slash != rd) {
+            char parent[4096];
+            size_t plen = (size_t)(slash - rd);
+            if (plen >= sizeof(parent)) plen = sizeof(parent) - 1;
+            memcpy(parent, rd, plen);
+            parent[plen] = '\0';
+            b7_mkdir_parents_c(parent, D, line, col);
+        }
+    }
+    int in = open(rs, O_RDONLY);
+    if (in < 0) {
+        free(rs); free(rd);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تثبيت الملف: %s", D, src);
+    }
+    int outfd = open(rd, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (outfd < 0) {
+        close(in); free(rs); free(rd);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تثبيت الملف: %s", D, src);
+    }
+    char buf[8192];
+    ssize_t r;
+    int failed = 0;
+    while ((r = read(in, buf, sizeof(buf))) > 0) {
+        ssize_t off = 0;
+        while (off < r) {
+            ssize_t w = write(outfd, buf + off, (size_t)(r - off));
+            if (w <= 0) { failed = 1; break; }
+            off += w;
+        }
+        if (failed) break;
+    }
+    if (r < 0) failed = 1;
+    close(in);
+    close(outfd);
+    if (failed) {
+        free(rs); free(rd);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تثبيت الملف: %s", D, src);
+    }
+#ifndef _WIN32
+    b7_files_set_mode_c(rd, 0755, D, dst, line, col);
+#endif
+    free(rs); free(rd);
+    return nv_bool(1);
+}
+
+static NvValue b7_files_hardlink_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "ملفات.أنشئ_رابط_صلب";
+    nv_std_need_args(D, args, nargs, 2, line, col);
+    const char *from = nv_std_need_string(D, args[0], line, col);
+    const char *to = nv_std_need_string(D, args[1], line, col);
+    char *rf = b6_resolve_plain_c(from);
+    char *rt = b6_resolve_plain_c(to);
+#ifdef _WIN32
+    free(rf); free(rt);
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على ويندوز", D);
+    return nv_nil();
+#else
+    int rc = link(rf, rt);
+    free(rf); free(rt);
+    if (rc != 0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر إنشاء رابط صلب", D);
+    return nv_bool(1);
+#endif
+}
+
+static NvValue b7_files_remove_file_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "ملفات.احذف_ملفا";
+    nv_std_need_args(D, args, nargs, 1, line, col);
+    const char *path = nv_std_need_string(D, args[0], line, col);
+    char *resolved = b6_resolve_plain_c(path);
+    struct stat st;
+    if (nv_lstat(resolved, &st) != 0) {
+        free(resolved);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف غير موجود: %s", D, path);
+    }
+    if (S_ISDIR(st.st_mode)) {
+        free(resolved);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مجلد وليس ملفا: %s", D, path);
+    }
+    if (remove(resolved) != 0) {
+        free(resolved);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر حذف %s", D, path);
+    }
+    free(resolved);
+    return nv_bool(1);
+}
+
+static NvValue b7_files_truncate_zero_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "ملفات.صفّر_ملفا";
+    nv_std_need_args(D, args, nargs, 1, line, col);
+    const char *path = nv_std_need_string(D, args[0], line, col);
+    char *resolved = b6_resolve_plain_c(path);
+    int fd = open(resolved, O_WRONLY);
+    if (fd < 0) {
+        free(resolved);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف غير موجود: %s", D, path);
+    }
+    int rc = ftruncate(fd, 0);
+    close(fd);
+    free(resolved);
+    if (rc != 0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تصفير %s", D, path);
+    return nv_bool(1);
+}
+
+static NvValue b7_files_resize_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "ملفات.غيّر_حجم_ملف";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", D, nargs);
+    }
+    const char *path = nv_std_need_string(D, args[0], line, col);
+    long long n = nv_std_need_integer(D, args[1], line, col);
+    if (n < 0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الحجم غير صالح", D);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 2, D, line, col);
+    const char *allowed[] = { "أضف" };
+    b7_no_unknown_c(opts, allowed, 1, D, line, col);
+    int add = b5_opt_bool_c(opts, "أضف", 0, D, line, col);
+    char *resolved = b6_resolve_plain_c(path);
+    int fd = open(resolved, O_WRONLY);
+    if (fd < 0) {
+        free(resolved);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الملف غير موجود: %s", D, path);
+    }
+    off_t target = (off_t)n;
+    if (add) {
+        struct stat st;
+        if (fstat(fd, &st) == 0) target = st.st_size + (off_t)n;
+    }
+    int rc = ftruncate(fd, target);
+    close(fd);
+    free(resolved);
+    if (rc != 0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تغيير حجم %s", D, path);
+    return nv_bool(1);
+}
+
+static NvValue b7_files_sync_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "ملفات.زامن_القرص";
+    nv_std_need_args(D, args, nargs, 0, line, col);
+#ifdef _WIN32
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على ويندوز", D);
+    return nv_nil();
+#else
+    sync();
+    return nv_bool(1);
+#endif
+}
+
+static NvValue b7_files_copy_lowlevel_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "ملفات.انسخ_منخفض_المستوى";
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", D, nargs);
+    }
+    const char *src = nv_std_need_string(D, args[0], line, col);
+    const char *dst = nv_std_need_string(D, args[1], line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 2, D, line, col);
+    const char *allowed[] = { "حجم_كتلة", "عدد_كتل" };
+    b7_no_unknown_c(opts, allowed, 2, D, line, col);
+    long long block = 512;
+    long long blocks = -1;
+    if (opts) {
+        int si = nv_dict_find(opts, "حجم_كتلة");
+        if (si >= 0) block = nv_std_need_integer(D, opts->entries[si].val, line, col);
+        si = nv_dict_find(opts, "عدد_كتل");
+        if (si >= 0) blocks = nv_std_need_integer(D, opts->entries[si].val, line, col);
+    }
+    if (block <= 0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s حجم_كتلة غير صالح", D);
+    if (blocks < -1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s عدد_كتل غير صالح", D);
+    char *rs = b6_resolve_plain_c(src);
+    char *rd = b6_resolve_plain_c(dst);
+    int in = open(rs, O_RDONLY);
+    if (in < 0) {
+        free(rs); free(rd);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s المصدر غير موجود: %s", D, src);
+    }
+    int outfd = open(rd, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (outfd < 0) {
+        close(in); free(rs); free(rd);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر إنشاء الهدف: %s", D, dst);
+    }
+    char *buf = (char *)malloc((size_t)block);
+    if (!buf) {
+        close(in); close(outfd); free(rs); free(rd);
+        nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+    }
+    unsigned long long copied = 0;
+    long long done_blocks = 0;
+    int failed = 0;
+    while (1) {
+        if (blocks >= 0 && done_blocks >= blocks) break;
+        ssize_t r = read(in, buf, (size_t)block);
+        if (r < 0) { failed = 1; break; }
+        if (r == 0) break;
+        ssize_t off = 0;
+        while (off < r) {
+            ssize_t w = write(outfd, buf + off, (size_t)(r - off));
+            if (w <= 0) { failed = 1; break; }
+            off += w;
+        }
+        if (failed) break;
+        copied += (unsigned long long)r;
+        done_blocks++;
+    }
+    free(buf);
+    close(in);
+    close(outfd);
+    free(rs); free(rd);
+    if (failed) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر نسخ %s", D, src);
+    return nv_num((double)copied);
+}
+
+static NvValue b7_files_reserve_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "ملفات.احجز_مساحة";
+    nv_std_need_args(D, args, nargs, 2, line, col);
+    const char *path = nv_std_need_string(D, args[0], line, col);
+    long long n = nv_std_need_integer(D, args[1], line, col);
+    if (n < 0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الحجم غير صالح", D);
+    char *resolved = b6_resolve_plain_c(path);
+    int fd = open(resolved, O_WRONLY | O_CREAT, 0644);
+    if (fd < 0) {
+        free(resolved);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر إنشاء %s", D, path);
+    }
+    int rc = ftruncate(fd, (off_t)n);
+    close(fd);
+    free(resolved);
+    if (rc != 0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر حجز مساحة %s", D, path);
+    return nv_bool(1);
+}
+
+static NvValue b7_files_realname_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "ملفات.اعرض_اسم_حقيقي";
+    nv_std_need_args(D, args, nargs, 1, line, col);
+    const char *path = nv_std_need_string(D, args[0], line, col);
+    char *resolved = b6_resolve_plain_c(path);
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    char prefix[8192];
+    prefix[0] = '\0';
+    /* المكون الأول: الجذر. */
+    {
+        NvValue item = nv_dict_new();
+        nv_dict_set_raw(item.u.dict, "مكون", nv_str_cstr("/"));
+        nv_dict_set_raw(item.u.dict, "نوع", nv_str_cstr("مجلد"));
+        nv_dict_set_raw(item.u.dict, "هدف", nv_nil());
+        nv_list_push_raw(out.u.list, item);
+        snprintf(prefix, sizeof(prefix), "/");
+    }
+    const char *s = resolved;
+    if (s[0] == '/') s++;
+    while (*s) {
+        const char *slash = strchr(s, '/');
+        size_t clen = slash ? (size_t)(slash - s) : strlen(s);
+        char comp[4096];
+        if (clen >= sizeof(comp)) clen = sizeof(comp) - 1;
+        memcpy(comp, s, clen);
+        comp[clen] = '\0';
+        if (strcmp(prefix, "/") == 0) snprintf(prefix, sizeof(prefix), "/%s", comp);
+        else {
+            size_t plen = strlen(prefix);
+            snprintf(prefix + plen, sizeof(prefix) - plen, "/%s", comp);
+        }
+        struct stat st;
+        const char *kind = "غير موجود";
+        NvValue target = nv_nil();
+        char linkbuf[4096];
+        if (nv_lstat(prefix, &st) == 0) {
+#ifdef S_ISLNK
+            if (S_ISLNK(st.st_mode)) {
+                kind = "رابط";
+                ssize_t n = readlink(prefix, linkbuf, sizeof(linkbuf) - 1);
+                if (n >= 0) {
+                    linkbuf[n] = '\0';
+                    target = nv_str_cstr(linkbuf);
+                } else {
+                    target = nv_str_cstr("");
+                }
+            } else
+#endif
+            if (S_ISDIR(st.st_mode)) kind = "مجلد";
+            else if (S_ISREG(st.st_mode)) kind = "ملف";
+            else kind = "أخرى";
+        }
+        NvValue item = nv_dict_new();
+        nv_dict_set_raw(item.u.dict, "مكون", nv_str_cstr(comp));
+        nv_dict_set_raw(item.u.dict, "نوع", nv_str_cstr(kind));
+        nv_dict_set_raw(item.u.dict, "هدف", target);
+        nv_list_push_raw(out.u.list, item);
+        if (!slash) break;
+        s = slash + 1;
+    }
+    free(resolved);
+    nv_root_pop();
+    return out;
+}
+
 /* لينكس6-هـ2ب-ملفات-نهاية. */
 
 void nv_std_files_fill(NvDict *d) {
@@ -5957,6 +7924,19 @@ void nv_std_files_fill(NvDict *d) {
     nv_std_add_fn(d, "حجم_مجلد_بشري", b6_files_dir_size_human_fn);
     nv_std_add_fn(d, "مساحة_قرص", b6_files_disk_fn);
     nv_std_add_fn(d, "مساحة_قرص_بشرية", b6_files_disk_human_fn);
+    nv_std_add_fn(d, "اقفل_ملفا", b7_files_lock_fn);
+    nv_std_add_fn(d, "أعد_تسمية_بنمط", b7_files_rename_pattern_fn);
+    nv_std_add_fn(d, "أحدث_من", b7_files_newer_fn);
+    nv_std_add_fn(d, "تحقق_مسار", b7_files_validate_path_fn);
+    nv_std_add_fn(d, "ثبت_ملفا", b7_files_install_fn);
+    nv_std_add_fn(d, "أنشئ_رابط_صلب", b7_files_hardlink_fn);
+    nv_std_add_fn(d, "احذف_ملفا", b7_files_remove_file_fn);
+    nv_std_add_fn(d, "صفر_ملفا", b7_files_truncate_zero_fn);
+    nv_std_add_fn(d, "غير_حجم_ملف", b7_files_resize_fn);
+    nv_std_add_fn(d, "زامن_القرص", b7_files_sync_fn);
+    nv_std_add_fn(d, "انسخ_منخفض_المستوى", b7_files_copy_lowlevel_fn);
+    nv_std_add_fn(d, "احجز_مساحة", b7_files_reserve_fn);
+    nv_std_add_fn(d, "اعرض_اسم_حقيقي", b7_files_realname_fn);
 }
 // قطعة قسم: تواصل + غير_متزامن + جهاز — خلفية C (مهمة 29).
 // قطعة لا وحدة ترجمة مستقلة: بلا أي سطر تضمين وبلا دالة رئيسية.
@@ -18621,8 +20601,47 @@ static int j14r_text_spec_num(double n, const char *spec, J14Buf *out) {
     return 1;
 }
 
+/* لينكس7-ز7ج-محاذاة-نسق: تصريحات مسبقة لمساعدات الخيارات. */
+static NvDict *b7_opts_dict_c(NvValue *args, int nargs, int at, const char *display, int line, int col);
+static void b7_no_unknown_c(NvDict *d, const char **allowed, size_t nallowed, const char *display, int line, int col);
+static int b5_opt_bool_c(NvDict *d, const char *key, int def, const char *display, int line, int col);
+
+/* بادئة محاذاة في مواصفة نسق — مرآة b7_text_align_prefix في Rust. */
+static const char *b7_text_align_prefix_c(const char *spec, int *left_out, long *width_out) {
+    *left_out = 0;
+    *width_out = -1;
+    const char *rest = spec;
+    int left = 0;
+    if (*rest == '-') { left = 1; rest++; }
+    const char *digits = rest;
+    while (*rest >= '0' && *rest <= '9') rest++;
+    if (rest == digits) return spec;
+    if (!left && digits[0] == '0') return spec;
+    long width = 0;
+    for (const char *p = digits; p < rest; p++) width = width * 10 + (*p - '0');
+    *left_out = left;
+    *width_out = width;
+    return rest;
+}
+
+/* حشو نص إلى عرض بالمسافات (العدّ بالمحارف). */
+static void b7_text_align_pad_c(J14Buf *out, const char *s, size_t len, size_t width, int left) {
+    size_t nchars = nv_utf8_chars(s, len);
+    if (nchars >= width) { j14_buf_addn(out, s, len); return; }
+    size_t pad = width - nchars;
+    if (left) {
+        j14_buf_addn(out, s, len);
+        for (size_t i = 0; i < pad; i++) j14_buf_addc(out, ' ');
+    } else {
+        for (size_t i = 0; i < pad; i++) j14_buf_addc(out, ' ');
+        j14_buf_addn(out, s, len);
+    }
+}
+
 static NvValue nv_std_text_format(NvValue *args, int nargs, int line, int col) {
-    nv_std_need_args("نص.نسق", args, nargs, 2, line, col);
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة نص.نسق تتوقع معاملين أو ثلاثة لكن أعطيت %d", nargs);
+    }
     const char *tpl = nv_std_need_string("نص.نسق", args[0], line, col);
     if (nv_utf8_chars(tpl, strlen(tpl)) > 100000) {
         nv_error(NV_ERR_RUNTIME, "قالب التنسيق كبير جدا", line, col);
@@ -18632,6 +20651,10 @@ static NvValue nv_std_text_format(NvValue *args, int nargs, int line, int col) {
     if (!is_list && !is_dict) {
         nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة نص.نسق تتوقع قائمة أو قاموسا لكن أعطيت %s", nv_type_name(args[1]));
     }
+    NvDict *align_opts = b7_opts_dict_c(args, nargs, 2, "نص.نسق", line, col);
+    const char *align_allowed[] = { "محاذاة" };
+    b7_no_unknown_c(align_opts, align_allowed, 1, "نص.نسق", line, col);
+    int align_on = b5_opt_bool_c(align_opts, "محاذاة", 0, "نص.نسق", line, col);
     J14Buf out;
     j14_buf_init(&out);
     size_t tlen = strlen(tpl);
@@ -18696,13 +20719,29 @@ static NvValue nv_std_text_format(NvValue *args, int nargs, int line, int col) {
                 j14_buf_add(&out, s);
                 free(s);
             } else {
-                if (val.tag != NV_NUM) {
-                    j14_buf_free(&out);
-                    nv_error(NV_ERR_RUNTIME, "مواصفة تنسيق لغير عدد", line, col);
-                }
-                if (!j14r_text_spec_num(val.u.num, spec, &out)) {
-                    j14_buf_free(&out);
-                    nv_error(NV_ERR_RUNTIME, "مواصفة تنسيق غير صالحة", line, col);
+                int aleft = 0;
+                long awidth = -1;
+                const char *rest = spec;
+                if (align_on) rest = b7_text_align_prefix_c(spec, &aleft, &awidth);
+                if (val.tag == NV_NUM) {
+                    J14Buf tmp;
+                    j14_buf_init(&tmp);
+                    if (!j14r_text_spec_num(val.u.num, rest, &tmp)) {
+                        j14_buf_free(&tmp);
+                        j14_buf_free(&out);
+                        nv_error(NV_ERR_RUNTIME, "مواصفة تنسيق غير صالحة", line, col);
+                    }
+                    if (awidth >= 0) b7_text_align_pad_c(&out, tmp.data, tmp.len, (size_t)awidth, aleft);
+                    else j14_buf_addn(&out, tmp.data, tmp.len);
+                    j14_buf_free(&tmp);
+                } else {
+                    if (awidth < 0 || *rest != '\0') {
+                        j14_buf_free(&out);
+                        nv_error(NV_ERR_RUNTIME, "مواصفة تنسيق لغير عدد", line, col);
+                    }
+                    char *s = nv_fmt_value(val);
+                    b7_text_align_pad_c(&out, s, strlen(s), (size_t)awidth, aleft);
+                    free(s);
                 }
             }
             i = j + 1;
@@ -19939,8 +21978,17 @@ static NvValue b6_text_printf_fn(NvValue *args, int nargs, int line, int col) {
 }
 /* لينكس6-هـ2ب-نص-نهاية. */
 
+/* لينكس7-ز7ج-تصريحات-مسبقة (نص). */
+static NvValue b7_text_slice_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_text_nonempty_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_text_unescape_fn(NvValue *args, int nargs, int line, int col);
+
 void nv_std_text_fill(NvDict *d) {
     nv_std_add_fn(d, "نسق", nv_std_text_format);
+    /* لينكس7-ز7ج-متنوع. */
+    nv_std_add_fn(d, "جزء_بفهارس", b7_text_slice_fn);
+    nv_std_add_fn(d, "غير_فارغ", b7_text_nonempty_fn);
+    nv_std_add_fn(d, "فسر_هروب", b7_text_unescape_fn);
     nv_std_add_fn(d, "يبدأ_ب", nv_std_text_starts_with);
     nv_std_add_fn(d, "ينتهي_ب", nv_std_text_ends_with);
     nv_std_add_fn(d, "قسم_كلمات", nv_std_text_split_words);
@@ -20168,12 +22216,19 @@ static NvValue b6_bases_b64decode_fn(NvValue *args, int nargs, int line, int col
 }
 /* لينكس6-هـ2أ-أسس-نهاية. */
 
+/* لينكس7-ز7ج-تصريحات-مسبقة (أسس). */
+static NvValue b7_bases_b32encode_fn(NvValue *args, int nargs, int line, int col);
+static NvValue b7_bases_b32decode_fn(NvValue *args, int nargs, int line, int col);
+
 void nv_std_bases_fill(NvDict *d) {
     nv_std_add_fn(d, "إلى_أساس", nv_std_bases_to_base);
     nv_std_add_fn(d, "من_أساس", nv_std_bases_from_base);
     /* لينكس6-هـ2أ-أسس-تسجيل. */
     nv_std_add_fn(d, "ترميز_قاعدة64", b6_bases_b64encode_fn);
     nv_std_add_fn(d, "فك_قاعدة64", b6_bases_b64decode_fn);
+    /* لينكس7-ز7ج-متنوع. */
+    nv_std_add_fn(d, "ترميز_قاعدة32", b7_bases_b32encode_fn);
+    nv_std_add_fn(d, "فك_قاعدة32", b7_bases_b32decode_fn);
 }
 
 // ---------- 208: تحويل الوحدات (وحدة وحدات) ----------
@@ -21000,53 +23055,86 @@ static NvValue nv_std_calendar_hijri_leap(NvValue *args, int nargs, int line, in
 }
 
 /* لينكس6-هـ2ب-تقويم. */
+/* شهر واحد منسق نصا (مساعد مشترك لمفاتيح اعرض_شهري) — مرآة b7_cal_month_str في Rust. */
+static void b7_cal_month_str_c(long long y, long long m, int monday_first, J14Buf *out) {
+    static const char *NAMES[12] = {"يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"};
+    int leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    long long days = 31;
+    if (m == 4 || m == 6 || m == 9 || m == 11) days = 30;
+    else if (m == 2) days = leap ? 29 : 28;
+    long long first_wd = (nv_std_time_days_from_civil(y, (unsigned long)m, 1) + (monday_first ? 3 : 4)) % 7;
+    if (first_wd < 0) first_wd += 7;
+    char head[64];
+    snprintf(head, sizeof(head), "%s %lld\n", NAMES[m - 1], y);
+    j14_buf_add(out, head);
+    if (monday_first) j14_buf_add(out, "ن  ث  ر  خ  ج  س  ح\n");
+    else j14_buf_add(out, "ح  ن  ث  ر  خ  ج  س\n");
+    char cells[42][8];
+    int ncells = 0;
+    long long k = 0;
+    for (k = 0; k < first_wd; k++) snprintf(cells[ncells++], 8, "   ");
+    long long d = 0;
+    for (d = 1; d <= days; d++) snprintf(cells[ncells++], 8, "%3lld", d);
+    while (ncells % 7 != 0) snprintf(cells[ncells++], 8, "   ");
+    for (int r = 0; r < ncells; r += 7) {
+        for (int c2 = 0; c2 < 7; c2++) {
+            if (c2 > 0) j14_buf_addc(out, ' ');
+            j14_buf_add(out, cells[r + c2]);
+        }
+        j14_buf_addc(out, '\n');
+    }
+    while (out->len > 0 && (out->data[out->len - 1] == ' ' || out->data[out->len - 1] == '\n' || out->data[out->len - 1] == '\t' || out->data[out->len - 1] == '\r')) {
+        out->len--;
+        out->data[out->len] = '\0';
+    }
+}
+
 static NvValue b6_cal_monthly_fn(NvValue *args, int nargs, int line, int col) {
     const char *D = "تقويم.اعرض_شهري";
-    if (nargs != 2) {
-        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين لكن أعطيت %d", D, nargs);
+    if (nargs < 2 || nargs > 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", D, nargs);
     }
     long long y = nv_std_need_integer(D, args[0], line, col);
     long long m = nv_std_need_integer(D, args[1], line, col);
     if (y < 1 || y > 9999 || m < 1 || m > 12) {
         nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s سنة 1..9999 وشهر 1..12", D);
     }
-    static const char *NAMES[12] = {"يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو", "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"};
-    int leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-    long long days = 31;
-    if (m == 4 || m == 6 || m == 9 || m == 11) days = 30;
-    else if (m == 2) days = leap ? 29 : 28;
-    long long first_wd = (nv_std_time_days_from_civil(y, (unsigned long)m, 1) + 4) % 7;
-    if (first_wd < 0) first_wd += 7;
-    char out[1024];
-    size_t w = 0;
-    w += (size_t)snprintf(out + w, sizeof(out) - w, "%s %lld\n", NAMES[m - 1], y);
-    w += (size_t)snprintf(out + w, sizeof(out) - w, "ح  ن  ث  ر  خ  ج  س\n");
-    char cells[42][8];
-    int ncells = 0;
-    long long k = 0;
-    for (k = 0; k < first_wd; k++) {
-        snprintf(cells[ncells++], 8, "   ");
+    NvDict *opts = b7_opts_dict_c(args, nargs, 2, D, line, col);
+    const char *allowed[] = { "سنة", "ثلاثة_أشهر", "يبدأ_الاثنين" };
+    b7_no_unknown_c(opts, allowed, 3, D, line, col);
+    int year_all = b5_opt_bool_c(opts, "سنة", 0, D, line, col);
+    int three = b5_opt_bool_c(opts, "ثلاثة_أشهر", 0, D, line, col);
+    int monday = b5_opt_bool_c(opts, "يبدأ_الاثنين", 0, D, line, col);
+    if (year_all && three) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا يجوز الجمع بين سنة وثلاثة_أشهر", D);
     }
-    long long d = 0;
-    for (d = 1; d <= days; d++) {
-        snprintf(cells[ncells++], 8, "%3lld", d);
-    }
-    while (ncells % 7 != 0) {
-        snprintf(cells[ncells++], 8, "   ");
-    }
-    int r = 0;
-    for (r = 0; r < ncells; r += 7) {
-        int c2 = 0;
-        for (c2 = 0; c2 < 7; c2++) {
-            if (c2 > 0) w += (size_t)snprintf(out + w, sizeof(out) - w, " ");
-            w += (size_t)snprintf(out + w, sizeof(out) - w, "%s", cells[r + c2]);
+    J14Buf out;
+    j14_buf_init(&out);
+    if (year_all) {
+        for (long long mm = 1; mm <= 12; mm++) {
+            if (mm > 1) j14_buf_add(&out, "\n\n");
+            b7_cal_month_str_c(y, mm, monday, &out);
         }
-        w += (size_t)snprintf(out + w, sizeof(out) - w, "\n");
+    } else if (three) {
+        long long py = y, pm = m - 1;
+        if (m == 1) { py = y - 1; pm = 12; }
+        long long ny = y, nm = m + 1;
+        if (m == 12) { ny = y + 1; nm = 1; }
+        if (py < 1 || ny > 9999) {
+            j14_buf_free(&out);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s ثلاثة_أشهر خارج نطاق السنة", D);
+        }
+        b7_cal_month_str_c(py, pm, monday, &out);
+        j14_buf_add(&out, "\n\n");
+        b7_cal_month_str_c(y, m, monday, &out);
+        j14_buf_add(&out, "\n\n");
+        b7_cal_month_str_c(ny, nm, monday, &out);
+    } else {
+        b7_cal_month_str_c(y, m, monday, &out);
     }
-    while (w > 0 && (out[w - 1] == ' ' || out[w - 1] == '\n' || out[w - 1] == '\t' || out[w - 1] == '\r')) {
-        out[--w] = '\0';
-    }
-    return nv_str_cstr(out);
+    NvValue v = nv_str_new(out.data, out.len);
+    j14_buf_free(&out);
+    return v;
 }
 /* لينكس6-هـ2ب-تقويم-نهاية. */
 
@@ -26374,8 +28462,13 @@ static NvValue nv_std_display_strip_ansi(NvValue *args, int nargs, int line, int
     return r;
 }
 /* END لينكس4-نص دوال عرض C */
+/* لينكس7-ز7ج-تصريحات-مسبقة (عرض). */
+static NvValue b7_display_print_no_nl_fn(NvValue *args, int nargs, int line, int col);
+
 void nv_std_display_fill(NvDict *d) {
     nv_std_add_fn(d, "اعرض", nv_std_display_show);
+    /* لينكس7-ز7ج-متنوع. */
+    nv_std_add_fn(d, "اطبع_بلا_سطر", b7_display_print_no_nl_fn);
     nv_std_add_fn(d, "اعرض_ملفا", nv_std_display_show_file);
     nv_std_add_fn(d, "سرد_اللغات", nv_std_display_list_langs);
     nv_std_add_fn(d, "سرد_السمات", nv_std_display_list_themes);
@@ -45415,7 +47508,9 @@ static int b6_bytes_cmp_c(const char *a, size_t alen, const char *b, size_t blen
 }
 
 /* سياق فرز. */
-typedef struct { int kind; long long field; const char *delim; size_t delim_len; } B6SortCtxC;
+/* تصريح مسبق: تحليل عدد بشري (يعرَّف مع مساعدات الدفعة 7). */
+static int b7_parse_human_c(const char *s, size_t len, double *out);
+typedef struct { int kind; long long field; const char *delim; size_t delim_len; int human; int ignore_blanks; } B6SortCtxC;
 
 static char *b6_field_of_c(const char *l, size_t llen, long long field, const char *delim, size_t delim_len, size_t *len_out);
 
@@ -45446,6 +47541,25 @@ static int b6_lines_cmp_c(const char *a, size_t alen, const char *b, size_t blen
         free(fa);
         free(fb);
         return c;
+    }
+    if (ctx->human || ctx->ignore_blanks) {
+        const char *pa = a, *pb = b;
+        size_t la = alen, lb = blen;
+        if (ctx->ignore_blanks) {
+            while (la > 0 && (*pa == ' ' || *pa == '\t')) { pa++; la--; }
+            while (lb > 0 && (*pb == ' ' || *pb == '\t')) { pb++; lb--; }
+        }
+        if (ctx->human) {
+            double na = 0, nb = 0;
+            int oka = b7_parse_human_c(pa, la, &na);
+            int okb = b7_parse_human_c(pb, lb, &nb);
+            if (oka && okb) {
+                if (na < nb) return -1;
+                if (na > nb) return 1;
+                return 0;
+            }
+        }
+        return b6_bytes_cmp_c(pa, la, pb, lb);
     }
     return b6_bytes_cmp_c(a, alen, b, blen);
 }
@@ -45882,50 +47996,184 @@ static NvValue b6_lines_tail_fn(NvValue *args, int nargs, int line, int col) {
     return r;
 }
 
+/* تصريحان مسبقان: مساعدا الخيارات معرَّفان في كتلة ز1ج اللاحقة. */
+static NvDict *b7_opts_dict_c(NvValue *args, int nargs, int at, const char *display, int line, int col);
+static void b7_no_unknown_c(NvDict *d, const char **allowed, size_t nallowed, const char *display, int line, int col);
+
+/* تحليل عدد بشري: بادئة رقمية مع لاحقة K/M/G/T (أساس 1024)؛ 1 عند النجاح. */
+static int b7_parse_human_c(const char *s, size_t len, double *out) {
+    while (len > 0 && (*s == ' ' || *s == '\t')) { s++; len--; }
+    while (len > 0 && (s[len - 1] == ' ' || s[len - 1] == '\t')) len--;
+    if (len == 0) return 0;
+    double mult = 1.0;
+    char last = s[len - 1];
+    if (last == 'K' || last == 'k') { mult = 1024.0; len--; }
+    else if (last == 'M' || last == 'm') { mult = 1024.0 * 1024.0; len--; }
+    else if (last == 'G' || last == 'g') { mult = 1024.0 * 1024.0 * 1024.0; len--; }
+    else if (last == 'T' || last == 't') { mult = 1024.0 * 1024.0 * 1024.0 * 1024.0; len--; }
+    if (len == 0) return 0;
+    char *tmp = (char *)malloc(len + 1);
+    memcpy(tmp, s, len);
+    tmp[len] = '\0';
+    char *end = NULL;
+    double v = strtod(tmp, &end);
+    int ok = (end != tmp && *end == '\0');
+    free(tmp);
+    if (!ok) return 0;
+    *out = v * mult;
+    return 1;
+}
+
+/* تحليل أخف_عمود: عدد أو قائمة أعداد (1..=3)؛ يعيد 1 إن وُجد. */
+static int b7_hide_cols_c(NvDict *d, long long *cols, size_t *ncols, const char *display, int line, int col) {
+    *ncols = 0;
+    if (!d) return 0;
+    int i = nv_dict_find(d, "أخف_عمود");
+    if (i < 0) return 0;
+    NvValue v = d->entries[i].val;
+    if (v.tag == NV_NUM) {
+        cols[0] = (long long)v.u.num;
+        *ncols = 1;
+        return 1;
+    }
+    if (v.tag == NV_LIST) {
+        for (size_t k = 0; k < v.u.list->len && k < 3; k++) {
+            NvValue it = v.u.list->items[k];
+            if (it.tag != NV_NUM) nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع عددا أو قائمة أعداد للخيار أخف_عمود لكن أعطيت %s", display, nv_type_name(it));
+            cols[k] = (long long)it.u.num;
+        }
+        *ncols = v.u.list->len < 3 ? v.u.list->len : 3;
+        return 1;
+    }
+    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع عددا أو قائمة أعداد للخيار أخف_عمود لكن أعطيت %s", display, nv_type_name(v));
+    return 0;
+}
+
+/* مفتاح مقارنة أزل_مكرر_متتال: تخطي حقول ثم حروف ثم أول N حروف ثم بلا حالة. */
+static char *b7_uniq_key_c(const char *s, size_t len, int fold, long long cmp_chars, long long skip_fields, long long skip_chars, size_t *len_out, int line, int col) {
+    /* تخطي الحقول (فصل على المسافات). */
+    const char *p = s;
+    size_t plen = len;
+    if (skip_fields > 0) {
+        long long skipped = 0;
+        size_t i = 0;
+        while (i < plen && skipped < skip_fields) {
+            while (i < plen && (p[i] == ' ' || p[i] == '\t')) i++;
+            if (i >= plen) break;
+            while (i < plen && p[i] != ' ' && p[i] != '\t') i++;
+            skipped++;
+        }
+        while (i < plen && (p[i] == ' ' || p[i] == '\t')) i++;
+        p += i;
+        plen -= i;
+    }
+    /* تخطي الحروف (نقاط شفرة). */
+    if (skip_chars > 0) {
+        size_t n = 0;
+        size_t *offs = NULL;
+        uint32_t *cps = j14_decode_all(p, plen, &n, &offs);
+        (void)cps;
+        size_t skip = (size_t)skip_chars < n ? (size_t)skip_chars : n;
+        size_t adv = skip < n ? offs[skip] : plen;
+        free(cps);
+        free(offs);
+        p += adv;
+        plen -= adv;
+    }
+    /* أول N حروف. */
+    if (cmp_chars >= 0) {
+        size_t n = 0;
+        size_t *offs = NULL;
+        uint32_t *cps = j14_decode_all(p, plen, &n, &offs);
+        (void)cps;
+        size_t take = (size_t)cmp_chars < n ? (size_t)cmp_chars : n;
+        size_t cut = take < n ? offs[take] : plen;
+        free(cps);
+        free(offs);
+        plen = cut;
+    }
+    if (fold) {
+        size_t olen = 0;
+        char *r = b6_case_str_c(p, plen, 0, &olen);
+        *len_out = olen;
+        return r;
+    }
+    char *out = (char *)malloc(plen + 1);
+    if (plen > 0) memcpy(out, p, plen);
+    out[plen] = '\0';
+    *len_out = plen;
+    return out;
+}
+
 static NvValue b6_lines_hexdump_fn(NvValue *args, int nargs, int line, int col) {
     const char *DISPLAY = "سطور.ست_عشري";
-    if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", DISPLAY, nargs);
-    unsigned char *data = NULL;
-    size_t dlen = 0;
+    if (nargs < 1 || nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", DISPLAY, nargs);
+    unsigned char *data_full = NULL;
+    size_t full_len = 0;
     char *text_alloc = NULL;
     if (args[0].tag == NV_LIST) {
-        data = b5_need_bytes_c(DISPLAY, args[0], &dlen, line, col);
+        data_full = b5_need_bytes_c(DISPLAY, args[0], &full_len, line, col);
     } else {
         size_t tlen = 0;
         text_alloc = b6_lines_input_c(args[0], DISPLAY, &tlen, line, col);
-        data = (unsigned char *)text_alloc;
-        dlen = tlen;
+        data_full = (unsigned char *)text_alloc;
+        full_len = tlen;
     }
+    NvDict *opts = b7_opts_dict_c(args, nargs, 1, DISPLAY, line, col);
+    const char *allowed[] = { "عرض_سطر", "إزاحة", "طول" };
+    b7_no_unknown_c(opts, allowed, 3, DISPLAY, line, col);
+    long long width = 16;
+    long long wv = 0;
+    if (b5_opt_int_c(opts, "عرض_سطر", &wv, DISPLAY, line, col)) width = wv;
+    long long offset = 0;
+    long long ov = 0;
+    if (b5_opt_int_c(opts, "إزاحة", &ov, DISPLAY, line, col)) offset = ov;
+    long long length = -1;
+    long long lv = 0;
+    if (b5_opt_int_c(opts, "طول", &lv, DISPLAY, line, col)) length = lv;
+    if (width < 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s عرض_سطر موجب", DISPLAY);
+    if (offset < 0 || length < -1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الإزاحة والطول لا سالبان", DISPLAY);
+    size_t start = (size_t)offset < full_len ? (size_t)offset : full_len;
+    size_t end = full_len;
+    if (length >= 0) {
+        size_t want = start + (size_t)length;
+        end = want < full_len ? want : full_len;
+    }
+    const unsigned char *data = data_full + start;
+    size_t dlen = end - start;
+    size_t w = (size_t)width;
     size_t cap = dlen * 5 + 64;
     char *out = (char *)malloc(cap);
     size_t olen = 0;
-    char tmp[128];
-    for (size_t off = 0; off < dlen; off += 16) {
-        size_t clen = dlen - off < 16 ? dlen - off : 16;
-        char hex[64];
+    char *hex = (char *)malloc(w * 3 + 2);
+    char *ascii = (char *)malloc(w + 1);
+    char *tmp = (char *)malloc(4 * w + 32);
+    for (size_t off = 0; off < dlen; off += w) {
+        size_t clen = dlen - off < w ? dlen - off : w;
         size_t hl = 0;
         for (size_t i = 0; i < clen; i++) {
-            if (i == 8) hex[hl++] = ' ';
-            hl += (size_t)snprintf(hex + hl, sizeof(hex) - hl, "%02x ", data[off + i]);
+            if (i == w / 2 && w > 1) hex[hl++] = ' ';
+            hl += (size_t)snprintf(hex + hl, w * 3 + 2 - hl, "%02x ", data[off + i]);
         }
-        while (hl < 49) hex[hl++] = ' ';
+        while (hl < w * 3 + 1) hex[hl++] = ' ';
         hex[hl] = '\0';
-        char ascii[17];
         for (size_t i = 0; i < clen; i++) {
             unsigned char b = data[off + i];
             ascii[i] = (b >= 0x20 && b < 0x7F) ? (char)b : '.';
         }
         ascii[clen] = '\0';
-        int n = snprintf(tmp, sizeof(tmp), "%08x  %s |%s|\n", (unsigned int)(off), hex, ascii);
+        int n = snprintf(tmp, 4 * w + 32, "%08x  %s |%s|\n", (unsigned int)(start + off), hex, ascii);
         memcpy(out + olen, tmp, (size_t)n);
         olen += (size_t)n;
     }
-    /* قص \n الأخير. */
+    free(hex);
+    free(ascii);
+    free(tmp);
     while (olen > 0 && out[olen - 1] == '\n') olen--;
     NvValue r = nv_str_new(out, olen);
     free(out);
     free(text_alloc);
-    if (args[0].tag == NV_LIST) free(data);
+    if (args[0].tag == NV_LIST) free(data_full);
     return r;
 }
 
@@ -45974,30 +48222,46 @@ static NvValue b6_lines_escape_fn(NvValue *args, int nargs, int line, int col) {
 
 static NvValue b6_lines_nl_fn(NvValue *args, int nargs, int line, int col) {
     const char *DISPLAY = "سطور.ترقيم";
-    if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", DISPLAY, nargs);
+    if (nargs < 1 || nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", DISPLAY, nargs);
     size_t tlen = 0;
     char *text = b6_lines_input_c(args[0], DISPLAY, &tlen, line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 1, DISPLAY, line, col);
+    const char *allowed[] = { "عرض_رقم", "فاصل", "رقم_بداية" };
+    b7_no_unknown_c(opts, allowed, 3, DISPLAY, line, col);
+    long long num_width = 0;
+    long long nw = 0;
+    if (b5_opt_int_c(opts, "عرض_رقم", &nw, DISPLAY, line, col)) num_width = nw;
+    const char *sep = b5_opt_str_c(opts, "فاصل", DISPLAY, line, col);
+    if (!sep) sep = ": ";
+    size_t seplen = strlen(sep);
+    long long start_at = 1;
+    long long sv = 0;
+    if (b5_opt_int_c(opts, "رقم_بداية", &sv, DISPLAY, line, col)) start_at = sv;
+    if (num_width < 0 || start_at < 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s عرض_رقم لا سالب ورقم_بداية يبدأ من 1", DISPLAY);
     B6LinesC lines;
     memset(&lines, 0, sizeof(lines));
     b6_split_lines_c(text, tlen, &lines, line, col);
     free(text);
     B6LinesC out;
     memset(&out, 0, sizeof(out));
-    size_t num = 0;
+    long long num = start_at;
     for (size_t i = 0; i < lines.len; i++) {
         if (lines.items[i].len == 0) {
             b6_lines_push_c(&out, "", 0, line, col);
         } else {
-            num++;
-            char nb[32];
-            int nl = snprintf(nb, sizeof(nb), "%zu: ", num);
+            char nb[40];
+            int nl = 0;
+            if (num_width > 0) nl = snprintf(nb, sizeof(nb), "%0*lld", (int)num_width, num);
+            else nl = snprintf(nb, sizeof(nb), "%lld", num);
             size_t ll = lines.items[i].len;
-            char *s = (char *)malloc((size_t)nl + ll + 1);
+            char *s = (char *)malloc((size_t)nl + seplen + ll + 1);
             memcpy(s, nb, (size_t)nl);
-            memcpy(s + nl, lines.items[i].s, ll);
-            s[nl + ll] = '\0';
-            b6_lines_push_c(&out, s, (size_t)nl + ll, line, col);
+            memcpy(s + nl, sep, seplen);
+            memcpy(s + nl + seplen, lines.items[i].s, ll);
+            s[nl + seplen + ll] = '\0';
+            b6_lines_push_c(&out, s, (size_t)nl + seplen + ll, line, col);
             free(s);
+            num++;
         }
     }
     b6_lines_free_c(&lines);
@@ -46010,9 +48274,15 @@ static NvValue b6_lines_nl_fn(NvValue *args, int nargs, int line, int col) {
 
 static NvValue b6_lines_sort_fn(NvValue *args, int nargs, int line, int col) {
     const char *DISPLAY = "سطور.فرز";
-    if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", DISPLAY, nargs);
+    if (nargs < 1 || nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", DISPLAY, nargs);
     size_t tlen = 0;
     char *text = b6_lines_input_c(args[0], DISPLAY, &tlen, line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 1, DISPLAY, line, col);
+    const char *allowed[] = { "بشري", "مستقر", "تجاهل_مسافات_بادئة" };
+    b7_no_unknown_c(opts, allowed, 3, DISPLAY, line, col);
+    int human = b5_opt_bool_c(opts, "بشري", 0, DISPLAY, line, col);
+    (void)b5_opt_bool_c(opts, "مستقر", 0, DISPLAY, line, col);
+    int ignore_blanks = b5_opt_bool_c(opts, "تجاهل_مسافات_بادئة", 0, DISPLAY, line, col);
     B6LinesC lines;
     memset(&lines, 0, sizeof(lines));
     b6_split_lines_c(text, tlen, &lines, line, col);
@@ -46020,6 +48290,8 @@ static NvValue b6_lines_sort_fn(NvValue *args, int nargs, int line, int col) {
     B6SortCtxC ctx;
     memset(&ctx, 0, sizeof(ctx));
     ctx.kind = 0;
+    ctx.human = human;
+    ctx.ignore_blanks = ignore_blanks;
     b6_lines_merge_sort_c(&lines, &ctx, line, col);
     NvValue r = b6_lines_joined_value_c(&lines);
     b6_lines_free_c(&lines);
@@ -46129,16 +48401,48 @@ static NvValue b6_lines_sort_uniq_fn(NvValue *args, int nargs, int line, int col
 
 static NvValue b6_lines_uniq_adj_fn(NvValue *args, int nargs, int line, int col) {
     const char *DISPLAY = "سطور.أزل_مكرر_متتال";
-    if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", DISPLAY, nargs);
+    if (nargs < 1 || nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", DISPLAY, nargs);
     size_t tlen = 0;
     char *text = b6_lines_input_c(args[0], DISPLAY, &tlen, line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 1, DISPLAY, line, col);
+    const char *allowed[] = { "بلا_حالة", "قارن_حروف", "تخط_حقول", "تخط_حروف" };
+    b7_no_unknown_c(opts, allowed, 4, DISPLAY, line, col);
+    int fold = b5_opt_bool_c(opts, "بلا_حالة", 0, DISPLAY, line, col);
+    long long cmp_chars = -1;
+    long long cv = 0;
+    if (b5_opt_int_c(opts, "قارن_حروف", &cv, DISPLAY, line, col)) cmp_chars = cv;
+    long long skip_fields = 0;
+    long long sf = 0;
+    if (b5_opt_int_c(opts, "تخط_حقول", &sf, DISPLAY, line, col)) skip_fields = sf;
+    long long skip_chars = 0;
+    long long sc = 0;
+    if (b5_opt_int_c(opts, "تخط_حروف", &sc, DISPLAY, line, col)) skip_chars = sc;
+    if (skip_fields < 0 || skip_chars < 0 || cmp_chars < -1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s أعداد التخطي والمقارنة لا سالبة", DISPLAY);
     B6LinesC lines;
     memset(&lines, 0, sizeof(lines));
     b6_split_lines_c(text, tlen, &lines, line, col);
     free(text);
-    b6_lines_dedup_c(&lines);
-    NvValue r = b6_lines_joined_value_c(&lines);
+    B6LinesC out;
+    memset(&out, 0, sizeof(out));
+    char *prev_key = NULL;
+    size_t prev_klen = 0;
+    for (size_t i = 0; i < lines.len; i++) {
+        size_t klen = 0;
+        char *key = b7_uniq_key_c(lines.items[i].s, lines.items[i].len, fold, cmp_chars, skip_fields, skip_chars, &klen, line, col);
+        int dup = (prev_key != NULL && klen == prev_klen && (klen == 0 || memcmp(key, prev_key, klen) == 0));
+        if (!dup) {
+            b6_lines_push_c(&out, lines.items[i].s, lines.items[i].len, line, col);
+            free(prev_key);
+            prev_key = key;
+            prev_klen = klen;
+        } else {
+            free(key);
+        }
+    }
+    free(prev_key);
     b6_lines_free_c(&lines);
+    NvValue r = b6_lines_joined_value_c(&out);
+    b6_lines_free_c(&out);
     return r;
 }
 
@@ -46248,10 +48552,21 @@ static NvValue b6_lines_uniq_only_fn(NvValue *args, int nargs, int line, int col
 
 static NvValue b6_lines_common_fn(NvValue *args, int nargs, int line, int col) {
     const char *DISPLAY = "سطور.مشترك";
-    if (nargs != 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين لكن أعطيت %d", DISPLAY, nargs);
+    if (nargs < 2 || nargs > 3) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
     size_t alen = 0, blen = 0;
     char *atext = b6_lines_input_c(args[0], DISPLAY, &alen, line, col);
     char *btext = b6_lines_input_c(args[1], DISPLAY, &blen, line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 2, DISPLAY, line, col);
+    const char *allowed[] = { "أخف_عمود" };
+    b7_no_unknown_c(opts, allowed, 1, DISPLAY, line, col);
+    long long hide_cols[3];
+    size_t nhide = 0;
+    int has_hide = b7_hide_cols_c(opts, hide_cols, &nhide, DISPLAY, line, col);
+    if (has_hide) {
+        for (size_t k = 0; k < nhide; k++) {
+            if (hide_cols[k] < 1 || hide_cols[k] > 3) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s أخف_عمود 1 أو 2 أو 3", DISPLAY);
+        }
+    }
     B6LinesC la, lb;
     memset(&la, 0, sizeof(la));
     memset(&lb, 0, sizeof(lb));
@@ -46269,16 +48584,55 @@ static NvValue b6_lines_common_fn(NvValue *args, int nargs, int line, int col) {
     B6LinesC out;
     memset(&out, 0, sizeof(out));
     size_t i = 0, j = 0;
-    while (i < la.len && j < lb.len) {
-        int c = b6_bytes_cmp_c(la.items[i].s, la.items[i].len, lb.items[j].s, lb.items[j].len);
-        if (c == 0) {
-            b6_lines_push_c(&out, la.items[i].s, la.items[i].len, line, col);
-            i++;
-            j++;
-        } else if (c < 0) {
-            i++;
-        } else {
-            j++;
+    if (!has_hide) {
+        while (i < la.len && j < lb.len) {
+            int c = b6_bytes_cmp_c(la.items[i].s, la.items[i].len, lb.items[j].s, lb.items[j].len);
+            if (c == 0) {
+                b6_lines_push_c(&out, la.items[i].s, la.items[i].len, line, col);
+                i++;
+                j++;
+            } else if (c < 0) {
+                i++;
+            } else {
+                j++;
+            }
+        }
+    } else {
+        while (i < la.len || j < lb.len) {
+            int hidden1 = 0, hidden2 = 0, hidden3 = 0;
+            for (size_t k = 0; k < nhide; k++) {
+                if (hide_cols[k] == 1) hidden1 = 1;
+                if (hide_cols[k] == 2) hidden2 = 1;
+                if (hide_cols[k] == 3) hidden3 = 1;
+            }
+            if (j >= lb.len || (i < la.len && b6_bytes_cmp_c(la.items[i].s, la.items[i].len, lb.items[j].s, lb.items[j].len) < 0)) {
+                if (!hidden1) b6_lines_push_c(&out, la.items[i].s, la.items[i].len, line, col);
+                i++;
+            } else if (i >= la.len || b6_bytes_cmp_c(lb.items[j].s, lb.items[j].len, la.items[i].s, la.items[i].len) < 0) {
+                if (!hidden2) {
+                    size_t ll = lb.items[j].len;
+                    char *s = (char *)malloc(ll + 2);
+                    s[0] = '\t';
+                    if (ll > 0) memcpy(s + 1, lb.items[j].s, ll);
+                    s[ll + 1] = '\0';
+                    b6_lines_push_c(&out, s, ll + 1, line, col);
+                    free(s);
+                }
+                j++;
+            } else {
+                if (!hidden3) {
+                    size_t ll = la.items[i].len;
+                    char *s = (char *)malloc(ll + 3);
+                    s[0] = '\t';
+                    s[1] = '\t';
+                    if (ll > 0) memcpy(s + 2, la.items[i].s, ll);
+                    s[ll + 2] = '\0';
+                    b6_lines_push_c(&out, s, ll + 2, line, col);
+                    free(s);
+                }
+                i++;
+                j++;
+            }
         }
     }
     b6_lines_free_c(&la);
@@ -46288,9 +48642,108 @@ static NvValue b6_lines_common_fn(NvValue *args, int nargs, int line, int col) {
     return r;
 }
 
+/* بناء سطر مدمج: [مفتاح، باقي أ، باقي ب]؛ fb لاشيء ← قيمة افتراضية مكررة ndef مرة. */
+static char *b7_join_build_c(const char *key, size_t klen, B6LinesC *fa, size_t idx,
+                             B6LinesC *fb, size_t idx_b,
+                             const char *defval, size_t deflen, size_t ndef,
+                             const char *delim, size_t dlen, size_t *len_out, int line, int col) {
+    size_t total = klen;
+    for (size_t q = 0; q < fa->len; q++) if (q != idx) total += dlen + fa->items[q].len;
+    if (fb) {
+        for (size_t q = 0; q < fb->len; q++) if (q != idx_b) total += dlen + fb->items[q].len;
+    } else {
+        total += ndef * (dlen + deflen);
+    }
+    char *buf = (char *)malloc(total + 1);
+    if (!buf) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+    size_t w = 0;
+    if (klen > 0) memcpy(buf + w, key, klen);
+    w += klen;
+    for (size_t q = 0; q < fa->len; q++) {
+        if (q == idx) continue;
+        memcpy(buf + w, delim, dlen); w += dlen;
+        memcpy(buf + w, fa->items[q].s, fa->items[q].len); w += fa->items[q].len;
+    }
+    if (fb) {
+        for (size_t q = 0; q < fb->len; q++) {
+            if (q == idx_b) continue;
+            memcpy(buf + w, delim, dlen); w += dlen;
+            memcpy(buf + w, fb->items[q].s, fb->items[q].len); w += fb->items[q].len;
+        }
+    } else {
+        for (size_t q = 0; q < ndef; q++) {
+            memcpy(buf + w, delim, dlen); w += dlen;
+            if (deflen > 0) memcpy(buf + w, defval, deflen);
+            w += deflen;
+        }
+    }
+    buf[w] = '\0';
+    *len_out = w;
+    return buf;
+}
+
+/* طي سطر واحد عند الكلمات: كلمات مفصولة بمسافة؛ والكلمة الأطول تُقطع. */
+static void b7_fold_word_line_c(const char *ls, size_t ll, size_t w, B6LinesC *out, int line, int col) {
+    size_t n = 0;
+    size_t *offs = NULL;
+    uint32_t *cps = j14_decode_all(ls, ll, &n, &offs);
+    if (n == 0) {
+        b6_lines_push_c(out, "", 0, line, col);
+        free(cps);
+        free(offs);
+        return;
+    }
+    J14Buf cur;
+    j14_buf_init(&cur);
+    size_t cur_n = 0;
+    size_t i = 0;
+    while (i < n) {
+        if (cps[i] == ' ') { i++; continue; }
+        size_t s = i;
+        while (i < n && cps[i] != ' ') i++;
+        size_t wn = i - s;
+        /* أضف الكلمة (مع مسافة فاصلة إن لم يكن السطر فارغا). */
+        if (cur_n == 0) {
+            for (size_t k = s; k < i; k++) j14_buf_add_cp(&cur, cps[k]);
+            cur_n = wn;
+        } else if (cur_n + 1 + wn <= w) {
+            j14_buf_add_cp(&cur, ' ');
+            for (size_t k = s; k < i; k++) j14_buf_add_cp(&cur, cps[k]);
+            cur_n += 1 + wn;
+        } else {
+            b6_lines_push_c(out, cur.data, cur.len, line, col);
+            j14_buf_free(&cur);
+            j14_buf_init(&cur);
+            cur_n = 0;
+            for (size_t k = s; k < i; k++) j14_buf_add_cp(&cur, cps[k]);
+            cur_n = wn;
+        }
+        /* اقطع السطر الحالي إن تجاوز العرض (كلمة طويلة). */
+        while (cur_n > w) {
+            size_t cn = 0;
+            size_t *coffs = NULL;
+            uint32_t *ccps = j14_decode_all(cur.data, cur.len, &cn, &coffs);
+            size_t cut = coffs[w];
+            b6_lines_push_c(out, cur.data, cut, line, col);
+            J14Buf rest;
+            j14_buf_init(&rest);
+            for (size_t k = w; k < cn; k++) j14_buf_add_cp(&rest, ccps[k]);
+            j14_buf_free(&cur);
+            cur = rest;
+            cur_n = cn - w;
+            free(ccps);
+            free(coffs);
+        }
+    }
+    if (cur_n > 0) b6_lines_push_c(out, cur.data, cur.len, line, col);
+    j14_buf_free(&cur);
+    free(cps);
+    free(offs);
+}
+
 static NvValue b6_lines_join_field_fn(NvValue *args, int nargs, int line, int col) {
     const char *DISPLAY = "سطور.ادمج_بحقل";
-    if (nargs < 2 || nargs > 4) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين إلى أربعة لكن أعطيت %d", DISPLAY, nargs);
+    if (nargs < 2 || nargs > 5) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين إلى خمسة لكن أعطيت %d", DISPLAY, nargs);
     size_t alen = 0, blen = 0;
     char *atext = b6_lines_input_c(args[0], DISPLAY, &alen, line, col);
     char *btext = b6_lines_input_c(args[1], DISPLAY, &blen, line, col);
@@ -46298,6 +48751,19 @@ static NvValue b6_lines_join_field_fn(NvValue *args, int nargs, int line, int co
     if (field < 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الحقل يبدأ من 1", DISPLAY);
     size_t dlen = 0;
     char *delim = b6_lines_s_c(args, nargs, 3, " ", &dlen, DISPLAY, line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 4, DISPLAY, line, col);
+    const char *allowed[] = { "أظهر_بلا_مقابل", "قيمة_افتراضية", "حقل_ثان" };
+    b7_no_unknown_c(opts, allowed, 3, DISPLAY, line, col);
+    int show_unmatched = b5_opt_bool_c(opts, "أظهر_بلا_مقابل", 0, DISPLAY, line, col);
+    const char *defval = b5_opt_str_c(opts, "قيمة_افتراضية", DISPLAY, line, col);
+    if (!defval) defval = "";
+    size_t deflen = strlen(defval);
+    long long field_b = field;
+    long long fbv = 0;
+    if (b5_opt_int_c(opts, "حقل_ثان", &fbv, DISPLAY, line, col)) field_b = fbv;
+    if (field_b < 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s حقل_ثان يبدأ من 1", DISPLAY);
+    size_t idx = (size_t)(field - 1);
+    size_t idx_b = (size_t)(field_b - 1);
     B6LinesC la, lb;
     memset(&la, 0, sizeof(la));
     memset(&lb, 0, sizeof(lb));
@@ -46305,7 +48771,15 @@ static NvValue b6_lines_join_field_fn(NvValue *args, int nargs, int line, int co
     b6_split_lines_c(btext, blen, &lb, line, col);
     free(atext);
     free(btext);
-    size_t idx = (size_t)(field - 1);
+    size_t max_b_fields = 0;
+    for (size_t bi = 0; bi < lb.len; bi++) {
+        B6LinesC fb0;
+        memset(&fb0, 0, sizeof(fb0));
+        if (dlen == 1 && delim[0] == ' ') b6_split_fields_c(lb.items[bi].s, lb.items[bi].len, NULL, 0, &fb0, line, col);
+        else b6_split_fields_c(lb.items[bi].s, lb.items[bi].len, delim, dlen, &fb0, line, col);
+        if (fb0.len > max_b_fields) max_b_fields = fb0.len;
+        b6_lines_free_c(&fb0);
+    }
     B6LinesC out;
     memset(&out, 0, sizeof(out));
     for (size_t ai = 0; ai < la.len; ai++) {
@@ -46315,43 +48789,31 @@ static NvValue b6_lines_join_field_fn(NvValue *args, int nargs, int line, int co
         else b6_split_fields_c(la.items[ai].s, la.items[ai].len, delim, dlen, &fa, line, col);
         const char *key = idx < fa.len ? fa.items[idx].s : "";
         size_t klen = idx < fa.len ? fa.items[idx].len : 0;
+        int matched = 0;
         for (size_t bi = 0; bi < lb.len; bi++) {
             B6LinesC fb;
             memset(&fb, 0, sizeof(fb));
             if (dlen == 1 && delim[0] == ' ') b6_split_fields_c(lb.items[bi].s, lb.items[bi].len, NULL, 0, &fb, line, col);
             else b6_split_fields_c(lb.items[bi].s, lb.items[bi].len, delim, dlen, &fb, line, col);
-            const char *kb = idx < fb.len ? fb.items[idx].s : "";
-            size_t kblen = idx < fb.len ? fb.items[idx].len : 0;
+            const char *kb = idx_b < fb.len ? fb.items[idx_b].s : "";
+            size_t kblen = idx_b < fb.len ? fb.items[idx_b].len : 0;
             if (klen == kblen && (klen == 0 || memcmp(key, kb, klen) == 0)) {
-                /* [مفتاح، باقي أ، باقي ب] موصولة بالمحدد. */
-                size_t total = klen;
-                for (size_t q = 0; q < fa.len; q++) if (q != idx) total += dlen + fa.items[q].len;
-                for (size_t q = 0; q < fb.len; q++) if (q != idx) total += dlen + fb.items[q].len;
-                char *buf = (char *)malloc(total + 1);
-                size_t w = 0;
-                memcpy(buf + w, key, klen);
-                w += klen;
-                for (size_t q = 0; q < fa.len; q++) {
-                    if (q == idx) continue;
-                    memcpy(buf + w, delim, dlen);
-                    w += dlen;
-                    memcpy(buf + w, fa.items[q].s, fa.items[q].len);
-                    w += fa.items[q].len;
-                }
-                for (size_t q = 0; q < fb.len; q++) {
-                    if (q == idx) continue;
-                    memcpy(buf + w, delim, dlen);
-                    w += dlen;
-                    memcpy(buf + w, fb.items[q].s, fb.items[q].len);
-                    w += fb.items[q].len;
-                }
-                buf[w] = '\0';
-                b6_lines_push_c(&out, buf, w, line, col);
+                size_t olen = 0;
+                char *buf = b7_join_build_c(key, klen, &fa, idx, &fb, idx_b, defval, deflen, 0, delim, dlen, &olen, line, col);
+                b6_lines_push_c(&out, buf, olen, line, col);
                 free(buf);
+                matched = 1;
                 b6_lines_free_c(&fb);
                 break;
             }
             b6_lines_free_c(&fb);
+        }
+        if (!matched && show_unmatched) {
+            size_t ndef = max_b_fields > 0 ? max_b_fields - 1 : 0;
+            size_t olen = 0;
+            char *buf = b7_join_build_c(key, klen, &fa, idx, NULL, idx_b, defval, deflen, ndef, delim, dlen, &olen, line, col);
+            b6_lines_push_c(&out, buf, olen, line, col);
+            free(buf);
         }
         b6_lines_free_c(&fa);
     }
@@ -46365,12 +48827,16 @@ static NvValue b6_lines_join_field_fn(NvValue *args, int nargs, int line, int co
 
 static NvValue b6_lines_paste_fn(NvValue *args, int nargs, int line, int col) {
     const char *DISPLAY = "سطور.الصق";
-    if (nargs < 2 || nargs > 3) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
+    if (nargs < 2 || nargs > 4) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين إلى أربعة لكن أعطيت %d", DISPLAY, nargs);
     size_t alen = 0, blen = 0;
     char *atext = b6_lines_input_c(args[0], DISPLAY, &alen, line, col);
     char *btext = b6_lines_input_c(args[1], DISPLAY, &blen, line, col);
     size_t dlen = 0;
     char *delim = b6_lines_s_c(args, nargs, 2, "\t", &dlen, DISPLAY, line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 3, DISPLAY, line, col);
+    const char *allowed[] = { "تتابعي" };
+    b7_no_unknown_c(opts, allowed, 1, DISPLAY, line, col);
+    int serial = b5_opt_bool_c(opts, "تتابعي", 0, DISPLAY, line, col);
     B6LinesC la, lb;
     memset(&la, 0, sizeof(la));
     memset(&lb, 0, sizeof(lb));
@@ -46378,9 +48844,33 @@ static NvValue b6_lines_paste_fn(NvValue *args, int nargs, int line, int col) {
     b6_split_lines_c(btext, blen, &lb, line, col);
     free(atext);
     free(btext);
-    size_t n = la.len > lb.len ? la.len : lb.len;
     B6LinesC out;
     memset(&out, 0, sizeof(out));
+    if (serial) {
+        B6LinesC *files[2] = { &la, &lb };
+        for (int f = 0; f < 2; f++) {
+            B6LinesC *fl = files[f];
+            size_t total = 0;
+            for (size_t q = 0; q < fl->len; q++) total += fl->items[q].len;
+            if (fl->len > 1) total += (fl->len - 1) * dlen;
+            char *buf = (char *)malloc(total + 1);
+            size_t w = 0;
+            for (size_t q = 0; q < fl->len; q++) {
+                if (q > 0) { memcpy(buf + w, delim, dlen); w += dlen; }
+                memcpy(buf + w, fl->items[q].s, fl->items[q].len); w += fl->items[q].len;
+            }
+            buf[w] = '\0';
+            b6_lines_push_c(&out, buf, w, line, col);
+            free(buf);
+        }
+        b6_lines_free_c(&la);
+        b6_lines_free_c(&lb);
+        free(delim);
+        NvValue r = b6_lines_joined_value_c(&out);
+        b6_lines_free_c(&out);
+        return r;
+    }
+    size_t n = la.len > lb.len ? la.len : lb.len;
     for (size_t i = 0; i < n; i++) {
         const char *x = i < la.len ? la.items[i].s : "";
         size_t xl = i < la.len ? la.items[i].len : 0;
@@ -46404,11 +48894,19 @@ static NvValue b6_lines_paste_fn(NvValue *args, int nargs, int line, int col) {
 
 static NvValue b6_lines_split_n_fn(NvValue *args, int nargs, int line, int col) {
     const char *DISPLAY = "سطور.قسّم_بسطور";
-    if (nargs != 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين لكن أعطيت %d", DISPLAY, nargs);
+    if (nargs < 2 || nargs > 3) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
     size_t tlen = 0;
     char *text = b6_lines_input_c(args[0], DISPLAY, &tlen, line, col);
     long long n = nv_std_need_integer(DISPLAY, args[1], line, col);
     if (n < 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العدد يبدأ من 1", DISPLAY);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 2, DISPLAY, line, col);
+    const char *allowed[] = { "عدد_أجزاء", "لاحقة_رقمية" };
+    b7_no_unknown_c(opts, allowed, 2, DISPLAY, line, col);
+    long long nparts = -1;
+    long long pv = 0;
+    if (b5_opt_int_c(opts, "عدد_أجزاء", &pv, DISPLAY, line, col)) nparts = pv;
+    (void)b5_opt_bool_c(opts, "لاحقة_رقمية", 0, DISPLAY, line, col);
+    if (nparts != -1 && nparts < 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s عدد_أجزاء يبدأ من 1", DISPLAY);
     B6LinesC lines;
     memset(&lines, 0, sizeof(lines));
     b6_split_lines_c(text, tlen, &lines, line, col);
@@ -46416,16 +48914,33 @@ static NvValue b6_lines_split_n_fn(NvValue *args, int nargs, int line, int col) 
     size_t ridx = nv_root_push_idx();
     NvValue out = nv_list_new();
     *nv_root_slot(ridx) = out;
-    for (size_t i = 0; i < lines.len; i += (size_t)n) {
-        size_t end = i + (size_t)n < lines.len ? i + (size_t)n : lines.len;
-        B6LinesC chunk;
-        memset(&chunk, 0, sizeof(chunk));
-        for (size_t j = i; j < end; j++) b6_lines_push_c(&chunk, lines.items[j].s, lines.items[j].len, line, col);
-        size_t clen = 0;
-        char *cs = b6_lines_join_c(&chunk, &clen);
-        nv_list_push_raw(out.u.list, nv_str_new(cs, clen));
-        free(cs);
-        b6_lines_free_c(&chunk);
+    if (nparts >= 0) {
+        size_t total = lines.len;
+        size_t p = (size_t)nparts;
+        for (size_t i = 0; i < p; i++) {
+            size_t s = i * total / p;
+            size_t e = (i + 1) * total / p;
+            B6LinesC chunk;
+            memset(&chunk, 0, sizeof(chunk));
+            for (size_t j = s; j < e; j++) b6_lines_push_c(&chunk, lines.items[j].s, lines.items[j].len, line, col);
+            size_t clen = 0;
+            char *cs = b6_lines_join_c(&chunk, &clen);
+            nv_list_push_raw(out.u.list, nv_str_new(cs, clen));
+            free(cs);
+            b6_lines_free_c(&chunk);
+        }
+    } else {
+        for (size_t i = 0; i < lines.len; i += (size_t)n) {
+            size_t end = i + (size_t)n < lines.len ? i + (size_t)n : lines.len;
+            B6LinesC chunk;
+            memset(&chunk, 0, sizeof(chunk));
+            for (size_t j = i; j < end; j++) b6_lines_push_c(&chunk, lines.items[j].s, lines.items[j].len, line, col);
+            size_t clen = 0;
+            char *cs = b6_lines_join_c(&chunk, &clen);
+            nv_list_push_raw(out.u.list, nv_str_new(cs, clen));
+            free(cs);
+            b6_lines_free_c(&chunk);
+        }
     }
     nv_root_pop();
     b6_lines_free_c(&lines);
@@ -46460,7 +48975,7 @@ static NvValue b6_lines_split_bytes_fn(NvValue *args, int nargs, int line, int c
 
 static NvValue b6_lines_cut_fields_fn(NvValue *args, int nargs, int line, int col) {
     const char *DISPLAY = "سطور.قص_حقول";
-    if (nargs < 2 || nargs > 3) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
+    if (nargs < 2 || nargs > 4) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين إلى أربعة لكن أعطيت %d", DISPLAY, nargs);
     size_t tlen = 0;
     char *text = b6_lines_input_c(args[0], DISPLAY, &tlen, line, col);
     const char *spec = nv_std_need_string(DISPLAY, args[1], line, col);
@@ -46469,6 +48984,11 @@ static NvValue b6_lines_cut_fields_fn(NvValue *args, int nargs, int line, int co
     b6_parse_ranges_c(spec, args[1].u.str->len, &ranges, &nranges, DISPLAY, line, col);
     size_t dlen = 0;
     char *delim = b6_lines_s_c(args, nargs, 2, "\t", &dlen, DISPLAY, line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 3, DISPLAY, line, col);
+    const char *allowed[] = { "تخط_بلا_محدد", "مكمل" };
+    b7_no_unknown_c(opts, allowed, 2, DISPLAY, line, col);
+    int skip_no_delim = b5_opt_bool_c(opts, "تخط_بلا_محدد", 0, DISPLAY, line, col);
+    int complement = b5_opt_bool_c(opts, "مكمل", 0, DISPLAY, line, col);
     B6LinesC lines;
     memset(&lines, 0, sizeof(lines));
     b6_split_lines_c(text, tlen, &lines, line, col);
@@ -46476,13 +48996,26 @@ static NvValue b6_lines_cut_fields_fn(NvValue *args, int nargs, int line, int co
     B6LinesC out;
     memset(&out, 0, sizeof(out));
     for (size_t li = 0; li < lines.len; li++) {
+        const char *ls = lines.items[li].s;
+        size_t ll = lines.items[li].len;
+        if (skip_no_delim) {
+            int has = 0;
+            if (dlen == 0) has = 1;
+            else {
+                for (size_t q = 0; q + dlen <= ll; q++) {
+                    if (memcmp(ls + q, delim, dlen) == 0) { has = 1; break; }
+                }
+            }
+            if (!has) continue;
+        }
         B6LinesC fields;
         memset(&fields, 0, sizeof(fields));
-        b6_split_fields_c(lines.items[li].s, lines.items[li].len, delim, dlen, &fields, line, col);
+        b6_split_fields_c(ls, ll, delim, dlen, &fields, line, col);
         size_t total = 0;
         size_t kept = 0;
         for (size_t i = 0; i < fields.len; i++) {
-            if (b6_in_ranges_c(i + 1, ranges, nranges)) {
+            int sel = b6_in_ranges_c(i + 1, ranges, nranges);
+            if (sel != complement) {
                 total += fields.items[i].len;
                 kept++;
             }
@@ -46492,7 +49025,8 @@ static NvValue b6_lines_cut_fields_fn(NvValue *args, int nargs, int line, int co
         size_t w = 0;
         int first = 1;
         for (size_t i = 0; i < fields.len; i++) {
-            if (!b6_in_ranges_c(i + 1, ranges, nranges)) continue;
+            int sel = b6_in_ranges_c(i + 1, ranges, nranges);
+            if (sel == complement) continue;
             if (!first) {
                 memcpy(buf + w, delim, dlen);
                 w += dlen;
@@ -46516,13 +49050,17 @@ static NvValue b6_lines_cut_fields_fn(NvValue *args, int nargs, int line, int co
 
 static NvValue b6_lines_cut_chars_fn(NvValue *args, int nargs, int line, int col) {
     const char *DISPLAY = "سطور.قص_حروف";
-    if (nargs != 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين لكن أعطيت %d", DISPLAY, nargs);
+    if (nargs < 2 || nargs > 3) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
     size_t tlen = 0;
     char *text = b6_lines_input_c(args[0], DISPLAY, &tlen, line, col);
     const char *spec = nv_std_need_string(DISPLAY, args[1], line, col);
     B6RangeC *ranges = NULL;
     size_t nranges = 0;
     b6_parse_ranges_c(spec, args[1].u.str->len, &ranges, &nranges, DISPLAY, line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 2, DISPLAY, line, col);
+    const char *allowed[] = { "بايتات" };
+    b7_no_unknown_c(opts, allowed, 1, DISPLAY, line, col);
+    int by_bytes = b5_opt_bool_c(opts, "بايتات", 0, DISPLAY, line, col);
     B6LinesC lines;
     memset(&lines, 0, sizeof(lines));
     b6_split_lines_c(text, tlen, &lines, line, col);
@@ -46530,6 +49068,21 @@ static NvValue b6_lines_cut_chars_fn(NvValue *args, int nargs, int line, int col
     B6LinesC out;
     memset(&out, 0, sizeof(out));
     for (size_t li = 0; li < lines.len; li++) {
+        if (by_bytes) {
+            const unsigned char *lb = (const unsigned char *)lines.items[li].s;
+            size_t ll = lines.items[li].len;
+            unsigned char *picked = (unsigned char *)malloc(ll + 1);
+            size_t w = 0;
+            for (size_t i = 0; i < ll; i++) {
+                if (b6_in_ranges_c(i + 1, ranges, nranges)) picked[w++] = lb[i];
+            }
+            size_t llen = 0;
+            char *ls = b6_lossy_c(picked, w, &llen);
+            b6_lines_push_c(&out, ls, llen, line, col);
+            free(picked);
+            free(ls);
+            continue;
+        }
         size_t n = 0;
         size_t *offs = NULL;
         uint32_t *cps = j14_decode_all(lines.items[li].s, lines.items[li].len, &n, &offs);
@@ -46552,13 +49105,17 @@ static NvValue b6_lines_cut_chars_fn(NvValue *args, int nargs, int line, int col
 
 static NvValue b6_lines_tr_fn(NvValue *args, int nargs, int line, int col) {
     const char *DISPLAY = "سطور.استبدل_حروف";
-    if (nargs != 3) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع ثلاثة معاملات لكن أعطيت %d", DISPLAY, nargs);
+    if (nargs < 3 || nargs > 4) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع ثلاثة معاملات أو أربعة لكن أعطيت %d", DISPLAY, nargs);
     size_t tlen = 0;
     char *text = b6_lines_input_c(args[0], DISPLAY, &tlen, line, col);
     const char *from = nv_std_need_string(DISPLAY, args[1], line, col);
     const char *to = nv_std_need_string(DISPLAY, args[2], line, col);
     size_t to_len = args[2].u.str->len;
     if (to_len == 0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s المجموعة الثانية فارغة", DISPLAY);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 3, DISPLAY, line, col);
+    const char *allowed[] = { "مكمل" };
+    b7_no_unknown_c(opts, allowed, 1, DISPLAY, line, col);
+    int complement = b5_opt_bool_c(opts, "مكمل", 0, DISPLAY, line, col);
     size_t nf = 0, nt = 0;
     size_t *offs_f = NULL, *offs_t = NULL;
     uint32_t *from_cps = j14_decode_all(from, args[1].u.str->len, &nf, &offs_f);
@@ -46574,7 +49131,10 @@ static NvValue b6_lines_tr_fn(NvValue *args, int nargs, int line, int col) {
         for (size_t j = 0; j < nf; j++) {
             if (from_cps[j] == c) { found = j; break; }
         }
-        if (found < nf) {
+        if (complement) {
+            if (found < nf) j14_buf_add_cp(&out, c);
+            else j14_buf_add_cp(&out, to_cps[nt - 1]);
+        } else if (found < nf) {
             size_t ti = found < nt - 1 ? found : nt - 1;
             j14_buf_add_cp(&out, to_cps[ti]);
         } else {
@@ -46681,11 +49241,15 @@ static NvValue b6_lines_case_fn(NvValue *args, int nargs, int line, int col) {
 
 static NvValue b6_lines_fold_fn(NvValue *args, int nargs, int line, int col) {
     const char *DISPLAY = "سطور.اطوِ";
-    if (nargs < 1 || nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", DISPLAY, nargs);
+    if (nargs < 1 || nargs > 3) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا إلى ثلاثة لكن أعطيت %d", DISPLAY, nargs);
     size_t tlen = 0;
     char *text = b6_lines_input_c(args[0], DISPLAY, &tlen, line, col);
     long long width = b6_lines_n_c(args, nargs, 1, 80, DISPLAY, line, col);
     if (width < 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العرض يبدأ من 1", DISPLAY);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 2, DISPLAY, line, col);
+    const char *allowed[] = { "عند_الكلمات" };
+    b7_no_unknown_c(opts, allowed, 1, DISPLAY, line, col);
+    int at_words = b5_opt_bool_c(opts, "عند_الكلمات", 0, DISPLAY, line, col);
     size_t w = (size_t)width;
     B6LinesC lines;
     memset(&lines, 0, sizeof(lines));
@@ -46694,6 +49258,10 @@ static NvValue b6_lines_fold_fn(NvValue *args, int nargs, int line, int col) {
     B6LinesC out;
     memset(&out, 0, sizeof(out));
     for (size_t li = 0; li < lines.len; li++) {
+        if (at_words) {
+            b7_fold_word_line_c(lines.items[li].s, lines.items[li].len, w, &out, line, col);
+            continue;
+        }
         size_t n = 0;
         size_t *offs = NULL;
         uint32_t *cps = j14_decode_all(lines.items[li].s, lines.items[li].len, &n, &offs);
@@ -46720,11 +49288,41 @@ static NvValue b6_lines_fold_fn(NvValue *args, int nargs, int line, int col) {
 
 static NvValue b6_lines_expand_tabs_fn(NvValue *args, int nargs, int line, int col) {
     const char *DISPLAY = "سطور.وسّع_تبويبات";
-    if (nargs < 1 || nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", DISPLAY, nargs);
+    if (nargs < 1 || nargs > 3) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا إلى ثلاثة لكن أعطيت %d", DISPLAY, nargs);
     size_t tlen = 0;
     char *text = b6_lines_input_c(args[0], DISPLAY, &tlen, line, col);
     long long width = b6_lines_n_c(args, nargs, 1, 8, DISPLAY, line, col);
     if (width < 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العرض يبدأ من 1", DISPLAY);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 2, DISPLAY, line, col);
+    const char *allowed[] = { "مواضع_توقف" };
+    b7_no_unknown_c(opts, allowed, 1, DISPLAY, line, col);
+    long long *stops = NULL;
+    size_t nstops = 0;
+    if (opts) {
+        int si = nv_dict_find(opts, "مواضع_توقف");
+        if (si >= 0) {
+            NvValue v = opts->entries[si].val;
+            if (v.tag != NV_LIST) nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة أعداد للخيار مواضع_توقف لكن أعطيت %s", DISPLAY, nv_type_name(v));
+            nstops = v.u.list->len;
+            stops = (long long *)malloc((nstops ? nstops : 1) * sizeof(long long));
+            for (size_t k = 0; k < nstops; k++) {
+                stops[k] = nv_std_need_integer(DISPLAY, v.u.list->items[k], line, col);
+                if (stops[k] < 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مواضع_توقف تبدأ من 1", DISPLAY);
+            }
+            /* فرز وإزالة تكرار (إدراج — القائمة قصيرة). */
+            for (size_t a = 1; a < nstops; a++) {
+                long long tmp = stops[a];
+                size_t b = a;
+                while (b > 0 && stops[b - 1] > tmp) { stops[b] = stops[b - 1]; b--; }
+                stops[b] = tmp;
+            }
+            size_t w2 = 0;
+            for (size_t a = 0; a < nstops; a++) {
+                if (w2 == 0 || stops[a] != stops[w2 - 1]) stops[w2++] = stops[a];
+            }
+            nstops = w2;
+        }
+    }
     size_t w = (size_t)width;
     J14Buf out;
     j14_buf_init(&out);
@@ -46735,7 +49333,22 @@ static NvValue b6_lines_expand_tabs_fn(NvValue *args, int nargs, int line, int c
     for (size_t i = 0; i < n; i++) {
         uint32_t c = cps[i];
         if (c == '\t') {
-            size_t spaces = w - (coln % w);
+            size_t spaces;
+            if (nstops == 0) {
+                spaces = w - (coln % w);
+            } else {
+                size_t cur1 = coln + 1;
+                size_t next = 0;
+                int found = 0;
+                for (size_t k = 0; k < nstops; k++) {
+                    if ((size_t)stops[k] > cur1) { next = (size_t)stops[k]; found = 1; break; }
+                }
+                if (!found) {
+                    next = (size_t)stops[nstops - 1] + w;
+                    while (next <= cur1) next += w;
+                }
+                spaces = next - cur1;
+            }
             for (size_t k = 0; k < spaces; k++) j14_buf_add_cp(&out, ' ');
             coln += spaces;
         } else if (c == '\n') {
@@ -46749,6 +49362,7 @@ static NvValue b6_lines_expand_tabs_fn(NvValue *args, int nargs, int line, int c
     free(cps);
     free(offs);
     free(text);
+    free(stops);
     NvValue r = nv_str_new(out.data, out.len);
     j14_buf_free(&out);
     return r;
@@ -46862,14 +49476,18 @@ static NvValue b6_lines_count_chars_fn(NvValue *args, int nargs, int line, int c
 
 static NvValue b6_lines_shuffle_fn(NvValue *args, int nargs, int line, int col) {
     const char *DISPLAY = "سطور.اخلط";
-    if (nargs < 1 || nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", DISPLAY, nargs);
+    if (nargs < 1 || nargs > 3) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا إلى ثلاثة لكن أعطيت %d", DISPLAY, nargs);
     size_t tlen = 0;
     char *text = b6_lines_input_c(args[0], DISPLAY, &tlen, line, col);
     uint64_t state = 0;
-    if (nargs >= 2) {
+    int opt_at = 2;
+    if (nargs >= 2 && args[1].tag == NV_DICT) {
+        opt_at = 1;
+    } else if (nargs >= 2) {
         long long seed = nv_std_need_integer(DISPLAY, args[1], line, col);
         state = (uint64_t)seed;
-    } else {
+    }
+    if (state == 0 && !(nargs >= 2 && args[1].tag != NV_DICT)) {
 #ifndef _WIN32
         struct timespec ts;
         uint64_t nanos = 0;
@@ -46883,6 +49501,13 @@ static NvValue b6_lines_shuffle_fn(NvValue *args, int nargs, int line, int col) 
         state = (uint64_t)time(NULL) * 1000000000ULL ^ ((uint64_t)_getpid() << 32) ^ 0x9E3779B97F4A7C15ULL;
 #endif
     }
+    NvDict *opts = b7_opts_dict_c(args, nargs, opt_at, DISPLAY, line, col);
+    const char *allowed[] = { "عدد" };
+    b7_no_unknown_c(opts, allowed, 1, DISPLAY, line, col);
+    long long take_n = -1;
+    long long tv = 0;
+    if (b5_opt_int_c(opts, "عدد", &tv, DISPLAY, line, col)) take_n = tv;
+    if (take_n < -1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العدد لا سالب", DISPLAY);
     if (state == 0) state = 0x9E3779B97F4A7C15ULL;
     B6LinesC lines;
     memset(&lines, 0, sizeof(lines));
@@ -46899,6 +49524,11 @@ static NvValue b6_lines_shuffle_fn(NvValue *args, int nargs, int line, int col) 
         lines.items[i] = lines.items[j];
         lines.items[j] = t;
     }
+    if (take_n >= 0) {
+        size_t keep = (size_t)take_n < lines.len ? (size_t)take_n : lines.len;
+        for (size_t i = keep; i < lines.len; i++) free(lines.items[i].s);
+        lines.len = keep;
+    }
     NvValue r = b6_lines_joined_value_c(&lines);
     b6_lines_free_c(&lines);
     return r;
@@ -46906,22 +49536,3560 @@ static NvValue b6_lines_shuffle_fn(NvValue *args, int nargs, int line, int col) 
 
 static NvValue b6_lines_tee_fn(NvValue *args, int nargs, int line, int col) {
     const char *DISPLAY = "سطور.انسخ_لملف_وشاشة";
-    if (nargs != 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين لكن أعطيت %d", DISPLAY, nargs);
+    if (nargs < 2 || nargs > 3) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين أو ثلاثة لكن أعطيت %d", DISPLAY, nargs);
     const char *text = nv_std_need_string(DISPLAY, args[0], line, col);
     size_t tlen = args[0].u.str->len;
     const char *path = nv_std_need_string(DISPLAY, args[1], line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 2, DISPLAY, line, col);
+    const char *allowed[] = { "ملفات", "إلحاق" };
+    b7_no_unknown_c(opts, allowed, 2, DISPLAY, line, col);
+    size_t nextra = 0;
+    char **extra = b5_opt_strs_c(opts, "ملفات", &nextra, DISPLAY, line, col);
+    int append = b5_opt_bool_c(opts, "إلحاق", 0, DISPLAY, line, col);
     if (tlen > 0) fwrite(text, 1, tlen, stdout);
     putchar('\n');
     fflush(stdout);
-    char *fs = nv_resolve_path(path, line, col);
-    FILE *fp = fopen(fs, "wb");
-    if (!fp) {
-        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر الكتابة في %s", DISPLAY, path);
+    size_t ntargets = 1 + nextra;
+    for (size_t t = 0; t < ntargets; t++) {
+        const char *target = (t == 0) ? path : extra[t - 1];
+        char *fs = nv_resolve_path(target, line, col);
+        FILE *fp = fopen(fs, append ? "ab" : "wb");
+        if (!fp) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر الكتابة في %s", DISPLAY, target);
+        }
+        if (tlen > 0) fwrite(text, 1, tlen, fp);
+        fclose(fp);
+        free(fs);
     }
-    if (tlen > 0) fwrite(text, 1, tlen, fp);
-    fclose(fp);
-    free(fs);
+    for (size_t t = 0; t < nextra; t++) free(extra[t]);
+    free(extra);
     return nv_str_new(text, tlen);
+}
+
+/* BEGIN لينكس7-ز1ج-سطور-جديد. */
+/* لينكس7-ز2ج-أ-سطور-مفاتيح. */
+/* لينكس7-ز2ج-ب-سطور-مفاتيح. */
+/* الدفعة 7 — مرآة C لدوال سطور الجديدة. */
+
+/* عدد المحارف (نقاط الشفرة) في بايتات UTF-8. */
+static size_t b7_utf8_chars_c(const char *s, size_t len) {
+    size_t n = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (((unsigned char)s[i] & 0xC0) != 0x80) n++;
+    }
+    return n;
+}
+
+/* طول تسلسل UTF-8 من بايت البداية (1–4؛ 1 للبايت غير الصالح). */
+static size_t b7_utf8_seqlen_c(unsigned char b) {
+    if (b < 0x80) return 1;
+    if ((b & 0xE0) == 0xC0) return 2;
+    if ((b & 0xF0) == 0xE0) return 3;
+    if ((b & 0xF8) == 0xF0) return 4;
+    return 1;
+}
+
+/* أول take بايتات مع فك ضائع: تسلسل ناقص في النهاية ← U+FFFD. */
+static char *b7_lossy_head_c(const char *s, size_t len, size_t take, size_t *out_len) {
+    if (take > len) take = len;
+    size_t i = 0;
+    while (i < take) {
+        size_t adv = b7_utf8_seqlen_c((unsigned char)s[i]);
+        if (i + adv > take) break;
+        i += adv;
+    }
+    size_t extra = (i < take) ? 3 : 0;
+    char *out = (char *)malloc(i + extra + 1);
+    if (i > 0) memcpy(out, s, i);
+    if (extra) memcpy(out + i, "\xEF\xBF\xBD", 3);
+    out[i + extra] = '\0';
+    *out_len = i + extra;
+    return out;
+}
+
+/* آخر take بايتات مع فك ضائع: تسلسل ناقص في البداية ← U+FFFD. */
+static char *b7_lossy_tail_c(const char *s, size_t len, size_t take, size_t *out_len) {
+    if (take > len) take = len;
+    size_t start = len - take;
+    size_t i = 0;
+    size_t cut_end = start;
+    int mid = 0;
+    while (i < start) {
+        size_t adv = b7_utf8_seqlen_c((unsigned char)s[i]);
+        if (i + adv > start) { mid = 1; cut_end = i + adv; break; }
+        i += adv;
+    }
+    if (!mid) {
+        char *out = (char *)malloc(take + 1);
+        if (take > 0) memcpy(out, s + start, take);
+        out[take] = '\0';
+        *out_len = take;
+        return out;
+    }
+    if (cut_end > len) cut_end = len;
+    size_t rest = len - cut_end;
+    char *out = (char *)malloc(3 + rest + 1);
+    memcpy(out, "\xEF\xBF\xBD", 3);
+    if (rest > 0) memcpy(out + 3, s + cut_end, rest);
+    out[3 + rest] = '\0';
+    *out_len = 3 + rest;
+    return out;
+}
+
+typedef struct { size_t lo, hi; } B7RangeC;
+
+static void b7_parse_ranges_c(const char *spec, const char *display, B7RangeC **out, size_t *n_out, int line, int col) {
+    B7RangeC *ranges = NULL;
+    size_t n = 0, cap = 0;
+    const char *p = spec;
+    while (*p) {
+        while (*p == ' ' || *p == ',') p++;
+        if (!*p) break;
+        char *end = NULL;
+        long long lo = strtoll(p, &end, 10);
+        if (end == p) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مواصفة نطاق غير صالحة: %s", display, spec);
+        p = end;
+        long long hi = lo;
+        if (*p == '-') {
+            p++;
+            hi = strtoll(p, &end, 10);
+            if (end == p) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مواصفة نطاق غير صالحة: %s", display, spec);
+            p = end;
+        }
+        if (lo < 1 || hi < lo) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مواصفة نطاق غير صالحة: %s", display, spec);
+        if (n >= cap) {
+            size_t nc = cap == 0 ? 8 : cap * 2;
+            B7RangeC *g = (B7RangeC *)realloc(ranges, nc * sizeof(B7RangeC));
+            if (!g) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+            ranges = g;
+            cap = nc;
+        }
+        ranges[n].lo = (size_t)lo;
+        ranges[n].hi = (size_t)hi;
+        n++;
+    }
+    *out = ranges;
+    *n_out = n;
+}
+
+static int b7_in_ranges_c(size_t pos, B7RangeC *ranges, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (pos >= ranges[i].lo && pos <= ranges[i].hi) return 1;
+    }
+    return 0;
+}
+
+static NvValue b7_lines_show_eol_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.أظهر_نهايات_السطور";
+    if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    B6LinesC lines; memset(&lines, 0, sizeof(lines));
+    b6_split_lines_c(text, tlen, &lines, line, col);
+    free(text);
+    B6LinesC out; memset(&out, 0, sizeof(out));
+    for (size_t i = 0; i < lines.len; i++) {
+        size_t ll = lines.items[i].len;
+        char *s = (char *)malloc(ll + 2);
+        if (ll > 0) memcpy(s, lines.items[i].s, ll);
+        s[ll] = '$';
+        s[ll + 1] = '\0';
+        b6_lines_push_c(&out, s, ll + 1, line, col);
+        free(s);
+    }
+    b6_lines_free_c(&lines);
+    NvValue r = b6_lines_joined_value_c(&out);
+    b6_lines_free_c(&out);
+    return r;
+}
+
+static NvValue b7_lines_show_tabs_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.أظهر_التبويبات";
+    if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    size_t tabs = 0;
+    for (size_t i = 0; i < tlen; i++) if (text[i] == '\t') tabs++;
+    char *out = (char *)malloc(tlen + tabs + 1);
+    size_t w = 0;
+    for (size_t i = 0; i < tlen; i++) {
+        if (text[i] == '\t') { out[w++] = '^'; out[w++] = 'I'; }
+        else out[w++] = text[i];
+    }
+    out[w] = '\0';
+    free(text);
+    NvValue r = nv_str_new(out, w);
+    free(out);
+    return r;
+}
+
+/* عرض حرف غير مطبوع كرمز ^X في مخزن (يعيد الطول المكتوب). */
+static size_t b7_show_nonprint_cp_c(uint32_t c, char *buf) {
+    if (c < 0x20) {
+        buf[0] = '^';
+        buf[1] = (char)('@' + c);
+        return 2;
+    }
+    if (c == 0x7F) { buf[0] = '^'; buf[1] = '?'; return 2; }
+    return 0;
+}
+
+static NvValue b7_lines_show_nonprint_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.أظهر_غير_المطبوع";
+    if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    J14Buf out;
+    j14_buf_init(&out);
+    size_t n = 0;
+    size_t *offs = NULL;
+    uint32_t *cps = j14_decode_all(text, tlen, &n, &offs);
+    for (size_t i = 0; i < n; i++) {
+        uint32_t c = cps[i];
+        if (c == '\n' || c == '\t') {
+            j14_buf_add_cp(&out, c);
+        } else {
+            char tmp[4];
+            size_t m = b7_show_nonprint_cp_c(c, tmp);
+            if (m > 0) {
+                for (size_t k = 0; k < m; k++) j14_buf_add_cp(&out, (unsigned char)tmp[k]);
+            } else {
+                j14_buf_add_cp(&out, c);
+            }
+        }
+    }
+    free(cps);
+    free(offs);
+    free(text);
+    NvValue r = nv_str_new(out.data, out.len);
+    j14_buf_free(&out);
+    return r;
+}
+
+static NvValue b7_lines_first_bytes_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.أول_البايتات";
+    if (nargs != 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    long long n = nv_std_need_integer(D, args[1], line, col);
+    if (n < 0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العدد لا سالب", D);
+    size_t olen = 0;
+    char *out = b7_lossy_head_c(text, tlen, (size_t)n, &olen);
+    free(text);
+    NvValue r = nv_str_new(out, olen);
+    free(out);
+    return r;
+}
+
+static NvValue b7_lines_head_except_last_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.أول_السطور_إلا_آخر";
+    if (nargs < 1 || nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    long long n = b6_lines_n_c(args, nargs, 1, 1, D, line, col);
+    if (n < 0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العدد لا سالب", D);
+    B6LinesC lines; memset(&lines, 0, sizeof(lines));
+    b6_split_lines_c(text, tlen, &lines, line, col);
+    free(text);
+    size_t keep = lines.len > (size_t)n ? lines.len - (size_t)n : 0;
+    B6LinesC out; memset(&out, 0, sizeof(out));
+    for (size_t i = 0; i < keep; i++) b6_lines_push_c(&out, lines.items[i].s, lines.items[i].len, line, col);
+    b6_lines_free_c(&lines);
+    NvValue r = b6_lines_joined_value_c(&out);
+    b6_lines_free_c(&out);
+    return r;
+}
+
+static NvValue b7_lines_last_bytes_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.آخر_البايتات";
+    if (nargs != 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    long long n = nv_std_need_integer(D, args[1], line, col);
+    if (n < 0) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العدد لا سالب", D);
+    size_t olen = 0;
+    char *out = b7_lossy_tail_c(text, tlen, (size_t)n, &olen);
+    free(text);
+    NvValue r = nv_str_new(out, olen);
+    free(out);
+    return r;
+}
+
+static NvValue b7_lines_tail_from_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.آخر_السطور_من";
+    if (nargs != 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    long long n = nv_std_need_integer(D, args[1], line, col);
+    if (n < 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s رقم السطر يبدأ من 1", D);
+    B6LinesC lines; memset(&lines, 0, sizeof(lines));
+    b6_split_lines_c(text, tlen, &lines, line, col);
+    free(text);
+    size_t skip = (size_t)(n - 1);
+    if (skip > lines.len) skip = lines.len;
+    B6LinesC out; memset(&out, 0, sizeof(out));
+    for (size_t i = skip; i < lines.len; i++) b6_lines_push_c(&out, lines.items[i].s, lines.items[i].len, line, col);
+    b6_lines_free_c(&lines);
+    NvValue r = b6_lines_joined_value_c(&out);
+    b6_lines_free_c(&out);
+    return r;
+}
+
+static NvValue b7_lines_dump_radix_fn(NvValue *args, int nargs, int radix, const char *display, int line, int col) {
+    if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", display, nargs);
+    unsigned char *data = NULL;
+    size_t dlen = 0;
+    char *text_alloc = NULL;
+    if (args[0].tag == NV_LIST) {
+        data = b5_need_bytes_c(display, args[0], &dlen, line, col);
+    } else {
+        size_t tlen = 0;
+        text_alloc = b6_lines_input_c(args[0], display, &tlen, line, col);
+        data = (unsigned char *)text_alloc;
+        dlen = tlen;
+    }
+    size_t cap = dlen * 5 + 64;
+    char *out = (char *)malloc(cap);
+    size_t olen = 0;
+    char tmp[128];
+    for (size_t off = 0; off < dlen; off += 16) {
+        size_t clen = dlen - off < 16 ? dlen - off : 16;
+        char vals[80];
+        size_t vl = 0;
+        for (size_t i = 0; i < clen; i++) {
+            if (radix == 8) vl += (size_t)snprintf(vals + vl, sizeof(vals) - vl, "%03o ", data[off + i]);
+            else vl += (size_t)snprintf(vals + vl, sizeof(vals) - vl, "%03u ", data[off + i]);
+        }
+        while (vl < 64) vals[vl++] = ' ';
+        vals[vl] = '\0';
+        char ascii[17];
+        for (size_t i = 0; i < clen; i++) {
+            unsigned char b = data[off + i];
+            ascii[i] = (b >= 0x20 && b < 0x7F) ? (char)b : '.';
+        }
+        ascii[clen] = '\0';
+        int m = snprintf(tmp, sizeof(tmp), "%07o  %s |%s|\n", (unsigned int)off, vals, ascii);
+        memcpy(out + olen, tmp, (size_t)m);
+        olen += (size_t)m;
+    }
+    while (olen > 0 && out[olen - 1] == '\n') olen--;
+    NvValue r = nv_str_new(out, olen);
+    free(out);
+    free(text_alloc);
+    if (args[0].tag == NV_LIST) free(data);
+    return r;
+}
+
+static NvValue b7_lines_octal_fn(NvValue *args, int nargs, int line, int col) {
+    return b7_lines_dump_radix_fn(args, nargs, 8, "سطور.اعرض_ثماني", line, col);
+}
+
+static NvValue b7_lines_decimal_fn(NvValue *args, int nargs, int line, int col) {
+    return b7_lines_dump_radix_fn(args, nargs, 10, "سطور.اعرض_عشري", line, col);
+}
+
+static NvValue b7_lines_paginate_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.اعرض_بصفحات";
+    if (nargs < 1 || nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    long long per = b6_lines_n_c(args, nargs, 1, 56, D, line, col);
+    if (per < 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s عدد سطور الصفحة موجب", D);
+    B6LinesC lines; memset(&lines, 0, sizeof(lines));
+    b6_split_lines_c(text, tlen, &lines, line, col);
+    free(text);
+    B6LinesC out; memset(&out, 0, sizeof(out));
+    size_t page = 1;
+    for (size_t i = 0; i < lines.len; i += (size_t)per) {
+        char hdr[32];
+        int hl = snprintf(hdr, sizeof(hdr), "صفحة %zu", page);
+        b6_lines_push_c(&out, hdr, (size_t)hl, line, col);
+        size_t end = i + (size_t)per;
+        if (end > lines.len) end = lines.len;
+        for (size_t j = i; j < end; j++) b6_lines_push_c(&out, lines.items[j].s, lines.items[j].len, line, col);
+        if (end < lines.len) b6_lines_push_c(&out, "", 0, line, col);
+        page++;
+    }
+    b6_lines_free_c(&lines);
+    NvValue r = b6_lines_joined_value_c(&out);
+    b6_lines_free_c(&out);
+    return r;
+}
+
+static NvValue b7_lines_reverse_chars_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.اعكس_الحروف";
+    if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    B6LinesC lines; memset(&lines, 0, sizeof(lines));
+    b6_split_lines_c(text, tlen, &lines, line, col);
+    free(text);
+    B6LinesC out; memset(&out, 0, sizeof(out));
+    for (size_t i = 0; i < lines.len; i++) {
+        const char *ls = lines.items[i].s;
+        size_t ll = lines.items[i].len;
+        size_t n = 0;
+        size_t *offs = NULL;
+        uint32_t *cps = j14_decode_all(ls, ll, &n, &offs);
+        (void)cps;
+        J14Buf b;
+        j14_buf_init(&b);
+        for (size_t k = n; k > 0; k--) {
+            size_t s0 = offs[k - 1], s1 = offs[k];
+            for (size_t q = s0; q < s1; q++) j14_buf_addc(&b, ls[q]);
+        }
+        b6_lines_push_c(&out, b.data, b.len, line, col);
+        j14_buf_free(&b);
+        free(cps);
+        free(offs);
+    }
+    b6_lines_free_c(&lines);
+    NvValue r = b6_lines_joined_value_c(&out);
+    b6_lines_free_c(&out);
+    return r;
+}
+
+static NvValue b7_lines_show_all_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.أظهر_كل_العلامات";
+    if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    B6LinesC lines; memset(&lines, 0, sizeof(lines));
+    b6_split_lines_c(text, tlen, &lines, line, col);
+    free(text);
+    B6LinesC out; memset(&out, 0, sizeof(out));
+    for (size_t i = 0; i < lines.len; i++) {
+        const char *ls = lines.items[i].s;
+        size_t ll = lines.items[i].len;
+        size_t n = 0;
+        size_t *offs = NULL;
+        uint32_t *cps = j14_decode_all(ls, ll, &n, &offs);
+        J14Buf b;
+        j14_buf_init(&b);
+        for (size_t k = 0; k < n; k++) {
+            uint32_t c = cps[k];
+            if (c == '\t') {
+                j14_buf_add_cp(&b, '^');
+                j14_buf_add_cp(&b, 'I');
+            } else {
+                char tmp[4];
+                size_t m = b7_show_nonprint_cp_c(c, tmp);
+                if (m > 0) {
+                    for (size_t q = 0; q < m; q++) j14_buf_add_cp(&b, (unsigned char)tmp[q]);
+                } else {
+                    j14_buf_add_cp(&b, c);
+                }
+            }
+        }
+        j14_buf_add_cp(&b, '$');
+        b6_lines_push_c(&out, b.data, b.len, line, col);
+        j14_buf_free(&b);
+        free(cps);
+        free(offs);
+    }
+    b6_lines_free_c(&lines);
+    NvValue r = b6_lines_joined_value_c(&out);
+    b6_lines_free_c(&out);
+    return r;
+}
+
+static NvValue b7_lines_is_sorted_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.تحقق_فرز";
+    if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    B6LinesC lines; memset(&lines, 0, sizeof(lines));
+    b6_split_lines_c(text, tlen, &lines, line, col);
+    free(text);
+    int ok = 1;
+    for (size_t i = 1; i < lines.len; i++) {
+        size_t la = lines.items[i - 1].len, lb = lines.items[i].len;
+        size_t m = la < lb ? la : lb;
+        int cmp = memcmp(lines.items[i - 1].s, lines.items[i].s, m);
+        if (cmp > 0 || (cmp == 0 && la > lb)) { ok = 0; break; }
+    }
+    b6_lines_free_c(&lines);
+    return nv_bool(ok);
+}
+
+/* مقارنة مقطع إصدار واحد: رقمي عدديا وإلا معجميا. */
+static int b7_version_seg_cmp_c(const char *a, size_t alen, const char *b, size_t blen) {
+    int anum = 1, bnum = 1;
+    for (size_t i = 0; i < alen; i++) if (a[i] < '0' || a[i] > '9') anum = 0;
+    for (size_t i = 0; i < blen; i++) if (b[i] < '0' || b[i] > '9') bnum = 0;
+    if (anum && bnum && alen > 0 && blen > 0) {
+        long long na = 0, nb = 0;
+        for (size_t i = 0; i < alen; i++) na = na * 10 + (a[i] - '0');
+        for (size_t i = 0; i < blen; i++) nb = nb * 10 + (b[i] - '0');
+        if (na < nb) return -1;
+        if (na > nb) return 1;
+        return 0;
+    }
+    size_t m = alen < blen ? alen : blen;
+    int cmp = memcmp(a, b, m);
+    if (cmp != 0) return cmp;
+    if (alen < blen) return -1;
+    if (alen > blen) return 1;
+    return 0;
+}
+
+static int b7_version_cmp_c(const char *a, const char *b) {
+    const char *pa = a, *pb = b;
+    for (;;) {
+        const char *da = strchr(pa, '.');
+        const char *db = strchr(pb, '.');
+        size_t la = da ? (size_t)(da - pa) : strlen(pa);
+        size_t lb = db ? (size_t)(db - pb) : strlen(pb);
+        int c = b7_version_seg_cmp_c(pa, la, pb, lb);
+        if (c != 0) return c;
+        if (!da && !db) return 0;
+        if (!da) return -1;
+        if (!db) return 1;
+        pa = da + 1;
+        pb = db + 1;
+    }
+}
+
+static int b7_qsort_version_cmp_c(const void *x, const void *y) {
+    const B6LineC *a = (const B6LineC *)x;
+    const B6LineC *b = (const B6LineC *)y;
+    return b7_version_cmp_c(a->s, b->s);
+}
+
+static NvValue b7_lines_sort_versions_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.فرز_إصدارات";
+    if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    B6LinesC lines; memset(&lines, 0, sizeof(lines));
+    b6_split_lines_c(text, tlen, &lines, line, col);
+    free(text);
+    if (lines.len > 1) qsort(lines.items, lines.len, sizeof(B6LineC), b7_qsort_version_cmp_c);
+    NvValue r = b6_lines_joined_value_c(&lines);
+    b6_lines_free_c(&lines);
+    return r;
+}
+
+static NvValue b7_lines_split_pattern_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.قسّم_بنمط";
+    if (nargs != 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    const char *pattern = nv_std_need_string(D, args[1], line, col);
+    if (pattern[0] == '\0') nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s النمط لا فارغ", D);
+    B6LinesC lines; memset(&lines, 0, sizeof(lines));
+    b6_split_lines_c(text, tlen, &lines, line, col);
+    free(text);
+    NvValue out = nv_list_new();
+    size_t ridx = nv_root_push_idx();
+    *nv_root_slot(ridx) = out;
+    B6LinesC cur; memset(&cur, 0, sizeof(cur));
+    size_t nchunks = 0;
+    for (size_t i = 0; i < lines.len; i++) {
+        if (strstr(lines.items[i].s, pattern) != NULL && cur.len > 0) {
+            NvValue chunk = b6_lines_joined_value_c(&cur);
+            size_t ri = nv_root_push_idx();
+            *nv_root_slot(ri) = chunk;
+            nv_list_push_raw(out.u.list, chunk);
+            nchunks++;
+            b6_lines_free_c(&cur);
+            memset(&cur, 0, sizeof(cur));
+        }
+        b6_lines_push_c(&cur, lines.items[i].s, lines.items[i].len, line, col);
+    }
+    NvValue chunk = b6_lines_joined_value_c(&cur);
+    size_t ri = nv_root_push_idx();
+    *nv_root_slot(ri) = chunk;
+    nv_list_push_raw(out.u.list, chunk);
+    nchunks++;
+    b6_lines_free_c(&cur);
+    b6_lines_free_c(&lines);
+    nv_root_pop_n((int)nchunks);
+    nv_root_pop();
+    (void)ri;
+    return out;
+}
+
+static NvValue b7_lines_toposort_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.رتب_طوبولوجيا";
+    if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", D, nargs);
+    if (args[0].tag != NV_LIST) nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة أزواج لكن أعطيت %s", D, nv_type_name(args[0]));
+    size_t npairs = args[0].u.list->len;
+    char **befores = (char **)calloc(npairs ? npairs : 1, sizeof(char *));
+    char **afters = (char **)calloc(npairs ? npairs : 1, sizeof(char *));
+    char **nodes = NULL;
+    size_t nnodes = 0, ncap = 0;
+    for (size_t i = 0; i < npairs; i++) {
+        NvValue item = args[0].u.list->items[i];
+        if (item.tag != NV_DICT) nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قواميس {قبل، بعد} لكن أعطيت %s", D, nv_type_name(item));
+        NvDict *d = item.u.dict;
+        int bi = nv_dict_find(d, "قبل");
+        int ai = nv_dict_find(d, "بعد");
+        if (bi < 0 || d->entries[bi].val.tag != NV_STR) nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s كل زوج يحتاج مفتاح قبل نصا", D);
+        if (ai < 0 || d->entries[ai].val.tag != NV_STR) nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s كل زوج يحتاج مفتاح بعد نصا", D);
+        const char *bs = d->entries[bi].val.u.str->data;
+        const char *as = d->entries[ai].val.u.str->data;
+        befores[i] = strdup(bs);
+        afters[i] = strdup(as);
+        const char *pair[2] = { bs, as };
+        for (int k = 0; k < 2; k++) {
+            int found = 0;
+            for (size_t j = 0; j < nnodes; j++) if (strcmp(nodes[j], pair[k]) == 0) { found = 1; break; }
+            if (!found) {
+                if (nnodes >= ncap) {
+                    size_t nc = ncap == 0 ? 8 : ncap * 2;
+                    char **g = (char **)realloc(nodes, nc * sizeof(char *));
+                    if (!g) nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col);
+                    nodes = g;
+                    ncap = nc;
+                }
+                nodes[nnodes++] = strdup(pair[k]);
+            }
+        }
+    }
+    NvValue out = nv_list_new();
+    size_t ridx = nv_root_push_idx();
+    *nv_root_slot(ridx) = out;
+    int *done = (int *)calloc(nnodes ? nnodes : 1, sizeof(int));
+    size_t placed = 0;
+    while (placed < nnodes) {
+        int progress = 0;
+        for (size_t i = 0; i < nnodes; i++) {
+            if (done[i]) continue;
+            int blocked = 0;
+            for (size_t e = 0; e < npairs; e++) {
+                if (strcmp(afters[e], nodes[i]) == 0) {
+                    for (size_t j = 0; j < nnodes; j++) {
+                        if (!done[j] && strcmp(befores[e], nodes[j]) == 0) { blocked = 1; break; }
+                    }
+                }
+                if (blocked) break;
+            }
+            if (!blocked) {
+                done[i] = 1;
+                placed++;
+                progress = 1;
+                NvValue s = nv_str_new(nodes[i], strlen(nodes[i]));
+                size_t ri = nv_root_push_idx();
+                *nv_root_slot(ri) = s;
+                nv_list_push_raw(out.u.list, s);
+            }
+        }
+        if (!progress) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s دورة في الاعتماديات", D);
+        }
+    }
+    for (size_t i = 0; i < npairs; i++) { free(befores[i]); free(afters[i]); }
+    free(befores);
+    free(afters);
+    for (size_t i = 0; i < nnodes; i++) free(nodes[i]);
+    free(nodes);
+    free(done);
+    nv_root_pop_n((int)placed);
+    nv_root_pop();
+    return out;
+}
+
+static NvValue b7_lines_unexpand_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.ضغط_تبويبات";
+    if (nargs < 1 || nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    long long width = b6_lines_n_c(args, nargs, 1, 8, D, line, col);
+    if (width < 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s عرض التبويب موجب", D);
+    B6LinesC lines; memset(&lines, 0, sizeof(lines));
+    b6_split_lines_c(text, tlen, &lines, line, col);
+    free(text);
+    B6LinesC out; memset(&out, 0, sizeof(out));
+    for (size_t i = 0; i < lines.len; i++) {
+        const char *ls = lines.items[i].s;
+        size_t ll = lines.items[i].len;
+        size_t spaces = 0;
+        while (spaces < ll && ls[spaces] == ' ') spaces++;
+        size_t tabs = spaces / (size_t)width;
+        size_t rest = spaces % (size_t)width;
+        size_t nlen = tabs + rest + (ll - spaces);
+        char *s = (char *)malloc(nlen + 1);
+        size_t w = 0;
+        for (size_t k = 0; k < tabs; k++) s[w++] = '\t';
+        for (size_t k = 0; k < rest; k++) s[w++] = ' ';
+        if (ll > spaces) memcpy(s + w, ls + spaces, ll - spaces);
+        w += ll - spaces;
+        s[w] = '\0';
+        b6_lines_push_c(&out, s, nlen, line, col);
+        free(s);
+    }
+    b6_lines_free_c(&lines);
+    NvValue r = b6_lines_joined_value_c(&out);
+    b6_lines_free_c(&out);
+    return r;
+}
+
+/* قاموس الخيارات الاختياري (معامل أخير): بلا معامل أو لاشيء ← NULL؛ وقاموس ← مؤشره. */
+static NvDict *b7_opts_dict_c(NvValue *args, int nargs, int at, const char *display, int line, int col) {
+    if (at >= nargs) return NULL;
+    if (args[at].tag == NV_NIL) return NULL;
+    if (args[at].tag != NV_DICT) nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قاموس خيارات لكن أعطيت %s", display, nv_type_name(args[at]));
+    return args[at].u.dict;
+}
+
+static void b7_no_unknown_c(NvDict *d, const char **allowed, size_t nallowed, const char *display, int line, int col) {
+    if (!d) return;
+    for (size_t i = 0; i < d->len; i++) {
+        const char *k = d->entries[i].key;
+        int ok = 0;
+        for (size_t j = 0; j < nallowed; j++) if (strcmp(k, allowed[j]) == 0) { ok = 1; break; }
+        if (!ok) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا تقبل الخيار %s", display, k);
+    }
+}
+
+static NvValue b7_lines_format_paras_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.نسّق_فقرات";
+    if (nargs < 1 || nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 1, D, line, col);
+    const char *allowed[] = { "عرض", "مسافات_موحدة" };
+    b7_no_unknown_c(opts, allowed, 2, D, line, col);
+    long long width = 72;
+    long long wv = 0;
+    if (b5_opt_int_c(opts, "عرض", &wv, D, line, col)) width = wv;
+    int uniform = b5_opt_bool_c(opts, "مسافات_موحدة", 0, D, line, col);
+    if (width < 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العرض موجب", D);
+    B6LinesC lines; memset(&lines, 0, sizeof(lines));
+    b6_split_lines_c(text, tlen, &lines, line, col);
+    free(text);
+    /* فقرات: سطور غير فارغة متتالية. */
+    B6LinesC out; memset(&out, 0, sizeof(out));
+    size_t i = 0;
+    while (i < lines.len) {
+        while (i < lines.len && lines.items[i].len == 0) i++;
+        if (i >= lines.len) break;
+        /* اجمع كلمات الفقرة (فصل على المسافات والتبويبات). */
+        J14Buf words;
+        j14_buf_init(&words);
+        size_t wstart = i;
+        while (i < lines.len && lines.items[i].len > 0) i++;
+        /* لصق سطور الفقرة بمسافة واحدة. */
+        J14Buf joined;
+        j14_buf_init(&joined);
+        for (size_t j = wstart; j < i; j++) {
+            if (j > wstart) j14_buf_add_cp(&joined, ' ');
+            for (size_t k = 0; k < lines.items[j].len; k++) j14_buf_addc(&joined, lines.items[j].s[k]);
+        }
+        /* قسّم إلى كلمات على المسافات. */
+        char *jt = joined.data;
+        size_t jl = joined.len;
+        J14Buf cur;
+        j14_buf_init(&cur);
+        size_t p = 0;
+        while (p <= jl) {
+            if (p == jl || jt[p] == ' ' || jt[p] == '\t') {
+                if (cur.len > 0) {
+                    size_t cw = b7_utf8_chars_c(cur.data, cur.len);
+                    size_t curw = b7_utf8_chars_c(words.data, words.len);
+                    if (words.len == 0) {
+                        for (size_t k = 0; k < cur.len; k++) j14_buf_addc(&words, cur.data[k]);
+                    } else if (curw + 1 + cw <= (size_t)width) {
+                        j14_buf_add_cp(&words, ' ');
+                        for (size_t k = 0; k < cur.len; k++) j14_buf_addc(&words, cur.data[k]);
+                    } else {
+                        b6_lines_push_c(&out, words.data, words.len, line, col);
+                        j14_buf_free(&words);
+                        j14_buf_init(&words);
+                        for (size_t k = 0; k < cur.len; k++) j14_buf_addc(&words, cur.data[k]);
+                    }
+                    j14_buf_free(&cur);
+                    j14_buf_init(&cur);
+                }
+            } else {
+                j14_buf_addc(&cur, jt[p]);
+            }
+            p++;
+        }
+        j14_buf_free(&cur);
+        if (words.len > 0) b6_lines_push_c(&out, words.data, words.len, line, col);
+        j14_buf_free(&words);
+        j14_buf_free(&joined);
+        if (i < lines.len) b6_lines_push_c(&out, "", 0, line, col);
+    }
+    b6_lines_free_c(&lines);
+    if (uniform) {
+        for (size_t k = 0; k < out.len; k++) {
+            char *ls = out.items[k].s;
+            size_t ll = out.items[k].len;
+            J14Buf b;
+            j14_buf_init(&b);
+            for (size_t q = 0; q < ll; q++) {
+                unsigned char ch = (unsigned char)ls[q];
+                j14_buf_addc(&b, (char)ch);
+                if ((ch == '.' || ch == '!' || ch == '?') && q + 1 < ll && ls[q + 1] == ' ') {
+                    j14_buf_addc(&b, ' ');
+                } else if (ch == 0xD8 && q + 2 < ll && (unsigned char)ls[q + 1] == 0x9F && ls[q + 2] == ' ') {
+                    /* ؟ عربية: البايت الثاني يأتي بعدها في التكرار التالي؛ نضيف المسافة بعد اكتمالها. */
+                }
+            }
+            /* معالجة ثانية للعلامات العربية ؟/؛ (بايتان D8 9F / D8 9B) قبل مسافة. */
+            J14Buf b2;
+            j14_buf_init(&b2);
+            for (size_t q = 0; q < b.len; q++) {
+                unsigned char ch = (unsigned char)b.data[q];
+                j14_buf_addc(&b2, (char)ch);
+                if (ch == 0xD8 && q + 2 < b.len && ((unsigned char)b.data[q + 1] == 0x9F || (unsigned char)b.data[q + 1] == 0x9B) && b.data[q + 2] == ' ') {
+                    /* أضف المسافة الإضافية بعد اكتمال المحرف (بعد بايتيه). */
+                    j14_buf_addc(&b2, (char)b.data[q + 1]);
+                    j14_buf_addc(&b2, ' ');
+                    q += 1;
+                }
+            }
+            j14_buf_free(&b);
+            free(out.items[k].s);
+            out.items[k].s = (char *)malloc(b2.len + 1);
+            memcpy(out.items[k].s, b2.data, b2.len);
+            out.items[k].s[b2.len] = '\0';
+            out.items[k].len = b2.len;
+            j14_buf_free(&b2);
+        }
+    }
+    NvValue r = b6_lines_joined_value_c(&out);
+    b6_lines_free_c(&out);
+    return r;
+}
+
+static NvValue b7_lines_delete_cols_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.احذف_أعمدة";
+    if (nargs != 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملين لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    const char *spec = nv_std_need_string(D, args[1], line, col);
+    B7RangeC *ranges = NULL;
+    size_t nranges = 0;
+    b7_parse_ranges_c(spec, D, &ranges, &nranges, line, col);
+    B6LinesC lines; memset(&lines, 0, sizeof(lines));
+    b6_split_lines_c(text, tlen, &lines, line, col);
+    free(text);
+    B6LinesC out; memset(&out, 0, sizeof(out));
+    for (size_t i = 0; i < lines.len; i++) {
+        const char *ls = lines.items[i].s;
+        size_t ll = lines.items[i].len;
+        size_t n = 0;
+        size_t *offs = NULL;
+        uint32_t *cps = j14_decode_all(ls, ll, &n, &offs);
+        (void)cps;
+        J14Buf b;
+        j14_buf_init(&b);
+        for (size_t k = 0; k < n; k++) {
+            if (b7_in_ranges_c(k + 1, ranges, nranges)) continue;
+            for (size_t q = offs[k]; q < offs[k + 1]; q++) j14_buf_addc(&b, ls[q]);
+        }
+        b6_lines_push_c(&out, b.data, b.len, line, col);
+        j14_buf_free(&b);
+        free(cps);
+        free(offs);
+    }
+    free(ranges);
+    b6_lines_free_c(&lines);
+    NvValue r = b6_lines_joined_value_c(&out);
+    b6_lines_free_c(&out);
+    return r;
+}
+
+static NvValue b7_lines_count_bytes_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.عد_بايتات";
+    if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    free(text);
+    return nv_num((double)tlen);
+}
+
+static NvValue b7_lines_longest_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "سطور.أطول_سطر";
+    if (nargs != 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا واحدا لكن أعطيت %d", D, nargs);
+    size_t tlen = 0;
+    char *text = b6_lines_input_c(args[0], D, &tlen, line, col);
+    B6LinesC lines; memset(&lines, 0, sizeof(lines));
+    b6_split_lines_c(text, tlen, &lines, line, col);
+    free(text);
+    size_t mx = 0;
+    for (size_t i = 0; i < lines.len; i++) {
+        size_t c = b7_utf8_chars_c(lines.items[i].s, lines.items[i].len);
+        if (c > mx) mx = c;
+    }
+    b6_lines_free_c(&lines);
+    return nv_num((double)mx);
+}
+
+/* END لينكس7-ز1ج-سطور-جديد. */
+
+/* قراءة ملف نصي كاملا (مالك)؛ NULL عند الفشل. */
+static char *b7_read_text_c(const char *path, size_t *len_out) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return NULL;
+    /* قراءة مقطعية حتى EOF: ملفات ‎/proc‎ حجمها
+       الظاهري 0 فلا يصح قياسها بـftell. */
+    size_t cap = 4096;
+    size_t len = 0;
+    char *buf = (char *)malloc(cap);
+    if (!buf) { fclose(fp); return NULL; }
+    for (;;) {
+        if (len + 1024 + 1 > cap) {
+            cap *= 2;
+            char *nb = (char *)realloc(buf, cap);
+            if (!nb) { free(buf); fclose(fp); return NULL; }
+            buf = nb;
+        }
+        size_t r = fread(buf + len, 1, 1024, fp);
+        len += r;
+        if (r < 1024) break;
+    }
+    fclose(fp);
+    buf[len] = '\0';
+    if (len_out) *len_out = len;
+    return buf;
+}
+
+/* قراءة ملف ‎/proc‎ نصا؛ خطأ موثق "لينكس فقط" على غير لينكس. */
+static char *b7_proc_text_c(const char *path, const char *display, int line, int col) {
+#if defined(__linux__)
+    size_t len = 0;
+    char *s = b7_read_text_c(path, &len);
+    if (!s) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر قراءة %s", display, path);
+    return s;
+#else
+    (void)path;
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مدعومة على لينكس فقط في هذه الدفعة", display);
+    return NULL;
+#endif
+}
+
+/* تنسيق بايتات بصيغة بشرية: "1.2 غ". */
+static void b7_human_bytes_c(double n, char *buf, size_t cap) {
+    static const char *units[] = { "ب", "ك", "م", "غ", "ت" };
+    double v = n;
+    int u = 0;
+    while (v >= 1024.0 && u < 4) { v /= 1024.0; u++; }
+    if (u == 0) snprintf(buf, cap, "%lld ب", (long long)n);
+    else snprintf(buf, cap, "%.1f %s", v, units[u]);
+}
+
+/* تحويل قيمة إلى نص جسون. */
+static NvValue b7_json_c(NvValue v, const char *display, int line, int col) {
+    J14Buf out;
+    j14_buf_init(&out);
+    if (!json_write_value_c(v, &out, 0)) {
+        j14_buf_free(&out);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s قيمة لا تقبل كتابة JSON", display);
+    }
+    NvValue r = nv_str_new(out.data, out.len);
+    j14_buf_free(&out);
+    return r;
+}
+
+/* معمارية الجهاز بمسميات std::env::consts::ARCH. */
+static const char *b7_arch_c(void) {
+#if defined(__x86_64__) || defined(_M_X64)
+    return "x86_64";
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    return "aarch64";
+#elif defined(__i386__) || defined(_M_IX86)
+    return "x86";
+#elif defined(__arm__) || defined(_M_ARM)
+    return "arm";
+#else
+    return "غير معروف";
+#endif
+}
+
+/* اسم نظام التشغيل: GNU/Linux وDarwin وWindows. */
+static const char *b7_os_name_c(void) {
+#if defined(__linux__)
+    return "GNU/Linux";
+#elif defined(__APPLE__)
+    return "Darwin";
+#elif defined(_WIN32)
+    return "Windows";
+#else
+    return "غير معروف";
+#endif
+}
+
+/* تشغيل أمر ثابت الاسم والتقاط مخرجاته بلا صدفة (مالك)؛ stderr إلى /dev/null. */
+static char *b7_capture_c(const char *prog, char *const *argv, const char *display, int line, int col) {
+#ifdef _WIN32
+    (void)prog; (void)argv;
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على ويندوز", display);
+    return NULL;
+#else
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تشغيل %s", display, prog);
+        return NULL;
+    }
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]); close(pipefd[1]);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تشغيل %s", display, prog);
+        return NULL;
+    }
+    if (pid == 0) {
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+        execvp(prog, argv);
+        _exit(127);
+    }
+    close(pipefd[1]);
+    J14Buf out;
+    j14_buf_init(&out);
+    char tmp[4096];
+    ssize_t r;
+    while ((r = read(pipefd[0], tmp, sizeof(tmp))) > 0) j14_buf_addn(&out, tmp, (size_t)r);
+    close(pipefd[0]);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        j14_buf_free(&out);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s فشل الأمر %s", display, prog);
+        return NULL;
+    }
+    return out.data;
+#endif
+}
+
+/* تشغيل أمر ثابت الاسم وانتظاره (بلا التقاط)؛ خطأ عند خروج غير صفر. */
+static void b7_run_status_c(const char *prog, char *const *argv, const char *display, int line, int col) {
+#ifdef _WIN32
+    (void)prog; (void)argv;
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على ويندوز", display);
+#else
+    pid_t pid = fork();
+    if (pid < 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تشغيل %s", display, prog);
+    }
+    if (pid == 0) {
+        int devnull = open("/dev/null", O_WRONLY);
+        if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+        execvp(prog, argv);
+        _exit(127);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s فشل الأمر %s", display, prog);
+    }
+#endif
+}
+
+/* بايتات عشوائية: ‎/dev/urandom‎ على يونكس؛ احتياطي زمني. */
+static void b7_rand_bytes_c(unsigned char *buf, size_t n) {
+#ifndef _WIN32
+    FILE *fp = fopen("/dev/urandom", "rb");
+    if (fp) {
+        if (fread(buf, 1, n, fp) == n) { fclose(fp); return; }
+        fclose(fp);
+    }
+#endif
+    uint64_t state = (uint64_t)time(NULL) * 1000000000ULL
+        ^ ((uint64_t)getpid() << 32) ^ 0x9E3779B97F4A7C15ULL;
+    for (size_t i = 0; i < n; i++) {
+        state ^= state >> 12;
+        state ^= state << 25;
+        state ^= state >> 27;
+        state *= 0x2545F4914F6CDD1DULL;
+        buf[i] = (unsigned char)(state >> 56);
+    }
+}
+
+/* قيمة عددية من ‎/proc/meminfo‎ لمفتاح (كيلوبايت)؛ 0 عند الغياب. */
+static long long b7_meminfo_get_c(const char *text, const char *key) {
+    size_t klen = strlen(key);
+    const char *p = text;
+    while (*p) {
+        const char *eol = strchr(p, '\n');
+        size_t llen = eol ? (size_t)(eol - p) : strlen(p);
+        if (llen > klen && strncmp(p, key, klen) == 0 && p[klen] == ':') {
+            const char *q = p + klen + 1;
+            while (*q == ' ' || *q == '\t') q++;
+            return strtoll(q, NULL, 10);
+        }
+        if (!eol) break;
+        p = eol + 1;
+    }
+    return 0;
+}
+
+/* قاموس ذاكرة واحد من ‎/proc/meminfo‎ (بايتات). */
+static NvValue b7_mem_dict_c(const char *display, int line, int col) {
+    char *text = b7_proc_text_c("/proc/meminfo", display, line, col);
+    long long total = b7_meminfo_get_c(text, "MemTotal");
+    long long free_kb = b7_meminfo_get_c(text, "MemFree");
+    long long buffers = b7_meminfo_get_c(text, "Buffers");
+    long long cached = b7_meminfo_get_c(text, "Cached");
+    long long shmem = b7_meminfo_get_c(text, "Shmem");
+    long long sreclaim = b7_meminfo_get_c(text, "SReclaimable");
+    long long used = total - free_kb - buffers - cached;
+    if (used < 0) used = 0;
+    NvValue d = nv_dict_new();
+    nv_dict_set_raw(d.u.dict, "كلية", nv_num((double)total * 1024.0));
+    nv_dict_set_raw(d.u.dict, "مستخدمة", nv_num((double)used * 1024.0));
+    nv_dict_set_raw(d.u.dict, "حرة", nv_num((double)free_kb * 1024.0));
+    nv_dict_set_raw(d.u.dict, "مشتركة", nv_num((double)shmem * 1024.0));
+    nv_dict_set_raw(d.u.dict, "مخزنة", nv_num((double)(buffers + cached + sreclaim) * 1024.0));
+    free(text);
+    return d;
+}
+
+/* قيمة حقل من ‎/proc/cpuinfo‎ (أول وقوع؛ مالك؛ "" عند الغياب). */
+static char *b7_cpu_field_c(const char *text, const char *key) {
+    size_t klen = strlen(key);
+    const char *p = text;
+    while (*p) {
+        const char *eol = strchr(p, '\n');
+        size_t llen = eol ? (size_t)(eol - p) : strlen(p);
+        if (llen > klen && strncmp(p, key, klen) == 0) {
+            const char *q = p + klen;
+            while (q < p + llen && (*q == ' ' || *q == '\t' || *q == ':')) q++;
+            const char *e = p + llen;
+            while (e > q && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r')) e--;
+            return j14_strndup(q, (size_t)(e - q));
+        }
+        if (!eol) break;
+        p = eol + 1;
+    }
+    return j14_strdup("");
+}
+
+/* عدد أسطر processor في ‎/proc/cpuinfo‎. */
+static long long b7_cpu_count_c(const char *text) {
+    long long n = 0;
+    const char *p = text;
+    while ((p = strstr(p, "processor")) != NULL) {
+        if (p == text || p[-1] == '\n') n++;
+        p += 9;
+    }
+    return n;
+}
+
+/* قراءة ‎/proc/mounts‎: عدد الإدخالات؛ والمصفوفات مالكة. */
+static size_t b7_mounts_c(const char *display, int line, int col,
+                          char ***dev_out, char ***point_out, char ***fst_out) {
+    char *text = b7_proc_text_c("/proc/mounts", display, line, col);
+    size_t cap = 16, n = 0;
+    char **devs = (char **)malloc(cap * sizeof(char *));
+    char **points = (char **)malloc(cap * sizeof(char *));
+    char **fsts = (char **)malloc(cap * sizeof(char *));
+    char *save = NULL;
+    char *l = strtok_r(text, "\n", &save);
+    while (l) {
+        char d[512], p[512], f[128];
+        if (sscanf(l, "%511s %511s %127s", d, p, f) == 3) {
+            if (n == cap) {
+                cap *= 2;
+                devs = (char **)realloc(devs, cap * sizeof(char *));
+                points = (char **)realloc(points, cap * sizeof(char *));
+                fsts = (char **)realloc(fsts, cap * sizeof(char *));
+            }
+            devs[n] = j14_strdup(d);
+            points[n] = j14_strdup(p);
+            fsts[n] = j14_strdup(f);
+            n++;
+        }
+        l = strtok_r(NULL, "\n", &save);
+    }
+    free(text);
+    *dev_out = devs;
+    *point_out = points;
+    *fst_out = fsts;
+    return n;
+}
+
+static void b7_mounts_free_c(char **devs, char **points, char **fsts, size_t n) {
+    for (size_t i = 0; i < n; i++) { free(devs[i]); free(points[i]); free(fsts[i]); }
+    free(devs); free(points); free(fsts);
+}
+
+/* هدف رابط رمزي (مالك)؛ NULL عند الفشل أو على ويندوز. */
+static char *b7_link_target_c(const char *path) {
+#ifdef _WIN32
+    (void)path;
+    return NULL;
+#else
+    char buf[1024];
+    ssize_t n = readlink(path, buf, sizeof(buf) - 1);
+    if (n < 0) return NULL;
+    buf[n] = '\0';
+    return j14_strdup(buf);
+#endif
+}
+
+/* تسمية ومعرف جهاز من ‎/dev/disk/by-label وby-uuid (مالكان؛ "" عند الغياب). */
+static void b7_dev_label_uuid_c(const char *dev, char **label_out, char **uuid_out) {
+    *label_out = j14_strdup("");
+    *uuid_out = j14_strdup("");
+    const char *dirs[2] = { "/dev/disk/by-label", "/dev/disk/by-uuid" };
+    for (int di = 0; di < 2; di++) {
+        DIR *dir = opendir(dirs[di]);
+        if (!dir) continue;
+        struct dirent *e;
+        while ((e = readdir(dir)) != NULL) {
+            if (e->d_name[0] == '.') continue;
+            char full[1024];
+            snprintf(full, sizeof(full), "%s/%s", dirs[di], e->d_name);
+            char *t = b7_link_target_c(full);
+            if (!t) continue;
+            if (strstr(t, dev) != NULL) {
+                if (di == 0 && (*label_out)[0] == '\0') { free(*label_out); *label_out = j14_strdup(e->d_name); }
+                if (di == 1 && (*uuid_out)[0] == '\0') { free(*uuid_out); *uuid_out = j14_strdup(e->d_name); }
+            }
+            free(t);
+        }
+        closedir(dir);
+    }
+}
+
+/* لينكس7-ز3ج-نظام. */
+/* حجم نافذة الطرفية: stty size ثم COLUMNS/LINES ثم 24/80. */
+static void b7_term_size_c(const char *display, int line, int col, long long *rows_out, long long *cols_out) {
+    char *argv[] = { (char *)"stty", (char *)"size", NULL };
+    char *out = NULL;
+#ifdef _WIN32
+    (void)display; (void)line; (void)col; (void)argv;
+#else
+    /* b7_capture_c يخطئ على الفشل؛ نلتقطه بصمت هنا للبديل. */
+    int pipefd[2];
+    if (pipe(pipefd) == 0) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(pipefd[0]);
+            dup2(pipefd[1], STDOUT_FILENO);
+            close(pipefd[1]);
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+            execvp("stty", argv);
+            _exit(127);
+        }
+        if (pid > 0) {
+            close(pipefd[1]);
+            J14Buf b;
+            j14_buf_init(&b);
+            char tmp[256];
+            ssize_t r;
+            while ((r = read(pipefd[0], tmp, sizeof(tmp))) > 0) j14_buf_addn(&b, tmp, (size_t)r);
+            close(pipefd[0]);
+            int status = 0;
+            waitpid(pid, &status, 0);
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) out = b.data;
+            else j14_buf_free(&b);
+        } else {
+            close(pipefd[0]); close(pipefd[1]);
+        }
+    }
+#endif
+    long long rows = 24, cols = 80;
+    if (out) {
+        long long r = 0, c = 0;
+        if (sscanf(out, "%lld %lld", &r, &c) == 2) { rows = r; cols = c; }
+        free(out);
+    } else {
+        const char *le = getenv("LINES");
+        const char *ce = getenv("COLUMNS");
+        if (le) { long long v = strtoll(le, NULL, 10); if (v > 0) rows = v; }
+        if (ce) { long long v = strtoll(ce, NULL, 10); if (v > 0) cols = v; }
+    }
+    *rows_out = rows;
+    *cols_out = cols;
+}
+
+static NvValue b7_sys_mem_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.ذاكرة";
+    NvDict *opts = b7_opts_dict_c(args, nargs, 0, DISPLAY, line, col);
+    const char *allowed[] = { "بشرية", "عينات", "جسون" };
+    b7_no_unknown_c(opts, allowed, 3, DISPLAY, line, col);
+    int human = b5_opt_bool_c(opts, "بشرية", 0, DISPLAY, line, col);
+    long long samples = -1;
+    long long sv = 0;
+    if (b5_opt_int_c(opts, "عينات", &sv, DISPLAY, line, col)) samples = sv;
+    int as_json = b5_opt_bool_c(opts, "جسون", 0, DISPLAY, line, col);
+    if (samples != -1) {
+        if (samples < 1) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s عينات تبدأ من 1", DISPLAY);
+        size_t ridx = nv_root_push_idx();
+        NvValue out = nv_list_new();
+        *nv_root_slot(ridx) = out;
+        for (long long i = 0; i < samples; i++) {
+            NvValue d = b7_mem_dict_c(DISPLAY, line, col);
+            nv_list_push_raw(out.u.list, d);
+        }
+        nv_root_pop();
+        if (as_json) return b7_json_c(out, DISPLAY, line, col);
+        return out;
+    }
+    NvValue d = b7_mem_dict_c(DISPLAY, line, col);
+    if (human) {
+        const char *keys[5] = { "كلية", "مستخدمة", "حرة", "مشتركة", "مخزنة" };
+        for (int i = 0; i < 5; i++) {
+            int idx = nv_dict_find(d.u.dict, keys[i]);
+            if (idx >= 0) {
+                double n = d.u.dict->entries[idx].val.u.num;
+                char buf[64];
+                b7_human_bytes_c(n, buf, sizeof(buf));
+                d.u.dict->entries[idx].val = nv_str_cstr(buf);
+            }
+        }
+    }
+    if (as_json) return b7_json_c(d, DISPLAY, line, col);
+    return d;
+}
+
+static NvValue b7_sys_cpu_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.معلومات_المعالج";
+    NvDict *opts = b7_opts_dict_c(args, nargs, 0, DISPLAY, line, col);
+    const char *allowed[] = { "طوبولوجيا", "جسون" };
+    b7_no_unknown_c(opts, allowed, 2, DISPLAY, line, col);
+    int topo = b5_opt_bool_c(opts, "طوبولوجيا", 0, DISPLAY, line, col);
+    int as_json = b5_opt_bool_c(opts, "جسون", 0, DISPLAY, line, col);
+    NvValue d = nv_dict_new();
+#if defined(__linux__)
+    char *text = b7_proc_text_c("/proc/cpuinfo", DISPLAY, line, col);
+    char *model = b7_cpu_field_c(text, "model name");
+    char *mhz_s = b7_cpu_field_c(text, "cpu MHz");
+    char *cache = b7_cpu_field_c(text, "cache size");
+    long long cores = b7_cpu_count_c(text);
+    double mhz = strtod(mhz_s, NULL);
+    nv_dict_set_raw(d.u.dict, "طراز", nv_str_cstr(model[0] ? model : "غير معروف"));
+    nv_dict_set_raw(d.u.dict, "أنوية", nv_num((double)cores));
+    nv_dict_set_raw(d.u.dict, "سرعة", nv_num(mhz));
+    nv_dict_set_raw(d.u.dict, "ذاكرة_مخبأة", nv_str_cstr(cache));
+    if (topo) {
+        long long sockets = 0, core_ids = 0;
+        /* عد القيم المميزة لـ physical id وcore id (قائمة صغيرة). */
+        char seen_s[64][32]; size_t ns = 0;
+        char seen_c[64][32]; size_t nc = 0;
+        const char *p = text;
+        while (*p) {
+            const char *eol = strchr(p, '\n');
+            size_t llen = eol ? (size_t)(eol - p) : strlen(p);
+            char line2[256];
+            size_t cl = llen < sizeof(line2) - 1 ? llen : sizeof(line2) - 1;
+            memcpy(line2, p, cl); line2[cl] = '\0';
+            char *colon = strchr(line2, ':');
+            if (colon) {
+                *colon = '\0';
+                char *k = line2; while (*k == ' ' || *k == '\t') k++;
+                char *ke = k + strlen(k); while (ke > k && (ke[-1] == ' ' || ke[-1] == '\t')) *--ke = '\0';
+                char *v = colon + 1; while (*v == ' ' || *v == '\t') v++;
+                char *ve = v + strlen(v); while (ve > v && (ve[-1] == ' ' || ve[-1] == '\t')) *--ve = '\0';
+                if (strcmp(k, "physical id") == 0 && ns < 64) {
+                    int found = 0;
+                    for (size_t q = 0; q < ns; q++) if (strcmp(seen_s[q], v) == 0) found = 1;
+                    if (!found) { snprintf(seen_s[ns], 32, "%s", v); ns++; }
+                }
+                if (strcmp(k, "core id") == 0 && nc < 64) {
+                    int found = 0;
+                    for (size_t q = 0; q < nc; q++) if (strcmp(seen_c[q], v) == 0) found = 1;
+                    if (!found) { snprintf(seen_c[nc], 32, "%s", v); nc++; }
+                }
+            }
+            if (!eol) break;
+            p = eol + 1;
+        }
+        sockets = ns == 0 ? 1 : (long long)ns;
+        core_ids = nc == 0 ? cores : (long long)nc;
+        nv_dict_set_raw(d.u.dict, "مقبس", nv_num((double)sockets));
+        nv_dict_set_raw(d.u.dict, "نواة", nv_num((double)core_ids));
+        nv_dict_set_raw(d.u.dict, "خيط", nv_num((double)cores));
+    }
+    free(model); free(mhz_s); free(cache); free(text);
+#else
+    long long cores = 1;
+#ifdef _WIN32
+    SYSTEM_INFO si; GetSystemInfo(&si); cores = (long long)si.dwNumberOfProcessors;
+#else
+    long v = sysconf(_SC_NPROCESSORS_ONLN);
+    if (v > 0) cores = (long long)v;
+#endif
+    nv_dict_set_raw(d.u.dict, "طراز", nv_str_cstr(b7_arch_c()));
+    nv_dict_set_raw(d.u.dict, "أنوية", nv_num((double)cores));
+    nv_dict_set_raw(d.u.dict, "سرعة", nv_num(0.0));
+    nv_dict_set_raw(d.u.dict, "ذاكرة_مخبأة", nv_str_cstr(""));
+    if (topo) {
+        nv_dict_set_raw(d.u.dict, "مقبس", nv_num(1.0));
+        nv_dict_set_raw(d.u.dict, "نواة", nv_num((double)cores));
+        nv_dict_set_raw(d.u.dict, "خيط", nv_num((double)cores));
+    }
+#endif
+    if (as_json) return b7_json_c(d, DISPLAY, line, col);
+    return d;
+}
+
+static NvValue b7_sys_ncpu_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.عدد_المعالجات";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    long long n = 1;
+#ifdef _WIN32
+    SYSTEM_INFO si; GetSystemInfo(&si); n = (long long)si.dwNumberOfProcessors;
+#else
+    long v = sysconf(_SC_NPROCESSORS_ONLN);
+    if (v > 0) n = (long long)v;
+#endif
+    if (n < 1) n = 1;
+    return nv_num((double)n);
+}
+
+static NvValue b7_sys_arch_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.معمارية_الجهاز";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    return nv_str_cstr(b7_arch_c());
+}
+
+static NvValue b7_sys_osname_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.اسم_نظام_التشغيل";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    return nv_str_cstr(b7_os_name_c());
+}
+
+static NvValue b7_sys_uptime_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.وقت_التشغيل";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    char *text = b7_proc_text_c("/proc/uptime", DISPLAY, line, col);
+    double secs = strtod(text, NULL);
+    free(text);
+    return nv_num(secs);
+}
+
+static NvValue b7_sys_load_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.متوسط_الحمل";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    char *text = b7_proc_text_c("/proc/loadavg", DISPLAY, line, col);
+    double a = 0, b = 0, c = 0;
+    if (sscanf(text, "%lf %lf %lf", &a, &b, &c) != 3) {
+        free(text);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s متوسط الحمل ناقص", DISPLAY);
+    }
+    free(text);
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    nv_list_push_raw(out.u.list, nv_num(a));
+    nv_list_push_raw(out.u.list, nv_num(b));
+    nv_list_push_raw(out.u.list, nv_num(c));
+    nv_root_pop();
+    return out;
+}
+
+static NvValue b7_sys_vmstat_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.إحصاءات_افتراضية";
+    NvDict *opts = b7_opts_dict_c(args, nargs, 0, DISPLAY, line, col);
+    const char *allowed[] = { "قرص" };
+    b7_no_unknown_c(opts, allowed, 1, DISPLAY, line, col);
+    int disk = b5_opt_bool_c(opts, "قرص", 0, DISPLAY, line, col);
+    if (disk) {
+        char *text = b7_proc_text_c("/proc/diskstats", DISPLAY, line, col);
+        size_t ridx = nv_root_push_idx();
+        NvValue out = nv_list_new();
+        *nv_root_slot(ridx) = out;
+        char *save = NULL;
+        char *l = strtok_r(text, "\n", &save);
+        while (l) {
+            char name[128];
+            long long f3 = 0, f5 = 0, f7 = 0, f9 = 0;
+            long long major = 0, minor = 0;
+            long long r0 = 0, r1 = 0, r2 = 0, r4 = 0, r6 = 0, r8 = 0, r10 = 0;
+            int got = sscanf(l, "%lld %lld %127s %lld %lld %lld %lld %lld %lld %lld %lld %lld",
+                             &major, &minor, name, &f3, &r0, &f5, &r1, &f7, &r2, &f9, &r4, &r6);
+            (void)r0; (void)r1; (void)r2; (void)r4; (void)r6; (void)r8; (void)r10;
+            if (got >= 10) {
+                NvValue d = nv_dict_new();
+                nv_dict_set_raw(d.u.dict, "جهاز", nv_str_cstr(name));
+                nv_dict_set_raw(d.u.dict, "قراءات", nv_num((double)f3));
+                nv_dict_set_raw(d.u.dict, "قطاعات_مقروءة", nv_num((double)f5));
+                nv_dict_set_raw(d.u.dict, "كتابات", nv_num((double)f7));
+                nv_dict_set_raw(d.u.dict, "قطاعات_مكتوبة", nv_num((double)f9));
+                nv_list_push_raw(out.u.list, d);
+            }
+            l = strtok_r(NULL, "\n", &save);
+        }
+        free(text);
+        nv_root_pop();
+        return out;
+    }
+    char *text = b7_proc_text_c("/proc/vmstat", DISPLAY, line, col);
+    NvValue d = nv_dict_new();
+    char *save = NULL;
+    char *l = strtok_r(text, "\n", &save);
+    while (l) {
+        char k[128];
+        long long v = 0;
+        if (sscanf(l, "%127s %lld", k, &v) == 2) {
+            nv_dict_set_raw(d.u.dict, k, nv_num((double)v));
+        }
+        l = strtok_r(NULL, "\n", &save);
+    }
+    free(text);
+    return d;
+}
+
+static NvValue b7_sys_memblocks_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.نطاقات_الذاكرة";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    DIR *dir = opendir("/sys/devices/system/memory");
+    if (!dir) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر قراءة نطاقات الذاكرة", DISPLAY);
+    long long nums[4096];
+    size_t nn = 0;
+    struct dirent *e;
+    while ((e = readdir(dir)) != NULL && nn < 4096) {
+        if (strncmp(e->d_name, "memory", 6) == 0) {
+            char *end = NULL;
+            long long v = strtoll(e->d_name + 6, &end, 10);
+            if (end && *end == '\0' && e->d_name[6] != '\0') nums[nn++] = v;
+        }
+    }
+    closedir(dir);
+    for (size_t i = 1; i < nn; i++) {
+        long long t = nums[i]; size_t j = i;
+        while (j > 0 && nums[j - 1] > t) { nums[j] = nums[j - 1]; j--; }
+        nums[j] = t;
+    }
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    for (size_t i = 0; i < nn; i++) {
+        char path[512];
+        snprintf(path, sizeof(path), "/sys/devices/system/memory/memory%lld/state", nums[i]);
+        char *state = b7_read_text_c(path, NULL);
+        char name[64];
+        snprintf(name, sizeof(name), "memory%lld", nums[i]);
+        NvValue d = nv_dict_new();
+        nv_dict_set_raw(d.u.dict, "نطاق", nv_str_cstr(name));
+        if (state) {
+            char *s = state;
+            while (*s == ' ' || *s == '\t') s++;
+            char *e2 = s + strlen(s);
+            while (e2 > s && (e2[-1] == '\n' || e2[-1] == ' ' || e2[-1] == '\t' || e2[-1] == '\r')) *--e2 = '\0';
+            nv_dict_set_raw(d.u.dict, "حالة", nv_str_cstr(s));
+            free(state);
+        } else {
+            nv_dict_set_raw(d.u.dict, "حالة", nv_str_cstr("غير معروف"));
+        }
+        nv_list_push_raw(out.u.list, d);
+    }
+    nv_root_pop();
+    return out;
+}
+
+/* لينكس7-ز3ج-معلومات-كاملة-جرّد: جرّد مسافات البداية والنهاية
+   في مكانها (مرآة ‎.trim()‎ في Rust)؛ تعيد بداية النص
+   المجرّد (قد تتقدم عن بداية المخزن — التحرير يبقى على
+   المؤشر الأصلي). */
+static char *b7_trim_in_place_c(char *s) {
+    while (*s == ' ' || *s == '\t') s++;
+    char *e = s + strlen(s);
+    while (e > s && (e[-1] == '\n' || e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r')) *--e = '\0';
+    return s;
+}
+
+static NvValue b7_sys_full_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.معلومات_النظام_الكاملة";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    NvValue d = nv_dict_new();
+#if defined(__linux__)
+    char *ostype = b7_proc_text_c("/proc/sys/kernel/ostype", DISPLAY, line, col);
+    char *host = b7_proc_text_c("/proc/sys/kernel/hostname", DISPLAY, line, col);
+    char *version = b7_proc_text_c("/proc/sys/kernel/version", DISPLAY, line, col);
+    char *release = b7_proc_text_c("/proc/sys/kernel/osrelease", DISPLAY, line, col);
+    char *trim = b7_trim_in_place_c(ostype);
+    char *host_t = b7_trim_in_place_c(host);
+    char *version_t = b7_trim_in_place_c(version);
+    char *release_t = b7_trim_in_place_c(release);
+    const char *os = "GNU/Linux";
+    if (strcmp(trim, "Darwin") == 0) os = "Darwin";
+    else if (strcmp(trim, "Linux") != 0) os = trim;
+    nv_dict_set_raw(d.u.dict, "نظام", nv_str_cstr(os));
+    nv_dict_set_raw(d.u.dict, "عقدة", nv_str_cstr(host_t));
+    nv_dict_set_raw(d.u.dict, "إصدار", nv_str_cstr(version_t));
+    nv_dict_set_raw(d.u.dict, "نواة", nv_str_cstr(release_t));
+    nv_dict_set_raw(d.u.dict, "معمارية", nv_str_cstr(b7_arch_c()));
+    nv_dict_set_raw(d.u.dict, "نظام_تشغيل", nv_str_cstr(os));
+    free(ostype); free(host); free(version); free(release);
+#else
+    const char *os = b7_os_name_c();
+    nv_dict_set_raw(d.u.dict, "نظام", nv_str_cstr(os));
+    nv_dict_set_raw(d.u.dict, "عقدة", nv_str_cstr("غير معروف"));
+    nv_dict_set_raw(d.u.dict, "إصدار", nv_str_cstr(""));
+    nv_dict_set_raw(d.u.dict, "نواة", nv_str_cstr(""));
+    nv_dict_set_raw(d.u.dict, "معمارية", nv_str_cstr(b7_arch_c()));
+    nv_dict_set_raw(d.u.dict, "نظام_تشغيل", nv_str_cstr(os));
+#endif
+    return d;
+}
+
+static NvValue b7_sys_login_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.اسم_المستخدم_المسجل";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    const char *keys[2] = { "USER", "LOGNAME" };
+    for (int i = 0; i < 2; i++) {
+        const char *v = getenv(keys[i]);
+        if (v && v[0] != '\0') return nv_str_cstr(v);
+    }
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا اسم مستخدم مسجل", DISPLAY);
+    return nv_nil();
+}
+
+static NvValue b7_sys_userinfo_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.معلومات_المستخدم";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    const char *user = getenv("USER");
+    if (!user || !user[0]) user = getenv("LOGNAME");
+    if (!user || !user[0]) user = getenv("USERNAME");
+    if (!user || !user[0]) user = "غير معروف";
+    NvValue d = nv_dict_new();
+    nv_dict_set_raw(d.u.dict, "مستخدم", nv_str_cstr(user));
+#if defined(__linux__)
+    char *status = b7_proc_text_c("/proc/self/status", DISPLAY, line, col);
+    long long uid = 0, gid = 0;
+    size_t ridx = nv_root_push_idx();
+    NvValue groups = nv_list_new();
+    *nv_root_slot(ridx) = groups;
+    char *save = NULL;
+    char *l = strtok_r(status, "\n", &save);
+    while (l) {
+        if (strncmp(l, "Uid:", 4) == 0) uid = strtoll(l + 4, NULL, 10);
+        else if (strncmp(l, "Gid:", 4) == 0) gid = strtoll(l + 4, NULL, 10);
+        else if (strncmp(l, "Groups:", 7) == 0) {
+            char *p = l + 7;
+            while (*p) {
+                while (*p == ' ' || *p == '\t') p++;
+                if (!*p) break;
+                char *end = NULL;
+                long long v = strtoll(p, &end, 10);
+                if (end == p) break;
+                nv_list_push_raw(groups.u.list, nv_num((double)v));
+                p = end;
+            }
+        }
+        l = strtok_r(NULL, "\n", &save);
+    }
+    free(status);
+    nv_dict_set_raw(d.u.dict, "معرف", nv_num((double)uid));
+    nv_dict_set_raw(d.u.dict, "مجموعة", nv_num((double)gid));
+    nv_dict_set_raw(d.u.dict, "مجموعات", groups);
+    nv_root_pop();
+#else
+    nv_dict_set_raw(d.u.dict, "معرف", nv_num(0.0));
+    nv_dict_set_raw(d.u.dict, "مجموعة", nv_num(0.0));
+    nv_dict_set_raw(d.u.dict, "مجموعات", nv_list_new());
+#endif
+    return d;
+}
+
+static NvValue b7_sys_which_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.حدّد_مكان_أمر";
+    nv_std_need_args(DISPLAY, args, nargs, 1, line, col);
+    const char *cmd = nv_std_need_string(DISPLAY, args[0], line, col);
+    if (cmd[0] == '\0') nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الأمر فارغ", DISPLAY);
+    int has_sep = strchr(cmd, '/') != NULL || strchr(cmd, '\\') != NULL;
+    char pathbuf[4096];
+    const char *pathenv = getenv("PATH");
+#ifdef _WIN32
+    const char sep = ';';
+#else
+    const char sep = ':';
+#endif
+    if (has_sep) {
+        snprintf(pathbuf, sizeof(pathbuf), "%s", cmd);
+        const char *cands[2];
+        cands[0] = pathbuf;
+#ifdef _WIN32
+        static char exe[4100];
+        snprintf(exe, sizeof(exe), "%s.exe", cmd);
+        cands[1] = exe;
+        int nc = 2;
+#else
+        int nc = 1;
+#endif
+        for (int i = 0; i < nc; i++) {
+#ifdef _WIN32
+            if (GetFileAttributesA(cands[i]) != INVALID_FILE_ATTRIBUTES) {
+#else
+            if (access(cands[i], X_OK) == 0) {
+#endif
+                NvValue d = nv_dict_new();
+                nv_dict_set_raw(d.u.dict, "ثنائي", nv_str_cstr(cands[i]));
+                const char *slash = strrchr(cands[i], '/');
+                const char *bslash = strrchr(cands[i], '\\');
+                const char *cut = slash > bslash ? slash : bslash;
+                char dir[4096];
+                if (cut) { size_t n = (size_t)(cut - cands[i]); if (n >= sizeof(dir)) n = sizeof(dir) - 1; memcpy(dir, cands[i], n); dir[n] = '\0'; }
+                else dir[0] = '\0';
+                nv_dict_set_raw(d.u.dict, "دليل", nv_str_cstr(dir));
+                nv_dict_set_raw(d.u.dict, "مصدر", nv_str_cstr("PATH"));
+                return d;
+            }
+        }
+    } else if (pathenv) {
+        const char *p = pathenv;
+        while (1) {
+            const char *s = strchr(p, sep);
+            size_t dlen = s ? (size_t)(s - p) : strlen(p);
+            char dir[4096];
+            if (dlen >= sizeof(dir)) dlen = sizeof(dir) - 1;
+            memcpy(dir, p, dlen); dir[dlen] = '\0';
+            char cand[4096];
+            if (dlen == 0) snprintf(cand, sizeof(cand), "%s", cmd);
+            else snprintf(cand, sizeof(cand), "%s/%s", dir, cmd);
+            const char *cands[2];
+            cands[0] = cand;
+#ifdef _WIN32
+            static char exe[4100];
+            snprintf(exe, sizeof(exe), "%s.exe", cand);
+            cands[1] = exe;
+            int nc = 2;
+#else
+            int nc = 1;
+#endif
+            for (int i = 0; i < nc; i++) {
+#ifdef _WIN32
+                if (GetFileAttributesA(cands[i]) != INVALID_FILE_ATTRIBUTES) {
+#else
+                if (access(cands[i], X_OK) == 0) {
+#endif
+                    NvValue d = nv_dict_new();
+                    nv_dict_set_raw(d.u.dict, "ثنائي", nv_str_cstr(cands[i]));
+                    nv_dict_set_raw(d.u.dict, "دليل", nv_str_cstr(dir));
+                    nv_dict_set_raw(d.u.dict, "مصدر", nv_str_cstr("PATH"));
+                    return d;
+                }
+            }
+            if (!s) break;
+            p = s + 1;
+        }
+    }
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الأمر %s غير موجود", DISPLAY, cmd);
+    return nv_nil();
+}
+
+static NvValue b7_sys_parseopts_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.حلل_الخيارات";
+    if (nargs > 2) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع معاملا أو معاملين لكن أعطيت %d", DISPLAY, nargs);
+    NvDict *opts = b7_opts_dict_c(args, nargs, 1, DISPLAY, line, col);
+    const char *allowed[] = { "طويلة" };
+    b7_no_unknown_c(opts, allowed, 1, DISPLAY, line, col);
+    (void)b5_opt_bool_c(opts, "طويلة", 0, DISPLAY, line, col);
+    size_t ridx = nv_root_push_idx();
+    NvValue odict = nv_dict_new();
+    *nv_root_slot(ridx) = odict;
+    size_t ridx2 = nv_root_push_idx();
+    NvValue plist = nv_list_new();
+    *nv_root_slot(ridx2) = plist;
+    int only_pos = 0;
+    size_t ntok = 0;
+    if (nargs >= 1) {
+        if (args[0].tag != NV_LIST) nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة نصوص لكن أعطيت %s", DISPLAY, nv_type_name(args[0]));
+        ntok = args[0].u.list->len;
+    }
+    for (size_t i = 0; i < ntok; i++) {
+        NvValue tv = args[0].u.list->items[i];
+        const char *t = nv_std_need_string(DISPLAY, tv, line, col);
+        if (only_pos) {
+            nv_list_push_raw(plist.u.list, nv_str_cstr(t));
+            continue;
+        }
+        if (strcmp(t, "--") == 0) { only_pos = 1; continue; }
+        if (t[0] == '-' && t[1] == '-') {
+            const char *rest = t + 2;
+            const char *eq = strchr(rest, '=');
+            if (eq) {
+                char *k = j14_strndup(rest, (size_t)(eq - rest));
+                nv_dict_set_raw(odict.u.dict, k, nv_str_cstr(eq + 1));
+                free(k);
+            } else {
+                nv_dict_set_raw(odict.u.dict, rest, nv_bool(1));
+            }
+            continue;
+        }
+        if (t[0] == '-' && t[1] != '\0') {
+            const char *body = t + 1;
+            const char *eq = strchr(body, '=');
+            if (eq) {
+                char *k = j14_strndup(body, (size_t)(eq - body));
+                nv_dict_set_raw(odict.u.dict, k, nv_str_cstr(eq + 1));
+                free(k);
+                continue;
+            }
+            if (strlen(body) == 1) {
+                if (i + 1 < ntok) {
+                    NvValue nv2 = args[0].u.list->items[i + 1];
+                    const char *nx = nv_std_need_string(DISPLAY, nv2, line, col);
+                    if (nx[0] != '-') {
+                        nv_dict_set_raw(odict.u.dict, body, nv_str_cstr(nx));
+                        i++;
+                        continue;
+                    }
+                }
+                nv_dict_set_raw(odict.u.dict, body, nv_bool(1));
+                continue;
+            }
+            for (const char *c = body; *c; c++) {
+                char k[2] = { *c, '\0' };
+                nv_dict_set_raw(odict.u.dict, k, nv_bool(1));
+            }
+            continue;
+        }
+        nv_list_push_raw(plist.u.list, nv_str_cstr(t));
+    }
+    NvValue d = nv_dict_new();
+    nv_dict_set_raw(d.u.dict, "خيارات", odict);
+    nv_dict_set_raw(d.u.dict, "موضعية", plist);
+    nv_root_pop();
+    nv_root_pop();
+    return d;
+}
+
+static NvValue b7_sys_mounts_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.نقاط_التركيب";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    char **devs = NULL, **points = NULL, **fsts = NULL;
+    size_t n = b7_mounts_c(DISPLAY, line, col, &devs, &points, &fsts);
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    for (size_t i = 0; i < n; i++) {
+        NvValue d = nv_dict_new();
+        nv_dict_set_raw(d.u.dict, "جهاز", nv_str_cstr(devs[i]));
+        nv_dict_set_raw(d.u.dict, "نقطة", nv_str_cstr(points[i]));
+        nv_dict_set_raw(d.u.dict, "نوع", nv_str_cstr(fsts[i]));
+        nv_list_push_raw(out.u.list, d);
+    }
+    b7_mounts_free_c(devs, points, fsts, n);
+    nv_root_pop();
+    return out;
+}
+
+static NvValue b7_sys_ismount_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.تحقق_تركيب";
+    nv_std_need_args(DISPLAY, args, nargs, 1, line, col);
+    const char *path = nv_std_need_string(DISPLAY, args[0], line, col);
+    char **devs = NULL, **points = NULL, **fsts = NULL;
+    size_t n = b7_mounts_c(DISPLAY, line, col, &devs, &points, &fsts);
+    int found = 0;
+    for (size_t i = 0; i < n; i++) if (strcmp(points[i], path) == 0) found = 1;
+    b7_mounts_free_c(devs, points, fsts, n);
+    if (found) return nv_bool(1);
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s المسار %s ليس نقطة تركيب", DISPLAY, path);
+    return nv_nil();
+}
+
+static NvValue b7_sys_disks_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.اعرض_الأقراص";
+    NvDict *opts = b7_opts_dict_c(args, nargs, 0, DISPLAY, line, col);
+    const char *allowed[] = { "أنظمة_ملفات", "أقراص_فقط", "أعمدة", "جسون" };
+    b7_no_unknown_c(opts, allowed, 4, DISPLAY, line, col);
+    int with_fs = b5_opt_bool_c(opts, "أنظمة_ملفات", 0, DISPLAY, line, col);
+    int disks_only = b5_opt_bool_c(opts, "أقراص_فقط", 0, DISPLAY, line, col);
+    size_t ncols = 0;
+    char **cols = b5_opt_strs_c(opts, "أعمدة", &ncols, DISPLAY, line, col);
+    int as_json = b5_opt_bool_c(opts, "جسون", 0, DISPLAY, line, col);
+    char **devs = NULL, **points = NULL, **fsts = NULL;
+    size_t nm = b7_mounts_c(DISPLAY, line, col, &devs, &points, &fsts);
+    DIR *dir = opendir("/sys/block");
+    if (!dir) {
+        b7_mounts_free_c(devs, points, fsts, nm);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر قراءة أجهزة التخزين", DISPLAY);
+    }
+    char names[256][128];
+    size_t nn = 0;
+    struct dirent *e;
+    while ((e = readdir(dir)) != NULL && nn < 256) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(names[nn], 128, "%s", e->d_name);
+        nn++;
+    }
+    closedir(dir);
+    for (size_t i = 1; i < nn; i++) {
+        char t[128]; snprintf(t, 128, "%s", names[i]);
+        size_t j = i;
+        while (j > 0 && strcmp(names[j - 1], t) > 0) { snprintf(names[j], 128, "%s", names[j - 1]); j--; }
+        snprintf(names[j], 128, "%s", t);
+    }
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    for (size_t di = 0; di < nn; di++) {
+        const char *dev = names[di];
+        char spath[512];
+        snprintf(spath, sizeof(spath), "/sys/block/%s/size", dev);
+        char *stxt = b7_read_text_c(spath, NULL);
+        long long sectors = stxt ? strtoll(stxt, NULL, 10) : 0;
+        free(stxt);
+        char want[600];
+        snprintf(want, sizeof(want), "/dev/%s", dev);
+        const char *point = "", *fst = "";
+        for (size_t m = 0; m < nm; m++) if (strcmp(devs[m], want) == 0) { point = points[m]; fst = fsts[m]; break; }
+        NvValue d = nv_dict_new();
+        nv_dict_set_raw(d.u.dict, "اسم", nv_str_cstr(dev));
+        nv_dict_set_raw(d.u.dict, "حجم", nv_num((double)sectors * 512.0));
+        nv_dict_set_raw(d.u.dict, "نوع", nv_str_cstr("قرص"));
+        nv_dict_set_raw(d.u.dict, "تركيب", nv_str_cstr(point));
+        if (with_fs) {
+            char *label = NULL, *uuid = NULL;
+            b7_dev_label_uuid_c(dev, &label, &uuid);
+            nv_dict_set_raw(d.u.dict, "نوع_النظام", nv_str_cstr(fst));
+            nv_dict_set_raw(d.u.dict, "تسمية", nv_str_cstr(label));
+            nv_dict_set_raw(d.u.dict, "معرف", nv_str_cstr(uuid));
+            free(label); free(uuid);
+        }
+        nv_list_push_raw(out.u.list, d);
+        if (disks_only) continue;
+        char dpath[512];
+        snprintf(dpath, sizeof(dpath), "/sys/block/%s", dev);
+        DIR *dd = opendir(dpath);
+        if (!dd) continue;
+        char parts[256][128];
+        size_t np = 0;
+        struct dirent *pe;
+        while ((pe = readdir(dd)) != NULL && np < 256) {
+            const char *nm2 = pe->d_name;
+            size_t dl = strlen(dev);
+            if (strncmp(nm2, dev, dl) == 0 && nm2[dl] != '\0') {
+                int alldigit = 1;
+                for (const char *q = nm2 + dl; *q; q++) if (!isdigit((unsigned char)*q)) alldigit = 0;
+                if (alldigit) { snprintf(parts[np], 128, "%s", nm2); np++; }
+            }
+        }
+        closedir(dd);
+        for (size_t i = 1; i < np; i++) {
+            char t[128]; snprintf(t, 128, "%s", parts[i]);
+            size_t j = i;
+            while (j > 0 && strcmp(parts[j - 1], t) > 0) { snprintf(parts[j], 128, "%s", parts[j - 1]); j--; }
+            snprintf(parts[j], 128, "%s", t);
+        }
+        for (size_t pi = 0; pi < np; pi++) {
+            const char *part = parts[pi];
+            snprintf(spath, sizeof(spath), "/sys/block/%s/%s/size", dev, part);
+            stxt = b7_read_text_c(spath, NULL);
+            long long psec = stxt ? strtoll(stxt, NULL, 10) : 0;
+            free(stxt);
+            snprintf(want, sizeof(want), "/dev/%s", part);
+            const char *ppoint = "", *pfst = "";
+            for (size_t m = 0; m < nm; m++) if (strcmp(devs[m], want) == 0) { ppoint = points[m]; pfst = fsts[m]; break; }
+            NvValue pd = nv_dict_new();
+            nv_dict_set_raw(pd.u.dict, "اسم", nv_str_cstr(part));
+            nv_dict_set_raw(pd.u.dict, "حجم", nv_num((double)psec * 512.0));
+            nv_dict_set_raw(pd.u.dict, "نوع", nv_str_cstr("قسم"));
+            nv_dict_set_raw(pd.u.dict, "تركيب", nv_str_cstr(ppoint));
+            if (with_fs) {
+                char *label = NULL, *uuid = NULL;
+                b7_dev_label_uuid_c(part, &label, &uuid);
+                nv_dict_set_raw(pd.u.dict, "نوع_النظام", nv_str_cstr(pfst));
+                nv_dict_set_raw(pd.u.dict, "تسمية", nv_str_cstr(label));
+                nv_dict_set_raw(pd.u.dict, "معرف", nv_str_cstr(uuid));
+                free(label); free(uuid);
+            }
+            nv_list_push_raw(out.u.list, pd);
+        }
+    }
+    b7_mounts_free_c(devs, points, fsts, nm);
+    if (ncols > 0) {
+        size_t ridx2 = nv_root_push_idx();
+        NvValue filtered = nv_list_new();
+        *nv_root_slot(ridx2) = filtered;
+        for (size_t i = 0; i < out.u.list->len; i++) {
+            NvValue item = out.u.list->items[i];
+            NvValue nd = nv_dict_new();
+            for (size_t c = 0; c < ncols; c++) {
+                int idx = nv_dict_find(item.u.dict, cols[c]);
+                if (idx >= 0) nv_dict_set_raw(nd.u.dict, cols[c], item.u.dict->entries[idx].val);
+            }
+            nv_list_push_raw(filtered.u.list, nd);
+        }
+        nv_root_pop();
+        out = filtered;
+    }
+    for (size_t c = 0; c < ncols; c++) free(cols[c]);
+    free(cols);
+    nv_root_pop();
+    if (as_json) return b7_json_c(out, DISPLAY, line, col);
+    return out;
+}
+
+static NvValue b7_sys_devid_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.معرف_جهاز";
+    nv_std_need_args(DISPLAY, args, nargs, 1, line, col);
+    const char *dev = nv_std_need_string(DISPLAY, args[0], line, col);
+    char *probe = b7_proc_text_c("/proc/mounts", DISPLAY, line, col);
+    free(probe);
+    DIR *dir = opendir("/dev/disk/by-uuid");
+    if (!dir) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر قراءة معرفات الأجهزة", DISPLAY);
+    struct dirent *e;
+    while ((e = readdir(dir)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        char full[1024];
+        snprintf(full, sizeof(full), "/dev/disk/by-uuid/%s", e->d_name);
+        char *t = b7_link_target_c(full);
+        if (!t) continue;
+        int hit = strstr(t, dev) != NULL;
+        free(t);
+        if (hit) {
+            NvValue d = nv_dict_new();
+            nv_dict_set_raw(d.u.dict, "معرف", nv_str_cstr(e->d_name));
+            nv_dict_set_raw(d.u.dict, "نوع", nv_str_cstr("uuid"));
+            closedir(dir);
+            return d;
+        }
+    }
+    closedir(dir);
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا معرف للجهاز %s", DISPLAY, dev);
+    return nv_nil();
+}
+
+static NvValue b7_sys_finddev_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.ابحث_جهاز_بنوع";
+    nv_std_need_args(DISPLAY, args, nargs, 1, line, col);
+    const char *q = nv_std_need_string(DISPLAY, args[0], line, col);
+    char *probe = b7_proc_text_c("/proc/mounts", DISPLAY, line, col);
+    free(probe);
+    const char *dirs[2] = { "/dev/disk/by-uuid", "/dev/disk/by-label" };
+    for (int di = 0; di < 2; di++) {
+        DIR *dir = opendir(dirs[di]);
+        if (!dir) continue;
+        struct dirent *e;
+        while ((e = readdir(dir)) != NULL) {
+            if (e->d_name[0] == '.') continue;
+            if (strcmp(e->d_name, q) == 0) {
+                char full[1024];
+                snprintf(full, sizeof(full), "%s/%s", dirs[di], e->d_name);
+                char *t = b7_link_target_c(full);
+                if (t) {
+                    const char *base = strrchr(t, '/');
+                    base = base ? base + 1 : t;
+                    char res[600];
+                    snprintf(res, sizeof(res), "/dev/%s", base);
+                    free(t);
+                    closedir(dir);
+                    return nv_str_cstr(res);
+                }
+                char res[1024];
+                snprintf(res, sizeof(res), "%s/%s", dirs[di], e->d_name);
+                closedir(dir);
+                return nv_str_cstr(res);
+            }
+        }
+        closedir(dir);
+    }
+    char **devs = NULL, **points = NULL, **fsts = NULL;
+    size_t n = b7_mounts_c(DISPLAY, line, col, &devs, &points, &fsts);
+    for (size_t i = 0; i < n; i++) {
+        if (strcmp(fsts[i], q) == 0) {
+            char *res = j14_strdup(devs[i]);
+            b7_mounts_free_c(devs, points, fsts, n);
+            NvValue r = nv_str_cstr(res);
+            free(res);
+            return r;
+        }
+    }
+    b7_mounts_free_c(devs, points, fsts, n);
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا جهاز بالنوع %s", DISPLAY, q);
+    return nv_nil();
+}
+
+static NvValue b7_sys_dmesg_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.رسائل_النواة";
+    NvDict *opts = b7_opts_dict_c(args, nargs, 0, DISPLAY, line, col);
+    const char *allowed[] = { "تابع" };
+    b7_no_unknown_c(opts, allowed, 1, DISPLAY, line, col);
+    int follow = b5_opt_bool_c(opts, "تابع", 0, DISPLAY, line, col);
+    char *first_text = b7_read_text_c("/var/log/dmesg", NULL);
+    if (!first_text) {
+        char *argv[] = { (char *)"dmesg", NULL };
+        first_text = b7_capture_c("dmesg", argv, DISPLAY, line, col);
+    }
+    /* عد السطور. */
+    size_t nfirst = 0;
+    for (char *p = first_text; *p; p++) if (*p == '\n') nfirst++;
+    if (first_text[0] != '\0' && first_text[strlen(first_text) - 1] != '\n') nfirst++;
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    if (!follow) {
+        char *save = NULL;
+        char *l = strtok_r(first_text, "\n", &save);
+        while (l) { nv_list_push_raw(out.u.list, nv_str_cstr(l)); l = strtok_r(NULL, "\n", &save); }
+        free(first_text);
+        nv_root_pop();
+        return out;
+    }
+#ifdef _WIN32
+    Sleep(500);
+#else
+    usleep(500000);
+#endif
+    char *second_text = b7_read_text_c("/var/log/dmesg", NULL);
+    if (!second_text) {
+        char *argv[] = { (char *)"dmesg", NULL };
+        second_text = b7_capture_c("dmesg", argv, DISPLAY, line, col);
+    }
+    size_t nsecond = 0;
+    for (char *p = second_text; *p; p++) if (*p == '\n') nsecond++;
+    if (second_text[0] != '\0' && second_text[strlen(second_text) - 1] != '\n') nsecond++;
+    size_t skip = nsecond > nfirst ? nfirst : nsecond;
+    size_t idx = 0;
+    char *save = NULL;
+    char *l = strtok_r(second_text, "\n", &save);
+    while (l) {
+        if (idx >= skip) nv_list_push_raw(out.u.list, nv_str_cstr(l));
+        idx++;
+        l = strtok_r(NULL, "\n", &save);
+    }
+    free(first_text);
+    free(second_text);
+    nv_root_pop();
+    return out;
+}
+
+static NvValue b7_sys_uuid_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.معرف_فريد";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    unsigned char b[16];
+    b7_rand_bytes_c(b, 16);
+    b[6] = (unsigned char)((b[6] & 0x0F) | 0x40);
+    b[8] = (unsigned char)((b[8] & 0x3F) | 0x80);
+    char s[64];
+    snprintf(s, sizeof(s),
+             "%02x%02x%02x%02x-%02x%02x-4%01x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             b[0], b[1], b[2], b[3], b[4], b[5], b[6] & 0x0F, b[7],
+             b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+    return nv_str_cstr(s);
+}
+
+static NvValue b7_sys_parse_uuid_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.حلّل_معرف";
+    nv_std_need_args(DISPLAY, args, nargs, 1, line, col);
+    const char *s = nv_std_need_string(DISPLAY, args[0], line, col);
+    int valid = strlen(s) == 36;
+    if (valid) {
+        for (int i = 0; i < 36; i++) {
+            char c = s[i];
+            if (i == 8 || i == 13 || i == 18 || i == 23) { if (c != '-') valid = 0; }
+            else if (!isxdigit((unsigned char)c)) valid = 0;
+        }
+    }
+    if (!valid) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s معرف غير صالح", DISPLAY);
+    char vc = s[14];
+    int version = 0;
+    if (vc >= '0' && vc <= '9') version = vc - '0';
+    else if (vc >= 'a' && vc <= 'f') version = vc - 'a' + 10;
+    else if (vc >= 'A' && vc <= 'F') version = vc - 'A' + 10;
+    char c19 = s[19];
+    const char *variant = (c19 == '8' || c19 == '9' || c19 == 'a' || c19 == 'b' || c19 == 'A' || c19 == 'B') ? "قياسي" : "آخر";
+    NvValue d = nv_dict_new();
+    nv_dict_set_raw(d.u.dict, "صالح", nv_bool(1));
+    nv_dict_set_raw(d.u.dict, "نسخة", nv_num((double)version));
+    nv_dict_set_raw(d.u.dict, "متغير", nv_str_cstr(variant));
+    return d;
+}
+
+static NvValue b7_sys_randword_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.كلمة_عشوائية_آمنة";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    unsigned char b[16];
+    b7_rand_bytes_c(b, 16);
+    char s[40];
+    size_t w = 0;
+    for (int i = 0; i < 16; i++) w += (size_t)snprintf(s + w, sizeof(s) - w, "%02x", b[i]);
+    return nv_str_cstr(s);
+}
+
+static NvValue b7_sys_locks_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.أقفال_الملفات";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    char *text = b7_proc_text_c("/proc/locks", DISPLAY, line, col);
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    char *save = NULL;
+    char *l = strtok_r(text, "\n", &save);
+    while (l) {
+        char *colon = strchr(l, ':');
+        if (colon) {
+            char kind[64], mode[64], type[64], start[64], end[64];
+            long long pid = -1;
+            if (sscanf(colon + 1, "%63s %63s %63s %lld %*s %63s %63s", kind, mode, type, &pid, start, end) == 6) {
+                (void)type;
+                NvValue d = nv_dict_new();
+                nv_dict_set_raw(d.u.dict, "نوع", nv_str_cstr(kind));
+                nv_dict_set_raw(d.u.dict, "نمط", nv_str_cstr(mode));
+                nv_dict_set_raw(d.u.dict, "معرف_العملية", nv_num((double)pid));
+                nv_dict_set_raw(d.u.dict, "بدء", nv_str_cstr(start));
+                nv_dict_set_raw(d.u.dict, "نهاية", nv_str_cstr(end));
+                nv_list_push_raw(out.u.list, d);
+            }
+        }
+        l = strtok_r(NULL, "\n", &save);
+    }
+    free(text);
+    nv_root_pop();
+    return out;
+}
+
+static NvValue b7_sys_irqs_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.مقاطعات";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    char *text = b7_proc_text_c("/proc/interrupts", DISPLAY, line, col);
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    char *save = NULL;
+    char *l = strtok_r(text, "\n", &save);
+    while (l) {
+        char *colon = strchr(l, ':');
+        if (colon) {
+            char numpart[32];
+            size_t nl = (size_t)(colon - l);
+            if (nl < sizeof(numpart)) {
+                memcpy(numpart, l, nl); numpart[nl] = '\0';
+                char *np = numpart; while (*np == ' ' || *np == '\t') np++;
+                char *end = NULL;
+                long long num = strtoll(np, &end, 10);
+                if (end && end != np && *end == '\0') {
+                    long long count = 0;
+                    char *p = colon + 1;
+                    char *desc = NULL;
+                    while (*p) {
+                        while (*p == ' ' || *p == '\t') p++;
+                        if (!*p) break;
+                        char *e2 = NULL;
+                        long long v = strtoll(p, &e2, 10);
+                        if (e2 == p) { desc = p; break; }
+                        count += v;
+                        p = e2;
+                    }
+                    NvValue d = nv_dict_new();
+                    nv_dict_set_raw(d.u.dict, "رقم", nv_num((double)num));
+                    nv_dict_set_raw(d.u.dict, "عدد", nv_num((double)count));
+                    nv_dict_set_raw(d.u.dict, "وصف", nv_str_cstr(desc ? desc : ""));
+                    nv_list_push_raw(out.u.list, d);
+                }
+            }
+        }
+        l = strtok_r(NULL, "\n", &save);
+    }
+    free(text);
+    nv_root_pop();
+    return out;
+}
+
+static NvValue b7_sys_ipc_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.قنوات_الاتصال";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    const char *paths[3] = { "/proc/sysvipc/msg", "/proc/sysvipc/sem", "/proc/sysvipc/shm" };
+    const char *keys[3] = { "رسائل", "إشارات", "ذاكرة_مشتركة" };
+    NvValue d = nv_dict_new();
+    for (int i = 0; i < 3; i++) {
+        char *text = b7_proc_text_c(paths[i], DISPLAY, line, col);
+        long long lines = 0;
+        for (char *p = text; *p; p++) if (*p == '\n') lines++;
+        if (text[0] != '\0' && text[strlen(text) - 1] != '\n') lines++;
+        long long n = lines > 0 ? lines - 1 : 0;
+        nv_dict_set_raw(d.u.dict, keys[i], nv_num((double)n));
+        free(text);
+    }
+    return d;
+}
+
+static NvValue b7_sys_clocks_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.ساعات_النظام";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_list_new();
+    *nv_root_slot(ridx) = out;
+    nv_list_push_raw(out.u.list, nv_str_cstr("حقيقي"));
+    nv_list_push_raw(out.u.list, nv_str_cstr("أحادي"));
+    nv_list_push_raw(out.u.list, nv_str_cstr("عملية"));
+    nv_list_push_raw(out.u.list, nv_str_cstr("خيط"));
+    nv_root_pop();
+    return out;
+}
+
+static NvValue b7_sys_log_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.سجّل_رسالة";
+    nv_std_need_args(DISPLAY, args, nargs, 1, line, col);
+    const char *msg = nv_std_need_string(DISPLAY, args[0], line, col);
+    char *argv[] = { (char *)"logger", (char *)msg, NULL };
+    b7_run_status_c("logger", argv, DISPLAY, line, col);
+    return nv_nil();
+}
+
+static NvValue b7_sys_termsize_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.حجم_نافذة_الطرفية";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+#ifdef _WIN32
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على ويندوز", DISPLAY);
+    return nv_nil();
+#else
+    long long rows = 0, cols = 0;
+    b7_term_size_c(DISPLAY, line, col, &rows, &cols);
+    NvValue d = nv_dict_new();
+    nv_dict_set_raw(d.u.dict, "صفوف", nv_num((double)rows));
+    nv_dict_set_raw(d.u.dict, "أعمدة", nv_num((double)cols));
+    return d;
+#endif
+}
+
+static NvValue b7_sys_termsettings_fn(NvValue *args, int nargs, int line, int col) {
+    const char *DISPLAY = "نظام.إعدادات_الطرفية";
+    nv_std_need_args(DISPLAY, args, nargs, 0, line, col);
+#ifdef _WIN32
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على ويندوز", DISPLAY);
+    return nv_nil();
+#else
+    long long rows = 24, cols = 80;
+    char speed[64];
+    snprintf(speed, sizeof(speed), "%s", "غير معروف");
+    char *argv[] = { (char *)"stty", (char *)"-a", NULL };
+    /* التقاط صامت: b7_capture_c يخطئ عند الفشل؛ نعيد المحاولة يدويا. */
+    int got = 0;
+    int pipefd[2];
+    if (pipe(pipefd) == 0) {
+        pid_t pid = fork();
+        if (pid == 0) {
+            close(pipefd[0]);
+            dup2(pipefd[1], STDOUT_FILENO);
+            close(pipefd[1]);
+            int devnull = open("/dev/null", O_WRONLY);
+            if (devnull >= 0) { dup2(devnull, STDERR_FILENO); close(devnull); }
+            execvp("stty", argv);
+            _exit(127);
+        }
+        if (pid > 0) {
+            close(pipefd[1]);
+            J14Buf b;
+            j14_buf_init(&b);
+            char tmp[4096];
+            ssize_t r;
+            while ((r = read(pipefd[0], tmp, sizeof(tmp))) > 0) j14_buf_addn(&b, tmp, (size_t)r);
+            close(pipefd[0]);
+            int status = 0;
+            waitpid(pid, &status, 0);
+            if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+                got = 1;
+                char *save = NULL;
+                char *part = strtok_r(b.data, ";", &save);
+                while (part) {
+                    while (*part == ' ' || *part == '\t' || *part == '\n') part++;
+                    if (strncmp(part, "speed ", 6) == 0) {
+                        char *v = part + 6;
+                        char *e2 = v;
+                        while (*e2 && *e2 != ' ' && *e2 != '\t') e2++;
+                        size_t n = (size_t)(e2 - v);
+                        if (n >= sizeof(speed)) n = sizeof(speed) - 1;
+                        memcpy(speed, v, n); speed[n] = '\0';
+                    } else if (strncmp(part, "rows ", 5) == 0) {
+                        rows = strtoll(part + 5, NULL, 10);
+                    } else if (strncmp(part, "columns ", 8) == 0) {
+                        cols = strtoll(part + 8, NULL, 10);
+                    }
+                    part = strtok_r(NULL, ";", &save);
+                }
+            }
+            j14_buf_free(&b);
+        } else {
+            close(pipefd[0]); close(pipefd[1]);
+        }
+    }
+    if (!got) b7_term_size_c(DISPLAY, line, col, &rows, &cols);
+    NvValue d = nv_dict_new();
+    nv_dict_set_raw(d.u.dict, "سرعة", nv_str_cstr(speed));
+    nv_dict_set_raw(d.u.dict, "صفوف", nv_num((double)rows));
+    nv_dict_set_raw(d.u.dict, "أعمدة", nv_num((double)cols));
+    return d;
+#endif
+}
+
+
+static void b7_proc_rows_free_c(B7ProcRowC *rows, size_t n) {
+    for (size_t i = 0; i < n; i++) { free(rows[i].name); free(rows[i].state); free(rows[i].user); }
+    free(rows);
+}
+
+/* مستخدم عملية من ‎/proc/PID/status‎ ثم ‎/etc/passwd‎؛ الرقم نصا عند غياب الاسم. */
+static char *b7_proc_user_c(long long pid) {
+#if defined(__linux__)
+    char spath[64];
+    snprintf(spath, sizeof(spath), "/proc/%lld/status", pid);
+    size_t slen = 0;
+    char *status = b5_read_file_c(spath, &slen);
+    if (!status) return j14_strdup("");
+    long long uid = -1;
+    char *save = NULL;
+    char *l = strtok_r(status, "\n", &save);
+    while (l) {
+        if (strncmp(l, "Uid:", 4) == 0) { uid = strtoll(l + 4, NULL, 10); break; }
+        l = strtok_r(NULL, "\n", &save);
+    }
+    free(status);
+    if (uid < 0) return j14_strdup("");
+    size_t plen = 0;
+    char *passwd = b5_read_file_c("/etc/passwd", &plen);
+    if (passwd) {
+        char *save2 = NULL;
+        char *pl = strtok_r(passwd, "\n", &save2);
+        while (pl) {
+            char *c1 = strchr(pl, ':');
+            if (c1) {
+                char *c2 = strchr(c1 + 1, ':');
+                if (c2) {
+                    char *c3 = strchr(c2 + 1, ':');
+                    if (c3) {
+                        long long u = strtoll(c2 + 1, NULL, 10);
+                        if (u == uid) {
+                            char *name = j14_strndup(pl, (size_t)(c1 - pl));
+                            free(passwd);
+                            return name;
+                        }
+                    }
+                }
+            }
+            pl = strtok_r(NULL, "\n", &save2);
+        }
+        free(passwd);
+    }
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%lld", uid);
+    return j14_strdup(buf);
+#else
+    (void)pid;
+    return j14_strdup("");
+#endif
+}
+
+/* ذاكرة مقيمة (بايتات) من ‎/proc/PID/status‎ (VmRSS). */
+static long long b7_proc_rss_c(long long pid) {
+#if defined(__linux__)
+    char spath[64];
+    snprintf(spath, sizeof(spath), "/proc/%lld/status", pid);
+    size_t slen = 0;
+    char *status = b5_read_file_c(spath, &slen);
+    if (!status) return 0;
+    long long rss = 0;
+    char *save = NULL;
+    char *l = strtok_r(status, "\n", &save);
+    while (l) {
+        if (strncmp(l, "VmRSS:", 6) == 0) { rss = strtoll(l + 6, NULL, 10) * 1024; break; }
+        l = strtok_r(NULL, "\n", &save);
+    }
+    free(status);
+    return rss;
+#else
+    (void)pid;
+    return 0;
+#endif
+}
+
+/* كل صفوف العمليات مرتبة بالمعرف؛ NULL عند تعذر ‎/proc‎. */
+static B7ProcRowC *b7_proc_rows_c(size_t *n_out, const char *display, int line, int col) {
+#if defined(__linux__)
+    DIR *dir = opendir("/proc");
+    if (!dir) nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر قراءة ‎/proc‎", display);
+    B7ProcRowC *rows = NULL;
+    size_t n = 0, cap = 0;
+    struct dirent *e;
+    while ((e = readdir(dir)) != NULL) {
+        char *end = NULL;
+        long long pid = strtoll(e->d_name, &end, 10);
+        if (end == e->d_name || !end || *end != '\0') continue;
+        char spath[64];
+        snprintf(spath, sizeof(spath), "/proc/%lld/stat", pid);
+        size_t slen = 0;
+        char *stat = b5_read_file_c(spath, &slen);
+        if (!stat) continue;
+        char *open = strchr(stat, '(');
+        char *close = strrchr(stat, ')');
+        if (!open || !close || close <= open) { free(stat); continue; }
+        char *comm = j14_strndup(open + 1, (size_t)(close - open - 1));
+        const char *rest = close + 2;
+        while (*rest == ' ' || *rest == '\t') rest++;
+        char state[16];
+        size_t si = 0;
+        while (rest[si] && rest[si] != ' ' && rest[si] != '\t' && si < sizeof(state) - 1) { state[si] = rest[si]; si++; }
+        state[si] = '\0';
+        const char *state_ar = state;
+        if (strcmp(state, "R") == 0) state_ar = "تعمل";
+        else if (strcmp(state, "S") == 0) state_ar = "نائمة";
+        else if (strcmp(state, "D") == 0) state_ar = "قرص";
+        else if (strcmp(state, "Z") == 0) state_ar = "زومبي";
+        else if (strcmp(state, "T") == 0) state_ar = "متوقفة";
+        else if (strcmp(state, "t") == 0) state_ar = "متتبعة";
+        else if (strcmp(state, "X") == 0 || strcmp(state, "x") == 0) state_ar = "ميتة";
+        else if (strcmp(state, "I") == 0) state_ar = "خاملة";
+        /* حقول ما بعد الاسم: ppid=2، utime=12، stime=13، nice=17، starttime=20 (صفرية). */
+        long long fields[21];
+        int nf = 0;
+        const char *p = rest;
+        while (*p && nf < 21) {
+            while (*p == ' ' || *p == '\t') p++;
+            if (!*p) break;
+            char *e2 = NULL;
+            long long v = strtoll(p, &e2, 10);
+            if (e2 == p) break;
+            fields[nf++] = v;
+            p = e2;
+        }
+        /* تخطي حقل الحالة (نص): أعد التحليل بعد تجاوزه. */
+        if (nf < 21) {
+            const char *q = rest;
+            while (*q && *q != ' ' && *q != '\t') q++;
+            while (*q == ' ' || *q == '\t') q++;
+            nf = 0;
+            p = q;
+            while (*p && nf < 21) {
+                while (*p == ' ' || *p == '\t') p++;
+                if (!*p) break;
+                char *e2 = NULL;
+                long long v = strtoll(p, &e2, 10);
+                if (e2 == p) break;
+                fields[nf++] = v;
+                p = e2;
+            }
+        }
+        free(stat);
+        if (nf < 21) { free(comm); continue; }
+        if (n >= cap) {
+            size_t ncap = cap == 0 ? 32 : cap * 2;
+            B7ProcRowC *grown = (B7ProcRowC *)realloc(rows, ncap * sizeof(B7ProcRowC));
+            if (!grown) { closedir(dir); free(comm); nv_error(NV_ERR_RUNTIME, "تعذر تخصيص الذاكرة", line, col); }
+            rows = grown;
+            cap = ncap;
+        }
+        rows[n].pid = pid;
+        rows[n].ppid = fields[1];
+        rows[n].name = comm;
+        rows[n].state = j14_strdup(state_ar);
+        rows[n].cpu = fields[11] + fields[12];
+        rows[n].start = fields[19];
+        rows[n].user = b7_proc_user_c(pid);
+        n++;
+    }
+    closedir(dir);
+    /* فرز بالمعرف (إدراج — القائمة مرتبة أصلا غالبا). */
+    for (size_t i = 1; i < n; i++) {
+        B7ProcRowC t = rows[i];
+        size_t j = i;
+        while (j > 0 && rows[j - 1].pid > t.pid) { rows[j] = rows[j - 1]; j--; }
+        rows[j] = t;
+    }
+    *n_out = n;
+    return rows;
+#else
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s مدعومة على لينكس فقط في هذه الدفعة", display);
+    return NULL;
+#endif
+}
+
+static int b7_proc_cpu_cmp_c(const void *a, const void *b) {
+    const B7ProcRowC *x = (const B7ProcRowC *)a;
+    const B7ProcRowC *y = (const B7ProcRowC *)b;
+    if (x->cpu != y->cpu) return x->cpu > y->cpu ? -1 : 1;
+    if (x->pid != y->pid) return x->pid < y->pid ? -1 : 1;
+    return 0;
+}
+
+/* ترشيح قاموس بأعمدة مطلوبة (بالترتيب المطلوب). */
+static NvValue b7_filter_cols_c(NvValue dict, char **cols, size_t ncols) {
+    NvValue nd = nv_dict_new();
+    for (size_t i = 0; i < ncols; i++) {
+        int idx = nv_dict_find(dict.u.dict, cols[i]);
+        if (idx >= 0) nv_dict_set_raw(nd.u.dict, cols[i], dict.u.dict->entries[idx].val);
+    }
+    return nd;
+}
+
+/* عقدة شجرة عمليات {معرف، أب، أبناء}؛ جذرا العقدة يبقيان والمتصل يزيلهما بعد التخزين. */
+static NvValue b7_proc_node_c(B7ProcRowC *rows, size_t n, long long pid, long long ppid, char **cols, size_t ncols) {
+    size_t ridx = nv_root_push_idx();
+    NvValue d = nv_dict_new();
+    *nv_root_slot(ridx) = d;
+    size_t ridx2 = nv_root_push_idx();
+    NvValue kids = nv_list_new();
+    *nv_root_slot(ridx2) = kids;
+    for (size_t i = 0; i < n; i++) {
+        if (rows[i].ppid == pid) {
+            NvValue c = b7_proc_node_c(rows, n, rows[i].pid, pid, cols, ncols);
+            nv_list_push_raw(kids.u.list, c);
+            nv_root_pop_n(2);
+        }
+    }
+    nv_dict_set_raw(d.u.dict, "معرف", nv_num((double)pid));
+    nv_dict_set_raw(d.u.dict, "أب", nv_num((double)ppid));
+    nv_dict_set_raw(d.u.dict, "أبناء", kids);
+    if (ncols > 0) {
+        NvValue f = b7_filter_cols_c(d, cols, ncols);
+        *nv_root_slot(ridx) = f;
+        d = f;
+    }
+    return d;
+}
+
+/* رقم إشارة من اسمها أو رقمها. */
+static int b7_signal_num_c(NvValue v, const char *display, int line, int col) {
+    char buf[32];
+    const char *s = buf;
+    if (v.tag == NV_STR) {
+        s = v.u.str->data;
+    } else if (v.tag == NV_NUM) {
+        snprintf(buf, sizeof(buf), "%lld", (long long)v.u.num);
+    } else {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع اسم إشارة أو رقمها لكن أعطيت %s", display, nv_type_name(v));
+    }
+    struct { const char *name; int num; } table[] = {
+        { "HUP", 1 }, { "INT", 2 }, { "QUIT", 3 }, { "ILL", 4 }, { "TRAP", 5 },
+        { "ABRT", 6 }, { "BUS", 7 }, { "FPE", 8 }, { "KILL", 9 }, { "USR1", 10 },
+        { "SEGV", 11 }, { "USR2", 12 }, { "PIPE", 13 }, { "ALRM", 14 }, { "TERM", 15 },
+        { "CHLD", 17 }, { "CONT", 18 }, { "STOP", 19 }, { "TSTP", 20 }, { "TTIN", 21 },
+        { "TTOU", 22 }, { "URG", 23 }, { "XCPU", 24 }, { "XFSZ", 25 }, { "VTALRM", 26 },
+        { "PROF", 27 }, { "WINCH", 28 }, { "IO", 29 }, { "PWR", 30 }, { "SYS", 31 },
+    };
+    for (size_t i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+        if (strcmp(s, table[i].name) == 0) return table[i].num;
+    }
+    char *end = NULL;
+    long n = strtol(s, &end, 10);
+    if (end && end != s && *end == '\0' && n >= 1 && n <= 64) return (int)n;
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s إشارة غير معروفة: %s", display, s);
+    return 15;
+}
+
+/* تحليل نص أمر إلى وسائط (تقسيم على المسافات البيضاء)؛ argv مالك منته بـNULL. */
+static char **b7_split_cmd_c(const char *text, int *argc_out) {
+    int cap = 8, n = 0;
+    char **argv = (char **)malloc((cap + 1) * sizeof(char *));
+    const char *p = text;
+    while (*p) {
+        while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+        if (!*p) break;
+        const char *s = p;
+        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') p++;
+        if (n >= cap) {
+            cap *= 2;
+            argv = (char **)realloc(argv, (cap + 1) * sizeof(char *));
+        }
+        argv[n++] = j14_strndup(s, (size_t)(p - s));
+    }
+    argv[n] = NULL;
+    *argc_out = n;
+    return argv;
+}
+
+static void b7_free_argv_c(char **argv, int argc) {
+    for (int i = 0; i < argc; i++) free(argv[i]);
+    free(argv);
+}
+
+
+/* تشغيل وسائط والتقاط مخرجاتها؛ setup: 0 بلا، 1 nice+10، 2 ionice (arg=فئة).
+   timeout_ms < 0 بلا مهلة؛ grace_ms إمهال بعد SIGTERM. */
+/* لينكس7-ز5ج-تشغيل-نيفا-فرعي-مسار-ثنائي: إن كان أول رمز ملف `.نيفا`
+   أعد كتابة الوسائط إلى [محرك، مسار-محلول، باقي-الوسائط]
+   على نمط `أنشئ` (اجتماع 49 §63): محرك نيفا الحالي إن
+   كان جذعه نيفا/نيفا، وإلا ~/.local/bin/نيفا ثم نيفا/niva
+   في PATH، وإلا خطأ «تشغيل برنامج نيفا فرعي غير مدعوم
+   من هذا الثنائي». تعيد الوسائط نفسها إن لم يكن الرمز
+   ملف نيفا، وتحدّث العدد عند إعادة الكتابة. */
+static char **b7_niva_argv_c(char **argv, int *argc_io, const char *display, int line, int col) {
+    (void)display;
+#ifdef _WIN32
+    /* ويندوز: دوال التشغيل مرفوضة أصلا قبل الوصول إلى هنا
+       (b7_run_argv_c يرفض أولا) — أعد الوسائط كما هي بلا حل. */
+    (void)argv; (void)argc_io; (void)line; (void)col;
+    return argv;
+#endif
+    if (argc_io == NULL || *argc_io == 0) return argv;
+    const char *program = argv[0];
+    size_t prog_len = strlen(program);
+    if (prog_len < 9 || strcmp(program + prog_len - 9, ".نيفا") != 0) return argv;
+    char *resolved = nv_resolve_subprogram(program, line, col);
+    char *engine = NULL;
+#ifndef _WIN32
+    /* مسار الثنائي الحالي معروف خارج ويندوز فقط
+       (nv_std_exe_path داخل #ifndef _WIN32). */
+    char exe[4096];
+    ssize_t elen = nv_std_exe_path(exe, sizeof(exe));
+    if (elen > 0) {
+        exe[elen] = '\0';
+        const char *base = strrchr(exe, '/');
+        base = base ? base + 1 : exe;
+        char stem[4096];
+        size_t blen = strlen(base);
+        if (blen >= sizeof(stem)) blen = sizeof(stem) - 1;
+        memcpy(stem, base, blen);
+        stem[blen] = '\0';
+        char *dot = strrchr(stem, '.');
+        if (dot && dot != stem) *dot = '\0';
+        if (strcmp(stem, "niva") == 0 || strcmp(stem, "نيفا") == 0) engine = strdup(exe);
+    }
+#endif
+    if (!engine) {
+        const char *home = getenv("HOME");
+        if (home && home[0]) {
+            char cand[4096];
+            snprintf(cand, sizeof(cand), "%s/.local/bin/نيفا", home);
+            if (access(cand, X_OK) == 0) engine = strdup(cand);
+        }
+    }
+    if (!engine) {
+        const char *path = getenv("PATH");
+        const char *names[2] = {"نيفا", "niva"};
+        if (path) {
+            for (int ni = 0; ni < 2 && !engine; ni++) {
+                const char *cur = path;
+                while (*cur && !engine) {
+                    const char *colon = strchr(cur, ':');
+                    size_t dlen = colon ? (size_t)(colon - cur) : strlen(cur);
+                    char cand[4096];
+                    if (dlen == 0) snprintf(cand, sizeof(cand), "%s", names[ni]);
+                    else snprintf(cand, sizeof(cand), "%.*s/%s", (int)dlen, cur, names[ni]);
+                    if (access(cand, X_OK) == 0) engine = strdup(cand);
+                    cur = colon ? colon + 1 : cur + strlen(cur);
+                }
+            }
+        }
+    }
+    if (!engine) {
+        free(resolved);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "تشغيل برنامج نيفا فرعي غير مدعوم من هذا الثنائي");
+        return argv;
+    }
+    int old_argc = *argc_io;
+    char **out = (char **)malloc((size_t)(old_argc + 2) * sizeof(char *));
+    out[0] = engine;
+    out[1] = resolved;
+    for (int i = 1; i < old_argc; i++) out[1 + i] = argv[i];
+    out[old_argc + 1] = NULL;
+    free(argv);
+    *argc_io = old_argc + 1;
+    return out;
+}
+
+static B7RunResultC b7_run_argv_c(char **argv, int setup, long long setup_arg,
+                                  long long timeout_ms, long long grace_ms,
+                                  const char *display, int line, int col) {
+    B7RunResultC res;
+    res.code = -1;
+    res.output = j14_strdup("");
+    res.timed_out = 0;
+#ifdef _WIN32
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على ويندوز", display);
+    return res;
+#else
+    if (setup == 2) {
+#ifndef __linux__
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على هذه المنصة", display);
+#endif
+    }
+    int outpipe[2], errpipe[2];
+    if (pipe(outpipe) != 0 || pipe(errpipe) != 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تشغيل الأمر", display);
+    }
+    fcntl(errpipe[1], F_SETFD, FD_CLOEXEC);
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(outpipe[0]); close(outpipe[1]); close(errpipe[0]); close(errpipe[1]);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تشغيل الأمر", display);
+    }
+    if (pid == 0) {
+        close(outpipe[0]);
+        close(errpipe[0]);
+        dup2(outpipe[1], STDOUT_FILENO);
+        dup2(outpipe[1], STDERR_FILENO);
+        close(outpipe[1]);
+        if (setup == 1) { if (setpriority(PRIO_PROCESS, 0, 10) != 0) _exit(126); }
+        else if (setup == 2) {
+#ifdef __linux__
+            if (syscall(SYS_ioprio_set, 1, 0, (setup_arg << 13)) != 0) _exit(126);
+#endif
+        }
+        execvp(argv[0], argv);
+        int e = errno;
+        (void)!write(errpipe[1], &e, sizeof(e));
+        _exit(127);
+    }
+    close(outpipe[1]);
+    close(errpipe[1]);
+    int exec_errno = 0;
+    ssize_t er = read(errpipe[0], &exec_errno, sizeof(exec_errno));
+    close(errpipe[0]);
+    if (er > 0) {
+        close(outpipe[0]);
+        int st = 0;
+        waitpid(pid, &st, 0);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تشغيل الأمر", display);
+    }
+    fcntl(outpipe[0], F_SETFL, O_NONBLOCK);
+    J14Buf out;
+    j14_buf_init(&out);
+    int status = 0, done = 0, pipe_done = 0;
+    int phase = 0;
+    long long phase_ms = 0;
+    while (!done || !pipe_done) {
+        char tmp[4096];
+        ssize_t r = read(outpipe[0], tmp, sizeof(tmp));
+        if (r > 0) j14_buf_addn(&out, tmp, (size_t)r);
+        else if (r == 0) pipe_done = 1;
+        pid_t w = waitpid(pid, &status, WNOHANG);
+        if (w == pid) done = 1;
+        if (done) {
+            fcntl(outpipe[0], F_SETFL, 0);
+            while ((r = read(outpipe[0], tmp, sizeof(tmp))) > 0) j14_buf_addn(&out, tmp, (size_t)r);
+            pipe_done = 1;
+            break;
+        }
+        if (timeout_ms >= 0) {
+            phase_ms += 10;
+            if (phase == 0 && phase_ms >= timeout_ms) {
+                res.timed_out = 1;
+                kill(pid, SIGTERM);
+                phase = 1;
+                phase_ms = 0;
+            } else if (phase == 1 && phase_ms >= grace_ms) {
+                kill(pid, SIGKILL);
+                phase = 2;
+                phase_ms = 0;
+            }
+        }
+        usleep(10000);
+    }
+    close(outpipe[0]);
+    if (WIFEXITED(status)) res.code = WEXITSTATUS(status);
+    else res.code = -1;
+    free(res.output);
+    res.output = out.data;
+    return res;
+#endif
+}
+
+static B7RunResultC b7_run_c(const char *cmd_text, int setup, long long setup_arg,
+                            long long timeout_ms, long long grace_ms,
+                            const char *display, int line, int col) {
+    int argc = 0;
+    char **argv = b7_split_cmd_c(cmd_text, &argc);
+    if (argc == 0) {
+        b7_free_argv_c(argv, argc);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الأمر فارغ", display);
+    }
+    argv = b7_niva_argv_c(argv, &argc, display, line, col);
+    B7RunResultC res = b7_run_argv_c(argv, setup, setup_arg, timeout_ms, grace_ms, display, line, col);
+    b7_free_argv_c(argv, argc);
+    return res;
+}
+
+/* توليد منفصل: SIGHUP مهمل + setsid + إخراج إلى ملف؛ يعيد المعرف. */
+static long long b7_spawn_detached_c(const char *cmd_text, const char *file, const char *display, int line, int col) {
+#ifdef _WIN32
+    (void)cmd_text; (void)file;
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s غير مدعومة على ويندوز", display);
+    return -1;
+#else
+    int argc = 0;
+    char **argv = b7_split_cmd_c(cmd_text, &argc);
+    if (argc == 0) {
+        b7_free_argv_c(argv, argc);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الأمر فارغ", display);
+    }
+    argv = b7_niva_argv_c(argv, &argc, display, line, col);
+    int fd = open(file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        b7_free_argv_c(argv, argc);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر إنشاء ملف الإخراج %s", display, file);
+    }
+    int errpipe[2];
+    if (pipe(errpipe) != 0) {
+        close(fd);
+        b7_free_argv_c(argv, argc);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تشغيل الأمر", display);
+    }
+    fcntl(errpipe[1], F_SETFD, FD_CLOEXEC);
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(fd); close(errpipe[0]); close(errpipe[1]);
+        b7_free_argv_c(argv, argc);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تشغيل الأمر", display);
+    }
+    if (pid == 0) {
+        close(errpipe[0]);
+        signal(SIGHUP, SIG_IGN);
+        setsid();
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) { dup2(devnull, STDIN_FILENO); close(devnull); }
+        dup2(fd, STDOUT_FILENO);
+        dup2(fd, STDERR_FILENO);
+        close(fd);
+        execvp(argv[0], argv);
+        int e = errno;
+        (void)!write(errpipe[1], &e, sizeof(e));
+        _exit(127);
+    }
+    close(fd);
+    close(errpipe[1]);
+    int exec_errno = 0;
+    ssize_t er = read(errpipe[0], &exec_errno, sizeof(exec_errno));
+    close(errpipe[0]);
+    b7_free_argv_c(argv, argc);
+    if (er > 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تعذر تشغيل الأمر", display);
+    }
+    return (long long)pid;
+#endif
+}
+
+/* هل البرنامج موجود في PATH (أو مسار قابل للتنفيذ)؟ */
+static int b7_find_in_path_c(const char *prog) {
+#ifdef _WIN32
+    (void)prog;
+    return 0;
+#else
+    if (strchr(prog, '/') != NULL) return access(prog, X_OK) == 0;
+    const char *pathenv = getenv("PATH");
+    if (!pathenv) return 0;
+    const char *p = pathenv;
+    while (1) {
+        const char *s = strchr(p, ':');
+        size_t dlen = s ? (size_t)(s - p) : strlen(p);
+        char cand[4096];
+        if (dlen == 0) snprintf(cand, sizeof(cand), "%s", prog);
+        else if (dlen + 1 + strlen(prog) < sizeof(cand)) snprintf(cand, sizeof(cand), "%.*s/%s", (int)dlen, p, prog);
+        else return 0;
+        if (access(cand, X_OK) == 0) return 1;
+        if (!s) break;
+        p = s + 1;
+    }
+    return 0;
+#endif
+}
+
+/* لينكس7-ز7ج-متنوع. */
+
+/* عدد غربي قصير معرّب (مرآة plain_number + arabicize_number)؛ يعيد نصا مملوكا. */
+static char *b7_plain_num_ar_c(double n) {
+    J14Buf tmp;
+    j14_buf_init(&tmp);
+    j14r_plain_num(n, &tmp);
+    char *arab = j14r_arabicize(tmp.data);
+    j14_buf_free(&tmp);
+    return arab;
+}
+
+/* تنسيق عدد بصيغة printf مختصرة %[أعلام][عرض][.دقة][dfe g] — مرآة b7_fmt_num في Rust.
+   يعيد نصا مملوكا معرّبا؛ الأس e بصيغة Rust (بلا + وبلا أصفار بادئة في الأس). */
+static char *b7_fmt_num_c(const char *fmt, double n, const char *display, int line, int col) {
+    const char *rest = fmt;
+    if (*rest != '%') {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s صيغة غير صالحة: %s", display, fmt);
+    }
+    rest++;
+    int left = 0, zero = 0, plus = 0;
+    for (;;) {
+        if (*rest == '-') { left = 1; rest++; }
+        else if (*rest == '0') { zero = 1; rest++; }
+        else if (*rest == '+') { plus = 1; rest++; }
+        else if (*rest == ' ') { rest++; }
+        else break;
+    }
+    long width = 0;
+    while (*rest >= '0' && *rest <= '9') { width = width * 10 + (*rest - '0'); rest++; }
+    long prec = -1;
+    if (*rest == '.') {
+        rest++;
+        if (!(*rest >= '0' && *rest <= '9')) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s صيغة غير صالحة: %s", display, fmt);
+        }
+        prec = 0;
+        while (*rest >= '0' && *rest <= '9') { prec = prec * 10 + (*rest - '0'); rest++; }
+    }
+    if (*rest == '\0' || rest[1] != '\0') {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s صيغة غير صالحة: %s", display, fmt);
+    }
+    char conv = *rest;
+    if (conv != 'd' && conv != 'f' && conv != 'e' && conv != 'g') {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s صيغة غير صالحة: %s", display, fmt);
+    }
+    char numbuf[256];
+    if (conv == 'd') {
+        long long v;
+        if (n >= 9.223372036854776e18) v = LLONG_MAX;
+        else if (n <= -9.223372036854776e18) v = LLONG_MIN;
+        else v = (long long)n;
+        snprintf(numbuf, sizeof(numbuf), "%lld", v);
+    } else if (conv == 'f') {
+        snprintf(numbuf, sizeof(numbuf), "%.*f", prec < 0 ? 6 : (int)prec, n);
+    } else if (conv == 'e') {
+        snprintf(numbuf, sizeof(numbuf), "%.*e", prec < 0 ? 6 : (int)prec, n);
+        char *epos = strchr(numbuf, 'e');
+        if (epos) {
+            char *ep = epos + 1;
+            int neg = 0;
+            if (*ep == '-') { neg = 1; ep++; }
+            else if (*ep == '+') { ep++; }
+            while (*ep == '0') ep++;
+            char tmp[256];
+            size_t head = (size_t)(epos - numbuf) + 1;
+            memcpy(tmp, numbuf, head);
+            size_t w = head;
+            if (neg) tmp[w++] = '-';
+            if (*ep == '\0') tmp[w++] = '0';
+            else { size_t el = strlen(ep); memcpy(tmp + w, ep, el); w += el; }
+            tmp[w] = '\0';
+            strcpy(numbuf, tmp);
+        }
+    } else {
+        if (prec >= 0) {
+            snprintf(numbuf, sizeof(numbuf), "%.*f", (int)prec, n);
+        } else {
+            J14Buf tmp;
+            j14_buf_init(&tmp);
+            j14r_plain_num(n, &tmp);
+            snprintf(numbuf, sizeof(numbuf), "%s", tmp.data);
+            j14_buf_free(&tmp);
+        }
+    }
+    char s2[320];
+    size_t sl = 0;
+    if (plus && numbuf[0] != '-') s2[sl++] = '+';
+    size_t nl = strlen(numbuf);
+    memcpy(s2 + sl, numbuf, nl);
+    sl += nl;
+    s2[sl] = '\0';
+    if (width > 0 && (long)sl < width) {
+        size_t pad = (size_t)width - sl;
+        char padded[320 + 64];
+        size_t w = 0;
+        if (left) {
+            memcpy(padded, s2, sl);
+            w = sl;
+            memset(padded + w, ' ', pad);
+            w += pad;
+        } else if (zero) {
+            size_t start = 0;
+            if (s2[0] == '-' || s2[0] == '+') { padded[w++] = s2[0]; start = 1; }
+            memset(padded + w, '0', pad);
+            w += pad;
+            memcpy(padded + w, s2 + start, sl - start);
+            w += sl - start;
+        } else {
+            memset(padded, ' ', pad);
+            w = pad;
+            memcpy(padded + w, s2, sl);
+            w += sl;
+        }
+        padded[w] = '\0';
+        strcpy(s2, padded);
+    }
+    return j14r_arabicize(s2);
+}
+
+/* مقارنة ثلاثية -1/0/1 (عددية ونصية). */
+static NvValue b7_math_compare_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "رياضيات.قارن";
+    nv_std_need_args(D, args, nargs, 2, line, col);
+    if (args[0].tag == NV_NUM && args[1].tag == NV_NUM) {
+        double a = args[0].u.num, b = args[1].u.num;
+        if (isnan(a) || isnan(b)) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لا تقارن قيما غير عددية", D);
+        }
+        return nv_num(a < b ? -1.0 : (a > b ? 1.0 : 0.0));
+    }
+    if (args[0].tag == NV_STR && args[1].tag == NV_STR) {
+        int c = strcmp(args[0].u.str->data, args[1].u.str->data);
+        return nv_num(c < 0 ? -1.0 : (c > 0 ? 1.0 : 0.0));
+    }
+    nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع عددين أو نصين لكن أعطيت %s و%s", D, nv_type_name(args[0]), nv_type_name(args[1]));
+    return nv_nil();
+}
+
+/* قائمة أعداد النطاق مخلوطة عشوائيا (Fisher-Yates). */
+static NvValue b7_math_shuffle_range_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "رياضيات.خلط_نطاق";
+    nv_std_need_args(D, args, nargs, 2, line, col);
+    long long start = nv_std_need_integer(D, args[0], line, col);
+    long long end = nv_std_need_integer(D, args[1], line, col);
+    NvValue out = nv_list_new();
+    size_t ridx = nv_root_push_idx();
+    *nv_root_slot(ridx) = out;
+    if (end >= start) {
+        if ((long double)end - (long double)start >= 100000.0L) {
+            nv_root_pop();
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s نطاق طويل جدا (الحد 100000)", D);
+        }
+        long long count = end - start + 1;
+        long long *v = (long long *)malloc(sizeof(long long) * (size_t)count);
+        for (long long i = 0; i < count; i++) v[i] = start + i;
+        for (long long i = count; i > 1; i--) {
+            uint64_t j = nv_std_random_next() % (uint64_t)i;
+            long long tmp = v[i - 1];
+            v[i - 1] = v[j];
+            v[j] = tmp;
+        }
+        for (long long i = 0; i < count; i++) nv_list_push_raw(out.u.list, nv_num((double)v[i]));
+        free(v);
+    }
+    nv_root_pop();
+    return out;
+}
+
+/* تحليل حجم بشري: 0=صحيح، 1=عدد غير صالح، 2=لاحقة غير معروفة. */
+static int b7_from_human_parse_c(const char *s, size_t len, double *out, char *suf_out, size_t suf_cap) {
+    char *norm = (char *)malloc(len + 1);
+    size_t nl = 0;
+    size_t i = 0;
+    while (i < len) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == 0xD9 && i + 1 < len) {
+            unsigned char d = (unsigned char)s[i + 1];
+            if (d >= 0xA0 && d <= 0xA9) { norm[nl++] = (char)('0' + (d - 0xA0)); i += 2; continue; }
+            if (d == 0xAB) { norm[nl++] = '.'; i += 2; continue; }
+        }
+        norm[nl++] = (char)c;
+        i++;
+    }
+    norm[nl] = '\0';
+    size_t a = 0, b = nl;
+    while (a < b && (norm[a] == ' ' || norm[a] == '\t')) a++;
+    while (b > a && (norm[b - 1] == ' ' || norm[b - 1] == '\t')) b--;
+    size_t cut = b;
+    for (size_t k = a; k < b; k++) {
+        char c = norm[k];
+        if (!((c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+')) { cut = k; break; }
+    }
+    if (cut == a) { free(norm); return 1; }
+    char *numbuf = (char *)malloc(cut - a + 1);
+    memcpy(numbuf, norm + a, cut - a);
+    numbuf[cut - a] = '\0';
+    char *endp = NULL;
+    double value = strtod(numbuf, &endp);
+    int ok = (endp != numbuf && *endp == '\0');
+    free(numbuf);
+    if (!ok) { free(norm); return 1; }
+    size_t sa = cut, sb = b;
+    while (sa < sb && (norm[sa] == ' ' || norm[sa] == '\t')) sa++;
+    while (sb > sa && (norm[sb - 1] == ' ' || norm[sb - 1] == '\t')) sb--;
+    size_t sl = sb - sa;
+    if (sl >= suf_cap) sl = suf_cap - 1;
+    memcpy(suf_out, norm + sa, sl);
+    suf_out[sl] = '\0';
+    char up[16];
+    size_t ul = sl < 15 ? sl : 15;
+    for (size_t k = 0; k < ul; k++) {
+        char c = suf_out[k];
+        up[k] = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
+    }
+    up[ul] = '\0';
+    if (ul > 0 && up[ul - 1] == 'B') up[--ul] = '\0';
+    double mult = 1.0;
+    if (ul == 0) mult = 1.0;
+    else if (strcmp(up, "K") == 0) mult = 1024.0;
+    else if (strcmp(up, "M") == 0) mult = 1024.0 * 1024.0;
+    else if (strcmp(up, "G") == 0) mult = 1024.0 * 1024.0 * 1024.0;
+    else if (strcmp(up, "T") == 0) mult = 1024.0 * 1024.0 * 1024.0 * 1024.0;
+    else if (strcmp(up, "P") == 0) mult = 1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0;
+    else { free(norm); return 2; }
+    free(norm);
+    double result = value * mult;
+    if (!isfinite(result)) return 1;
+    *out = result;
+    return 0;
+}
+
+static NvValue b7_math_from_human_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "رياضيات.من_حجم_بشري";
+    nv_std_need_args(D, args, nargs, 1, line, col);
+    const char *text = nv_std_need_string(D, args[0], line, col);
+    double v = 0;
+    char suf[64];
+    int rc = b7_from_human_parse_c(text, args[0].u.str->len, &v, suf, sizeof(suf));
+    if (rc == 1) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s حجم بشري غير صالح: %s", D, text);
+    }
+    if (rc == 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لاحقة حجم غير معروفة: %s", D, suf);
+    }
+    return nv_num(v);
+}
+
+/* نسّق عددا بعدد كسور ثابت (تقريب). */
+static NvValue b7_math_format_num_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "رياضيات.نسّق_عدد";
+    nv_std_need_args(D, args, nargs, 2, line, col);
+    double n = nv_std_need_number(D, args[0], line, col);
+    long long prec = nv_std_need_integer(D, args[1], line, col);
+    if (prec < 0 || prec > 20) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الكسور بين 0 و20", D);
+    }
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%.*f", (int)prec, n);
+    char *arab = j14r_arabicize(buf);
+    NvValue v = nv_str_cstr(arab);
+    free(arab);
+    return v;
+}
+
+/* جزء النص من الفهرس بطول معين (فهارس من 1). */
+static NvValue b7_text_slice_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "نص.جزء_بفهارس";
+    nv_std_need_args(D, args, nargs, 3, line, col);
+    const char *text = nv_std_need_string(D, args[0], line, col);
+    size_t tlen = args[0].u.str->len;
+    long long start = nv_std_need_integer(D, args[1], line, col);
+    long long len = nv_std_need_integer(D, args[2], line, col);
+    if (start < 1) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الفهرس يبدأ من 1", D);
+    }
+    if (len < 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الطول غير صالح", D);
+    }
+    size_t n = 0;
+    size_t *offs = NULL;
+    uint32_t *chars = j14_decode_all(text, tlen, &n, &offs);
+    size_t s = (size_t)(start - 1);
+    if (s >= n) {
+        free(chars);
+        free(offs);
+        return nv_str_cstr("");
+    }
+    size_t e = s + (size_t)len;
+    if (e > n) e = n;
+    NvValue v = nv_str_new(text + offs[s], offs[e] - offs[s]);
+    free(chars);
+    free(offs);
+    return v;
+}
+
+/* صحيح إن كان النص غير فارغ وإلا خطأ. */
+static NvValue b7_text_nonempty_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "نص.غير_فارغ";
+    nv_std_need_args(D, args, nargs, 1, line, col);
+    const char *text = nv_std_need_string(D, args[0], line, col);
+    if (args[0].u.str->len == 0) {
+        (void)text;
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s النص فارغ", D);
+    }
+    return nv_bool(1);
+}
+
+static int b7_hex_val_c(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* فسّر \n و\t و\r و\\ و\0 و\xHH في النص. */
+static NvValue b7_text_unescape_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "نص.فسّر_هروب";
+    nv_std_need_args(D, args, nargs, 1, line, col);
+    const char *text = nv_std_need_string(D, args[0], line, col);
+    size_t tlen = args[0].u.str->len;
+    J14Buf out;
+    j14_buf_init(&out);
+    size_t i = 0;
+    while (i < tlen) {
+        unsigned char c = (unsigned char)text[i];
+        if (c != '\\') { j14_buf_addc(&out, (char)c); i++; continue; }
+        if (i + 1 >= tlen) {
+            j14_buf_free(&out);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s شرطة مائلة في النهاية", D);
+        }
+        char e = text[i + 1];
+        if (e == 'n') { j14_buf_addc(&out, '\n'); i += 2; }
+        else if (e == 't') { j14_buf_addc(&out, '\t'); i += 2; }
+        else if (e == 'r') { j14_buf_addc(&out, '\r'); i += 2; }
+        else if (e == '\\') { j14_buf_addc(&out, '\\'); i += 2; }
+        else if (e == '0') { j14_buf_addc(&out, '\0'); i += 2; }
+        else if (e == 'x') {
+            if (i + 3 >= tlen) {
+                j14_buf_free(&out);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تسلسل هروب غير مكتمل", D);
+            }
+            int h1 = b7_hex_val_c(text[i + 2]), h2 = b7_hex_val_c(text[i + 3]);
+            if (h1 < 0 || h2 < 0) {
+                j14_buf_free(&out);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تسلسل هروب غير صالح", D);
+            }
+            unsigned v = (unsigned)(h1 * 16 + h2);
+            if (v < 0x80) j14_buf_addc(&out, (char)v);
+            else {
+                j14_buf_addc(&out, (char)(0xC0 | (v >> 6)));
+                j14_buf_addc(&out, (char)(0x80 | (v & 0x3F)));
+            }
+            i += 4;
+        } else {
+            j14_buf_free(&out);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تسلسل هروب غير معروف: \\%c", D, e);
+        }
+    }
+    NvValue v = nv_str_new(out.data, out.len);
+    j14_buf_free(&out);
+    return v;
+}
+
+/* تاريخ اليوم بصيغة ISO (أرقام مشرقية كسائر نصوص التاريخ في Rust). */
+static NvValue b7_time_iso_today_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "وقت.تاريخ_دولي";
+    nv_std_need_args(D, args, nargs, 0, line, col);
+    long long epoch = nv_std_time_now_epoch();
+    NvStdTimeDt dt = nv_std_time_from_epoch(epoch, 0, D, line, col);
+    char buf[64];
+    nv_std_time_format_date(&dt, buf, sizeof(buf));
+    char *arab = j14r_arabicize(buf);
+    NvValue v = nv_str_cstr(arab);
+    free(arab);
+    return v;
+}
+
+static int b7_parse_int_c(const char *s, size_t len, long long *out) {
+    if (len == 0) return 0;
+    size_t i = 0;
+    int neg = 0;
+    if (s[0] == '-' || s[0] == '+') {
+        neg = (s[0] == '-');
+        i = 1;
+        if (len == 1) return 0;
+    }
+    long long v = 0;
+    for (; i < len; i++) {
+        if (s[i] < '0' || s[i] > '9') return 0;
+        v = v * 10 + (s[i] - '0');
+    }
+    *out = neg ? -v : v;
+    return 1;
+}
+
+/* حلّل نص تاريخ (ISO وشائع) إلى قاموس {سنة، شهر، يوم، ساعة، دقيقة}. */
+static NvValue b7_time_parse_date_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "وقت.حلّل_تاريخ";
+    nv_std_need_args(D, args, nargs, 1, line, col);
+    const char *text = nv_std_need_string(D, args[0], line, col);
+    size_t tlen = args[0].u.str->len;
+    size_t a = 0, b = tlen;
+    while (a < b && (text[a] == ' ' || text[a] == '\t')) a++;
+    while (b > a && (text[b - 1] == ' ' || text[b - 1] == '\t')) b--;
+    size_t sep = b;
+    for (size_t k = a; k < b; k++) {
+        if (text[k] == ' ' || text[k] == 'T') { sep = k; break; }
+    }
+    char dsep = 0;
+    for (size_t k = a; k < sep; k++) {
+        if (text[k] == '-' || text[k] == '/') { dsep = text[k]; break; }
+    }
+    long long y = 0, mo = 0, d = 0, h = 0, mi = 0;
+    int bad = 0;
+    if (dsep == 0) bad = 1;
+    long long f0 = 0, f1 = 0, f2 = 0;
+    size_t l0 = 0, l1 = 0, l2 = 0;
+    if (!bad) {
+        size_t p1 = a, p2 = a;
+        for (size_t k = a; k < sep; k++) {
+            if (text[k] == dsep) { if (p1 == a) p1 = k; else if (p2 == a) p2 = k; }
+        }
+        if (p1 == a || p2 == a) bad = 1;
+        else {
+            l0 = p1 - a; l1 = p2 - p1 - 1; l2 = sep - p2 - 1;
+            if (!b7_parse_int_c(text + a, l0, &f0) || !b7_parse_int_c(text + p1 + 1, l1, &f1) ||
+                !b7_parse_int_c(text + p2 + 1, l2, &f2)) bad = 1;
+            else if (l0 == 4) { y = f0; mo = f1; d = f2; }
+            else if (l2 == 4) { y = f2; mo = f1; d = f0; }
+            else bad = 1;
+        }
+    }
+    if (!bad && sep < b) {
+        size_t tp = sep + 1;
+        size_t tl = b - tp;
+        size_t c1 = tl, c2 = tl;
+        for (size_t k = 0; k < tl; k++) {
+            if (text[tp + k] == ':') {
+                if (c1 == tl) c1 = k;
+                else if (c2 == tl) c2 = k;
+            }
+        }
+        if (c1 == tl) bad = 1;
+        else {
+            long long hh = 0, mm = 0, ss = 0;
+            if (!b7_parse_int_c(text + tp, c1, &hh) || !b7_parse_int_c(text + tp + c1 + 1, (c2 == tl ? tl : c2) - c1 - 1, &mm)) bad = 1;
+            else if (c2 != tl && !b7_parse_int_c(text + tp + c2 + 1, tl - c2 - 1, &ss)) bad = 1;
+            else if (c2 != tl && tl - c2 - 1 == 0) bad = 1;
+            else { h = hh; mi = mm; }
+        }
+    }
+    if (!bad) {
+        if (y < 1 || y > 9999 || mo < 1 || mo > 12) bad = 1;
+        else if (d < 1 || d > nv_std_time_days_in_month(y, mo)) bad = 1;
+        else if (h < 0 || h > 23 || mi < 0 || mi > 59) bad = 1;
+    }
+    if (bad) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تاريخ غير صالح: %s", D, text);
+    }
+    NvValue v = nv_dict_new();
+    nv_dict_set_raw(v.u.dict, "سنة", nv_num((double)y));
+    nv_dict_set_raw(v.u.dict, "شهر", nv_num((double)mo));
+    nv_dict_set_raw(v.u.dict, "يوم", nv_num((double)d));
+    nv_dict_set_raw(v.u.dict, "ساعة", nv_num((double)h));
+    nv_dict_set_raw(v.u.dict, "دقيقة", nv_num((double)mi));
+    return v;
+}
+
+/* تاريخ بعد N يوما من اليوم بصيغة YYYY-MM-DD (أرقام مشرقية). */
+static NvValue b7_time_date_after_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "وقت.تاريخ_بعد_أيام";
+    nv_std_need_args(D, args, nargs, 1, line, col);
+    long long n = nv_std_need_integer(D, args[0], line, col);
+    long long epoch = nv_std_time_now_epoch();
+    NvStdTimeDt dt = nv_std_time_from_epoch(epoch, 0, D, line, col);
+    long long days = nv_std_time_days_from_civil(dt.year, (unsigned long)dt.month, (unsigned long)dt.day) + n;
+    long long y = 0;
+    long mo = 0, d = 0;
+    nv_std_time_civil_from_days(days, &y, &mo, &d);
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%04lld-%02ld-%02ld", y, mo, d);
+    char *arab = j14r_arabicize(buf);
+    NvValue v = nv_str_cstr(arab);
+    free(arab);
+    return v;
+}
+
+/* حوّل طابعا زمنيا (ثوان منذ العصر، UTC) إلى تاريخ منسق. */
+static NvValue b7_time_from_stamp_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "وقت.من_طابع";
+    nv_std_need_args(D, args, nargs, 1, line, col);
+    long long epoch = nv_std_time_need_epoch(D, args[0], line, col);
+    NvStdTimeDt dt = nv_std_time_from_epoch(epoch, 1, D, line, col);
+    char buf[64];
+    nv_std_time_format_datetime(&dt, buf, sizeof(buf));
+    char *arab = j14r_arabicize(buf);
+    NvValue v = nv_str_cstr(arab);
+    free(arab);
+    return v;
+}
+
+/* اطبع النص بلا سطر جديد في النهاية؛ يعيد النص. */
+static NvValue b7_display_print_no_nl_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "عرض.اطبع_بلا_سطر";
+    nv_std_need_args(D, args, nargs, 1, line, col);
+    const char *text = nv_std_need_string(D, args[0], line, col);
+    size_t len = args[0].u.str->len;
+    fwrite(text, 1, len, stdout);
+    fflush(stdout);
+    return nv_str_new(text, len);
+}
+
+/* ترميز قاعدة 32 (RFC 4648). */
+static NvValue b7_bases_b32encode_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "أسس.ترميز_قاعدة32";
+    nv_std_need_args(D, args, nargs, 1, line, col);
+    const char *text = nv_std_need_string(D, args[0], line, col);
+    size_t len = args[0].u.str->len;
+    static const char ALPHA[32] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    J14Buf out;
+    j14_buf_init(&out);
+    size_t i = 0;
+    while (i < len) {
+        size_t chunk = len - i < 5 ? len - i : 5;
+        unsigned char buf[5] = { 0, 0, 0, 0, 0 };
+        memcpy(buf, text + i, chunk);
+        unsigned char bits[8] = {
+            (unsigned char)(buf[0] >> 3),
+            (unsigned char)(((buf[0] & 0x07) << 2) | (buf[1] >> 6)),
+            (unsigned char)((buf[1] >> 1) & 0x1F),
+            (unsigned char)(((buf[1] & 0x01) << 4) | (buf[2] >> 4)),
+            (unsigned char)(((buf[2] & 0x0F) << 1) | (buf[3] >> 7)),
+            (unsigned char)((buf[3] >> 2) & 0x1F),
+            (unsigned char)(((buf[3] & 0x03) << 3) | (buf[4] >> 5)),
+            (unsigned char)(buf[4] & 0x1F),
+        };
+        int keep = chunk == 1 ? 2 : chunk == 2 ? 4 : chunk == 3 ? 5 : chunk == 4 ? 7 : 8;
+        for (int k = 0; k < 8; k++) {
+            if (k < keep) j14_buf_addc(&out, ALPHA[bits[k]]);
+            else j14_buf_addc(&out, '=');
+        }
+        i += 5;
+    }
+    NvValue v = nv_str_new(out.data, out.len);
+    j14_buf_free(&out);
+    return v;
+}
+
+/* فك قاعدة 32 (يقبل بحشو أو بلا حشو). */
+static NvValue b7_bases_b32decode_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "أسس.فك_قاعدة32";
+    nv_std_need_args(D, args, nargs, 1, line, col);
+    const char *text = nv_std_need_string(D, args[0], line, col);
+    size_t len = args[0].u.str->len;
+    size_t n = 0;
+    for (size_t i = 0; i < len; i++) if (text[i] != '=') n++;
+    size_t rem = n % 8;
+    if (rem != 0 && rem != 2 && rem != 4 && rem != 5 && rem != 7) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s نص قاعدة32 غير صالح", D);
+    }
+    unsigned char *vals = (unsigned char *)malloc(n + 1);
+    size_t vn = 0;
+    for (size_t i = 0; i < len; i++) {
+        char c = text[i];
+        if (c == '=') continue;
+        int v = -1;
+        if (c >= 'A' && c <= 'Z') v = c - 'A';
+        else if (c >= '2' && c <= '7') v = c - '2' + 26;
+        else {
+            free(vals);
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s محرف غير صالح في قاعدة32: %c", D, c);
+        }
+        vals[vn++] = (unsigned char)v;
+    }
+    unsigned char *outb = (unsigned char *)malloc(n * 5 / 8 + 8);
+    size_t olen = 0;
+    size_t i = 0;
+    while (i < n) {
+        size_t take = n - i < 8 ? n - i : 8;
+        unsigned char b[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+        memcpy(b, vals + i, take);
+        switch (take) {
+            case 2:
+                outb[olen++] = (unsigned char)((b[0] << 3) | (b[1] >> 2));
+                break;
+            case 4:
+                outb[olen++] = (unsigned char)((b[0] << 3) | (b[1] >> 2));
+                outb[olen++] = (unsigned char)(((b[1] & 0x03) << 6) | (b[2] << 1) | (b[3] >> 4));
+                break;
+            case 5:
+                outb[olen++] = (unsigned char)((b[0] << 3) | (b[1] >> 2));
+                outb[olen++] = (unsigned char)(((b[1] & 0x03) << 6) | (b[2] << 1) | (b[3] >> 4));
+                outb[olen++] = (unsigned char)(((b[3] & 0x0F) << 4) | (b[4] >> 1));
+                break;
+            case 7:
+                outb[olen++] = (unsigned char)((b[0] << 3) | (b[1] >> 2));
+                outb[olen++] = (unsigned char)(((b[1] & 0x03) << 6) | (b[2] << 1) | (b[3] >> 4));
+                outb[olen++] = (unsigned char)(((b[3] & 0x0F) << 4) | (b[4] >> 1));
+                outb[olen++] = (unsigned char)(((b[4] & 0x01) << 7) | (b[5] << 2) | (b[6] >> 3));
+                break;
+            case 8:
+                outb[olen++] = (unsigned char)((b[0] << 3) | (b[1] >> 2));
+                outb[olen++] = (unsigned char)(((b[1] & 0x03) << 6) | (b[2] << 1) | (b[3] >> 4));
+                outb[olen++] = (unsigned char)(((b[3] & 0x0F) << 4) | (b[4] >> 1));
+                outb[olen++] = (unsigned char)(((b[4] & 0x01) << 7) | (b[5] << 2) | (b[6] >> 3));
+                outb[olen++] = (unsigned char)(((b[6] & 0x07) << 5) | b[7]);
+                break;
+            default:
+                free(vals);
+                free(outb);
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s نص قاعدة32 غير صالح", D);
+                break;
+        }
+        i += take;
+    }
+    free(vals);
+    size_t olen2 = 0;
+    char *lossy = b6_lossy_c(outb, olen, &olen2);
+    free(outb);
+    NvValue v = nv_str_new(lossy, olen2);
+    free(lossy);
+    return v;
 }
 
 void nv_std_lines_fill(NvDict *d) {
@@ -46963,6 +53131,27 @@ void nv_std_lines_fill(NvDict *d) {
     nv_std_add_fn(d, "عد_حروف", b6_lines_count_chars_fn);
     nv_std_add_fn(d, "اخلط", b6_lines_shuffle_fn);
     nv_std_add_fn(d, "انسخ_لملف_وشاشة", b6_lines_tee_fn);
+    nv_std_add_fn(d, "أظهر_نهايات_السطور", b7_lines_show_eol_fn);
+    nv_std_add_fn(d, "أظهر_التبويبات", b7_lines_show_tabs_fn);
+    nv_std_add_fn(d, "أظهر_غير_المطبوع", b7_lines_show_nonprint_fn);
+    nv_std_add_fn(d, "أول_البايتات", b7_lines_first_bytes_fn);
+    nv_std_add_fn(d, "أول_السطور_إلا_آخر", b7_lines_head_except_last_fn);
+    nv_std_add_fn(d, "آخر_البايتات", b7_lines_last_bytes_fn);
+    nv_std_add_fn(d, "آخر_السطور_من", b7_lines_tail_from_fn);
+    nv_std_add_fn(d, "اعرض_ثماني", b7_lines_octal_fn);
+    nv_std_add_fn(d, "اعرض_عشري", b7_lines_decimal_fn);
+    nv_std_add_fn(d, "اعرض_بصفحات", b7_lines_paginate_fn);
+    nv_std_add_fn(d, "اعكس_الحروف", b7_lines_reverse_chars_fn);
+    nv_std_add_fn(d, "أظهر_كل_العلامات", b7_lines_show_all_fn);
+    nv_std_add_fn(d, "تحقق_فرز", b7_lines_is_sorted_fn);
+    nv_std_add_fn(d, "فرز_إصدارات", b7_lines_sort_versions_fn);
+    nv_std_add_fn(d, "قسم_بنمط", b7_lines_split_pattern_fn);
+    nv_std_add_fn(d, "رتب_طوبولوجيا", b7_lines_toposort_fn);
+    nv_std_add_fn(d, "ضغط_تبويبات", b7_lines_unexpand_fn);
+    nv_std_add_fn(d, "نسق_فقرات", b7_lines_format_paras_fn);
+    nv_std_add_fn(d, "احذف_أعمدة", b7_lines_delete_cols_fn);
+    nv_std_add_fn(d, "عد_بايتات", b7_lines_count_bytes_fn);
+    nv_std_add_fn(d, "أطول_سطر", b7_lines_longest_fn);
 }
 
 
