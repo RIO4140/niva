@@ -52342,7 +52342,13 @@ static B7RunResultC b7_run_argv_c(char **argv, int setup, long long setup_arg,
     j14_buf_init(&out);
     int status = 0, done = 0, pipe_done = 0;
     int phase = 0;
-    long long phase_ms = 0;
+    /* لينكس7-ز5ج-مهلة-زمن-جدار: المهلة بزمن الجدار
+       (CLOCK_MONOTONIC) لا بعدّ التكرارات — عدّ التكرارات
+       يتأخر تحت الحمل (ماك CI: النائم 3ث أكمل قبل SIGTERM
+       عند مهلة 1ث). مرآة Instant في Rust. */
+    struct timespec t0;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    long long phase_start_ms = 0;
     while (!done || !pipe_done) {
         char tmp[4096];
         ssize_t r = read(outpipe[0], tmp, sizeof(tmp));
@@ -52357,16 +52363,20 @@ static B7RunResultC b7_run_argv_c(char **argv, int setup, long long setup_arg,
             break;
         }
         if (timeout_ms >= 0) {
-            phase_ms += 10;
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            long long elapsed_ms = (long long)(now.tv_sec - t0.tv_sec) * 1000
+                + (long long)(now.tv_nsec - t0.tv_nsec) / 1000000;
+            long long phase_ms = elapsed_ms - phase_start_ms;
             if (phase == 0 && phase_ms >= timeout_ms) {
                 res.timed_out = 1;
                 kill(pid, SIGTERM);
                 phase = 1;
-                phase_ms = 0;
+                phase_start_ms = elapsed_ms;
             } else if (phase == 1 && phase_ms >= grace_ms) {
                 kill(pid, SIGKILL);
                 phase = 2;
-                phase_ms = 0;
+                phase_start_ms = elapsed_ms;
             }
         }
         usleep(10000);
