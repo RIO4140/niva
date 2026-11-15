@@ -47787,9 +47787,23 @@ fn b7_files_statvfs_full(
     let iused = itotal.saturating_sub(ifree);
     #[cfg(target_os = "macos")]
     let fstype = {
-        let raw = &st.f_fstypename;
-        let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
-        String::from_utf8_lossy(&raw[..end]).to_string()
+        // لينكس7-ز6-مساحة-قرص-ماك-statfs: statvfs على ماك
+        // بلا f_fstypename — النوع من statfs (كما في
+        // b6_files_fstype).
+        let mut sfs: libc::statfs = unsafe { std::mem::zeroed() };
+        if unsafe { libc::statfs(c.as_ptr(), &mut sfs) } != 0 {
+            "غير معروف".to_string()
+        } else {
+            let raw = &sfs.f_fstypename as &[libc::c_char];
+            let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+            let bytes: Vec<u8> = raw[..end].iter().map(|&b| b as u8).collect();
+            let name = String::from_utf8_lossy(&bytes).into_owned();
+            if name.is_empty() {
+                "غير معروف".to_string()
+            } else {
+                name
+            }
+        }
     };
     #[cfg(not(target_os = "macos"))]
     let fstype = match st.f_type as u64 {

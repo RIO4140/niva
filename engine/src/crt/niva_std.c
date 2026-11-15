@@ -7275,7 +7275,15 @@ static void b7_files_statvfs_full_c(const char *path, const char *display, int l
     *ifree_out = (unsigned long long)st.f_ffree;
     *iused = *itotal >= *ifree_out ? *itotal - *ifree_out : 0;
 #ifdef __APPLE__
-    *fstype_out = j14_strndup(st.f_fstypename, sizeof(st.f_fstypename));
+    /* لينكس7-ز6ج-مساحة-قرص-ماك-statfs: statvfs على ماك بلا
+       f_fstypename — النوع من statfs. */
+    {
+        char *resolved2 = b6_resolve_plain_c(path);
+        struct statfs sfs;
+        if (statfs(resolved2, &sfs) != 0) *fstype_out = j14_strdup("غير معروف");
+        else *fstype_out = j14_strndup(sfs.f_fstypename, sizeof(sfs.f_fstypename));
+        free(resolved2);
+    }
 #else
     const char *name = "غير معروف";
     switch ((unsigned long)st.f_type) {
