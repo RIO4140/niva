@@ -11492,6 +11492,5264 @@ fn random_choice(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col:
 
 // --- شبكة (Meeting 22, DESIGN §16) ---
 
+
+// ----- لينكس8-طبقة1-أغلفة: طلب_جديد/نفذ/اعرض_الطلب + ضابطات -----
+
+fn net_dict_upsert(pairs: &mut Vec<(String, Value)>, key: &str, value: Value) {
+    if let Some(e) = pairs.iter_mut().find(|(k, _)| k == key) {
+        e.1 = value;
+    } else {
+        pairs.push((key.to_string(), value));
+    }
+}
+
+fn net_dict_get<'a>(pairs: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
+    pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+}
+
+/// أزواج قاموس الطلب من المعامل الأول (ينسخها — فالضابط
+/// يعيد قاموسا جديدا ولا يعدّل الأصل).
+fn net_req_pairs(
+    args: &[Value],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<(String, Value)>> {
+    let pairs = need_dict(display, &args[0], line, col)?;
+    Ok(pairs.clone())
+}
+
+fn net_need_bool(display: &str, v: &Value, line: usize, col: usize) -> RioResult<bool> {
+    match v {
+        Value::Bool(b) => Ok(*b),
+        other => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع منطقيا لكن أعطيت {}",
+                display,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+fn net_bad(display: &str, key: &str, line: usize, col: usize) -> RioError {
+    RioError::typ(format!("الدالة {} {} غير صالح", display, key), line, col)
+}
+
+fn net_header_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn net_header_value_ok(value: &str) -> bool {
+    !value.chars().any(|c| c == '\r' || c == '\n')
+}
+
+/// قاموس نص→نص من قيمة (لرؤوس/كوكيز).
+fn net_text_dict(
+    v: &Value,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<(String, String)>> {
+    let pairs = need_dict(display, v, line, col)?;
+    let mut out = Vec::new();
+    for (k, val) in pairs {
+        match val {
+            Value::Str(s) => out.push((k.clone(), s.clone())),
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع قيما نصية فقط لكن أعطيت {}",
+                        display,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn net_text_list(
+    v: &Value,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<String>> {
+    let items = need_list(display, v, line, col)?;
+    let mut out = Vec::new();
+    for it in items {
+        match it {
+            Value::Str(s) => out.push(s.clone()),
+            other => {
+                return Err(RioError::typ(
+                    format!(
+                        "الدالة {} تتوقع عناصر نصية فقط لكن أعطيت {}",
+                        display,
+                        other.type_name()
+                    ),
+                    line,
+                    col,
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn net_setter_0(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.خلال_ثوان";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_number(display, &args[1], line, col)?;
+    if !(v > 0.0) || !v.is_finite() {
+        return Err(net_bad(display, "مهلة", line, col));
+    }
+    net_dict_upsert(&mut pairs, "مهلة", Value::Number(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_1(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بسرعة_قصوى";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_integer(display, &args[1], line, col)?;
+    if v <= 0 {
+        return Err(net_bad(display, "حد_سرعة_التنزيل", line, col));
+    }
+    net_dict_upsert(&mut pairs, "حد_سرعة_التنزيل", Value::Number(v as f64));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_2(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بحد_سرعة_الرفع";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_integer(display, &args[1], line, col)?;
+    if v <= 0 {
+        return Err(net_bad(display, "حد_سرعة_الرفع", line, col));
+    }
+    net_dict_upsert(&mut pairs, "حد_سرعة_الرفع", Value::Number(v as f64));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_3(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بحد_الحجم";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_integer(display, &args[1], line, col)?;
+    if v <= 0 {
+        return Err(net_bad(display, "حد_الحجم", line, col));
+    }
+    net_dict_upsert(&mut pairs, "حد_الحجم", Value::Number(v as f64));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_4(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.أعد_عند_الفشل";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_integer(display, &args[1], line, col)?;
+    if v < 1 || v > 100 {
+        return Err(net_bad(display, "محاولات", line, col));
+    }
+    net_dict_upsert(&mut pairs, "محاولات", Value::Number(v as f64));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_5(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بتأخير_المحاولات";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_number(display, &args[1], line, col)?;
+    if v < 0.0 || !v.is_finite() {
+        return Err(net_bad(display, "تأخير", line, col));
+    }
+    net_dict_upsert(&mut pairs, "تأخير", Value::Number(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_6(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بأقصى_زمن_المحاولات";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_number(display, &args[1], line, col)?;
+    if !(v > 0.0) || !v.is_finite() {
+        return Err(net_bad(display, "أقصى_زمن_المحاولات", line, col));
+    }
+    net_dict_upsert(&mut pairs, "أقصى_زمن_المحاولات", Value::Number(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_7(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بأعد_عند_الرفض";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "أعد_عند_الرفض", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_8(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بأعد_بلا_نهاية";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "أعد_بلا_نهاية", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_9(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بصامت";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "صامت", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_10(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بأخطاء_فقط";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "أخطاء_فقط", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_11(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.أظهر_التقدم";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "أظهر_التقدم", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_12(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بمفصل";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "مفصل", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_13(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.باتباع_التوجيه";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "اتباع_التوجيه", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_14(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بأقصى_توجيه";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_integer(display, &args[1], line, col)?;
+    if v < 0 {
+        return Err(net_bad(display, "أقصى_التوجيه", line, col));
+    }
+    net_dict_upsert(&mut pairs, "أقصى_التوجيه", Value::Number(v as f64));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_15(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بتوجيه_لموثوق_فقط";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "توجيه_لموثوق_فقط", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_16(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.ببروتوكولات_التوجيه";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let items = net_text_list(&args[1], display, line, col)?;
+    let values: Vec<Value> = items.into_iter().map(Value::Str).collect();
+    net_dict_upsert(&mut pairs, "بروتوكولات_التوجيه", Value::List(values));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_17(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.عبر_وكيل";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_string(display, &args[1], line, col)?;
+    if v.is_empty() {
+        return Err(net_bad(display, "وكيل", line, col));
+    }
+    net_dict_upsert(&mut pairs, "وكيل", Value::Str(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_18(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.عبر_وكيل_socks5";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_string(display, &args[1], line, col)?;
+    if v.is_empty() {
+        return Err(net_bad(display, "وكيل_socks5", line, col));
+    }
+    net_dict_upsert(&mut pairs, "وكيل_socks5", Value::Str(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_19(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بلا_وكيل_ل";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let items = net_text_list(&args[1], display, line, col)?;
+    let values: Vec<Value> = items.into_iter().map(Value::Str).collect();
+    net_dict_upsert(&mut pairs, "بلا_وكيل_ل", Value::List(values));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_20(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بنفق_الوكيل";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "نفق_الوكيل", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_21(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بمصادقة_الوكيل";
+    need_args(display, args, 3, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let user = need_string(display, &args[1], line, col)?;
+    let pass = need_string(display, &args[2], line, col)?;
+    net_dict_upsert(
+        &mut pairs,
+        "مصادقة_الوكيل",
+        Value::Dict(vec![
+            ("مستخدم".to_string(), Value::Str(user)),
+            ("كلمة_سر".to_string(), Value::Str(pass)),
+        ]),
+    );
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_22(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بتحقق_الشهادة";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    if !v {
+        return Err(RioError::runtime(
+            "تجاهل التحقق من الشهادة مرفوض — الشهادة تُتحقق دائما",
+            line,
+            col,
+        ));
+    }
+    net_dict_upsert(&mut pairs, "تحقق_الشهادة", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_23(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بملف_شهادات";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_string(display, &args[1], line, col)?;
+
+    net_dict_upsert(&mut pairs, "ملف_شهادات", Value::Str(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_24(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بمجلد_شهادات";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_string(display, &args[1], line, col)?;
+
+    net_dict_upsert(&mut pairs, "مجلد_شهادات", Value::Str(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_25(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بشهادة_عميل";
+    need_args(display, args, 3, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let cert = need_string(display, &args[1], line, col)?;
+    let key = need_string(display, &args[2], line, col)?;
+    net_dict_upsert(
+        &mut pairs,
+        "شهادة_عميل",
+        Value::Dict(vec![
+            ("شهادة".to_string(), Value::Str(cert)),
+            ("مفتاح".to_string(), Value::Str(key)),
+        ]),
+    );
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_26(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.باسم_متصفح";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_string(display, &args[1], line, col)?;
+
+    net_dict_upsert(&mut pairs, "وكيل_المستخدم", Value::Str(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_27(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بإحالة";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_string(display, &args[1], line, col)?;
+
+    net_dict_upsert(&mut pairs, "إحالة", Value::Str(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_28(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.باللغة";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_string(display, &args[1], line, col)?;
+
+    net_dict_upsert(&mut pairs, "لغة", Value::Str(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_29(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.مع_رأس";
+    need_args(display, args, 3, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let name = need_string(display, &args[1], line, col)?;
+    let value = need_string(display, &args[2], line, col)?;
+    if !net_header_name_ok(&name) {
+        return Err(net_bad(display, "رؤوس", line, col));
+    }
+    if !net_header_value_ok(&value) {
+        return Err(RioError::runtime(
+            "قيمة ترويسة غير صالحة — لا يُسمح بأسطر جديدة في الترويسات",
+            line,
+            col,
+        ));
+    }
+    let mut headers: Vec<(String, Value)> = match net_dict_get(&pairs, "رؤوس") {
+        Some(Value::Dict(d)) => d.clone(),
+        _ => Vec::new(),
+    };
+    net_dict_upsert(&mut headers, &name, Value::Str(value));
+    net_dict_upsert(&mut pairs, "رؤوس", Value::Dict(headers));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_30(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بلا_رأس";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_string(display, &args[1], line, col)?;
+    if !net_header_name_ok(&v) {
+        return Err(net_bad(display, "رؤوس_محذوفة", line, col));
+    }
+    let mut list: Vec<Value> = match net_dict_get(&pairs, "رؤوس_محذوفة") {
+        Some(Value::List(items)) => items.clone(),
+        _ => Vec::new(),
+    };
+    if !list.iter().any(|x| matches!(x, Value::Str(s) if s == &v)) {
+        list.push(Value::Str(v));
+    }
+    net_dict_upsert(&mut pairs, "رؤوس_محذوفة", Value::List(list));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_31(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.مع_كوكيز";
+    if args.len() != 2 && args.len() != 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 2 أو 3 معاملات لكن أعطيت {}",
+                display,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let mut cookies: Vec<(String, Value)> = match net_dict_get(&pairs, "كوكيز") {
+        Some(Value::Dict(d)) => d.clone(),
+        _ => Vec::new(),
+    };
+    if args.len() == 2 {
+        let entries = net_text_dict(&args[1], display, line, col)?;
+        for (k, v) in entries {
+            net_dict_upsert(&mut cookies, &k, Value::Str(v));
+        }
+    } else {
+        let name = need_string(display, &args[1], line, col)?;
+        let value = need_string(display, &args[2], line, col)?;
+        net_dict_upsert(&mut cookies, &name, Value::Str(value));
+    }
+    net_dict_upsert(&mut pairs, "كوكيز", Value::Dict(cookies));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_32(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بتجاهل_كوكيز_الجلسة";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "تجاهل_كوكيز_الجلسة", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_33(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.باسم_وكلمة_سر";
+    need_args(display, args, 3, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let user = need_string(display, &args[1], line, col)?;
+    let pass = need_string(display, &args[2], line, col)?;
+    net_dict_upsert(
+        &mut pairs,
+        "مصادقة",
+        Value::Dict(vec![
+            ("نوع".to_string(), Value::Str("أساسية".to_string())),
+            ("مستخدم".to_string(), Value::Str(user)),
+            ("كلمة_سر".to_string(), Value::Str(pass)),
+        ]),
+    );
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_34(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بمصادقة_هضمية";
+    need_args(display, args, 3, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let user = need_string(display, &args[1], line, col)?;
+    let pass = need_string(display, &args[2], line, col)?;
+    net_dict_upsert(
+        &mut pairs,
+        "مصادقة",
+        Value::Dict(vec![
+            ("نوع".to_string(), Value::Str("هضمية".to_string())),
+            ("مستخدم".to_string(), Value::Str(user)),
+            ("كلمة_سر".to_string(), Value::Str(pass)),
+        ]),
+    );
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_35(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بأي_مصادقة";
+    need_args(display, args, 3, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let user = need_string(display, &args[1], line, col)?;
+    let pass = need_string(display, &args[2], line, col)?;
+    net_dict_upsert(
+        &mut pairs,
+        "مصادقة",
+        Value::Dict(vec![
+            ("نوع".to_string(), Value::Str("تفاوضية".to_string())),
+            ("مستخدم".to_string(), Value::Str(user)),
+            ("كلمة_سر".to_string(), Value::Str(pass)),
+        ]),
+    );
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_36(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.برمز";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let token = need_string(display, &args[1], line, col)?;
+    net_dict_upsert(
+        &mut pairs,
+        "مصادقة",
+        Value::Dict(vec![
+            ("نوع".to_string(), Value::Str("حامل".to_string())),
+            ("رمز".to_string(), Value::Str(token)),
+        ]),
+    );
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_37(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بتوقيع_أمازون";
+    if args.len() < 3 || args.len() > 5 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 3 إلى 5 معاملات لكن أعطيت {}",
+                display,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let key = need_string(display, &args[1], line, col)?;
+    let secret = need_string(display, &args[2], line, col)?;
+    let mut auth: Vec<(String, Value)> = vec![
+        ("نوع".to_string(), Value::Str("أمازون".to_string())),
+        ("مفتاح".to_string(), Value::Str(key)),
+        ("سر".to_string(), Value::Str(secret)),
+    ];
+    if args.len() >= 4 {
+        let region = need_string(display, &args[3], line, col)?;
+        auth.push(("منطقة".to_string(), Value::Str(region)));
+    }
+    if args.len() >= 5 {
+        let service = need_string(display, &args[4], line, col)?;
+        auth.push(("خدمة".to_string(), Value::Str(service)));
+    }
+    net_dict_upsert(&mut pairs, "مصادقة", Value::Dict(auth));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_38(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بتوقيع_طلب";
+    if args.len() < 3 || args.len() > 4 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 3 إلى 4 معاملات لكن أعطيت {}",
+                display,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let key_id = need_string(display, &args[1], line, col)?;
+    let key = need_string(display, &args[2], line, col)?;
+    let mut auth: Vec<(String, Value)> = vec![
+        ("نوع".to_string(), Value::Str("توقيع".to_string())),
+        ("معرف".to_string(), Value::Str(key_id)),
+        ("مفتاح".to_string(), Value::Str(key)),
+    ];
+    if args.len() >= 4 {
+        let algo = need_string(display, &args[3], line, col)?;
+        auth.push(("خوارزمية".to_string(), Value::Str(algo)));
+    }
+    net_dict_upsert(&mut pairs, "مصادقة", Value::Dict(auth));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_39(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بمنع_بيانات_الدخول";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "منع_بيانات_الدخول", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_40(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بمهلة_النقل";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_number(display, &args[1], line, col)?;
+    if !(v > 0.0) || !v.is_finite() {
+        return Err(net_bad(display, "مهلة_النقل", line, col));
+    }
+    net_dict_upsert(&mut pairs, "مهلة_النقل", Value::Number(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_41(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بتتبع";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_string(display, &args[1], line, col)?;
+
+    net_dict_upsert(&mut pairs, "تتبع_في", Value::Str(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_42(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بتتبع_نصي";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "تتبع_نصي", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_43(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بضغط";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "ضغط", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_44(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بترميز_الرد";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_string(display, &args[1], line, col)?;
+    if v != "utf-8" && v != "latin1" {
+        return Err(net_bad(display, "ترميز_الرد", line, col));
+    }
+    net_dict_upsert(&mut pairs, "ترميز_الرد", Value::Str(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_45(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بتحقق_الحالة";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "تحقق_من_الحالة", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_46(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بإصدار_http";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_string(display, &args[1], line, col)?;
+    if v != "1.0" && v != "1.1" {
+        return Err(net_bad(display, "إصدار_http", line, col));
+    }
+    net_dict_upsert(&mut pairs, "إصدار_http", Value::Str(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_47(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بإرسال_متقطع";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "إرسال_متقطع", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_48(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بأبق_الجسم_بعد_التوجيه";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "أبق_الجسم_بعد_التوجيه", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_49(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بمدى";
+    if args.len() != 2 && args.len() != 3 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} تتوقع 2 أو 3 معاملات لكن أعطيت {}",
+                display,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let from = need_integer(display, &args[1], line, col)?;
+    if from < 0 {
+        return Err(net_bad(display, "مدى", line, col));
+    }
+    let mut range: Vec<(String, Value)> =
+        vec![("من".to_string(), Value::Number(from as f64))];
+    if args.len() == 3 {
+        let to = need_integer(display, &args[2], line, col)?;
+        if to < from {
+            return Err(net_bad(display, "مدى", line, col));
+        }
+        range.push(("إلى".to_string(), Value::Number(to as f64)));
+    }
+    net_dict_upsert(&mut pairs, "مدى", Value::Dict(range));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_50(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بوسم_الكيان";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_string(display, &args[1], line, col)?;
+
+    net_dict_upsert(&mut pairs, "وسم_الكيان", Value::Str(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_51(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بشرط_زمني";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_string(display, &args[1], line, col)?;
+    if v.is_empty() {
+        return Err(net_bad(display, "شرط_زمني", line, col));
+    }
+    net_dict_upsert(&mut pairs, "شرط_زمني", Value::Str(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_52(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بحفظ_وقت_التعديل";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "حفظ_وقت_التعديل", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_53(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بمنع_الكتابة";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "منع_الكتابة", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_54(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بتخط_الموجود";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "تخط_الموجود", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_55(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بأنشئ_المجلدات";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "أنشئ_المجلدات", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_56(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بسجل_التنزيل";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_string(display, &args[1], line, col)?;
+
+    net_dict_upsert(&mut pairs, "سجل_التنزيل", Value::Str(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_57(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بإلحاق_السجل";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "إلحاق_السجل", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_58(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بإلى_مجلد";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_string(display, &args[1], line, col)?;
+
+    net_dict_upsert(&mut pairs, "مجلد_التنزيل", Value::Str(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_59(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بعمق_التكرار";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_integer(display, &args[1], line, col)?;
+    if v < 0 {
+        return Err(net_bad(display, "عمق_التكرار", line, col));
+    }
+    net_dict_upsert(&mut pairs, "عمق_التكرار", Value::Number(v as f64));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_60(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بتحويل_الروابط";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "حوّل_الروابط", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_61(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.باحترام_الروبوتات";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "احترام_الروبوتات", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_62(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بالبقاء_في_المضيف";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "البقاء_في_المضيف", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_63(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بالبقاء_في_المجلد";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "البقاء_في_المجلد", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_64(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بأنواع_مقبولة";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let items = net_text_list(&args[1], display, line, col)?;
+    let values: Vec<Value> = items.into_iter().map(Value::Str).collect();
+    net_dict_upsert(&mut pairs, "أنواع_مقبولة", Value::List(values));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_65(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بأنواع_مرفوضة";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let items = net_text_list(&args[1], display, line, col)?;
+    let values: Vec<Value> = items.into_iter().map(Value::Str).collect();
+    net_dict_upsert(&mut pairs, "أنواع_مرفوضة", Value::List(values));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_66(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بأنماط_مقبولة";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let items = net_text_list(&args[1], display, line, col)?;
+    let values: Vec<Value> = items.into_iter().map(Value::Str).collect();
+    net_dict_upsert(&mut pairs, "أنماط_مقبولة", Value::List(values));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_67(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بتتبع_الصور";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "تتبع_الصور", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_68(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بتتبع_css";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "تتبع_css", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_69(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بتسطيح_المجلدات";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "سطّح_المجلدات", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_70(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بحد_الملفات";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = need_integer(display, &args[1], line, col)?;
+    if v < 0 {
+        return Err(net_bad(display, "حد_الملفات", line, col));
+    }
+    net_dict_upsert(&mut pairs, "حد_الملفات", Value::Number(v as f64));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_71(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.باسمح_http";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "اسمح_http", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_72(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.ببنية_المجلدات";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "بنية_المجلدات", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_setter_73(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let display = "شبكة.بأنشئ_مجلدات_ftp";
+    need_args(display, args, 2, line, col)?;
+    let mut pairs = net_req_pairs(args, display, line, col)?;
+    let v = net_need_bool(display, &args[1], line, col)?;
+    net_dict_upsert(&mut pairs, "أنشئ_مجلدات_ftp", Value::Bool(v));
+    Ok(Value::Dict(pairs))
+}
+
+fn net_req_new(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.طلب_جديد", args, 1, line, col)?;
+    let url = need_string("شبكة.طلب_جديد", &args[0], line, col)?;
+    if url.is_empty() {
+        return Err(RioError::typ(
+            "الدالة شبكة.طلب_جديد تتوقع رابطا غير فارغ",
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Dict(vec![
+        ("رابط".to_string(), Value::Str(url)),
+        ("طريقة".to_string(), Value::Str("GET".to_string())),
+    ]))
+}
+
+fn net_req_show(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.اعرض_الطلب", args, 1, line, col)?;
+    let pairs = need_dict("شبكة.اعرض_الطلب", &args[0], line, col)?;
+    let url = match net_dict_get(pairs, "رابط") {
+        Some(Value::Str(s)) => s.clone(),
+        _ => String::new(),
+    };
+    let method = match net_dict_get(pairs, "طريقة") {
+        Some(Value::Str(s)) => s.clone(),
+        _ => "GET".to_string(),
+    };
+    let n_headers = match net_dict_get(pairs, "رؤوس") {
+        Some(Value::Dict(d)) => d.len(),
+        _ => 0,
+    };
+    let n_opts = pairs
+        .iter()
+        .filter(|(k, _)| {
+            !matches!(
+                k.as_str(),
+                "رابط" | "طريقة" | "رؤوس" | "كوكيز" | "جسم" | "نوع_المحتوى"
+            )
+        })
+        .count();
+    let mut out = format!("{} {}", method, url);
+    if n_headers > 0 {
+        out.push_str(&format!("\nرؤوس: {}", n_headers));
+    }
+    if n_opts > 0 {
+        out.push_str(&format!("\nخيارات: {}", n_opts));
+    }
+    Ok(Value::Str(out))
+}
+
+fn net_req_exec(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.نفذ", args, 1, line, col)?;
+    let pairs = need_dict("شبكة.نفذ", &args[0], line, col)?;
+    let url = match net_dict_get(pairs, "رابط") {
+        Some(Value::Str(s)) => s.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة شبكة.نفذ تتوقع رابطا نصا لكن أعطيت {}",
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+        None => {
+            return Err(RioError::typ(
+                "الدالة شبكة.نفذ تتوقع مفتاح رابط في الطلب",
+                line,
+                col,
+            ))
+        }
+    };
+    if url.is_empty() {
+        return Err(RioError::typ(
+            "الدالة شبكة.نفذ تتوقع رابطا غير فارغ",
+            line,
+            col,
+        ));
+    }
+    let method = match net_dict_get(pairs, "طريقة") {
+        Some(Value::Str(s)) => s.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة شبكة.نفذ تتوقع طريقة نصا لكن أعطيت {}",
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+        None => "GET".to_string(),
+    };
+    if method.is_empty()
+        || method
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(RioError::typ(
+            "الدالة شبكة.نفذ طريقة غير صالحة",
+            line,
+            col,
+        ));
+    }
+    let headers = match net_dict_get(pairs, "رؤوس") {
+        Some(v) => net_text_dict(v, "شبكة.نفذ", line, col)?,
+        None => Vec::new(),
+    };
+    for (n, v) in &headers {
+        if n.is_empty() {
+            return Err(RioError::runtime(
+                "اسم ترويسة فارغ — الترويسة تحتاج اسما غير فارغ",
+                line,
+                col,
+            ));
+        }
+        if !net_header_name_ok(n) {
+            return Err(RioError::runtime(
+                "اسم ترويسة غير صالح — الاسم حروف رمزية فقط",
+                line,
+                col,
+            ));
+        }
+        if !net_header_value_ok(v) {
+            return Err(RioError::runtime(
+                "قيمة ترويسة غير صالحة — لا يُسمح بأسطر جديدة في الترويسات",
+                line,
+                col,
+            ));
+        }
+    }
+    let body: Vec<u8> = match net_dict_get(pairs, "جسم") {
+        Some(Value::Str(s)) => s.as_bytes().to_vec(),
+        Some(Value::List(items)) => {
+            let mut b = Vec::new();
+            for it in items {
+                match it {
+                    Value::Number(n)
+                        if n.fract() == 0.0 && (0.0..=255.0).contains(n) =>
+                    {
+                        b.push(*n as u8)
+                    }
+                    _ => {
+                        return Err(RioError::typ(
+                            "الدالة شبكة.نفذ جسم غير صالح — القائمة بايتات 0 إلى 255",
+                            line,
+                            col,
+                        ))
+                    }
+                }
+            }
+            b
+        }
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة شبكة.نفذ تتوقع جسما نصا أو قائمة بايتات لكن أعطيت {}",
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+        None => Vec::new(),
+    };
+    let content_type = match net_dict_get(pairs, "نوع_المحتوى") {
+        Some(Value::Str(s)) => s.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة شبكة.نفذ تتوقع نوع محتوى نصا لكن أعطيت {}",
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+        None => "text/plain; charset=utf-8".to_string(),
+    };
+    let mut opts = crate::network::exec_opts_from_dict(pairs, "شبكة.نفذ", line, col)?;
+    if let Some(v) = net_dict_get(pairs, "كوكيز") {
+        opts.session_cookies = net_text_dict(v, "شبكة.نفذ", line, col)?;
+    }
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    let save = match &opts.save_to {
+        Some(p) => Some((&policy, cwd.as_path(), p.as_str())),
+        None => None,
+    };
+    if let Some(t) = opts.trace_file.clone() {
+        let resolved = policy.resolve_in_for_write(&cwd, &t, line, col)?;
+        opts.trace_file = Some(resolved.to_string_lossy().into_owned());
+    }
+    let resp = crate::network::execute_request(
+        &url,
+        &method,
+        &body,
+        &content_type,
+        &headers,
+        &opts,
+        save,
+        line,
+        col,
+    )?;
+    let body_str = if opts.response_encoding == "latin1" {
+        resp.body.iter().map(|&b| b as char).collect::<String>()
+    } else {
+        String::from_utf8_lossy(&resp.body).into_owned()
+    };
+    let headers_v: Vec<(String, Value)> = resp
+        .headers
+        .into_iter()
+        .map(|(k, v)| (k, Value::Str(v)))
+        .collect();
+    Ok(Value::Dict(vec![
+        ("رمز".to_string(), Value::Number(resp.status as f64)),
+        ("جسم".to_string(), Value::Str(body_str)),
+        ("رؤوس".to_string(), Value::Dict(headers_v)),
+        ("بايتات".to_string(), Value::Number(resp.bytes as f64)),
+    ]))
+}
+
+
+// ---------- لينكس8-طبقة2: أغلفة فورية وتنزيل (اجتماع 90 §105) ----------
+fn net_call_exec(
+    ctx: &mut dyn HandlerCaller,
+    line: usize,
+    col: usize,
+    pairs: Vec<(String, Value)>,
+) -> RioResult<Value> {
+    net_req_exec(ctx, &[Value::Dict(pairs)], line, col)
+}
+
+fn net_url_arg(args: &[Value], i: usize, name: &str, line: usize, col: usize) -> RioResult<String> {
+    match &args[i] {
+        Value::Str(s) if !s.is_empty() => Ok(s.clone()),
+        Value::Str(_) => Err(RioError::typ(
+            format!("الدالة شبكة.{} تتوقع رابطا غير فارغ", name),
+            line,
+            col,
+        )),
+        other => Err(RioError::typ(
+            format!(
+                "الدالة شبكة.{} تتوقع رابطا نصا لكن أعطيت {}",
+                name,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+fn net_path_arg(args: &[Value], i: usize, name: &str, line: usize, col: usize) -> RioResult<String> {
+    match &args[i] {
+        Value::Str(s) if !s.is_empty() => Ok(s.clone()),
+        Value::Str(_) => Err(RioError::typ(
+            format!("الدالة شبكة.{} تتوقع مسارا غير فارغ", name),
+            line,
+            col,
+        )),
+        other => Err(RioError::typ(
+            format!(
+                "الدالة شبكة.{} تتوقع مسارا نصا لكن أعطيت {}",
+                name,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+fn net_opt_args(args: &[Value], min: usize, max: usize, name: &str, line: usize, col: usize) -> RioResult<()> {
+    if args.len() < min || args.len() > max {
+        let want = if min == max {
+            min.to_string()
+        } else {
+            format!("{} أو {}", min, max)
+        };
+        return Err(RioError::typ(
+            format!(
+                "الدالة شبكة.{} تتوقع {} معاملات لكن أعطيت {}",
+                name,
+                want,
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok(())
+}
+
+fn net_body_arg(v: &Value, name: &str, line: usize, col: usize) -> RioResult<Vec<u8>> {
+    match v {
+        Value::Str(s) => Ok(s.as_bytes().to_vec()),
+        Value::List(items) => {
+            let mut b = Vec::new();
+            for it in items {
+                match it {
+                    Value::Number(n) if n.fract() == 0.0 && (0.0..=255.0).contains(n) => {
+                        b.push(*n as u8)
+                    }
+                    _ => {
+                        return Err(RioError::typ(
+                            format!("الدالة شبكة.{} جسم غير صالح — القائمة بايتات 0 إلى 255", name),
+                            line,
+                            col,
+                        ))
+                    }
+                }
+            }
+            Ok(b)
+        }
+        other => Err(RioError::typ(
+            format!(
+                "الدالة شبكة.{} تتوقع جسما نصا أو قائمة بايتات لكن أعطيت {}",
+                name,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+fn net_body_list(body: &[u8]) -> Value {
+    Value::List(body.iter().map(|b| Value::Number(*b as f64)).collect())
+}
+
+fn net_merge_opts(
+    mut pairs: Vec<(String, Value)>,
+    opts: &Value,
+    name: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<(String, Value)>> {
+    match opts {
+        Value::Dict(op) => {
+            for (k, v) in op {
+                net_dict_upsert(&mut pairs, k, v.clone());
+            }
+            Ok(pairs)
+        }
+        other => Err(RioError::typ(
+            format!(
+                "الدالة شبكة.{} تتوقع خيارات قاموسا لكن أعطيت {}",
+                name,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+fn net_read_file(
+    ctx: &mut dyn HandlerCaller,
+    path: &str,
+    name: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<u8>> {
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    let resolved = policy.resolve_in(&cwd, path, line, col)?;
+    match std::fs::read(&resolved) {
+        Ok(b) => Ok(b),
+        Err(_) => Err(RioError::runtime(
+            format!("الدالة شبكة.{} الملف غير موجود", name),
+            line,
+            col,
+        )),
+    }
+}
+
+fn net_write_file(
+    ctx: &mut dyn HandlerCaller,
+    path: &str,
+    bytes: &[u8],
+    name: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    let resolved = policy.resolve_in_for_write(&cwd, path, line, col)?;
+    std::fs::write(&resolved, bytes).map_err(|_| {
+        RioError::runtime(format!("الدالة شبكة.{} تعذر كتابة الملف", name), line, col)
+    })
+}
+
+fn net_url_encode(s: &str) -> String {
+    let mut out = String::new();
+    for &b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+fn net_percent_decode(s: &str) -> String {
+    let bs = s.as_bytes();
+    let mut out: Vec<u8> = Vec::new();
+    let mut i = 0usize;
+    while i < bs.len() {
+        if bs[i] == b'%' && i + 2 < bs.len() {
+            if let Ok(n) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(n);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bs[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn net_form_value(v: &Value, name: &str, line: usize, col: usize) -> RioResult<String> {
+    match v {
+        Value::Str(s) => Ok(s.clone()),
+        Value::Number(n) => Ok(json_fmt_number(*n)),
+        Value::Bool(b) => Ok(if *b { "true".to_string() } else { "false".to_string() }),
+        _ => Err(RioError::typ(
+            format!("الدالة شبكة.{} قيمة حقل غير صالحة", name),
+            line,
+            col,
+        )),
+    }
+}
+
+fn net_form_fields(v: &Value, name: &str, line: usize, col: usize) -> RioResult<Vec<(String, String)>> {
+    match v {
+        Value::Dict(pairs) => {
+            let mut out = Vec::new();
+            for (k, val) in pairs {
+                out.push((k.clone(), net_form_value(val, name, line, col)?));
+            }
+            Ok(out)
+        }
+        Value::List(items) => {
+            let mut out = Vec::new();
+            for it in items {
+                match it {
+                    Value::List(pair) if pair.len() == 2 => {
+                        let k = match &pair[0] {
+                            Value::Str(s) => s.clone(),
+                            other => {
+                                return Err(RioError::typ(
+                                    format!(
+                                        "الدالة شبكة.{} تتوقع اسم حقل نصا لكن أعطيت {}",
+                                        name,
+                                        other.type_name()
+                                    ),
+                                    line,
+                                    col,
+                                ))
+                            }
+                        };
+                        out.push((k, net_form_value(&pair[1], name, line, col)?));
+                    }
+                    _ => {
+                        return Err(RioError::typ(
+                            format!("الدالة شبكة.{} زوج غير صالح — الزوج [اسم، قيمة]", name),
+                            line,
+                            col,
+                        ))
+                    }
+                }
+            }
+            Ok(out)
+        }
+        other => Err(RioError::typ(
+            format!(
+                "الدالة شبكة.{} تتوقع حقولا قاموسا أو قائمة أزواج لكن أعطيت {}",
+                name,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+fn net_form_encode(fields: &[(String, String)]) -> String {
+    fields
+        .iter()
+        .map(|(k, v)| format!("{}={}", net_url_encode(k), net_url_encode(v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn net_multipart(fields: &[(String, String)], file_name: &str, file_bytes: &[u8]) -> (Vec<u8>, String) {
+    let b = "----niva-multipart-8----";
+    let mut out: Vec<u8> = Vec::new();
+    for (k, v) in fields {
+        out.extend_from_slice(
+            format!(
+                "--{}\r\nContent-Disposition: form-data; name=\"{}\"\r\n\r\n{}\r\n",
+                b, k, v
+            )
+            .as_bytes(),
+        );
+    }
+    out.extend_from_slice(
+        format!(
+            "--{}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{}\"\r\nContent-Type: application/octet-stream\r\n\r\n",
+            b, file_name
+        )
+        .as_bytes(),
+    );
+    out.extend_from_slice(file_bytes);
+    out.extend_from_slice(format!("\r\n--{}--\r\n", b).as_bytes());
+    (out, format!("multipart/form-data; boundary={}", b))
+}
+
+fn net_url_basename(url: &str) -> String {
+    let nofrag = url.split(['?', '#']).next().unwrap_or(url);
+    let base = nofrag.rsplit('/').next().unwrap_or("");
+    if base.is_empty() {
+        "تنزيل".to_string()
+    } else {
+        net_percent_decode(base)
+    }
+}
+
+fn net_cd_filename(headers: &[(String, String)]) -> Option<String> {
+    for (k, v) in headers {
+        if k == "content-disposition" {
+            if let Some(i) = v.find("filename*=") {
+                let mut rest = v[i + 10..].trim_start();
+                if let Some(r) = rest.strip_prefix("UTF-8''") {
+                    rest = r;
+                } else if let Some(r) = rest.strip_prefix("utf-8''") {
+                    rest = r;
+                }
+                let end = rest.find(';').unwrap_or(rest.len());
+                let raw = rest[..end].trim_end_matches('"').trim();
+                let name = net_percent_decode(raw);
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+            if let Some(i) = v.find("filename=") {
+                let rest = v[i + 9..].trim_start();
+                let rest = rest.strip_prefix('"').unwrap_or(rest);
+                let end = rest.find('"').unwrap_or(rest.len());
+                let name = &rest[..end];
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn net_latin1_back(s: &str) -> Vec<u8> {
+    s.chars().map(|c| c as u32 as u8).collect()
+}
+
+fn net_resp_parts(resp: &Value) -> (f64, String, Vec<(String, String)>, f64) {
+    if let Value::Dict(pairs) = resp {
+        let status = match net_dict_get(pairs, "رمز") {
+            Some(Value::Number(n)) => *n,
+            _ => 0.0,
+        };
+        let body = match net_dict_get(pairs, "جسم") {
+            Some(Value::Str(s)) => s.clone(),
+            _ => String::new(),
+        };
+        let headers = match net_dict_get(pairs, "رؤوس") {
+            Some(Value::Dict(hp)) => hp
+                .iter()
+                .filter_map(|(k, v)| match v {
+                    Value::Str(s) => Some((k.clone(), s.clone())),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let bytes = match net_dict_get(pairs, "بايتات") {
+            Some(Value::Number(n)) => *n,
+            _ => 0.0,
+        };
+        (status, body, headers, bytes)
+    } else {
+        (0.0, String::new(), Vec::new(), 0.0)
+    }
+}
+
+fn net_resp_rebuild(resp: &Value, bytes: &[u8]) -> Value {
+    let (status, _, headers, nbytes) = net_resp_parts(resp);
+    let body = String::from_utf8_lossy(bytes).into_owned();
+    let headers_v: Vec<(String, Value)> = headers
+        .into_iter()
+        .map(|(k, v)| (k, Value::Str(v)))
+        .collect();
+    Value::Dict(vec![
+        ("رمز".to_string(), Value::Number(status)),
+        ("جسم".to_string(), Value::Str(body)),
+        ("رؤوس".to_string(), Value::Dict(headers_v)),
+        ("بايتات".to_string(), Value::Number(nbytes)),
+    ])
+}
+
+fn net_join_dir(dir: &str, name: &str) -> String {
+    if dir.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}/{}", dir.trim_end_matches('/'), name)
+    }
+}
+
+fn net_resolve_link(base: &str, link: &str) -> Option<String> {
+    let link = link.trim();
+    if link.is_empty()
+        || link.starts_with('#')
+        || link.starts_with("javascript:")
+        || link.starts_with("mailto:")
+    {
+        return None;
+    }
+    let link = link.split('#').next().unwrap_or(link);
+    if link.is_empty() {
+        return None;
+    }
+    if link.starts_with("http://") || link.starts_with("https://") {
+        return Some(link.to_string());
+    }
+    let scheme_end = base.find("://")?;
+    let after = &base[scheme_end + 3..];
+    let host_end = after.find('/').unwrap_or(after.len());
+    let scheme_host = &base[..scheme_end + 3 + host_end];
+    if link.starts_with('/') {
+        return Some(format!("{}{}", scheme_host, link));
+    }
+    let base_path = &after[host_end..];
+    let dir_end = base_path.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let dir = &base_path[..dir_end];
+    let full = format!("{}{}{}", scheme_host, dir, link);
+    if full.starts_with(scheme_host) {
+        Some(full)
+    } else {
+        None
+    }
+}
+
+fn net_extract_links(html: &str, base: &str) -> Vec<String> {
+    let lower = html.to_lowercase();
+    let mut out: Vec<String> = Vec::new();
+    let mut i = 0usize;
+    while i < lower.len() {
+        let rest = &lower[i..];
+        let ih = rest.find("href=\"").or_else(|| rest.find("href='"));
+        let is = rest.find("src=\"").or_else(|| rest.find("src='"));
+        let (pos, qlen) = match (ih, is) {
+            (Some(a), Some(b)) => {
+                if a < b {
+                    (a, 6)
+                } else {
+                    (b, 5)
+                }
+            }
+            (Some(a), None) => (a, 6),
+            (None, Some(b)) => (b, 5),
+            (None, None) => break,
+        };
+        let vstart = i + pos + qlen;
+        if vstart >= html.len() {
+            break;
+        }
+        let q = html.as_bytes()[vstart - 1] as char;
+        match html[vstart..].find(q) {
+            Some(end) => {
+                let raw = &html[vstart..vstart + end];
+                if let Some(u) = net_resolve_link(base, raw) {
+                    if !out.contains(&u) {
+                        out.push(u);
+                    }
+                }
+                i = vstart + end + 1;
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+fn net_save_in(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let _ = ctx;
+    need_args("شبكة.بحفظ_في", args, 2, line, col)?;
+    let pairs = need_dict("شبكة.بحفظ_في", &args[0], line, col)?;
+    let path = net_path_arg(args, 1, "بحفظ_في", line, col)?;
+    let mut out = pairs.clone();
+    net_dict_upsert(&mut out, "حفظ_في", Value::Str(path));
+    Ok(Value::Dict(out))
+}
+
+fn net_one_json(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.أرسل_json", args, 2, line, col)?;
+    let url = net_url_arg(args, 0, "أرسل_json", line, col)?;
+    let mut js = String::new();
+    json_write_value(&args[1], &mut js, 0).map_err(|_| {
+        RioError::typ("الدالة شبكة.أرسل_json قيمة لا تقبل كتابة JSON", line, col)
+    })?;
+    let pairs = vec![
+        ("رابط".to_string(), Value::Str(url)),
+        ("طريقة".to_string(), Value::Str("POST".to_string())),
+        ("جسم".to_string(), Value::Str(js)),
+        (
+            "نوع_المحتوى".to_string(),
+            Value::Str("application/json; charset=utf-8".to_string()),
+        ),
+    ];
+    net_call_exec(ctx, line, col, pairs)
+}
+
+fn net_one_form(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.أرسل_نموذج", args, 2, line, col)?;
+    let url = net_url_arg(args, 0, "أرسل_نموذج", line, col)?;
+    let fields = net_form_fields(&args[1], "أرسل_نموذج", line, col)?;
+    let body = net_form_encode(&fields);
+    let pairs = vec![
+        ("رابط".to_string(), Value::Str(url)),
+        ("طريقة".to_string(), Value::Str("POST".to_string())),
+        ("جسم".to_string(), Value::Str(body)),
+        (
+            "نوع_المحتوى".to_string(),
+            Value::Str("application/x-www-form-urlencoded".to_string()),
+        ),
+    ];
+    net_call_exec(ctx, line, col, pairs)
+}
+
+fn net_one_raw(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    net_opt_args(args, 2, 3, "أرسل_خام", line, col)?;
+    let url = net_url_arg(args, 0, "أرسل_خام", line, col)?;
+    let body = net_body_arg(&args[1], "أرسل_خام", line, col)?;
+    let ct = match args.get(2) {
+        Some(Value::Str(s)) => s.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة شبكة.أرسل_خام تتوقع نوعا نصا لكن أعطيت {}",
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+        None => "application/octet-stream".to_string(),
+    };
+    let pairs = vec![
+        ("رابط".to_string(), Value::Str(url)),
+        ("طريقة".to_string(), Value::Str("POST".to_string())),
+        ("جسم".to_string(), net_body_list(&body)),
+        ("نوع_المحتوى".to_string(), Value::Str(ct)),
+    ];
+    net_call_exec(ctx, line, col, pairs)
+}
+
+fn net_one_binary(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.أرسل_ثنائي", args, 2, line, col)?;
+    let url = net_url_arg(args, 0, "أرسل_ثنائي", line, col)?;
+    let body = net_body_arg(&args[1], "أرسل_ثنائي", line, col)?;
+    let pairs = vec![
+        ("رابط".to_string(), Value::Str(url)),
+        ("طريقة".to_string(), Value::Str("POST".to_string())),
+        ("جسم".to_string(), net_body_list(&body)),
+        (
+            "نوع_المحتوى".to_string(),
+            Value::Str("application/octet-stream".to_string()),
+        ),
+    ];
+    net_call_exec(ctx, line, col, pairs)
+}
+
+fn net_one_from_file(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    net_opt_args(args, 2, 3, "أرسل_من_ملف", line, col)?;
+    let url = net_url_arg(args, 0, "أرسل_من_ملف", line, col)?;
+    let path = net_path_arg(args, 1, "أرسل_من_ملف", line, col)?;
+    let bytes = net_read_file(ctx, &path, "أرسل_من_ملف", line, col)?;
+    let ct = match args.get(2) {
+        Some(Value::Str(s)) => s.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة شبكة.أرسل_من_ملف تتوقع نوعا نصا لكن أعطيت {}",
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+        None => "application/octet-stream".to_string(),
+    };
+    let pairs = vec![
+        ("رابط".to_string(), Value::Str(url)),
+        ("طريقة".to_string(), Value::Str("POST".to_string())),
+        ("جسم".to_string(), net_body_list(&bytes)),
+        ("نوع_المحتوى".to_string(), Value::Str(ct)),
+    ];
+    net_call_exec(ctx, line, col, pairs)
+}
+
+fn net_one_from_stdin(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.أرسل_من_المدخل", args, 1, line, col)?;
+    let url = net_url_arg(args, 0, "أرسل_من_المدخل", line, col)?;
+    let text = search_read_stdin_text(line, col)?;
+    let pairs = vec![
+        ("رابط".to_string(), Value::Str(url)),
+        ("طريقة".to_string(), Value::Str("POST".to_string())),
+        ("جسم".to_string(), Value::Str(text)),
+        (
+            "نوع_المحتوى".to_string(),
+            Value::Str("text/plain; charset=utf-8".to_string()),
+        ),
+    ];
+    net_call_exec(ctx, line, col, pairs)
+}
+
+fn net_method_body(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    name: &str,
+    method: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args(&format!("شبكة.{}", name), args, 2, line, col)?;
+    let url = net_url_arg(args, 0, name, line, col)?;
+    let body = net_body_arg(&args[1], name, line, col)?;
+    let pairs = vec![
+        ("رابط".to_string(), Value::Str(url)),
+        ("طريقة".to_string(), Value::Str(method.to_string())),
+        ("جسم".to_string(), net_body_list(&body)),
+        (
+            "نوع_المحتوى".to_string(),
+            Value::Str("text/plain; charset=utf-8".to_string()),
+        ),
+    ];
+    net_call_exec(ctx, line, col, pairs)
+}
+
+fn net_m_put(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    net_method_body(ctx, args, "استبدل", "PUT", line, col)
+}
+
+fn net_m_patch(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    net_method_body(ctx, args, "عدل", "PATCH", line, col)
+}
+
+fn net_m_delete(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.احذف_مورد", args, 1, line, col)?;
+    let url = net_url_arg(args, 0, "احذف_مورد", line, col)?;
+    let pairs = vec![
+        ("رابط".to_string(), Value::Str(url)),
+        ("طريقة".to_string(), Value::Str("DELETE".to_string())),
+    ];
+    net_call_exec(ctx, line, col, pairs)
+}
+
+fn net_m_head(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.افحص_رؤوس", args, 1, line, col)?;
+    let url = net_url_arg(args, 0, "افحص_رؤوس", line, col)?;
+    let pairs = vec![
+        ("رابط".to_string(), Value::Str(url)),
+        ("طريقة".to_string(), Value::Str("HEAD".to_string())),
+    ];
+    let resp = net_call_exec(ctx, line, col, pairs)?;
+    let (_, _, headers, _) = net_resp_parts(&resp);
+    Ok(Value::Dict(
+        headers
+            .into_iter()
+            .map(|(k, v)| (k, Value::Str(v)))
+            .collect(),
+    ))
+}
+
+fn net_m_options(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.اطلب_خيارات", args, 1, line, col)?;
+    let url = net_url_arg(args, 0, "اطلب_خيارات", line, col)?;
+    let pairs = vec![
+        ("رابط".to_string(), Value::Str(url)),
+        ("طريقة".to_string(), Value::Str("OPTIONS".to_string())),
+    ];
+    net_call_exec(ctx, line, col, pairs)
+}
+
+fn net_m_custom(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    net_opt_args(args, 2, 3, "اطلب_مخصص", line, col)?;
+    let url = net_url_arg(args, 0, "اطلب_مخصص", line, col)?;
+    let method = match &args[1] {
+        Value::Str(s) if !s.is_empty()
+            && !s.chars().any(|c| c.is_whitespace() || c.is_control()) =>
+        {
+            s.clone()
+        }
+        Value::Str(_) => {
+            return Err(RioError::typ(
+                "الدالة شبكة.اطلب_مخصص طريقة غير صالحة",
+                line,
+                col,
+            ))
+        }
+        other => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة شبكة.اطلب_مخصص تتوقع طريقة نصا لكن أعطيت {}",
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let mut pairs = vec![
+        ("رابط".to_string(), Value::Str(url)),
+        ("طريقة".to_string(), Value::Str(method)),
+    ];
+    if let Some(b) = args.get(2) {
+        let body = net_body_arg(b, "اطلب_مخصص", line, col)?;
+        pairs.push(("جسم".to_string(), net_body_list(&body)));
+        pairs.push((
+            "نوع_المحتوى".to_string(),
+            Value::Str("text/plain; charset=utf-8".to_string()),
+        ));
+    }
+    net_call_exec(ctx, line, col, pairs)
+}
+
+fn net_upload_file(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    net_opt_args(args, 2, 3, "ارفع_ملف", line, col)?;
+    let url = net_url_arg(args, 0, "ارفع_ملف", line, col)?;
+    let path = net_path_arg(args, 1, "ارفع_ملف", line, col)?;
+    let bytes = net_read_file(ctx, &path, "ارفع_ملف", line, col)?;
+    let fields = match args.get(2) {
+        Some(v) => net_form_fields(v, "ارفع_ملف", line, col)?,
+        None => Vec::new(),
+    };
+    let fname = path.rsplit('/').next().unwrap_or(&path).to_string();
+    let (body, ct) = net_multipart(&fields, &fname, &bytes);
+    let pairs = vec![
+        ("رابط".to_string(), Value::Str(url)),
+        ("طريقة".to_string(), Value::Str("POST".to_string())),
+        ("جسم".to_string(), net_body_list(&body)),
+        ("نوع_المحتوى".to_string(), Value::Str(ct)),
+    ];
+    net_call_exec(ctx, line, col, pairs)
+}
+
+fn net_upload_body_file(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.ارفع_جسم_ملف", args, 2, line, col)?;
+    let url = net_url_arg(args, 0, "ارفع_جسم_ملف", line, col)?;
+    let path = net_path_arg(args, 1, "ارفع_جسم_ملف", line, col)?;
+    let bytes = net_read_file(ctx, &path, "ارفع_جسم_ملف", line, col)?;
+    let pairs = vec![
+        ("رابط".to_string(), Value::Str(url)),
+        ("طريقة".to_string(), Value::Str("POST".to_string())),
+        ("جسم".to_string(), net_body_list(&bytes)),
+        (
+            "نوع_المحتوى".to_string(),
+            Value::Str("application/octet-stream".to_string()),
+        ),
+    ];
+    net_call_exec(ctx, line, col, pairs)
+}
+
+fn net_dl_server_name(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    net_opt_args(args, 1, 2, "نزل_باسم_الخادم", line, col)?;
+    let url = net_url_arg(args, 0, "نزل_باسم_الخادم", line, col)?;
+    let dir = match args.get(1) {
+        Some(Value::Str(s)) => s.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة شبكة.نزل_باسم_الخادم تتوقع مجلدا نصا لكن أعطيت {}",
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+        None => String::new(),
+    };
+    let pairs = vec![
+        ("رابط".to_string(), Value::Str(url.clone())),
+        ("طريقة".to_string(), Value::Str("GET".to_string())),
+        (
+            "ترميز_الرد".to_string(),
+            Value::Str("latin1".to_string()),
+        ),
+    ];
+    let resp = net_call_exec(ctx, line, col, pairs)?;
+    let (_, body_latin1, headers, _) = net_resp_parts(&resp);
+    let bytes = net_latin1_back(&body_latin1);
+    let fname = net_cd_filename(&headers).unwrap_or_else(|| net_url_basename(&url));
+    net_write_file(
+        ctx,
+        &net_join_dir(&dir, &fname),
+        &bytes,
+        "نزل_باسم_الخادم",
+        line,
+        col,
+    )?;
+    Ok(net_resp_rebuild(&resp, &bytes))
+}
+
+fn net_dl_list_inner(
+    ctx: &mut dyn HandlerCaller,
+    urls: &[String],
+    dir: &str,
+    opts: Option<&Value>,
+    name: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<Value>> {
+    let mut out = Vec::new();
+    for u in urls {
+        let mut pairs = vec![
+            ("رابط".to_string(), Value::Str(u.clone())),
+            ("طريقة".to_string(), Value::Str("GET".to_string())),
+            (
+                "حفظ_في".to_string(),
+                Value::Str(net_join_dir(dir, &net_url_basename(u))),
+            ),
+        ];
+        if let Some(o) = opts {
+            pairs = net_merge_opts(pairs, o, name, line, col)?;
+        }
+        out.push(net_call_exec(ctx, line, col, pairs)?);
+    }
+    Ok(out)
+}
+
+fn net_dir_arg(args: &[Value], i: usize, name: &str, line: usize, col: usize) -> RioResult<String> {
+    match args.get(i) {
+        Some(Value::Str(s)) => Ok(s.clone()),
+        Some(other) => Err(RioError::typ(
+            format!(
+                "الدالة شبكة.{} تتوقع مجلدا نصا لكن أعطيت {}",
+                name,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+        None => Ok(String::new()),
+    }
+}
+
+fn net_url_list_arg(v: &Value, name: &str, line: usize, col: usize) -> RioResult<Vec<String>> {
+    match v {
+        Value::List(items) => {
+            let mut out = Vec::new();
+            for it in items {
+                match it {
+                    Value::Str(s) => out.push(s.clone()),
+                    other => {
+                        return Err(RioError::typ(
+                            format!(
+                                "الدالة شبكة.{} تتوقع روابط نصية لكن أعطيت {}",
+                                name,
+                                other.type_name()
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                }
+            }
+            Ok(out)
+        }
+        other => Err(RioError::typ(
+            format!(
+                "الدالة شبكة.{} تتوقع قائمة روابط لكن أعطيت {}",
+                name,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+fn net_dl_all(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    net_opt_args(args, 1, 3, "نزل_الكل", line, col)?;
+    let urls = net_url_list_arg(&args[0], "نزل_الكل", line, col)?;
+    let dir = net_dir_arg(args, 1, "نزل_الكل", line, col)?;
+    let opts = args.get(2);
+    Ok(Value::List(net_dl_list_inner(
+        ctx, &urls, &dir, opts, "نزل_الكل", line, col,
+    )?))
+}
+
+fn net_dl_from_list(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    net_opt_args(args, 1, 3, "نزل_من_قائمة", line, col)?;
+    let path = net_path_arg(args, 0, "نزل_من_قائمة", line, col)?;
+    let bytes = net_read_file(ctx, &path, "نزل_من_قائمة", line, col)?;
+    let text = String::from_utf8_lossy(&bytes);
+    let urls: Vec<String> = text
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let dir = net_dir_arg(args, 1, "نزل_من_قائمة", line, col)?;
+    let opts = args.get(2);
+    Ok(Value::List(net_dl_list_inner(
+        ctx,
+        &urls,
+        &dir,
+        opts,
+        "نزل_من_قائمة",
+        line,
+        col,
+    )?))
+}
+
+fn net_dl_from_stdin(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    net_opt_args(args, 0, 2, "نزل_من_المدخل", line, col)?;
+    let text = search_read_stdin_text(line, col)?;
+    let urls: Vec<String> = text
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    let dir = net_dir_arg(args, 0, "نزل_من_المدخل", line, col)?;
+    let opts = args.get(1);
+    Ok(Value::List(net_dl_list_inner(
+        ctx,
+        &urls,
+        &dir,
+        opts,
+        "نزل_من_المدخل",
+        line,
+        col,
+    )?))
+}
+
+fn net_dl_resume(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.أكمل_التنزيل", args, 2, line, col)?;
+    let url = net_url_arg(args, 0, "أكمل_التنزيل", line, col)?;
+    let path = net_path_arg(args, 1, "أكمل_التنزيل", line, col)?;
+    let pairs = vec![
+        ("رابط".to_string(), Value::Str(url)),
+        ("طريقة".to_string(), Value::Str("GET".to_string())),
+        ("حفظ_في".to_string(), Value::Str(path)),
+        ("استئناف".to_string(), Value::Bool(true)),
+    ];
+    net_call_exec(ctx, line, col, pairs)
+}
+
+fn net_dl_site_walk(
+    ctx: &mut dyn HandlerCaller,
+    url: &str,
+    dir: &str,
+    opts: Option<&Value>,
+    depth: i64,
+    max_files: i64,
+    seen: &mut Vec<String>,
+    out: &mut Vec<Value>,
+    name: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    if seen.iter().any(|u| u == url) {
+        return Ok(());
+    }
+    if max_files > 0 && (out.len() as i64) >= max_files {
+        return Ok(());
+    }
+    seen.push(url.to_string());
+    let mut pairs = vec![
+        ("رابط".to_string(), Value::Str(url.to_string())),
+        ("طريقة".to_string(), Value::Str("GET".to_string())),
+        (
+            "ترميز_الرد".to_string(),
+            Value::Str("latin1".to_string()),
+        ),
+    ];
+    if let Some(o) = opts {
+        pairs = net_merge_opts(pairs, o, name, line, col)?;
+        net_dict_upsert(
+            &mut pairs,
+            "ترميز_الرد",
+            Value::Str("latin1".to_string()),
+        );
+    }
+    let resp = net_call_exec(ctx, line, col, pairs)?;
+    let (_, body_latin1, _, _) = net_resp_parts(&resp);
+    let bytes = net_latin1_back(&body_latin1);
+    let fname = net_url_basename(url);
+    net_write_file(ctx, &net_join_dir(dir, &fname), &bytes, name, line, col)?;
+    out.push(net_resp_rebuild(&resp, &bytes));
+    if depth > 0 {
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let links = net_extract_links(&text, url);
+        for l in links {
+            net_dl_site_walk(ctx, &l, dir, opts, depth - 1, max_files, seen, out, name, line, col)?;
+        }
+    }
+    Ok(())
+}
+
+fn net_dl_site(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    // الاسم الثاني انسخ_الموقع يستدعي الدالة نفسها؛ ورسائل
+    // الخطأ تحمل نزل_الموقع في الحالين (الدالة لا تعرف اسمها).
+    net_opt_args(args, 1, 3, "نزل_الموقع", line, col)?;
+    let url = net_url_arg(args, 0, "نزل_الموقع", line, col)?;
+    let dir = net_dir_arg(args, 1, "نزل_الموقع", line, col)?;
+    let opts = args.get(2);
+    let mut depth: i64 = 1;
+    let mut max_files: i64 = 0;
+    if let Some(Value::Dict(op)) = opts {
+        if let Some(Value::Number(n)) = net_dict_get(op, "عمق_التكرار") {
+            depth = *n as i64;
+        }
+        if let Some(Value::Number(n)) = net_dict_get(op, "حد_الملفات") {
+            max_files = *n as i64;
+        }
+    }
+    let mut seen: Vec<String> = Vec::new();
+    let mut out: Vec<Value> = Vec::new();
+    net_dl_site_walk(
+        ctx,
+        &url,
+        &dir,
+        opts,
+        depth,
+        max_files,
+        &mut seen,
+        &mut out,
+        "نزل_الموقع",
+        line,
+        col,
+    )?;
+    Ok(Value::List(out))
+}
+
+
+
+
+
+// ---------- لينكس8-طبقة5ب: فحص واتصال (اجتماع 90 §105) ----------
+fn net5b_host(v: &Value, display: &str, line: usize, col: usize) -> RioResult<String> {
+    let h = need_string(display, v, line, col)?;
+    if h.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع مضيفا غير فارغ", display),
+            line,
+            col,
+        ));
+    }
+    Ok(h)
+}
+
+fn net5b_port(v: &Value, display: &str, line: usize, col: usize) -> RioResult<u16> {
+    let p = need_integer(display, v, line, col)?;
+    if !(1..=65535).contains(&p) {
+        return Err(RioError::runtime(
+            format!("الدالة {} تتوقع منفذا بين 1 و 65535", display),
+            line,
+            col,
+        ));
+    }
+    Ok(p as u16)
+}
+
+fn net5b_ping_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    if args.len() == 1 {
+        let host = net5b_host(&args[0], "شبكة.انبض", line, col)?;
+        Ok(Value::Bool(crate::network::net_probe_tcp(&host, 80, 2000, "شبكة.انبض", line, col)?))
+    } else if args.len() == 2 {
+        let host = net5b_host(&args[0], "شبكة.انبض", line, col)?;
+        let port = net5b_port(&args[1], "شبكة.انبض", line, col)?;
+        Ok(Value::Bool(crate::network::net_probe_tcp(&host, port, 2000, "شبكة.انبض", line, col)?))
+    } else {
+        Err(RioError::typ(
+            "الدالة شبكة.انبض تتوقع معاملا واحدا (مضيف) أو معاملين (مضيف، منفذ)",
+            line,
+            col,
+        ))
+    }
+}
+
+fn net5b_ping_loop_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RioError::typ(
+            "الدالة شبكة.انبض_مستمر تتوقع معاملين (مضيف، عدد) أو ثلاثة (مضيف، عدد، فاصل)",
+            line,
+            col,
+        ));
+    }
+    let host = net5b_host(&args[0], "شبكة.انبض_مستمر", line, col)?;
+    let count = need_integer("شبكة.انبض_مستمر", &args[1], line, col)?;
+    if !(1..=100).contains(&count) {
+        return Err(RioError::runtime(
+            "الدالة شبكة.انبض_مستمر عدد غير صالح",
+            line,
+            col,
+        ));
+    }
+    let gap: i64 = if args.len() == 3 {
+        let g = need_integer("شبكة.انبض_مستمر", &args[2], line, col)?;
+        if !(0..=60).contains(&g) {
+            return Err(RioError::runtime(
+                "الدالة شبكة.انبض_مستمر فاصل غير صالح",
+                line,
+                col,
+            ));
+        }
+        g
+    } else {
+        1
+    };
+    let mut out: Vec<Value> = Vec::new();
+    for i in 0..count {
+        if i > 0 && gap > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(gap as u64));
+        }
+        let ok = crate::network::net_probe_tcp(&host, 80, 2000, "شبكة.انبض_مستمر", line, col)?;
+        out.push(Value::Bool(ok));
+    }
+    Ok(Value::List(out))
+}
+
+fn net5b_rtt_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    if args.len() == 1 {
+        let host = net5b_host(&args[0], "شبكة.زمن_الذهاب_والعودة", line, col)?;
+        let start = std::time::Instant::now();
+        let ok = crate::network::net_probe_tcp(&host, 80, 2000, "شبكة.زمن_الذهاب_والعودة", line, col)?;
+        Ok(Value::Number(if ok { start.elapsed().as_millis() as f64 } else { -1.0 }))
+    } else if args.len() == 2 {
+        let host = net5b_host(&args[0], "شبكة.زمن_الذهاب_والعودة", line, col)?;
+        let port = net5b_port(&args[1], "شبكة.زمن_الذهاب_والعودة", line, col)?;
+        let start = std::time::Instant::now();
+        let ok = crate::network::net_probe_tcp(&host, port, 2000, "شبكة.زمن_الذهاب_والعودة", line, col)?;
+        Ok(Value::Number(if ok { start.elapsed().as_millis() as f64 } else { -1.0 }))
+    } else {
+        Err(RioError::typ(
+            "الدالة شبكة.زمن_الذهاب_والعودة تتوقع معاملا واحدا (مضيف) أو معاملين (مضيف، منفذ)",
+            line,
+            col,
+        ))
+    }
+}
+
+fn net5b_resolve_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.حل_الاسم", args, 1, line, col)?;
+    let host = net5b_host(&args[0], "شبكة.حل_الاسم", line, col)?;
+    crate::network::require_network_allowed(line, col)?;
+    use std::net::ToSocketAddrs;
+    let mut out: Vec<Value> = Vec::new();
+    let addrs = (host.as_str(), 0u16).to_socket_addrs().map_err(|_| {
+        RioError::runtime(format!("الدالة شبكة.حل_الاسم تعذر حل اسم المضيف {}", host), line, col)
+    })?;
+    for a in addrs {
+        let ip = a.ip().to_string();
+        if !out.iter().any(|v| matches!(v, Value::Str(s) if s.as_str() == ip)) {
+            out.push(Value::Str(ip.into()));
+        }
+    }
+    Ok(Value::List(out))
+}
+
+fn net5b_port_check_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.افحص_المنفذ", args, 2, line, col)?;
+    let host = net5b_host(&args[0], "شبكة.افحص_المنفذ", line, col)?;
+    let port = net5b_port(&args[1], "شبكة.افحص_المنفذ", line, col)?;
+    Ok(Value::Bool(crate::network::net_probe_tcp(&host, port, 500, "شبكة.افحص_المنفذ", line, col)?))
+}
+
+fn net5b_ports_check_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.افحص_المنافذ", args, 2, line, col)?;
+    let host = net5b_host(&args[0], "شبكة.افحص_المنافذ", line, col)?;
+    let list = need_list("شبكة.افحص_المنافذ", &args[1], line, col)?;
+    let mut out: Vec<(String, Value)> = Vec::new();
+    for item in list.iter() {
+        let port = net5b_port(item, "شبكة.افحص_المنافذ", line, col)?;
+        let ok = crate::network::net_probe_tcp(&host, port, 500, "شبكة.افحص_المنافذ", line, col)?;
+        out.push((port.to_string(), Value::Bool(ok)));
+    }
+    Ok(Value::Dict(out))
+}
+
+fn net5b_range_check_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.افحص_نطاق", args, 3, line, col)?;
+    let host = net5b_host(&args[0], "شبكة.افحص_نطاق", line, col)?;
+    let from = need_integer("شبكة.افحص_نطاق", &args[1], line, col)?;
+    let to = need_integer("شبكة.افحص_نطاق", &args[2], line, col)?;
+    if !(1..=65535).contains(&from) || !(1..=65535).contains(&to) || from > to {
+        return Err(RioError::runtime(
+            "الدالة شبكة.افحص_نطاق مدى غير صالح",
+            line,
+            col,
+        ));
+    }
+    if to - from + 1 > 1024 {
+        return Err(RioError::runtime(
+            "الدالة شبكة.افحص_نطاق نطاق كبير جدا (الحد 1024)",
+            line,
+            col,
+        ));
+    }
+    let mut out: Vec<Value> = Vec::new();
+    let mut p = from;
+    while p <= to {
+        if crate::network::net_probe_tcp(&host, p as u16, 200, "شبكة.افحص_نطاق", line, col)? {
+            out.push(Value::Number(p as f64));
+        }
+        p += 1;
+    }
+    Ok(Value::List(out))
+}
+
+fn net5b_fast_check_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.افحص_سريع", args, 1, line, col)?;
+    let host = net5b_host(&args[0], "شبكة.افحص_سريع", line, col)?;
+    let ports: [u16; 18] = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 993, 995, 1723, 3306, 3389, 5432, 5900, 8080];
+    let mut out: Vec<Value> = Vec::new();
+    for p in ports {
+        if crate::network::net_probe_tcp(&host, p, 500, "شبكة.افحص_سريع", line, col)? {
+            out.push(Value::Number(p as f64));
+        }
+    }
+    Ok(Value::List(out))
+}
+
+fn net5b_udp_check_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.افحص_udp", args, 2, line, col)?;
+    let host = net5b_host(&args[0], "شبكة.افحص_udp", line, col)?;
+    let port = net5b_port(&args[1], "شبكة.افحص_udp", line, col)?;
+    let state = crate::network::net_probe_udp(&host, port, 1000, "شبكة.افحص_udp", line, col)?;
+    Ok(Value::Str(state.to_string().into()))
+}
+
+fn net5b_icmp_ping_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.انبض_icmp", args, 1, line, col)?;
+    let host = net5b_host(&args[0], "شبكة.انبض_icmp", line, col)?;
+    Ok(Value::Bool(crate::network::net_probe_icmp(&host, 1000, "شبكة.انبض_icmp", line, col)?))
+}
+
+fn net5b_trace_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    if args.len() == 1 {
+        let host = net5b_host(&args[0], "شبكة.تتبع_المسار", line, col)?;
+        let hops = crate::network::net_probe_trace(&host, 30, "شبكة.تتبع_المسار", line, col)?;
+        Ok(net5b_trace_value(hops))
+    } else if args.len() == 2 {
+        let host = net5b_host(&args[0], "شبكة.تتبع_المسار", line, col)?;
+        let max = need_integer("شبكة.تتبع_المسار", &args[1], line, col)?;
+        if !(1..=30).contains(&max) {
+            return Err(RioError::runtime(
+                "الدالة شبكة.تتبع_المسار أقصى غير صالح",
+                line,
+                col,
+            ));
+        }
+        let hops = crate::network::net_probe_trace(&host, max as u32, "شبكة.تتبع_المسار", line, col)?;
+        Ok(net5b_trace_value(hops))
+    } else {
+        Err(RioError::typ(
+            "الدالة شبكة.تتبع_المسار تتوقع معاملا واحدا (مضيف) أو معاملين (مضيف، أقصى)",
+            line,
+            col,
+        ))
+    }
+}
+
+fn net5b_trace_value(hops: Vec<(u32, Option<String>, u64)>) -> Value {
+    let mut out: Vec<Value> = Vec::new();
+    for (n, addr, ms) in hops {
+        let mut d: Vec<(String, Value)> = Vec::new();
+        d.push(("قفزة".to_string(), Value::Number(n as f64)));
+        match addr {
+            Some(a) => d.push(("عنوان".to_string(), Value::Str(a.into()))),
+            None => d.push(("عنوان".to_string(), Value::Nil)),
+        }
+        d.push(("زمن".to_string(), Value::Number(ms as f64)));
+        out.push(Value::Dict(d));
+    }
+    Value::List(out)
+}
+
+fn net5b_tls_connect_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.اتصل_مشفر", args, 2, line, col)?;
+    let host = net5b_host(&args[0], "شبكة.اتصل_مشفر", line, col)?;
+    let port = need_integer("شبكة.اتصل_مشفر", &args[1], line, col)?;
+    Ok(Value::Number(
+        crate::sockets::connect_tls(&host, port, line, col)? as f64,
+    ))
+}
+
+fn net5b_timeout_connect_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.اتصل_بمهلة", args, 3, line, col)?;
+    let host = net5b_host(&args[0], "شبكة.اتصل_بمهلة", line, col)?;
+    let port = need_integer("شبكة.اتصل_بمهلة", &args[1], line, col)?;
+    let secs = need_integer("شبكة.اتصل_بمهلة", &args[2], line, col)?;
+    if !(1..=300).contains(&secs) {
+        return Err(RioError::runtime(
+            "الدالة شبكة.اتصل_بمهلة ثوان غير صالحة",
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Number(
+        crate::sockets::connect_timeout_new(&host, port, secs, line, col)? as f64,
+    ))
+}
+
+// ---------- لينكس8-طبقة5أ: معلومات محلية (اجتماع 90 §105) ----------
+#[cfg(unix)]
+fn net5_read_file(path: &str) -> Option<String> {
+    std::fs::read_to_string(path).ok()
+}
+
+#[cfg(unix)]
+fn net5_sys(iface: &str, file: &str) -> Option<String> {
+    net5_read_file(&format!("/sys/class/net/{}/{}", iface, file))
+        .map(|s| s.trim().to_string())
+}
+
+#[cfg(unix)]
+fn net5_ipv4_str(octets: [u8; 4]) -> String {
+    format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3])
+}
+
+
+#[cfg(unix)]
+struct Net5Addr {
+    addr: String,
+    mask: String,
+    bcast: Option<String>,
+    v6: bool,
+}
+
+#[cfg(unix)]
+struct Net5Iface {
+    name: String,
+    addrs: Vec<Net5Addr>,
+    up: bool,
+    loopback: bool,
+}
+
+#[cfg(unix)]
+fn net5_ifaces() -> Vec<Net5Iface> {
+    let mut out: Vec<Net5Iface> = Vec::new();
+    unsafe {
+        let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
+        if libc::getifaddrs(&mut ifap) != 0 || ifap.is_null() {
+            return out;
+        }
+        let mut cur = ifap;
+        while !cur.is_null() {
+            let ifa = &*cur;
+            let name = std::ffi::CStr::from_ptr(ifa.ifa_name)
+                .to_string_lossy()
+                .into_owned();
+            let flags = ifa.ifa_flags as u32;
+            let up = flags & (libc::IFF_UP as u32) != 0;
+            let loopback = flags & (libc::IFF_LOOPBACK as u32) != 0;
+            let entry = out.iter_mut().find(|e: &&mut Net5Iface| e.name == name);
+            let entry = match entry {
+                Some(e) => e,
+                None => {
+                    out.push(Net5Iface {
+                        name: name.clone(),
+                        addrs: Vec::new(),
+                        up,
+                        loopback,
+                    });
+                    out.last_mut().unwrap()
+                }
+            };
+            if up != entry.up {
+                entry.up = up;
+            }
+            if loopback != entry.loopback {
+                entry.loopback = loopback;
+            }
+            if !ifa.ifa_addr.is_null() {
+                let sa = &*ifa.ifa_addr;
+                if sa.sa_family as i32 == libc::AF_INET {
+                    let sin = &*(ifa.ifa_addr as *const libc::sockaddr_in);
+                    let oct = sin.sin_addr.s_addr.to_ne_bytes();
+                    let addr = net5_ipv4_str(oct);
+                    let mut mask = "255.255.255.255".to_string();
+                    if !ifa.ifa_netmask.is_null() {
+                        let msin = &*(ifa.ifa_netmask as *const libc::sockaddr_in);
+                        mask = net5_ipv4_str(msin.sin_addr.s_addr.to_ne_bytes());
+                    }
+                    let mut bcast = None;
+                    if (flags & (libc::IFF_BROADCAST as u32)) != 0
+                        && !ifa.ifa_ifu.is_null()
+                    {
+                        let bsin =
+                            &*(ifa.ifa_ifu as *const libc::sockaddr_in);
+                        bcast = Some(net5_ipv4_str(
+                            bsin.sin_addr.s_addr.to_ne_bytes(),
+                        ));
+                    }
+                    entry.addrs.push(Net5Addr {
+                        addr,
+                        mask,
+                        bcast,
+                        v6: false,
+                    });
+                } else if sa.sa_family as i32 == libc::AF_INET6 {
+                    let sin6 = &*(ifa.ifa_addr as *const libc::sockaddr_in6);
+                    let oct = sin6.sin6_addr.s6_addr;
+                    let addr = std::net::Ipv6Addr::from(oct).to_string();
+                    let mut prefix = 128u32;
+                    if !ifa.ifa_netmask.is_null() {
+                        let msin6 =
+                            &*(ifa.ifa_netmask as *const libc::sockaddr_in6);
+                        let mut n = 0u32;
+                        for b in msin6.sin6_addr.s6_addr {
+                            n += b.count_ones();
+                        }
+                        prefix = n;
+                    }
+                    entry.addrs.push(Net5Addr {
+                        addr,
+                        mask: prefix.to_string(),
+                        bcast: None,
+                        v6: true,
+                    });
+                }
+            }
+            cur = ifa.ifa_next;
+        }
+        libc::freeifaddrs(ifap);
+    }
+    out
+}
+
+#[cfg(unix)]
+fn net5_iface_value(e: &Net5Iface, a: &Net5Addr) -> Value {
+    Value::Dict(vec![
+        ("اسم".to_string(), Value::Str(e.name.clone())),
+        ("عنوان".to_string(), Value::Str(a.addr.clone())),
+        ("قناع".to_string(), Value::Str(a.mask.clone())),
+        (
+            "بث".to_string(),
+            match &a.bcast {
+                Some(b) => Value::Str(b.clone()),
+                None => Value::Nil,
+            },
+        ),
+        ("يعمل".to_string(), Value::Bool(e.up)),
+        ("حلقي".to_string(), Value::Bool(e.loopback)),
+    ])
+}
+
+#[cfg(unix)]
+fn net5_hex_ip_le(hex: &str) -> String {
+    let v = u32::from_str_radix(hex, 16).unwrap_or(0);
+    net5_ipv4_str(v.to_le_bytes())
+}
+
+#[cfg(unix)]
+struct Net5Route {
+    dest: String,
+    gw: String,
+    mask: String,
+    iface: String,
+}
+
+#[cfg(unix)]
+fn net5_routes() -> Vec<Net5Route> {
+    let mut out = Vec::new();
+    let Some(text) = net5_read_file("/proc/net/route") else {
+        return out;
+    };
+    for line in text.lines().skip(1) {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        if f.len() < 8 {
+            continue;
+        }
+        out.push(Net5Route {
+            dest: net5_hex_ip_le(f[1]),
+            gw: net5_hex_ip_le(f[2]),
+            mask: net5_hex_ip_le(f[7]),
+            iface: f[0].to_string(),
+        });
+    }
+    out
+}
+
+#[cfg(unix)]
+fn net5_route_value(r: &Net5Route) -> Value {
+    Value::Dict(vec![
+        ("وجهة".to_string(), Value::Str(r.dest.clone())),
+        ("بوابة".to_string(), Value::Str(r.gw.clone())),
+        ("قناع".to_string(), Value::Str(r.mask.clone())),
+        ("واجهة".to_string(), Value::Str(r.iface.clone())),
+    ])
+}
+
+#[cfg(unix)]
+struct Net5Dev {
+    name: String,
+    rx_bytes: u64,
+    rx_packets: u64,
+    rx_errs: u64,
+    rx_drop: u64,
+    tx_bytes: u64,
+    tx_packets: u64,
+    tx_errs: u64,
+    tx_drop: u64,
+}
+
+#[cfg(unix)]
+fn net5_dev() -> Vec<Net5Dev> {
+    let mut out = Vec::new();
+    let Some(text) = net5_read_file("/proc/net/dev") else {
+        return out;
+    };
+    for line in text.lines().skip(2) {
+        let Some((name, rest)) = line.split_once(':') else {
+            continue;
+        };
+        let f: Vec<&str> = rest.split_whitespace().collect();
+        if f.len() < 16 {
+            continue;
+        }
+        let n = |i: usize| f.get(i).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        out.push(Net5Dev {
+            name: name.trim().to_string(),
+            rx_bytes: n(0),
+            rx_packets: n(1),
+            rx_errs: n(2),
+            rx_drop: n(3),
+            tx_bytes: n(8),
+            tx_packets: n(9),
+            tx_errs: n(10),
+            tx_drop: n(11),
+        });
+    }
+    out
+}
+
+#[cfg(unix)]
+fn net5_tcp_state(code: &str) -> String {
+    match code {
+        "01" => "متصل".to_string(),
+        "02" => "مزامنة-مرسل".to_string(),
+        "03" => "مزامنة-مستلم".to_string(),
+        "04" => "مغلق-انتظار".to_string(),
+        "05" => "انتظار-إغلاق".to_string(),
+        "06" => "مغلق".to_string(),
+        "07" => "إغلاق".to_string(),
+        "08" => "إغلاق-انتظار".to_string(),
+        "09" => "إغلاق-أخير".to_string(),
+        "0A" => "يستمع".to_string(),
+        "0B" => "مغلق-جديد".to_string(),
+        other => format!("حالة {}", other),
+    }
+}
+
+#[cfg(unix)]
+fn net5_sock_addr(hex: &str) -> (String, u16) {
+    let Some((ip_hex, port_hex)) = hex.split_once(':') else {
+        return ("0.0.0.0".to_string(), 0);
+    };
+    let port = u16::from_str_radix(port_hex, 16).unwrap_or(0);
+    if ip_hex.len() == 8 {
+        return (net5_hex_ip_le(ip_hex), port);
+    }
+    if ip_hex.len() == 32 {
+        // النواة تطبع كل كلمة 32-بت بترتيب المضيف
+        // (صغير-النهاية هنا) — تُعكس بايتات كل مجموعة.
+        let mut oct = [0u8; 16];
+        for w in 0..4 {
+            for b in 0..4 {
+                oct[w * 4 + (3 - b)] = u8::from_str_radix(
+                    &ip_hex[w * 8 + b * 2..w * 8 + b * 2 + 2],
+                    16,
+                )
+                .unwrap_or(0);
+            }
+        }
+        return (std::net::Ipv6Addr::from(oct).to_string(), port);
+    }
+    ("0.0.0.0".to_string(), port)
+}
+
+#[cfg(unix)]
+fn net5_conns() -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for (path, proto) in [
+        ("/proc/net/tcp", "TCP"),
+        ("/proc/net/tcp6", "TCP"),
+        ("/proc/net/udp", "UDP"),
+        ("/proc/net/udp6", "UDP"),
+    ] {
+        let Some(text) = net5_read_file(path) else {
+            continue;
+        };
+        for line in text.lines().skip(1) {
+            let f: Vec<&str> = line.split_whitespace().collect();
+            if f.len() < 4 {
+                continue;
+            }
+            let (lip, lport) = net5_sock_addr(f[1]);
+            let (rip, rport) = net5_sock_addr(f[2]);
+            let state = if proto == "UDP" {
+                "بلا حالة".to_string()
+            } else {
+                net5_tcp_state(f[3])
+            };
+            out.push(Value::Dict(vec![
+                ("بروتوكول".to_string(), Value::Str(proto.to_string())),
+                (
+                    "محلي".to_string(),
+                    Value::Str(format!("{}:{}", lip, lport)),
+                ),
+                (
+                    "بعيد".to_string(),
+                    Value::Str(format!("{}:{}", rip, rport)),
+                ),
+                ("حالة".to_string(), Value::Str(state)),
+            ]));
+        }
+    }
+    out
+}
+
+#[cfg(unix)]
+fn net5_snmp_num(section: &str, key: &str) -> u64 {
+    let Some(text) = net5_read_file("/proc/net/snmp") else {
+        return 0;
+    };
+    let mut lines = text.lines();
+    while let Some(head) = lines.next() {
+        if head.starts_with(section) {
+            let Some(vals) = lines.next() else {
+                return 0;
+            };
+            let keys: Vec<&str> = head.split_whitespace().skip(1).collect();
+            let values: Vec<&str> = vals.split_whitespace().skip(1).collect();
+            for (i, k) in keys.iter().enumerate() {
+                if *k == key {
+                    return values
+                        .get(i)
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(0);
+                }
+            }
+            return 0;
+        }
+    }
+    0
+}
+
+
+#[cfg(not(unix))]
+fn net5_refuse(name: &str, line: usize, col: usize) -> RioError {
+    RioError::runtime(
+        format!("شبكة.{} غير مدعوم على هذه المنصة", name),
+        line,
+        col,
+    )
+}
+
+fn net5_ifaces_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.عناويني", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("عناويني", line, col));
+    #[cfg(unix)]
+    {
+        let list: Vec<Value> = net5_ifaces()
+            .iter()
+            .flat_map(|e| e.addrs.iter().map(|a| net5_iface_value(e, a)).collect::<Vec<_>>())
+            .collect();
+        Ok(Value::List(list))
+    }
+}
+
+fn net5_iface_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.عنوان_واجهة", args, 1, line, col)?;
+    let name = need_string("شبكة.عنوان_واجهة", &args[0], line, col)?;
+    if name.is_empty() {
+        return Err(RioError::typ(
+            "الدالة شبكة.عنوان_واجهة تتوقع اسما غير فارغ",
+            line,
+            col,
+        ));
+    }
+    #[cfg(not(unix))]
+    return Err(net5_refuse("عنوان_واجهة", line, col));
+    #[cfg(unix)]
+    {
+        for e in net5_ifaces() {
+            if e.name == name {
+                if let Some(a) = e.addrs.first() {
+                    return Ok(net5_iface_value(&e, a));
+                }
+                return Ok(Value::Nil);
+            }
+        }
+        Ok(Value::Nil)
+    }
+}
+
+fn net5_ifaces_short_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.عناويني_مختصرة", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("عناويني_مختصرة", line, col));
+    #[cfg(unix)]
+    {
+        let list: Vec<Value> = net5_ifaces()
+            .iter()
+            .flat_map(|e| {
+                e.addrs
+                    .iter()
+                    .map(|a| Value::Str(format!("{}: {}", e.name, a.addr)))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        Ok(Value::List(list))
+    }
+}
+
+fn net5_ifaces_json_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.عناويني_json", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("عناويني_json", line, col));
+    #[cfg(unix)]
+    {
+        let list: Vec<Value> = net5_ifaces()
+            .iter()
+            .flat_map(|e| e.addrs.iter().map(|a| net5_iface_value(e, a)).collect::<Vec<_>>())
+            .collect();
+        let v = Value::List(list);
+        let mut out = String::new();
+        json_write_value(&v, &mut out, 0).map_err(|_| {
+            RioError::runtime(
+                "الدالة شبكة.عناويني_json قيمة لا تقبل كتابة JSON",
+                line,
+                col,
+            )
+        })?;
+        Ok(Value::Str(out))
+    }
+}
+
+fn net5_routes_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.مساراتي", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("مساراتي", line, col));
+    #[cfg(unix)]
+    {
+        Ok(Value::List(
+            net5_routes().iter().map(net5_route_value).collect(),
+        ))
+    }
+}
+
+fn net5_route_for_host_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.مسار_لمضيف", args, 1, line, col)?;
+    let host = need_string("شبكة.مسار_لمضيف", &args[0], line, col)?;
+    if host.is_empty() {
+        return Err(RioError::typ(
+            "الدالة شبكة.مسار_لمضيف تتوقع مضيفا غير فارغ",
+            line,
+            col,
+        ));
+    }
+    #[cfg(not(unix))]
+    return Err(net5_refuse("مسار_لمضيف", line, col));
+    #[cfg(unix)]
+    {
+        let target: std::net::IpAddr = match host.parse::<std::net::IpAddr>() {
+            Ok(ip) => ip,
+            Err(_) => {
+                use std::net::ToSocketAddrs;
+                match (host.as_str(), 0u16).to_socket_addrs() {
+                    Ok(mut it) => match it.next() {
+                        Some(sa) => sa.ip(),
+                        None => {
+                            return Err(RioError::runtime(
+                                format!(
+                                    "الدالة شبكة.مسار_لمضيف تعذر حل اسم المضيف {}",
+                                    host
+                                ),
+                                line,
+                                col,
+                            ))
+                        }
+                    },
+                    Err(_) => {
+                        return Err(RioError::runtime(
+                            format!(
+                                "الدالة شبكة.مسار_لمضيف تعذر حل اسم المضيف {}",
+                                host
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                }
+            }
+        };
+        let target4 = match target {
+            std::net::IpAddr::V4(v4) => v4.octets(),
+            std::net::IpAddr::V6(_) => return Ok(Value::Nil),
+        };
+        let mut best: Option<(u32, Net5Route)> = None;
+        for r in net5_routes() {
+            let dest: std::net::Ipv4Addr = match r.dest.parse() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let mask: std::net::Ipv4Addr = match r.mask.parse() {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let d = dest.octets();
+            let m = mask.octets();
+            let mut ok = true;
+            for i in 0..4 {
+                if target4[i] & m[i] != d[i] & m[i] {
+                    ok = false;
+                    break;
+                }
+            }
+            if !ok {
+                continue;
+            }
+            let bits: u32 = m.iter().map(|b| b.count_ones()).sum();
+            if best.as_ref().map(|(b, _)| bits > *b).unwrap_or(true) {
+                best = Some((bits, r));
+            }
+        }
+        match best {
+            Some((_, r)) => Ok(net5_route_value(&r)),
+            None => Ok(Value::Nil),
+        }
+    }
+}
+
+fn net5_net_status_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.حالة_الشبكة", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("حالة_الشبكة", line, col));
+    #[cfg(unix)]
+    {
+        let mut list: Vec<Value> = Vec::new();
+        for e in net5_ifaces() {
+            let speed = net5_sys(&e.name, "speed")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0)
+                .max(0);
+            let kind = if e.loopback {
+                "حلقي"
+            } else if std::path::Path::new(&format!(
+                "/sys/class/net/{}/wireless",
+                e.name
+            ))
+            .exists()
+            {
+                "لاسلكي"
+            } else {
+                "سلكي"
+            };
+            list.push(Value::Dict(vec![
+                ("اسم".to_string(), Value::Str(e.name.clone())),
+                (
+                    "حالة".to_string(),
+                    Value::Str(if e.up { "يعمل".to_string() } else { "متوقف".to_string() }),
+                ),
+                ("سرعة".to_string(), Value::Number(speed as f64)),
+                ("نوع".to_string(), Value::Str(kind.to_string())),
+            ]));
+        }
+        Ok(Value::List(list))
+    }
+}
+
+fn net5_neighbors_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.جيراني", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("جيراني", line, col));
+    #[cfg(unix)]
+    {
+        let mut list: Vec<Value> = Vec::new();
+        if let Some(text) = net5_read_file("/proc/net/arp") {
+            for line in text.lines().skip(1) {
+                let f: Vec<&str> = line.split_whitespace().collect();
+                if f.len() < 6 {
+                    continue;
+                }
+                list.push(Value::Dict(vec![
+                    ("عنوان".to_string(), Value::Str(f[0].to_string())),
+                    ("ماك".to_string(), Value::Str(f[3].to_string())),
+                    ("واجهة".to_string(), Value::Str(f[5].to_string())),
+                ]));
+            }
+        }
+        Ok(Value::List(list))
+    }
+}
+
+fn net5_neighbor_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.جار", args, 1, line, col)?;
+    let addr = need_string("شبكة.جار", &args[0], line, col)?;
+    if addr.is_empty() {
+        return Err(RioError::typ(
+            "الدالة شبكة.جار تتوقع عنوانا غير فارغ",
+            line,
+            col,
+        ));
+    }
+    #[cfg(not(unix))]
+    return Err(net5_refuse("جار", line, col));
+    #[cfg(unix)]
+    {
+        if let Some(text) = net5_read_file("/proc/net/arp") {
+            for line in text.lines().skip(1) {
+                let f: Vec<&str> = line.split_whitespace().collect();
+                if f.len() < 6 {
+                    continue;
+                }
+                if f[0] == addr {
+                    return Ok(Value::Dict(vec![
+                        ("عنوان".to_string(), Value::Str(f[0].to_string())),
+                        ("ماك".to_string(), Value::Str(f[3].to_string())),
+                        ("واجهة".to_string(), Value::Str(f[5].to_string())),
+                    ]));
+                }
+            }
+        }
+        Ok(Value::Nil)
+    }
+}
+
+fn net5_net_stats_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.إحصاءات_الشبكة", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("إحصاءات_الشبكة", line, col));
+    #[cfg(unix)]
+    {
+        let list: Vec<Value> = net5_dev()
+            .iter()
+            .map(|d| {
+                Value::Dict(vec![
+                    ("اسم".to_string(), Value::Str(d.name.clone())),
+                    ("مستلم".to_string(), Value::Number(d.rx_bytes as f64)),
+                    ("مرسل".to_string(), Value::Number(d.tx_bytes as f64)),
+                    (
+                        "أخطاء".to_string(),
+                        Value::Number((d.rx_errs + d.tx_errs) as f64),
+                    ),
+                ])
+            })
+            .collect();
+        Ok(Value::List(list))
+    }
+}
+
+fn net5_route_stats_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.إحصاءات_التوجيه", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("إحصاءات_التوجيه", line, col));
+    #[cfg(unix)]
+    {
+        let routes = net5_routes();
+        let mut gws: Vec<String> = Vec::new();
+        let mut ifs: Vec<String> = Vec::new();
+        for r in &routes {
+            if r.gw != "0.0.0.0" && !gws.contains(&r.gw) {
+                gws.push(r.gw.clone());
+            }
+            if !ifs.contains(&r.iface) {
+                ifs.push(r.iface.clone());
+            }
+        }
+        Ok(Value::Dict(vec![
+            ("وجهات".to_string(), Value::Number(routes.len() as f64)),
+            ("بوابات".to_string(), Value::Number(gws.len() as f64)),
+            ("واجهات".to_string(), Value::Number(ifs.len() as f64)),
+        ]))
+    }
+}
+
+fn net5_route_rules_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.قواعد_التوجيه", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("قواعد_التوجيه", line, col));
+    #[cfg(unix)]
+    {
+        let mut list: Vec<Value> = Vec::new();
+        if let Some(text) = net5_read_file("/proc/net/fib_rules") {
+            for line in text.lines() {
+                let Some((prio, rest)) = line.split_once(':') else {
+                    continue;
+                };
+                let Some((_, table)) = rest.split_once("lookup ") else {
+                    continue;
+                };
+                let prio: f64 = prio.trim().parse().unwrap_or(0.0);
+                let table = table.trim().split_whitespace().next().unwrap_or("").to_string();
+                if !table.is_empty() {
+                    list.push(Value::Dict(vec![
+                        ("أولوية".to_string(), Value::Number(prio)),
+                        ("جدول".to_string(), Value::Str(table)),
+                    ]));
+                }
+            }
+        }
+        if list.is_empty() {
+            list = vec![
+                Value::Dict(vec![
+                    ("أولوية".to_string(), Value::Number(0.0)),
+                    ("جدول".to_string(), Value::Str("local".to_string())),
+                ]),
+                Value::Dict(vec![
+                    ("أولوية".to_string(), Value::Number(32766.0)),
+                    ("جدول".to_string(), Value::Str("main".to_string())),
+                ]),
+                Value::Dict(vec![
+                    ("أولوية".to_string(), Value::Number(32767.0)),
+                    ("جدول".to_string(), Value::Str("default".to_string())),
+                ]),
+            ];
+        }
+        Ok(Value::List(list))
+    }
+}
+
+fn net5_broadcast_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.عناوين_البث", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("عناوين_البث", line, col));
+    #[cfg(unix)]
+    {
+        let mut list: Vec<Value> = Vec::new();
+        for e in net5_ifaces() {
+            for a in &e.addrs {
+                if !a.v6 {
+                    if let Some(b) = &a.bcast {
+                        list.push(Value::Dict(vec![
+                            ("واجهة".to_string(), Value::Str(e.name.clone())),
+                            ("مجموعة".to_string(), Value::Str(b.clone())),
+                        ]));
+                    }
+                }
+            }
+        }
+        Ok(Value::List(list))
+    }
+}
+
+fn net5_firewall_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.قواعد_الجدار", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("قواعد_الجدار", line, col));
+    #[cfg(unix)]
+    {
+        let mut list: Vec<Value> = Vec::new();
+        if let Some(text) = net5_read_file("/proc/net/ip_tables_names") {
+            for line in text.lines() {
+                let t = line.trim();
+                if !t.is_empty() {
+                    list.push(Value::Str(t.to_string()));
+                }
+            }
+        }
+        Ok(Value::List(list))
+    }
+}
+
+fn net5_conns_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.اتصالاتي", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("اتصالاتي", line, col));
+    #[cfg(unix)]
+    {
+        Ok(Value::List(net5_conns()))
+    }
+}
+
+fn net5_listeners_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.المستمعة", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("المستمعة", line, col));
+    #[cfg(unix)]
+    {
+        let list: Vec<Value> = net5_conns()
+            .into_iter()
+            .filter(|v| match v {
+                Value::Dict(pairs) => pairs
+                    .iter()
+                    .any(|(k, v)| k == "حالة" && matches!(v, Value::Str(s) if s == "يستمع")),
+                _ => false,
+            })
+            .collect();
+        Ok(Value::List(list))
+    }
+}
+
+fn net5_bridges_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.الجسور", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("الجسور", line, col));
+    #[cfg(unix)]
+    {
+        let mut list: Vec<Value> = Vec::new();
+        if let Ok(rd) = std::fs::read_dir("/sys/class/net") {
+            for ent in rd.flatten() {
+                let name = ent.file_name().to_string_lossy().into_owned();
+                let brif = ent.path().join("bridge").join("brif");
+                if let Ok(members) = std::fs::read_dir(&brif) {
+                    let mut ifs: Vec<Value> = members
+                        .flatten()
+                        .map(|m| Value::Str(m.file_name().to_string_lossy().into_owned()))
+                        .collect();
+                    ifs.sort_by(|a, b| match (a, b) {
+                        (Value::Str(x), Value::Str(y)) => x.cmp(y),
+                        _ => std::cmp::Ordering::Equal,
+                    });
+                    list.push(Value::Dict(vec![
+                        ("اسم".to_string(), Value::Str(name)),
+                        ("واجهات".to_string(), Value::List(ifs)),
+                    ]));
+                }
+            }
+        }
+        Ok(Value::List(list))
+    }
+}
+
+fn net5_queues_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.طوابير_الحركة", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("طوابير_الحركة", line, col));
+    #[cfg(unix)]
+    {
+        let mut list: Vec<Value> = Vec::new();
+        for e in net5_ifaces() {
+            let qdir = format!("/sys/class/net/{}/queues", e.name);
+            let n = std::fs::read_dir(&qdir).map(|rd| rd.count()).unwrap_or(0);
+            list.push(Value::Dict(vec![
+                ("واجهة".to_string(), Value::Str(e.name.clone())),
+                ("طوابير".to_string(), Value::Number(n as f64)),
+            ]));
+        }
+        Ok(Value::List(list))
+    }
+}
+
+fn net5_traffic_stats_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.إحصاءات_الحركة", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("إحصاءات_الحركة", line, col));
+    #[cfg(unix)]
+    {
+        let list: Vec<Value> = net5_dev()
+            .iter()
+            .map(|d| {
+                Value::Dict(vec![
+                    ("اسم".to_string(), Value::Str(d.name.clone())),
+                    (
+                        "حزم".to_string(),
+                        Value::Number((d.rx_packets + d.tx_packets) as f64),
+                    ),
+                    (
+                        "مسقط".to_string(),
+                        Value::Number((d.rx_drop + d.tx_drop) as f64),
+                    ),
+                ])
+            })
+            .collect();
+        Ok(Value::List(list))
+    }
+}
+
+fn net5_device_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.معلومات_الجهاز", args, 1, line, col)?;
+    let name = need_string("شبكة.معلومات_الجهاز", &args[0], line, col)?;
+    if name.is_empty() {
+        return Err(RioError::typ(
+            "الدالة شبكة.معلومات_الجهاز تتوقع اسما غير فارغ",
+            line,
+            col,
+        ));
+    }
+    #[cfg(not(unix))]
+    return Err(net5_refuse("معلومات_الجهاز", line, col));
+    #[cfg(unix)]
+    {
+        let dir = format!("/sys/class/net/{}", name);
+        if !std::path::Path::new(&dir).exists() {
+            return Ok(Value::Nil);
+        }
+        let mac = match net5_sys(&name, "address") {
+            Some(m) => Value::Str(m),
+            None => Value::Nil,
+        };
+        let mtu = net5_sys(&name, "mtu")
+            .and_then(|s| s.parse::<f64>().ok())
+            .unwrap_or(0.0);
+        let speed = net5_sys(&name, "speed")
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0)
+            .max(0);
+        Ok(Value::Dict(vec![
+            ("اسم".to_string(), Value::Str(name)),
+            ("ماك".to_string(), mac),
+            ("وحدة".to_string(), Value::Number(mtu)),
+            ("سرعة".to_string(), Value::Number(speed as f64)),
+        ]))
+    }
+}
+
+fn net5_proto_stats_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.إحصاءات_البروتوكول", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("إحصاءات_البروتوكول", line, col));
+    #[cfg(unix)]
+    {
+        let proto = |sec: &str, rx: &str, tx: &str, err: &str| {
+            Value::Dict(vec![
+                (
+                    "مستلم".to_string(),
+                    Value::Number(net5_snmp_num(sec, rx) as f64),
+                ),
+                (
+                    "مرسل".to_string(),
+                    Value::Number(net5_snmp_num(sec, tx) as f64),
+                ),
+                (
+                    "أخطاء".to_string(),
+                    Value::Number(net5_snmp_num(sec, err) as f64),
+                ),
+            ])
+        };
+        Ok(Value::Dict(vec![
+            (
+                "TCP".to_string(),
+                proto("Tcp:", "InSegs", "OutSegs", "InErrs"),
+            ),
+            (
+                "UDP".to_string(),
+                proto("Udp:", "InDatagrams", "OutDatagrams", "InErrors"),
+            ),
+            (
+                "ICMP".to_string(),
+                proto("Icmp:", "InMsgs", "OutMsgs", "InErrors"),
+            ),
+        ]))
+    }
+}
+
+fn net5_watch_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.راقب_التغييرات", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("راقب_التغييرات", line, col));
+    #[cfg(unix)]
+    {
+        let snap = || {
+            net5_dev()
+                .into_iter()
+                .map(|d| (d.name, d.rx_bytes + d.tx_bytes))
+                .collect::<Vec<(String, u64)>>()
+        };
+        let before = snap();
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let after = snap();
+        let mut changed: Vec<Value> = Vec::new();
+        for (name, b0) in &before {
+            if let Some((_, b1)) = after.iter().find(|(n, _)| n == name) {
+                if b1 != b0 {
+                    changed.push(Value::Str(name.clone()));
+                }
+            }
+        }
+        Ok(Value::List(changed))
+    }
+}
+
+fn net5_rate_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.معدل_الحركة", args, 1, line, col)?;
+    let name = need_string("شبكة.معدل_الحركة", &args[0], line, col)?;
+    if name.is_empty() {
+        return Err(RioError::typ(
+            "الدالة شبكة.معدل_الحركة تتوقع اسما غير فارغ",
+            line,
+            col,
+        ));
+    }
+    #[cfg(not(unix))]
+    return Err(net5_refuse("معدل_الحركة", line, col));
+    #[cfg(unix)]
+    {
+        let snap = || {
+            net5_dev()
+                .into_iter()
+                .find(|d| d.name == name)
+                .map(|d| (d.rx_bytes, d.tx_bytes))
+        };
+        let Some((r0, t0)) = snap() else {
+            return Err(RioError::runtime(
+                "الدالة شبكة.معدل_الحركة واجهة غير موجودة",
+                line,
+                col,
+            ));
+        };
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let (r1, t1) = snap().unwrap_or((r0, t0));
+        Ok(Value::Dict(vec![
+            (
+                "مستلم_في_الثانية".to_string(),
+                Value::Number(r1.saturating_sub(r0) as f64),
+            ),
+            (
+                "مرسل_في_الثانية".to_string(),
+                Value::Number(t1.saturating_sub(t0) as f64),
+            ),
+        ]))
+    }
+}
+
+fn net5_live_hosts_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.من_المتصل", args, 0, line, col)?;
+    #[cfg(not(unix))]
+    return Err(net5_refuse("من_المتصل", line, col));
+    #[cfg(unix)]
+    {
+        let mut list: Vec<Value> = Vec::new();
+        if let Some(text) = net5_read_file("/proc/net/arp") {
+            for line in text.lines().skip(1) {
+                let f: Vec<&str> = line.split_whitespace().collect();
+                if f.len() < 6 {
+                    continue;
+                }
+                if f[2] == "0x2" {
+                    list.push(Value::Str(f[0].to_string()));
+                }
+            }
+        }
+        Ok(Value::List(list))
+    }
+}
+
+// ---------- لينكس8-طبقة4: جلسات + نقية (اجتماع 90 §105) ----------
+fn net4_req_parts(
+    args: &[Value],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(String, String, Vec<u8>)> {
+    let pairs = need_dict(display, &args[0], line, col)?;
+    let url = match net_dict_get(pairs, "رابط") {
+        Some(Value::Str(s)) => s.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع رابطا نصا لكن أعطيت {}",
+                    display,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+        None => {
+            return Err(RioError::typ(
+                format!("الدالة {} تتوقع مفتاح رابط في الطلب", display),
+                line,
+                col,
+            ))
+        }
+    };
+    if url.is_empty() {
+        return Err(RioError::typ(
+            format!("الدالة {} تتوقع رابطا غير فارغ", display),
+            line,
+            col,
+        ));
+    }
+    let method = match net_dict_get(pairs, "طريقة") {
+        Some(Value::Str(s)) => s.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع طريقة نصا لكن أعطيت {}",
+                    display,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+        None => "GET".to_string(),
+    };
+    if method.is_empty()
+        || method
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Err(RioError::typ(
+            format!("الدالة {} طريقة غير صالحة", display),
+            line,
+            col,
+        ));
+    }
+    let body = match net_dict_get(pairs, "جسم") {
+        Some(Value::Str(s)) => s.as_bytes().to_vec(),
+        Some(Value::List(items)) => {
+            let mut out = Vec::new();
+            for it in items {
+                match it {
+                    Value::Number(n)
+                        if n.fract() == 0.0 && *n >= 0.0 && *n <= 255.0 =>
+                    {
+                        out.push(*n as u8)
+                    }
+                    other => {
+                        return Err(RioError::typ(
+                            format!(
+                                "الدالة {} جسم غير صالح — القائمة بايتات 0 إلى 255",
+                                display
+                            ),
+                            line,
+                            col,
+                        ))
+                    }
+                }
+            }
+            out
+        }
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع جسما نصا أو قائمة بايتات لكن أعطيت {}",
+                    display,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+        None => Vec::new(),
+    };
+    Ok((url, method, body))
+}
+
+fn net4_text_dict_opt(pairs: &[(String, Value)], key: &str) -> Vec<(String, String)> {
+    match net_dict_get(pairs, key) {
+        Some(Value::Dict(p)) => p
+            .iter()
+            .filter_map(|(k, v)| match v {
+                Value::Str(s) => Some((k.clone(), s.clone())),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn net4_session_text(cookies: &[(String, String)], headers: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for (k, v) in cookies {
+        out.push_str("كوكيز ");
+        out.push_str(k);
+        out.push('=');
+        out.push_str(v);
+        out.push('\n');
+    }
+    for (k, v) in headers {
+        out.push_str("رأس ");
+        out.push_str(k);
+        out.push_str(": ");
+        out.push_str(v);
+        out.push('\n');
+    }
+    out
+}
+
+fn net4_parse_session_text(text: &str) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    let mut cookies = Vec::new();
+    let mut headers = Vec::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("كوكيز ") {
+            if let Some((k, v)) = rest.split_once('=') {
+                cookies.push((k.to_string(), v.to_string()));
+            }
+        } else if let Some(rest) = line.strip_prefix("رأس ") {
+            if let Some((k, v)) = rest.split_once(':') {
+                headers.push((k.to_string(), v.trim_start().to_string()));
+            }
+        }
+    }
+    (cookies, headers)
+}
+
+fn net4_read_opt(
+    ctx: &mut dyn HandlerCaller,
+    path: &str,
+    name: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<Vec<u8>>> {
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    let resolved = policy.resolve_in(&cwd, path, line, col)?;
+    match std::fs::read(&resolved) {
+        Ok(b) => Ok(Some(b)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn net4_resp_parts(
+    args: &[Value],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(u16, Vec<(String, String)>, String)> {
+    let pairs = need_dict(display, &args[0], line, col)?;
+    let status = match net_dict_get(pairs, "رمز") {
+        Some(Value::Number(n)) if n.fract() == 0.0 && *n >= 0.0 && *n <= 65535.0 => {
+            *n as u16
+        }
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع ردا فيه رمز عددا لكن أعطيت {}",
+                    display,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+        None => 0,
+    };
+    let headers = match net_dict_get(pairs, "رؤوس") {
+        Some(Value::Dict(p)) => net_text_dict(
+            &Value::Dict(p.clone()),
+            display,
+            line,
+            col,
+        )?,
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع ردا فيه رؤوس قاموسا لكن أعطيت {}",
+                    display,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+        None => Vec::new(),
+    };
+    let body = match net_dict_get(pairs, "جسم") {
+        Some(Value::Str(s)) => s.clone(),
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع ردا فيه جسم نصا لكن أعطيت {}",
+                    display,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+        None => String::new(),
+    };
+    Ok((status, headers, body))
+}
+
+fn net4_headers_text(headers: &[(String, String)]) -> String {
+    let mut sorted: Vec<(String, String)> = headers.to_vec();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    sorted
+        .iter()
+        .map(|(k, v)| format!("{}: {}", k, v))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn net4_session_new() -> Value {
+    Value::Dict(vec![
+        ("كوكيز".to_string(), Value::Dict(vec![])),
+        ("رؤوس".to_string(), Value::Dict(vec![])),
+    ])
+}
+
+
+fn net4_session_new_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.جلسة_جديدة", args, 0, line, col)?;
+    Ok(net4_session_new())
+}
+
+fn net4_session_named(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.جلسة", args, 1, line, col)?;
+    let name = need_string("شبكة.جلسة", &args[0], line, col)?;
+    if name.is_empty() {
+        return Err(RioError::typ(
+            "الدالة شبكة.جلسة تتوقع اسما غير فارغ",
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Dict(vec![
+        ("اسم".to_string(), Value::Str(name)),
+        ("كوكيز".to_string(), Value::Dict(vec![])),
+        ("رؤوس".to_string(), Value::Dict(vec![])),
+    ]))
+}
+
+fn net4_apply_session(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.طبق_جلسة", args, 2, line, col)?;
+    let mut req = net_req_pairs(args, "شبكة.طبق_جلسة", line, col)?;
+    let sess = need_dict("شبكة.طبق_جلسة", &args[1], line, col)?;
+    let s_cookies = net4_text_dict_opt(sess, "كوكيز");
+    let s_headers = net4_text_dict_opt(sess, "رؤوس");
+    let mut r_cookies: Vec<(String, String)> = net4_text_dict_opt(&req, "كوكيز");
+    for (k, v) in s_cookies {
+        if !r_cookies.iter().any(|(ek, _)| *ek == k) {
+            r_cookies.push((k, v));
+        }
+    }
+    let mut r_headers: Vec<(String, String)> = net4_text_dict_opt(&req, "رؤوس");
+    for (k, v) in s_headers {
+        if !r_headers.iter().any(|(ek, _)| *ek == k) {
+            r_headers.push((k, v));
+        }
+    }
+    net_dict_upsert(
+        &mut req,
+        "كوكيز",
+        Value::Dict(
+            r_cookies
+                .into_iter()
+                .map(|(k, v)| (k, Value::Str(v)))
+                .collect(),
+        ),
+    );
+    net_dict_upsert(
+        &mut req,
+        "رؤوس",
+        Value::Dict(
+            r_headers
+                .into_iter()
+                .map(|(k, v)| (k, Value::Str(v)))
+                .collect(),
+        ),
+    );
+    Ok(Value::Dict(req))
+}
+
+fn net4_save_session(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.احفظ_الجلسة", args, 2, line, col)?;
+    let pairs = need_dict("شبكة.احفظ_الجلسة", &args[0], line, col)?;
+    let path = net_path_arg(args, 1, "احفظ_الجلسة", line, col)?;
+    let cookies = net4_text_dict_opt(pairs, "كوكيز");
+    let headers = net4_text_dict_opt(pairs, "رؤوس");
+    let text = net4_session_text(&cookies, &headers);
+    net_write_file(ctx, &path, text.as_bytes(), "احفظ_الجلسة", line, col)?;
+    Ok(Value::Bool(true))
+}
+
+fn net4_read_session(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    net_opt_args(args, 1, 2, "اقرأ_الجلسة", line, col)?;
+    let path = net_path_arg(args, 0, "اقرأ_الجلسة", line, col)?;
+    let readonly = match args.get(1) {
+        Some(v) => net_need_bool("شبكة.اقرأ_الجلسة", v, line, col)?,
+        None => false,
+    };
+    let bytes = net4_read_opt(ctx, &path, "اقرأ_الجلسة", line, col)?;
+    let bytes = match bytes {
+        Some(b) => b,
+        None => {
+            if readonly {
+                return Err(RioError::runtime(
+                    "الدالة شبكة.اقرأ_الجلسة الملف غير موجود",
+                    line,
+                    col,
+                ));
+            }
+            Vec::new()
+        }
+    };
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let (cookies, headers) = net4_parse_session_text(&text);
+    Ok(Value::Dict(vec![
+        ("طريقة".to_string(), Value::Str("GET".to_string())),
+        (
+            "كوكيز".to_string(),
+            Value::Dict(
+                cookies
+                    .into_iter()
+                    .map(|(k, v)| (k, Value::Str(v)))
+                    .collect(),
+            ),
+        ),
+        (
+            "رؤوس".to_string(),
+            Value::Dict(
+                headers
+                    .into_iter()
+                    .map(|(k, v)| (k, Value::Str(v)))
+                    .collect(),
+            ),
+        ),
+    ]))
+}
+
+fn net4_read_cookies(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.اقرأ_كوكيز", args, 1, line, col)?;
+    let path = net_path_arg(args, 0, "اقرأ_كوكيز", line, col)?;
+    let bytes = net_read_file(ctx, &path, "اقرأ_كوكيز", line, col)?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let mut out: Vec<(String, Value)> = Vec::new();
+    for line in text.lines() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 7 {
+            continue;
+        }
+        let name = fields[5].to_string();
+        let value = fields[6].to_string();
+        if !out.iter().any(|(k, _)| *k == name) {
+            out.push((name, Value::Str(value)));
+        }
+    }
+    Ok(Value::Dict(out))
+}
+
+fn net4_save_tag(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.احفظ_الوسم", args, 2, line, col)?;
+    let (_status, headers, _body) = net4_resp_parts(args, "شبكة.احفظ_الوسم", line, col)?;
+    let path = net_path_arg(args, 1, "احفظ_الوسم", line, col)?;
+    let tag = headers
+        .iter()
+        .find(|(k, _)| k.to_ascii_lowercase() == "etag")
+        .map(|(_, v)| v.clone());
+    let tag = match tag {
+        Some(t) => t,
+        None => {
+            return Err(RioError::runtime(
+                "الدالة شبكة.احفظ_الوسم لا يوجد وسم في الرد",
+                line,
+                col,
+            ))
+        }
+    };
+    net_write_file(ctx, &path, tag.as_bytes(), "احفظ_الوسم", line, col)?;
+    Ok(Value::Str(tag))
+}
+
+fn net4_read_tag(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.اقرأ_الوسم", args, 1, line, col)?;
+    let path = net_path_arg(args, 0, "اقرأ_الوسم", line, col)?;
+    match net4_read_opt(ctx, &path, "اقرأ_الوسم", line, col)? {
+        Some(b) => {
+            let text = String::from_utf8_lossy(&b).into_owned();
+            Ok(Value::Str(text.trim().to_string()))
+        }
+        None => Ok(Value::Nil),
+    }
+}
+
+fn net4_read_credentials(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.اقرأ_بيانات_الدخول", args, 1, line, col)?;
+    let path = net_path_arg(args, 0, "اقرأ_بيانات_الدخول", line, col)?;
+    let bytes = net_read_file(ctx, &path, "اقرأ_بيانات_الدخول", line, col)?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let mut out: Vec<(String, Value)> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let host = parts[0].to_string();
+        let user = parts[1].to_string();
+        let pass = parts[2..].join(" ");
+        if !out.iter().any(|(k, _)| *k == host) {
+            out.push((
+                host,
+                Value::Dict(vec![
+                    ("مستخدم".to_string(), Value::Str(user)),
+                    ("كلمة_سر".to_string(), Value::Str(pass)),
+                ]),
+            ));
+        }
+    }
+    Ok(Value::Dict(out))
+}
+
+fn net4_read_dl_opts(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.اقرأ_إعدادات_التنزيل", args, 1, line, col)?;
+    let path = net_path_arg(args, 0, "اقرأ_إعدادات_التنزيل", line, col)?;
+    let bytes = net_read_file(ctx, &path, "اقرأ_إعدادات_التنزيل", line, col)?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let mut out: Vec<(String, Value)> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        let k = k.trim().to_string();
+        let v = v.trim();
+        if k.is_empty() {
+            continue;
+        }
+        let value = if v == "صحيح" {
+            Value::Bool(true)
+        } else if v == "خطأ" {
+            Value::Bool(false)
+        } else if let Ok(n) = v.parse::<f64>() {
+            if n.is_finite() {
+                Value::Number(n)
+            } else {
+                Value::Str(v.to_string())
+            }
+        } else {
+            Value::Str(v.to_string())
+        };
+        if !out.iter().any(|(ek, _)| *ek == k) {
+            out.push((k, value));
+        }
+    }
+    Ok(Value::Dict(out))
+}
+
+fn net4_write_dl_opts(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.اكتب_إعدادات_التنزيل", args, 2, line, col)?;
+    let pairs = need_dict("شبكة.اكتب_إعدادات_التنزيل", &args[0], line, col)?;
+    let path = net_path_arg(args, 1, "اكتب_إعدادات_التنزيل", line, col)?;
+    let mut text = String::new();
+    for (k, v) in pairs {
+        let vs = match v {
+            Value::Bool(b) => {
+                if *b {
+                    "صحيح".to_string()
+                } else {
+                    "خطأ".to_string()
+                }
+            }
+            Value::Number(n) => json_fmt_number(*n),
+            Value::Str(s) => s.clone(),
+            _ => {
+                return Err(RioError::typ(
+                    "الدالة شبكة.اكتب_إعدادات_التنزيل قيمة غير صالحة",
+                    line,
+                    col,
+                ))
+            }
+        };
+        text.push_str(k);
+        text.push('=');
+        text.push_str(&vs);
+        text.push('\n');
+    }
+    net_write_file(
+        ctx,
+        &path,
+        text.as_bytes(),
+        "اكتب_إعدادات_التنزيل",
+        line,
+        col,
+    )?;
+    Ok(Value::Bool(true))
+}
+
+fn net4_url_encode_fn(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.رمز_العنوان", args, 1, line, col)?;
+    let s = need_string("شبكة.رمز_العنوان", &args[0], line, col)?;
+    Ok(Value::Str(net_url_encode(&s)))
+}
+
+fn net4_add_param(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.أضف_معامل", args, 3, line, col)?;
+    let url = need_string("شبكة.أضف_معامل", &args[0], line, col)?;
+    let name = need_string("شبكة.أضف_معامل", &args[1], line, col)?;
+    if name.is_empty() {
+        return Err(RioError::typ(
+            "الدالة شبكة.أضف_معامل تتوقع اسما غير فارغ",
+            line,
+            col,
+        ));
+    }
+    let value = match &args[2] {
+        Value::Str(s) => s.clone(),
+        Value::Number(n) => json_fmt_number(*n),
+        Value::Bool(b) => {
+            if *b {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
+        other => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة شبكة.أضف_معامل تتوقع قيمة نصا أو عددا أو منطقيا لكن أعطيت {}",
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let (base, frag) = match url.split_once('#') {
+        Some((b, f)) => (b.to_string(), Some(f.to_string())),
+        None => (url.clone(), None),
+    };
+    let sep = if base.contains('?') { "&" } else { "?" };
+    let mut out = format!(
+        "{}{}{}={}",
+        base,
+        sep,
+        net_url_encode(&name),
+        net_url_encode(&value)
+    );
+    if let Some(f) = frag {
+        out.push('#');
+        out.push_str(&f);
+    }
+    Ok(Value::Str(out))
+}
+
+fn net4_resp_headers(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.رؤوس_الرد", args, 1, line, col)?;
+    let (_status, headers, _body) = net4_resp_parts(args, "شبكة.رؤوس_الرد", line, col)?;
+    Ok(Value::Dict(
+        headers
+            .into_iter()
+            .map(|(k, v)| (k, Value::Str(v)))
+            .collect(),
+    ))
+}
+
+fn net4_headers_only(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.رؤوس_فقط", args, 1, line, col)?;
+    let (_status, headers, _body) = net4_resp_parts(args, "شبكة.رؤوس_فقط", line, col)?;
+    Ok(Value::Str(net4_headers_text(&headers)))
+}
+
+fn net4_body_only(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.جسم_فقط", args, 1, line, col)?;
+    let (_status, _headers, body) = net4_resp_parts(args, "شبكة.جسم_فقط", line, col)?;
+    Ok(Value::Str(body))
+}
+
+fn net4_show_resp(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.اعرض_الرد", args, 1, line, col)?;
+    let (_status, headers, body) = net4_resp_parts(args, "شبكة.اعرض_الرد", line, col)?;
+    let h = net4_headers_text(&headers);
+    if h.is_empty() {
+        Ok(Value::Str(body))
+    } else {
+        Ok(Value::Str(format!("{}\n\n{}", h, body)))
+    }
+}
+
+fn net4_show_resp_color(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.اعرض_ملونا", args, 1, line, col)?;
+    let (status, headers, body) = net4_resp_parts(args, "شبكة.اعرض_ملونا", line, col)?;
+    let mut out = format!("\x1b[1;32mرمز {}\x1b[0m\n", status);
+    for (k, v) in &headers {
+        out.push_str(&format!("\x1b[36m{}\x1b[0m: {}\n", k, v));
+    }
+    out.push('\n');
+    out.push_str(&body);
+    Ok(Value::Str(out))
+}
+
+fn net4_format_json(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.نسق_json", args, 1, line, col)?;
+    let (_status, _headers, body) = net4_resp_parts(args, "شبكة.نسق_json", line, col)?;
+    let parsed = parse_json(&body).map_err(|_| {
+        RioError::runtime("الدالة شبكة.نسق_json جسم ليس JSON صالحا", line, col)
+    })?;
+    let value = json_to_niva(parsed);
+    let mut out = String::new();
+    b4_json_write_pretty(&value, &mut out, 2, false, false, 0).map_err(|_| {
+        RioError::runtime(
+            "الدالة شبكة.نسق_json قيمة لا تقبل كتابة JSON",
+            line,
+            col,
+        )
+    })?;
+    Ok(Value::Str(out))
+}
+
+fn net4_save_headers(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.احفظ_الرؤوس", args, 2, line, col)?;
+    let (_status, headers, _body) = net4_resp_parts(args, "شبكة.احفظ_الرؤوس", line, col)?;
+    let path = net_path_arg(args, 1, "احفظ_الرؤوس", line, col)?;
+    let text = net4_headers_text(&headers);
+    let n = text.len();
+    net_write_file(ctx, &path, text.as_bytes(), "احفظ_الرؤوس", line, col)?;
+    Ok(Value::Number(n as f64))
+}
+
+fn net4_sign_amazon(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    if args.len() < 3 || args.len() > 5 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة شبكة.وقع_أمازون تتوقع 3 إلى 5 معاملات لكن أعطيت {}",
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let (url, method, body) = net4_req_parts(args, "شبكة.وقع_أمازون", line, col)?;
+    let key = need_string("شبكة.وقع_أمازون", &args[1], line, col)?;
+    let secret = need_string("شبكة.وقع_أمازون", &args[2], line, col)?;
+    let region = match args.get(3) {
+        Some(v) => need_string("شبكة.وقع_أمازون", v, line, col)?,
+        None => "us-east-1".to_string(),
+    };
+    let service = match args.get(4) {
+        Some(v) => need_string("شبكة.وقع_أمازون", v, line, col)?,
+        None => "s3".to_string(),
+    };
+    let signed = crate::network::sign_amazon_headers(
+        &method, &url, &body, &key, &secret, &region, &service, line, col,
+    )?;
+    Ok(Value::Dict(
+        signed
+            .into_iter()
+            .map(|(k, v)| (k, Value::Str(v)))
+            .collect(),
+    ))
+}
+
+fn net4_sign_request(
+    _ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    if args.len() < 3 || args.len() > 4 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة شبكة.وقع_الطلب تتوقع 3 أو 4 معاملات لكن أعطيت {}",
+                args.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let (url, method, _body) = net4_req_parts(args, "شبكة.وقع_الطلب", line, col)?;
+    let key_id = need_string("شبكة.وقع_الطلب", &args[1], line, col)?;
+    let key = need_string("شبكة.وقع_الطلب", &args[2], line, col)?;
+    let algorithm = match args.get(3) {
+        Some(v) => need_string("شبكة.وقع_الطلب", v, line, col)?,
+        None => "hmac-sha256".to_string(),
+    };
+    let (_date, sig) = crate::network::sign_http_sig(
+        &method, &url, &key_id, &key, &algorithm, line, col,
+    )?;
+    Ok(Value::Str(sig))
+}
+
+fn net4_write_check(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.اكتب_الفحص", args, 2, line, col)?;
+    let text = need_string("شبكة.اكتب_الفحص", &args[0], line, col)?;
+    let path = net_path_arg(args, 1, "اكتب_الفحص", line, col)?;
+    net_write_file(ctx, &path, text.as_bytes(), "اكتب_الفحص", line, col)?;
+    Ok(Value::Bool(true))
+}
+
+// ---------- لينكس8-طبقة3: بروتوكولات (اجتماع 90 §105) ----------
+fn net3_ftp_fetch(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let _ = ctx;
+    need_args("شبكة.اجلب_ftp", args, 1, line, col)?;
+    let url = net_url_arg(args, 0, "اجلب_ftp", line, col)?;
+    let bytes = crate::network::ftp_fetch(&url, "شبكة.اجلب_ftp", line, col)?;
+    Ok(Value::Str(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+fn net3_ftp_download(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.نزل_ftp", args, 2, line, col)?;
+    let url = net_url_arg(args, 0, "نزل_ftp", line, col)?;
+    let path = net_path_arg(args, 1, "نزل_ftp", line, col)?;
+    let bytes = crate::network::ftp_fetch(&url, "شبكة.نزل_ftp", line, col)?;
+    let n = bytes.len();
+    net_write_file(ctx, &path, &bytes, "نزل_ftp", line, col)?;
+    Ok(Value::Number(n as f64))
+}
+
+fn net3_ftp_upload(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.ارفع_ftp", args, 2, line, col)?;
+    let url = net_url_arg(args, 0, "ارفع_ftp", line, col)?;
+    let path = net_path_arg(args, 1, "ارفع_ftp", line, col)?;
+    let bytes = net_read_file(ctx, &path, "ارفع_ftp", line, col)?;
+    let n = bytes.len();
+    crate::network::ftp_upload(&url, &bytes, "شبكة.ارفع_ftp", line, col)?;
+    Ok(Value::Number(n as f64))
+}
+
+fn net3_ftps_fetch(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let _ = ctx;
+    need_args("شبكة.اجلب_ftps", args, 1, line, col)?;
+    let url = net_url_arg(args, 0, "اجلب_ftps", line, col)?;
+    let bytes = crate::network::ftps_fetch(&url, "شبكة.اجلب_ftps", line, col)?;
+    Ok(Value::Str(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+fn net3_ftps_download(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    need_args("شبكة.نزل_ftps", args, 2, line, col)?;
+    let url = net_url_arg(args, 0, "نزل_ftps", line, col)?;
+    let path = net_path_arg(args, 1, "نزل_ftps", line, col)?;
+    let bytes = crate::network::ftps_fetch(&url, "شبكة.نزل_ftps", line, col)?;
+    let n = bytes.len();
+    net_write_file(ctx, &path, &bytes, "نزل_ftps", line, col)?;
+    Ok(Value::Number(n as f64))
+}
+
+fn net3_mqtt_broker(args: &[Value], i: usize, name: &str, line: usize, col: usize) -> RioResult<String> {
+    match &args[i] {
+        Value::Str(s) if !s.is_empty() => Ok(s.clone()),
+        Value::Str(_) => Err(RioError::typ(
+            format!("الدالة شبكة.{} تتوقع وسيطا غير فارغ", name),
+            line,
+            col,
+        )),
+        other => Err(RioError::typ(
+            format!(
+                "الدالة شبكة.{} تتوقع وسيطا نصا لكن أعطيت {}",
+                name,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+fn net3_mqtt_topic(args: &[Value], i: usize, name: &str, line: usize, col: usize) -> RioResult<String> {
+    match &args[i] {
+        Value::Str(s) if !s.is_empty() => Ok(s.clone()),
+        Value::Str(_) => Err(RioError::typ(
+            format!("الدالة شبكة.{} تتوقع موضوعا غير فارغ", name),
+            line,
+            col,
+        )),
+        other => Err(RioError::typ(
+            format!(
+                "الدالة شبكة.{} تتوقع موضوعا نصا لكن أعطيت {}",
+                name,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+fn net3_mqtt_sub(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let _ = ctx;
+    net_opt_args(args, 2, 3, "اشترك_mqtt", line, col)?;
+    let broker = net3_mqtt_broker(args, 0, "اشترك_mqtt", line, col)?;
+    let topic = net3_mqtt_topic(args, 1, "اشترك_mqtt", line, col)?;
+    let timeout: u64 = match args.get(2) {
+        Some(Value::Number(n)) if n.fract() == 0.0 && *n >= 1.0 && *n <= 300.0 => *n as u64,
+        Some(Value::Number(_)) => {
+            return Err(RioError::typ(
+                "الدالة شبكة.اشترك_mqtt مهلة غير صالحة",
+                line,
+                col,
+            ))
+        }
+        Some(other) => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة شبكة.اشترك_mqtt تتوقع مهلة عددا لكن أعطيت {}",
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+        None => 5,
+    };
+    let msgs = crate::network::mqtt_subscribe(
+        &broker,
+        &topic,
+        timeout,
+        "شبكة.اشترك_mqtt",
+        line,
+        col,
+    )?;
+    Ok(Value::List(msgs.into_iter().map(Value::Str).collect()))
+}
+
+fn net3_mqtt_pub(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let _ = ctx;
+    need_args("شبكة.انشر_mqtt", args, 3, line, col)?;
+    let broker = net3_mqtt_broker(args, 0, "انشر_mqtt", line, col)?;
+    let topic = net3_mqtt_topic(args, 1, "انشر_mqtt", line, col)?;
+    let payload = net_body_arg(&args[2], "انشر_mqtt", line, col)?;
+    crate::network::mqtt_publish(
+        &broker,
+        &topic,
+        &payload,
+        "شبكة.انشر_mqtt",
+        line,
+        col,
+    )?;
+    Ok(Value::Bool(true))
+}
+
+fn net3_sftp_fetch(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let _ = ctx;
+    need_args("شبكة.اجلب_sftp", args, 1, line, col)?;
+    Err(RioError::runtime(
+        "SFTP غير مدعوم في هذه النسخة — يحتاج تنفيذ SSH",
+        line,
+        col,
+    ))
+}
+
+fn net3_sftp_download(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let _ = ctx;
+    need_args("شبكة.نزل_sftp", args, 2, line, col)?;
+    Err(RioError::runtime(
+        "SFTP غير مدعوم في هذه النسخة — يحتاج تنفيذ SSH",
+        line,
+        col,
+    ))
+}
+
+fn net3_http3(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let _ = ctx;
+    need_args("شبكة.اطلب_http3", args, 1, line, col)?;
+    Err(RioError::runtime(
+        "HTTP/3 غير مدعوم في هذه النسخة — يحتاج QUIC",
+        line,
+        col,
+    ))
+}
+
+fn net3_bg_download(
+    ctx: &mut dyn HandlerCaller,
+    args: &[Value],
+    line: usize,
+    col: usize,
+) -> RioResult<Value> {
+    let _ = ctx;
+    need_args("شبكة.نزل_في_الخلفية", args, 2, line, col)?;
+    Err(RioError::runtime(
+        "التنزيل في الخلفية غير مدعوم بعد — يحتاج آلة المهام (§102)",
+        line,
+        col,
+    ))
+}
+
 fn network_entries() -> Vec<(&'static str, Value)> {
     vec![
         ("اجلب", native("اجلب", network_fetch)),
@@ -11522,6 +16780,176 @@ fn network_entries() -> Vec<(&'static str, Value)> {
         ("استقبل_من", native("استقبل_من", net_recv_from)),
         ("أغلق", native("أغلق", net_close)),
         ("المنفذ", native("المنفذ", net_local_port)),
+        ("طلب_جديد", native("طلب_جديد", net_req_new)),
+        ("نفذ", native("نفذ", net_req_exec)),
+        ("اعرض_الطلب", native("اعرض_الطلب", net_req_show)),
+        ("خلال_ثوان", native("خلال_ثوان", net_setter_0)),
+        ("بسرعة_قصوى", native("بسرعة_قصوى", net_setter_1)),
+        ("بحد_سرعة_الرفع", native("بحد_سرعة_الرفع", net_setter_2)),
+        ("بحد_الحجم", native("بحد_الحجم", net_setter_3)),
+        ("أعد_عند_الفشل", native("أعد_عند_الفشل", net_setter_4)),
+        ("بتأخير_المحاولات", native("بتأخير_المحاولات", net_setter_5)),
+        ("بأقصى_زمن_المحاولات", native("بأقصى_زمن_المحاولات", net_setter_6)),
+        ("بأعد_عند_الرفض", native("بأعد_عند_الرفض", net_setter_7)),
+        ("بأعد_بلا_نهاية", native("بأعد_بلا_نهاية", net_setter_8)),
+        ("بصامت", native("بصامت", net_setter_9)),
+        ("بأخطاء_فقط", native("بأخطاء_فقط", net_setter_10)),
+        ("أظهر_التقدم", native("أظهر_التقدم", net_setter_11)),
+        ("بمفصل", native("بمفصل", net_setter_12)),
+        ("باتباع_التوجيه", native("باتباع_التوجيه", net_setter_13)),
+        ("بأقصى_توجيه", native("بأقصى_توجيه", net_setter_14)),
+        ("بتوجيه_لموثوق_فقط", native("بتوجيه_لموثوق_فقط", net_setter_15)),
+        ("ببروتوكولات_التوجيه", native("ببروتوكولات_التوجيه", net_setter_16)),
+        ("عبر_وكيل", native("عبر_وكيل", net_setter_17)),
+        ("عبر_وكيل_socks5", native("عبر_وكيل_socks5", net_setter_18)),
+        ("بلا_وكيل_ل", native("بلا_وكيل_ل", net_setter_19)),
+        ("بنفق_الوكيل", native("بنفق_الوكيل", net_setter_20)),
+        ("بمصادقة_الوكيل", native("بمصادقة_الوكيل", net_setter_21)),
+        ("بتحقق_الشهادة", native("بتحقق_الشهادة", net_setter_22)),
+        ("بملف_شهادات", native("بملف_شهادات", net_setter_23)),
+        ("بمجلد_شهادات", native("بمجلد_شهادات", net_setter_24)),
+        ("بشهادة_عميل", native("بشهادة_عميل", net_setter_25)),
+        ("باسم_متصفح", native("باسم_متصفح", net_setter_26)),
+        ("بإحالة", native("بإحالة", net_setter_27)),
+        ("باللغة", native("باللغة", net_setter_28)),
+        ("مع_رأس", native("مع_رأس", net_setter_29)),
+        ("بلا_رأس", native("بلا_رأس", net_setter_30)),
+        ("مع_كوكيز", native("مع_كوكيز", net_setter_31)),
+        ("بتجاهل_كوكيز_الجلسة", native("بتجاهل_كوكيز_الجلسة", net_setter_32)),
+        ("باسم_وكلمة_سر", native("باسم_وكلمة_سر", net_setter_33)),
+        ("بمصادقة_هضمية", native("بمصادقة_هضمية", net_setter_34)),
+        ("بأي_مصادقة", native("بأي_مصادقة", net_setter_35)),
+        ("برمز", native("برمز", net_setter_36)),
+        ("بتوقيع_أمازون", native("بتوقيع_أمازون", net_setter_37)),
+        ("بتوقيع_طلب", native("بتوقيع_طلب", net_setter_38)),
+        ("بمنع_بيانات_الدخول", native("بمنع_بيانات_الدخول", net_setter_39)),
+        ("بمهلة_النقل", native("بمهلة_النقل", net_setter_40)),
+        ("بتتبع", native("بتتبع", net_setter_41)),
+        ("بتتبع_نصي", native("بتتبع_نصي", net_setter_42)),
+        ("بضغط", native("بضغط", net_setter_43)),
+        ("بترميز_الرد", native("بترميز_الرد", net_setter_44)),
+        ("بتحقق_الحالة", native("بتحقق_الحالة", net_setter_45)),
+        ("بإصدار_http", native("بإصدار_http", net_setter_46)),
+        ("بإرسال_متقطع", native("بإرسال_متقطع", net_setter_47)),
+        ("بأبق_الجسم_بعد_التوجيه", native("بأبق_الجسم_بعد_التوجيه", net_setter_48)),
+        ("بمدى", native("بمدى", net_setter_49)),
+        ("بوسم_الكيان", native("بوسم_الكيان", net_setter_50)),
+        ("بشرط_زمني", native("بشرط_زمني", net_setter_51)),
+        ("بحفظ_وقت_التعديل", native("بحفظ_وقت_التعديل", net_setter_52)),
+        ("بمنع_الكتابة", native("بمنع_الكتابة", net_setter_53)),
+        ("بتخط_الموجود", native("بتخط_الموجود", net_setter_54)),
+        ("بأنشئ_المجلدات", native("بأنشئ_المجلدات", net_setter_55)),
+        ("بسجل_التنزيل", native("بسجل_التنزيل", net_setter_56)),
+        ("بإلحاق_السجل", native("بإلحاق_السجل", net_setter_57)),
+        ("بإلى_مجلد", native("بإلى_مجلد", net_setter_58)),
+        ("بعمق_التكرار", native("بعمق_التكرار", net_setter_59)),
+        ("بتحويل_الروابط", native("بتحويل_الروابط", net_setter_60)),
+        ("باحترام_الروبوتات", native("باحترام_الروبوتات", net_setter_61)),
+        ("بالبقاء_في_المضيف", native("بالبقاء_في_المضيف", net_setter_62)),
+        ("بالبقاء_في_المجلد", native("بالبقاء_في_المجلد", net_setter_63)),
+        ("بأنواع_مقبولة", native("بأنواع_مقبولة", net_setter_64)),
+        ("بأنواع_مرفوضة", native("بأنواع_مرفوضة", net_setter_65)),
+        ("بأنماط_مقبولة", native("بأنماط_مقبولة", net_setter_66)),
+        ("بتتبع_الصور", native("بتتبع_الصور", net_setter_67)),
+        ("بتتبع_css", native("بتتبع_css", net_setter_68)),
+        ("بتسطيح_المجلدات", native("بتسطيح_المجلدات", net_setter_69)),
+        ("بحد_الملفات", native("بحد_الملفات", net_setter_70)),
+        ("باسمح_http", native("باسمح_http", net_setter_71)),
+        ("ببنية_المجلدات", native("ببنية_المجلدات", net_setter_72)),
+        ("بأنشئ_مجلدات_ftp", native("بأنشئ_مجلدات_ftp", net_setter_73)),
+        ("بحفظ_في", native("بحفظ_في", net_save_in)),
+        ("أرسل_json", native("أرسل_json", net_one_json)),
+        ("أرسل_نموذج", native("أرسل_نموذج", net_one_form)),
+        ("أرسل_خام", native("أرسل_خام", net_one_raw)),
+        ("أرسل_ثنائي", native("أرسل_ثنائي", net_one_binary)),
+        ("أرسل_من_ملف", native("أرسل_من_ملف", net_one_from_file)),
+        ("أرسل_من_المدخل", native("أرسل_من_المدخل", net_one_from_stdin)),
+        ("استبدل", native("استبدل", net_m_put)),
+        ("عدل", native("عدل", net_m_patch)),
+        ("احذف_مورد", native("احذف_مورد", net_m_delete)),
+        ("افحص_رؤوس", native("افحص_رؤوس", net_m_head)),
+        ("اطلب_خيارات", native("اطلب_خيارات", net_m_options)),
+        ("اطلب_مخصص", native("اطلب_مخصص", net_m_custom)),
+        ("ارفع_ملف", native("ارفع_ملف", net_upload_file)),
+        ("ارفع_جسم_ملف", native("ارفع_جسم_ملف", net_upload_body_file)),
+        ("نزل_باسم_الخادم", native("نزل_باسم_الخادم", net_dl_server_name)),
+        ("نزل_الكل", native("نزل_الكل", net_dl_all)),
+        ("نزل_من_قائمة", native("نزل_من_قائمة", net_dl_from_list)),
+        ("نزل_من_المدخل", native("نزل_من_المدخل", net_dl_from_stdin)),
+        ("أكمل_التنزيل", native("أكمل_التنزيل", net_dl_resume)),
+        ("نزل_الموقع", native("نزل_الموقع", net_dl_site)),
+        ("انسخ_الموقع", native("انسخ_الموقع", net_dl_site)),
+        ("اجلب_ftp", native("اجلب_ftp", net3_ftp_fetch)),
+        ("نزل_ftp", native("نزل_ftp", net3_ftp_download)),
+        ("ارفع_ftp", native("ارفع_ftp", net3_ftp_upload)),
+        ("اجلب_ftps", native("اجلب_ftps", net3_ftps_fetch)),
+        ("نزل_ftps", native("نزل_ftps", net3_ftps_download)),
+        ("اشترك_mqtt", native("اشترك_mqtt", net3_mqtt_sub)),
+        ("انشر_mqtt", native("انشر_mqtt", net3_mqtt_pub)),
+        ("اجلب_sftp", native("اجلب_sftp", net3_sftp_fetch)),
+        ("نزل_sftp", native("نزل_sftp", net3_sftp_download)),
+        ("اطلب_http3", native("اطلب_http3", net3_http3)),
+        ("نزل_في_الخلفية", native("نزل_في_الخلفية", net3_bg_download)),
+        ("جلسة_جديدة", native("جلسة_جديدة", net4_session_new_fn)),
+        ("جلسة", native("جلسة", net4_session_named)),
+        ("طبق_جلسة", native("طبق_جلسة", net4_apply_session)),
+        ("احفظ_الجلسة", native("احفظ_الجلسة", net4_save_session)),
+        ("اقرأ_الجلسة", native("اقرأ_الجلسة", net4_read_session)),
+        ("اقرأ_كوكيز", native("اقرأ_كوكيز", net4_read_cookies)),
+        ("احفظ_الوسم", native("احفظ_الوسم", net4_save_tag)),
+        ("اقرأ_الوسم", native("اقرأ_الوسم", net4_read_tag)),
+        ("اقرأ_بيانات_الدخول", native("اقرأ_بيانات_الدخول", net4_read_credentials)),
+        ("اقرأ_إعدادات_التنزيل", native("اقرأ_إعدادات_التنزيل", net4_read_dl_opts)),
+        ("اكتب_إعدادات_التنزيل", native("اكتب_إعدادات_التنزيل", net4_write_dl_opts)),
+        ("رمز_العنوان", native("رمز_العنوان", net4_url_encode_fn)),
+        ("أضف_معامل", native("أضف_معامل", net4_add_param)),
+        ("رؤوس_الرد", native("رؤوس_الرد", net4_resp_headers)),
+        ("رؤوس_فقط", native("رؤوس_فقط", net4_headers_only)),
+        ("جسم_فقط", native("جسم_فقط", net4_body_only)),
+        ("اعرض_الرد", native("اعرض_الرد", net4_show_resp)),
+        ("اعرض_ملونا", native("اعرض_ملونا", net4_show_resp_color)),
+        ("نسق_json", native("نسق_json", net4_format_json)),
+        ("احفظ_الرؤوس", native("احفظ_الرؤوس", net4_save_headers)),
+        ("وقع_أمازون", native("وقع_أمازون", net4_sign_amazon)),
+        ("وقع_الطلب", native("وقع_الطلب", net4_sign_request)),
+        ("اكتب_الفحص", native("اكتب_الفحص", net4_write_check)),
+        ("عناويني", native("عناويني", net5_ifaces_fn)),
+        ("عنوان_واجهة", native("عنوان_واجهة", net5_iface_fn)),
+        ("عناويني_مختصرة", native("عناويني_مختصرة", net5_ifaces_short_fn)),
+        ("عناويني_json", native("عناويني_json", net5_ifaces_json_fn)),
+        ("مساراتي", native("مساراتي", net5_routes_fn)),
+        ("مسار_لمضيف", native("مسار_لمضيف", net5_route_for_host_fn)),
+        ("حالة_الشبكة", native("حالة_الشبكة", net5_net_status_fn)),
+        ("جيراني", native("جيراني", net5_neighbors_fn)),
+        ("جار", native("جار", net5_neighbor_fn)),
+        ("إحصاءات_الشبكة", native("إحصاءات_الشبكة", net5_net_stats_fn)),
+        ("إحصاءات_التوجيه", native("إحصاءات_التوجيه", net5_route_stats_fn)),
+        ("قواعد_التوجيه", native("قواعد_التوجيه", net5_route_rules_fn)),
+        ("عناوين_البث", native("عناوين_البث", net5_broadcast_fn)),
+        ("قواعد_الجدار", native("قواعد_الجدار", net5_firewall_fn)),
+        ("اتصالاتي", native("اتصالاتي", net5_conns_fn)),
+        ("المستمعة", native("المستمعة", net5_listeners_fn)),
+        ("الجسور", native("الجسور", net5_bridges_fn)),
+        ("طوابير_الحركة", native("طوابير_الحركة", net5_queues_fn)),
+        ("إحصاءات_الحركة", native("إحصاءات_الحركة", net5_traffic_stats_fn)),
+        ("معلومات_الجهاز", native("معلومات_الجهاز", net5_device_fn)),
+        ("إحصاءات_البروتوكول", native("إحصاءات_البروتوكول", net5_proto_stats_fn)),
+        ("راقب_التغييرات", native("راقب_التغييرات", net5_watch_fn)),
+        ("معدل_الحركة", native("معدل_الحركة", net5_rate_fn)),
+        ("من_المتصل", native("من_المتصل", net5_live_hosts_fn)),
+        ("انبض", native("انبض", net5b_ping_fn)),
+        ("انبض_مستمر", native("انبض_مستمر", net5b_ping_loop_fn)),
+        ("زمن_الذهاب_والعودة", native("زمن_الذهاب_والعودة", net5b_rtt_fn)),
+        ("حل_الاسم", native("حل_الاسم", net5b_resolve_fn)),
+        ("افحص_المنفذ", native("افحص_المنفذ", net5b_port_check_fn)),
+        ("افحص_المنافذ", native("افحص_المنافذ", net5b_ports_check_fn)),
+        ("افحص_نطاق", native("افحص_نطاق", net5b_range_check_fn)),
+        ("افحص_سريع", native("افحص_سريع", net5b_fast_check_fn)),
+        ("افحص_udp", native("افحص_udp", net5b_udp_check_fn)),
+        ("انبض_icmp", native("انبض_icmp", net5b_icmp_ping_fn)),
+        ("تتبع_المسار", native("تتبع_المسار", net5b_trace_fn)),
+        ("اتصل_مشفر", native("اتصل_مشفر", net5b_tls_connect_fn)),
+        ("اتصل_بمهلة", native("اتصل_بمهلة", net5b_timeout_connect_fn)),
     ]
 }
 

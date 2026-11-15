@@ -2057,6 +2057,10 @@ struct FetchRequest {
     body: Vec<u8>,
     content_type: String,
     headers: Vec<(String, String)>,
+    // لينكس8-طبقة1-نواة: طريقة مخصصة (PUT/PATCH/DELETE/HEAD/
+    // OPTIONS/أي فعل) + خيارات التنفيذ الكاملة.
+    custom_method: Option<String>,
+    opts: ExecOpts,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2067,6 +2071,8 @@ impl FetchRequest {
             body: Vec::new(),
             content_type: String::new(),
             headers: Vec::new(),
+            custom_method: None,
+            opts: ExecOpts::default(),
         }
     }
 
@@ -2076,7 +2082,71 @@ impl FetchRequest {
             body: body.to_vec(),
             content_type: content_type.to_string(),
             headers: headers.to_vec(),
+            custom_method: None,
+            opts: ExecOpts::default(),
         }
+    }
+
+    // لينكس8-طبقة1-نواة: طلب بأي طريقة + خيارات.
+    fn with_method(
+        method: &str,
+        body: &[u8],
+        content_type: &str,
+        headers: &[(String, String)],
+        opts: ExecOpts,
+    ) -> Self {
+        let upper = method.to_ascii_uppercase();
+        let (base, custom) = match upper.as_str() {
+            "GET" => (FetchMethod::Get, None),
+            "POST" => (FetchMethod::Post, None),
+            _ => (FetchMethod::Post, Some(upper)),
+        };
+        FetchRequest {
+            method: base,
+            body: body.to_vec(),
+            content_type: content_type.to_string(),
+            headers: headers.to_vec(),
+            custom_method: custom,
+            opts,
+        }
+    }
+
+    // لينكس8-طبقة1-نواة: الفعل كما يُرسل على السلك.
+    fn method_str(&self) -> String {
+        if let Some(m) = &self.custom_method {
+            return m.clone();
+        }
+        if self.is_post() {
+            "POST".to_string()
+        } else {
+            "GET".to_string()
+        }
+    }
+
+    // لينكس8-طبقة1-نواة: هل تُرسل الطريقة جسما؟
+    fn sends_body(&self) -> bool {
+        if let Some(m) = &self.custom_method {
+            return !self.body.is_empty()
+                || matches!(m.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
+        }
+        self.is_post()
+    }
+
+    // لينكس8-طبقة1-نواة: هل تتحول إلى GET عند 301/302/303؟
+    fn converts_to_get(&self) -> bool {
+        if let Some(m) = &self.custom_method {
+            return matches!(m.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
+        }
+        self.is_post()
+    }
+
+    // لينكس8-طبقة1-نواة: هل يحمل الطلب اعتمادا (ترويسة
+    // تفويض أو كوكيز)؟ — لقاعدة التوجيه لمضيف موثوق فقط.
+    fn has_auth(&self) -> bool {
+        self.headers.iter().any(|(n, _)| {
+            let l = n.to_ascii_lowercase();
+            l == "authorization" || l == "cookie"
+        })
     }
 
     /// بعد POST: 301/302/303 تُعاد GET (بلا جسم وبلا
@@ -2085,6 +2155,7 @@ impl FetchRequest {
     /// مختلف قرار الحلقة (§45)، لا قرار التحويل.
     fn to_get(&mut self) {
         self.method = FetchMethod::Get;
+        self.custom_method = None;
         self.body.clear();
         self.content_type.clear();
     }
@@ -2209,6 +2280,16 @@ fn fetch_loop(
     // نسخة قابلة للتعديل: بعد POST قد يتحول الطلب
     // إلى GET (301/302/303) أو يبقى POST (307/308).
     let mut req = req.clone();
+    // لينكس8-طبقة1-نواة: قياس التنزيل (مهلة نقل/حد سرعة/
+    // حد حجم) — بلا حدود يعبر المصرف كما هو.
+    let mut sink = Box::new(MeteredSink::new(
+        sink,
+        req.opts.stall_secs,
+        req.opts.max_speed_down,
+        req.opts.max_size,
+        line,
+        col,
+    )) as Box<dyn BodySink + Send>;
     let mut redirects = 0usize;
     // Audit م-15: one total deadline for the whole fetch
     // (connect + headers + body + redirects) — a slow server
@@ -2223,9 +2304,14 @@ fn fetch_loop(
         match outcome {
             FetchOutcome::Body => return Ok(sink),
             FetchOutcome::Redirect(status, location) => {
-                if redirects >= MAX_REDIRECTS {
+                // لينكس8-طبقة1-نواة: بلا اتباع يُرجع الرد 3xx نفسه.
+                if !req.opts.follow_redirects {
+                    return Ok(sink);
+                }
+                let max_red = req.opts.max_redirects.min(MAX_REDIRECTS);
+                if redirects >= max_red {
                     return Err(RioError::runtime(
-                        "عدد إعادات التوجيه تجاوز الحد (5)",
+                        format!("عدد إعادات التوجيه تجاوز الحد ({})", max_red),
                         line,
                         col,
                     ));
@@ -2248,12 +2334,36 @@ fn fetch_loop(
                 let cross_host = next.host.to_ascii_lowercase()
                     != current.host.to_ascii_lowercase()
                     || next.port != current.port;
-                // اجتماع 29: بعد POST — 307/308 يعيد POST
-                // بالجسم نفسه للمضيف نفسه فقط (قائمة
-                // السماح لا تسري هنا)؛ وكل 3xx آخر (ومنها
-                // 301/302/303) يُعاد GET أولا ثم تسري
-                // قواعد التحويل نفسها (الاجتماعان 26 و28).
-                if req.is_post() && (status == 307 || status == 308) {
+                // لينكس8-طبقة1-نواة: بروتوكول التوجيه المقيد.
+                if !req
+                    .opts
+                    .redirect_protocols
+                    .iter()
+                    .any(|p| p == &next.scheme)
+                {
+                    return Err(RioError::runtime(
+                        format!(
+                            "إعادة التوجيه إلى بروتوكول {} مرفوضة",
+                            next.scheme
+                        ),
+                        line,
+                        col,
+                    ));
+                }
+                // لينكس8-طبقة1-نواة: لمضيف موثوق فقط — مع
+                // اعتماد يُرفض التحويل لمضيف مختلف أصلا.
+                if req.opts.trusted_only_redirect && cross_host && req.has_auth() {
+                    return Err(RioError::runtime(
+                        "إعادة التوجيه إلى مضيف غير موثوق مرفوضة",
+                        line,
+                        col,
+                    ));
+                }
+                // اجتماع 29: بعد طريقة بجسم — 307/308 يعيد
+                // الطريقة بالجسم نفسه للمضيف نفسه فقط؛ وكل
+                // 3xx آخر (ومنها 301/302/303) يُعاد GET أولا
+                // (إلا مع إبقاء الجسم) ثم تسري قواعد التحويل.
+                if req.converts_to_get() && (status == 307 || status == 308) {
                     if cross_host {
                         return Err(RioError::runtime(
                             format!(
@@ -2265,7 +2375,7 @@ fn fetch_loop(
                         ));
                     }
                 } else {
-                    if req.is_post() {
+                    if req.converts_to_get() && !req.opts.keep_body_on_redirect {
                         req.to_get();
                     }
                     if cross_host && !redirect_allowlisted(&next) {
@@ -2341,6 +2451,7 @@ fn download_native_with_timeout(
         written: 0,
         limit,
         display: display.to_string(),
+        meta: None,
     });
     match fetch_loop(url, &FetchRequest::get(), timeout_secs, line, col, sink) {
         Ok(sink) => Ok(sink.finish_bytes()),
@@ -2373,6 +2484,15 @@ trait BodySink: Send {
     fn finish_string(self: Box<Self>) -> Option<String>;
     /// البايتات المكتوبة (كل مصرف).
     fn finish_bytes(&self) -> u64;
+    // لينكس8-طبقة1-نواة: بيانات الرد الأخيرة (رمز + رؤوس).
+    fn set_meta(&mut self, _status: u16, _headers: Vec<(String, String)>) {}
+    fn meta(&self) -> Option<(u16, Vec<(String, String)>)> {
+        None
+    }
+    /// البايتات الخام (الذاكرة فقط؛ الملف يرجع فارغا).
+    fn finish_raw(self: Box<Self>) -> Vec<u8> {
+        Vec::new()
+    }
 }
 
 /// مصرف الذاكرة (اجلب): السقف نفسه 5MB + 1 بايت
@@ -2380,12 +2500,17 @@ trait BodySink: Send {
 #[cfg(not(target_arch = "wasm32"))]
 struct MemorySink {
     buf: Vec<u8>,
+    // لينكس8-طبقة1-نواة: بيانات الرد الأخيرة.
+    meta: Option<(u16, Vec<(String, String)>)>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl MemorySink {
     fn new() -> Self {
-        MemorySink { buf: Vec::new() }
+        MemorySink {
+            buf: Vec::new(),
+            meta: None,
+        }
     }
 }
 
@@ -2415,6 +2540,19 @@ impl BodySink for MemorySink {
     fn finish_bytes(&self) -> u64 {
         self.buf.len() as u64
     }
+
+    fn finish_raw(self: Box<Self>) -> Vec<u8> {
+        self.buf
+    }
+
+    // لينكس8-طبقة1-نواة: حفظ بيانات الرد وإرجاعها.
+    fn set_meta(&mut self, status: u16, headers: Vec<(String, String)>) {
+        self.meta = Some((status, headers));
+    }
+
+    fn meta(&self) -> Option<(u16, Vec<(String, String)>)> {
+        self.meta.clone()
+    }
 }
 
 /// مصرف الملف (نزّل): يكتب القطع خاما (بايتات كما
@@ -2427,6 +2565,8 @@ struct FileSink {
     written: u64,
     limit: u64,
     display: String,
+    // لينكس8-طبقة1-نواة: بيانات الرد الأخيرة.
+    meta: Option<(u16, Vec<(String, String)>)>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2481,6 +2621,15 @@ impl BodySink for FileSink {
 
     fn finish_bytes(&self) -> u64 {
         self.written
+    }
+
+    // لينكس8-طبقة1-نواة: حفظ بيانات الرد وإرجاعها.
+    fn set_meta(&mut self, status: u16, headers: Vec<(String, String)>) {
+        self.meta = Some((status, headers));
+    }
+
+    fn meta(&self) -> Option<(u16, Vec<(String, String)>)> {
+        self.meta.clone()
     }
 }
 
@@ -2671,52 +2820,8 @@ fn fetch_one_native(
         ));
     }
 
-    // One DNS resolution, then the IP is checked, then the
-    // connection goes to that same IP (§7).
-    let addr = (url.host.as_str(), url.port)
-        .to_socket_addrs()
-        .map_err(|_| {
-            RioError::runtime(
-                format!("تعذر حل اسم المضيف {}", url.host),
-                line,
-                col,
-            )
-        })?
-        .next()
-        .ok_or_else(|| {
-            RioError::runtime(
-                format!("تعذر حل اسم المضيف {}", url.host),
-                line,
-                col,
-            )
-        })?;
-    if let Some(class) = ip_class(&addr.ip()) {
-        if !local_host_allowed(&url.host) {
-            return Err(RioError::runtime(
-                format!(
-                    "الوصول إلى العنوان {} مرفوض (عنوان {})",
-                    addr.ip(),
-                    class
-                ),
-                line,
-                col,
-            ));
-        }
-    }
-    let timeout = time_left(deadline, line, col)?;
-    let mut stream = TcpStream::connect_timeout(&addr, timeout).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::TimedOut {
-            RioError::runtime("انتهت مهلة الاتصال (30 ثانية)", line, col)
-        } else {
-            RioError::runtime(
-                format!("تعذر الاتصال بالمضيف {}", url.host),
-                line,
-                col,
-            )
-        }
-    })?;
-    let _ = stream.set_read_timeout(Some(time_left(deadline, line, col)?));
-    let _ = stream.set_write_timeout(Some(time_left(deadline, line, col)?));
+    // لينكس8-وكيل: اتصال مباشر أو عبر وكيل (HTTP/SOCKS5).
+    let (mut stream, absolute) = connect_target(url, req, deadline, line, col)?;
     let host_header = if url.port == 80 {
         url.host.clone()
     } else {
@@ -2724,44 +2829,125 @@ fn fetch_one_native(
     };
     // ترميز هدف الطلب قبل الإرسال: المسار العربي الخام
     // يرفضه المحلل الصارم (llhttp) برمز 400. والهدف
-    // المرمّز نفسه يمر إلى HTTP/2 أدناه.
-    let target = encode_request_target(&url.path);
+    // المرمّز نفسه يمر إلى HTTP/2 أدناه. وعبر وكيل HTTP
+    // عادي يكون الهدف مطلقا (المخطط + المضيف + المسار).
+    let target = if absolute {
+        format!(
+            "{}://{}{}",
+            url.scheme,
+            host_header,
+            encode_request_target(&url.path)
+        )
+    } else {
+        encode_request_target(&url.path)
+    };
     // اجتماع 29: الطريقة من الطلب (GET أو POST)؛ وفي
     // POST يضاف نوع المحتوى وطول الجسم، والجسم نفسه
     // بايتات بعد سطر فارغ. والمدارة (Host وUser-Agent
     // وAccept) من المحرك وحده — لا ترويسة اعتماد
     // يضيفها المحرك من نفسه أبدا؛ وترويسات المتصل
     // (اجتماع 30) ملكه هو.
-    let method = if req.is_post() { "POST" } else { "GET" };
-    let mut head = format!(
-        "{} {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: Niva/1.0\r\nAccept: */*\r\n",
-        method, target, host_header
-    );
+    // لينكس8-طبقة1-نواة: الطريقة من الطلب + إصدار HTTP من الخيارات.
+    let method = req.method_str();
+    let version = if req.opts.http_version == "1.0" { "HTTP/1.0" } else { "HTTP/1.1" };
+    let user_agent = req
+        .opts
+        .user_agent
+        .clone()
+        .unwrap_or_else(|| "Niva/1.0".to_string());
+    // لينكس8-طبقة1-أغلفة: الرؤوس المحذوفة تُسقط من المدارة أيضا.
+    let removed = |name: &str| {
+        req.opts
+            .removed_headers
+            .iter()
+            .any(|h| h.eq_ignore_ascii_case(name))
+    };
+    let mut head = format!("{} {} {}\r\nHost: {}\r\n", method, target, version, host_header);
+    if !removed("user-agent") {
+        head.push_str(&format!("User-Agent: {}\r\n", user_agent));
+    }
+    if !removed("accept") {
+        head.push_str("Accept: */*\r\n");
+    }
+    // لينكس8-طبقة1-نواة: رؤوس مدارة من الخيارات (إحالة/لغة).
+    if !removed("referer") {
+        if let Some(r) = &req.opts.referer {
+            head.push_str(&format!("Referer: {}\r\n", r));
+        }
+    }
+    if !removed("accept-language") {
+        if let Some(l) = &req.opts.language {
+            head.push_str(&format!("Accept-Language: {}\r\n", l));
+        }
+    }
+    if !removed("accept-encoding") && req.opts.gzip {
+        head.push_str("Accept-Encoding: gzip\r\n");
+    }
     // اجتماع 30: ترويسات المتصل — والمدارة (Host
     // وContent-Length وContent-Type وConnection)
     // تغلب دائما فتُسقط نسخ المتصل منها؛ فلا ازدواج
     // على السلك ولا قيمة متصل تحل محل المدارة.
     for (name, value) in &req.headers {
         let lower = name.to_ascii_lowercase();
+        // لينكس8-طبقة1-أغلفة: رأس محذوف لا يُرسل أبدا.
+        if removed(&lower) {
+            continue;
+        }
         if lower == "host"
             || lower == "content-length"
             || lower == "content-type"
             || lower == "connection"
+            || lower == "transfer-encoding"
+            || (lower == "user-agent" && req.opts.user_agent.is_some())
+            || (lower == "referer" && req.opts.referer.is_some())
+            || (lower == "accept-language" && req.opts.language.is_some())
+            || (lower == "accept-encoding" && req.opts.gzip)
         {
             continue;
         }
         head.push_str(&format!("{}: {}\r\n", name, value));
     }
-    if req.is_post() {
-        head.push_str(&format!(
-            "Content-Type: {}\r\nContent-Length: {}\r\n",
-            req.content_type,
-            req.body.len()
-        ));
+    // لينكس8-طبقة1-نواة: الجسم — عادي (طول) أو متقطع (chunks).
+    if req.sends_body() {
+        head.push_str(&format!("Content-Type: {}\r\n", req.content_type));
+        if req.opts.chunked {
+            head.push_str("Transfer-Encoding: chunked\r\n");
+        } else {
+            head.push_str(&format!("Content-Length: {}\r\n", req.body.len()));
+        }
+    }
+    // لينكس8-وكيل: تفويض الوكيل لطلب HTTP العادي (أما
+    // النفق فيرسله في CONNECT لا هنا).
+    if req.opts.proxy.is_some() && !req.opts.tunnel_proxy && url.scheme == "http" {
+        if let Some((u, p)) = &req.opts.proxy_auth {
+            let has = req
+                .headers
+                .iter()
+                .any(|(n, _)| n.eq_ignore_ascii_case("proxy-authorization"));
+            if !has {
+                head.push_str(&format!(
+                    "Proxy-Authorization: Basic {}\r\n",
+                    b64_encode(format!("{}:{}", u, p).as_bytes())
+                ));
+            }
+        }
     }
     head.push_str("Connection: close\r\n\r\n");
     let mut request: Vec<u8> = head.into_bytes();
-    request.extend_from_slice(&req.body);
+    if req.opts.chunked && req.sends_body() {
+        // لينكس8-طبقة1-نواة: الإرسال المتقطع — قطع 8KB + قطعة صفرية.
+        let mut off = 0usize;
+        while off < req.body.len() {
+            let n = (req.body.len() - off).min(8192);
+            request.extend_from_slice(format!("{:x}\r\n", n).as_bytes());
+            request.extend_from_slice(&req.body[off..off + n]);
+            request.extend_from_slice(b"\r\n");
+            off += n;
+        }
+        request.extend_from_slice(b"0\r\n\r\n");
+    } else {
+        request.extend_from_slice(&req.body);
+    }
     // Meeting 26: HTTPS wraps the connected TcpStream in TLS
     // (after the §7 IP check above, before the handshake).
     // Meeting 27 §42: with the `http2` feature the handshake
@@ -2776,29 +2962,27 @@ fn fetch_one_native(
         #[cfg(not(feature = "http2"))]
         {
             let mut tls = tls_wrap(stream, &url.host, line, col)?;
-            tls.write_all(&request).map_err(|e| {
-                io_timeout_or(
-                    e,
-                    "انتهت مهلة إرسال الطلب",
-                    &format!("تعذر إرسال الطلب إلى {}", url.host),
-                    line,
-                    col,
-                )
-            })?;
-            let outcome = read_response(&mut tls, deadline, line, col, &mut *sink)?;
+            write_throttled(
+                &mut tls,
+                &request,
+                req.opts.max_speed_up,
+                &url.host,
+                line,
+                col,
+            )?;
+            let outcome = read_response(&mut tls, deadline, line, col, &mut *sink, req.opts.return_all_status)?;
             return Ok((outcome, sink));
         }
     }
-    stream.write_all(&request).map_err(|e| {
-        io_timeout_or(
-            e,
-            "انتهت مهلة إرسال الطلب",
-            &format!("تعذر إرسال الطلب إلى {}", url.host),
-            line,
-            col,
-        )
-    })?;
-    let outcome = read_response(&mut stream, deadline, line, col, &mut *sink)?;
+    write_throttled(
+        &mut stream,
+        &request,
+        req.opts.max_speed_up,
+        &url.host,
+        line,
+        col,
+    )?;
+    let outcome = read_response(&mut stream, deadline, line, col, &mut *sink, req.opts.return_all_status)?;
     Ok((outcome, sink))
 }
 
@@ -2871,6 +3055,10 @@ fn fetch_https_h2(
     // ينقل القيم نفسها فيُستعار منها داخل المستقبل).
     let request = request.to_vec();
     let req = req.clone();
+    // لينكس8-طبقة1-نواة: الخياران المستعملان بعد النقل
+    // يُلتقطان قبله (فـ async move ينقل req كله).
+    let max_speed_up = req.opts.max_speed_up;
+    let return_all = req.opts.return_all_status;
     let outcome = run_on_runtime(async move {
         fetch_https_h2_async(stream, &host_async, &path, &host_header, &req, deadline, line, col, sink).await
     })
@@ -2885,16 +3073,15 @@ fn fetch_https_h2(
             let _ = std_stream.set_read_timeout(Some(time_left(deadline, line, col)?));
             let _ = std_stream.set_write_timeout(Some(time_left(deadline, line, col)?));
             let mut tls = rustls::StreamOwned::new(conn, std_stream);
-            tls.write_all(&request).map_err(|e| {
-                io_timeout_or(
-                    e,
-                    "انتهت مهلة إرسال الطلب",
-                    &format!("تعذر إرسال الطلب إلى {}", host),
-                    line,
-                    col,
-                )
-            })?;
-            let outcome = read_response(&mut tls, deadline, line, col, &mut *sink)?;
+            write_throttled(
+                &mut tls,
+                &request,
+                max_speed_up,
+                host.as_str(),
+                line,
+                col,
+            )?;
+            let outcome = read_response(&mut tls, deadline, line, col, &mut *sink, return_all)?;
             Ok((outcome, sink))
         }
         Err(e) => Err(e),
@@ -3082,21 +3269,53 @@ async fn fetch_h2(
     // المحتوى. والمدارة من المحرك وحده — لا ترويسة
     // اعتماد يضيفها المحرك من نفسه أبدا؛ وترويسات
     // المتصل (اجتماع 30) ملكه هو.
+    // لينكس8-طبقة1-أغلفة: الرؤوس المحذوفة + المدارة كما H1.
+    let removed_h2 = |name: &str| {
+        req.opts
+            .removed_headers
+            .iter()
+            .any(|h| h.eq_ignore_ascii_case(name))
+    };
+    let user_agent_h2 = req
+        .opts
+        .user_agent
+        .clone()
+        .unwrap_or_else(|| "Niva/1.0".to_string());
     let mut builder = http::Request::builder()
-        .method(if req.is_post() {
-            http::Method::POST
-        } else {
-            http::Method::GET
-        })
+        .method(
+            http::Method::from_bytes(req.method_str().as_bytes()).map_err(|_| {
+                RioError::runtime("طريقة طلب غير صالحة", line, col)
+            })?,
+        )
         .uri(uri)
-        .header("host", host_header.as_str())
-        .header("user-agent", "Niva/1.0")
-        .header("accept", "*/*");
+        .header("host", host_header.as_str());
+    if !removed_h2("user-agent") {
+        builder = builder.header("user-agent", user_agent_h2.as_str());
+    }
+    if !removed_h2("accept") {
+        builder = builder.header("accept", "*/*");
+    }
+    if !removed_h2("referer") {
+        if let Some(r) = &req.opts.referer {
+            builder = builder.header("referer", r.as_str());
+        }
+    }
+    if !removed_h2("accept-language") {
+        if let Some(l) = &req.opts.language {
+            builder = builder.header("accept-language", l.as_str());
+        }
+    }
+    if !removed_h2("accept-encoding") && req.opts.gzip {
+        builder = builder.header("accept-encoding", "gzip");
+    }
     // اجتماع 30: ترويسات المتصل — والمدارة (host
     // وcontent-type) تغلب؛ وconnection ممنوعة في
     // HTTP/2 أصلا فتُسقط هي وcontent-length معهما.
     for (name, value) in &req.headers {
         let lower = name.to_ascii_lowercase();
+        if removed_h2(&lower) {
+            continue;
+        }
         if lower == "host"
             || lower == "content-length"
             || lower == "content-type"
@@ -3106,7 +3325,7 @@ async fn fetch_h2(
         }
         builder = builder.header(name.as_str(), value.as_str());
     }
-    if req.is_post() {
+    if req.sends_body() {
         builder = builder.header("content-type", req.content_type.as_str());
     }
     let http_req = builder
@@ -3119,7 +3338,7 @@ async fn fetch_h2(
         .send_request(http_req, end_of_stream)
         .map_err(|_| RioError::runtime("تعذر إرسال طلب HTTP/2", line, col))?;
     let mut resp_fut = std::pin::pin!(resp_fut);
-    if req.is_post() && !req.body.is_empty() {
+    if req.sends_body() && !req.body.is_empty() {
         // إرسال الجسم في قطع 16KB تناسب نافذة التدفق
         // الأولية (65,535 بايت) — على نمط اختبار 413
         // في هذا الملف: حجز سعة، انتظارها بالمهلة،
@@ -3193,6 +3412,66 @@ async fn fetch_h2(
         .get("location")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
+    // لينكس8-طبقة1-نواة: بيانات الرد من ترويسات h2.
+    let h2_headers: Vec<(String, String)> = parts
+        .headers
+        .iter()
+        .map(|(n, v)| {
+            (
+                n.as_str().to_string(),
+                v.to_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    sink.set_meta(status, h2_headers);
+    // لينكس8-طبقة1-نواة: بيانات الرد من ترويسات h2.
+    let h2_headers: Vec<(String, String)> = parts
+        .headers
+        .iter()
+        .map(|(n, v)| {
+            (
+                n.as_str().to_string(),
+                v.to_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    sink.set_meta(status, h2_headers);
+    // لينكس8-طبقة1-نواة: بيانات الرد من ترويسات h2.
+    let h2_headers: Vec<(String, String)> = parts
+        .headers
+        .iter()
+        .map(|(n, v)| {
+            (
+                n.as_str().to_string(),
+                v.to_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    sink.set_meta(status, h2_headers);
+    // لينكس8-طبقة1-نواة: بيانات الرد من ترويسات h2.
+    let h2_headers: Vec<(String, String)> = parts
+        .headers
+        .iter()
+        .map(|(n, v)| {
+            (
+                n.as_str().to_string(),
+                v.to_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    sink.set_meta(status, h2_headers);
+    // لينكس8-طبقة1-نواة: بيانات الرد من ترويسات h2.
+    let h2_headers: Vec<(String, String)> = parts
+        .headers
+        .iter()
+        .map(|(n, v)| {
+            (
+                n.as_str().to_string(),
+                v.to_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    sink.set_meta(status, h2_headers);
     // المهمة 22: القطع تُدفع إلى المصرف (الذاكرة
     // تسقف 5MB، والملف يسقف الحصة) — فلا جسم كامل
     // في الذاكرة عند التنزيل.
@@ -3217,6 +3496,26 @@ async fn fetch_h2(
         // consumed, so a 5 MB body never stalls the peer.
         let _ = body_stream.flow_control().release_capacity(chunk.len());
         sink.push(&chunk, line, col)?;
+    }
+    // لينكس8-طبقة1-نواة: إرجاع كل الحالات — كل غير-توجيه جسم عادي.
+    if req.opts.return_all_status && !((300..400).contains(&status) && location.is_some()) {
+        return Ok((FetchOutcome::Body, sink));
+    }
+    // لينكس8-طبقة1-نواة: إرجاع كل الحالات — كل غير-توجيه جسم عادي.
+    if req.opts.return_all_status && !((300..400).contains(&status) && location.is_some()) {
+        return Ok((FetchOutcome::Body, sink));
+    }
+    // لينكس8-طبقة1-نواة: إرجاع كل الحالات — كل غير-توجيه جسم عادي.
+    if req.opts.return_all_status && !((300..400).contains(&status) && location.is_some()) {
+        return Ok((FetchOutcome::Body, sink));
+    }
+    // لينكس8-طبقة1-نواة: إرجاع كل الحالات — كل غير-توجيه جسم عادي.
+    if req.opts.return_all_status && !((300..400).contains(&status) && location.is_some()) {
+        return Ok((FetchOutcome::Body, sink));
+    }
+    // لينكس8-طبقة1-نواة: إرجاع كل الحالات — كل غير-توجيه جسم عادي.
+    if req.opts.return_all_status && !((300..400).contains(&status) && location.is_some()) {
+        return Ok((FetchOutcome::Body, sink));
     }
     if (200..300).contains(&status) {
         Ok((FetchOutcome::Body, sink))
@@ -3394,6 +3693,8 @@ fn read_response(
     line: usize,
     col: usize,
     sink: &mut dyn BodySink,
+    // لينكس8-طبقة1-نواة: صح = إرجاع كل الحالات بلا خطأ (نفذ).
+    return_all: bool,
 ) -> RioResult<FetchOutcome> {
     const HEADER_CAP: usize = 64 * 1024;
     let mut head: Vec<u8> = Vec::new();
@@ -3465,10 +3766,13 @@ fn read_response(
     let mut content_length: Option<usize> = None;
     let mut chunked = false;
     let mut location: Option<String> = None;
+    // لينكس8-طبقة1-نواة: كل الرؤوس (اسم صغير + قيمة مقصوصة).
+    let mut all_headers: Vec<(String, String)> = Vec::new();
     for l in lines {
         if let Some((name, value)) = l.split_once(':') {
             let name = name.trim().to_ascii_lowercase();
             let value = value.trim();
+            all_headers.push((name.clone(), value.to_string()));
             match name.as_str() {
                 "content-length" => {
                     content_length = value.parse().ok();
@@ -3485,6 +3789,9 @@ fn read_response(
             }
         }
     }
+    // لينكس8-طبقة1-نواة: بيانات الرد قبل قراءة الجسم (فتصل
+    // حتى عند التوجيه — فالمصرف يُصفَّر لاحقا لا البيانات).
+    sink.set_meta(status, all_headers);
     // The body: Content-Length, then chunked, then until EOF.
     // القطع تُدفع إلى المصرف (الذاكرة تسقف 5MB،
     // والملف يسقف الحصة) — فلا جسم كامل في الذاكرة
@@ -3605,6 +3912,36 @@ fn read_response(
                 }
             }
         }
+    }
+    // لينكس8-طبقة1-نواة: إرجاع كل الحالات — كل غير-توجيه
+    // (ومنها 3xx بلا عنوان و4xx/5xx) جسم عادي.
+    if return_all && !((300..400).contains(&status) && location.is_some()) {
+        return Ok(FetchOutcome::Body);
+    }
+    // لينكس8-طبقة1-نواة: إرجاع كل الحالات — كل غير-توجيه
+    // (ومنها 3xx بلا عنوان و4xx/5xx) جسم عادي.
+    if return_all && !((300..400).contains(&status) && location.is_some()) {
+        return Ok(FetchOutcome::Body);
+    }
+    // لينكس8-طبقة1-نواة: إرجاع كل الحالات — كل غير-توجيه
+    // (ومنها 3xx بلا عنوان و4xx/5xx) جسم عادي.
+    if return_all && !((300..400).contains(&status) && location.is_some()) {
+        return Ok(FetchOutcome::Body);
+    }
+    // لينكس8-طبقة1-نواة: إرجاع كل الحالات — كل غير-توجيه
+    // (ومنها 3xx بلا عنوان و4xx/5xx) جسم عادي.
+    if return_all && !((300..400).contains(&status) && location.is_some()) {
+        return Ok(FetchOutcome::Body);
+    }
+    // لينكس8-طبقة1-نواة: إرجاع كل الحالات — كل غير-توجيه
+    // (ومنها 3xx بلا عنوان و4xx/5xx) جسم عادي.
+    if return_all && !((300..400).contains(&status) && location.is_some()) {
+        return Ok(FetchOutcome::Body);
+    }
+    // لينكس8-طبقة1-نواة: إرجاع كل الحالات — كل غير-توجيه
+    // (ومنها 3xx بلا عنوان و4xx/5xx) جسم عادي.
+    if return_all && !((300..400).contains(&status) && location.is_some()) {
+        return Ok(FetchOutcome::Body);
     }
     if (200..300).contains(&status) {
         Ok(FetchOutcome::Body)
@@ -5438,6 +5775,7 @@ mod tests {
             written: 0,
             limit: 10,
             display: "حصة.بن".to_string(),
+            meta: None,
         };
         sink.push(b"12345", 1, 1).unwrap();
         let err = sink.push(b"123456", 1, 1).unwrap_err();
@@ -6558,4 +6896,3646 @@ mod tests {
         stop_test_server(handle, rx);
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+// ----- لينكس8-طبقة1-نواة: نواة الطلب (اجتماع 90 §105) -----
+
+/// خيارات تنفيذ الطلب الكاملة — تُبنى من قاموس طلب نيفا
+/// (exec_opts_from_dict) وتُحمل في FetchRequest.opts.
+#[derive(Clone)]
+pub struct ExecOpts {
+    pub timeout_secs: u64,
+    pub stall_secs: u64,
+    pub retries: u32,
+    pub retry_delay_ms: u64,
+    pub max_retry_ms: u64,
+    pub retry_on_refused: bool,
+    pub retry_forever: bool,
+    pub follow_redirects: bool,
+    pub max_redirects: usize,
+    pub redirect_protocols: Vec<String>,
+    pub keep_body_on_redirect: bool,
+    pub trusted_only_redirect: bool,
+    pub verify_cert: bool,
+    pub gzip: bool,
+    pub check_status: bool,
+    pub return_all_status: bool,
+    pub allow_http: bool,
+    pub http_version: String,
+    pub chunked: bool,
+    pub response_encoding: String,
+    pub save_to: Option<String>,
+    pub max_size: Option<u64>,
+    pub no_overwrite: bool,
+    pub skip_existing: bool,
+    pub delete_on_fail: bool,
+    pub preserve_mtime: bool,
+    pub resume: bool,
+    pub range_from: Option<u64>,
+    pub range_to: Option<u64>,
+    pub etag: Option<String>,
+    pub if_modified_since: Option<String>,
+    pub user_agent: Option<String>,
+    pub referer: Option<String>,
+    pub language: Option<String>,
+    pub trace_file: Option<String>,
+    pub silent: bool,
+    pub verbose: bool,
+    pub errors_only: bool,
+    pub show_progress: bool,
+    pub max_speed_down: Option<u64>,
+    pub max_speed_up: Option<u64>,
+    pub proxy: Option<String>,
+    pub proxy_auth: Option<(String, String)>,
+    pub no_proxy: Vec<String>,
+    pub socks5: Option<String>,
+    pub tunnel_proxy: bool,
+    pub ca_file: Option<String>,
+    pub ca_dir: Option<String>,
+    pub client_cert: Option<(String, String)>,
+    pub no_userinfo: bool,
+    pub cookies: Vec<(String, String)>,
+    pub auth: Option<AuthKind>,
+    pub session_cookies: Vec<(String, String)>,
+    pub ignore_session_cookies: bool,
+    pub trace_text: bool,
+    pub removed_headers: Vec<String>,
+}
+
+impl Default for ExecOpts {
+    fn default() -> Self {
+        ExecOpts {
+            timeout_secs: 30,
+            stall_secs: 0,
+            retries: 1,
+            retry_delay_ms: 0,
+            max_retry_ms: 0,
+            retry_on_refused: false,
+            retry_forever: false,
+            follow_redirects: true,
+            max_redirects: 5,
+            redirect_protocols: vec!["http".to_string(), "https".to_string()],
+            keep_body_on_redirect: false,
+            trusted_only_redirect: false,
+            verify_cert: true,
+            gzip: true,
+            check_status: false,
+            return_all_status: false,
+            allow_http: false,
+            http_version: "1.1".to_string(),
+            chunked: false,
+            response_encoding: "utf-8".to_string(),
+            save_to: None,
+            max_size: None,
+            no_overwrite: false,
+            skip_existing: false,
+            delete_on_fail: true,
+            preserve_mtime: false,
+            resume: false,
+            range_from: None,
+            range_to: None,
+            etag: None,
+            if_modified_since: None,
+            user_agent: None,
+            referer: None,
+            language: None,
+            trace_file: None,
+            silent: false,
+            verbose: false,
+            errors_only: false,
+            show_progress: false,
+            max_speed_down: None,
+            max_speed_up: None,
+            proxy: None,
+            proxy_auth: None,
+            no_proxy: Vec::new(),
+            socks5: None,
+            tunnel_proxy: false,
+            ca_file: None,
+            ca_dir: None,
+            client_cert: None,
+            no_userinfo: true,
+            cookies: Vec::new(),
+            auth: None,
+            session_cookies: Vec::new(),
+            ignore_session_cookies: false,
+            trace_text: true,
+            removed_headers: Vec::new(),
+        }
+    }
+}
+
+/// نوع المصادقة المحمول في قاموس الطلب (مفتاح «مصادقة»).
+#[derive(Clone, Debug)]
+pub enum AuthKind {
+    Basic(String, String),
+    Digest(String, String),
+    Negotiate(String, String),
+    Bearer(String),
+    Amazon {
+        key: String,
+        secret: String,
+        region: String,
+        service: String,
+    },
+    HttpSig {
+        key_id: String,
+        key: String,
+        algorithm: String,
+    },
+}
+
+/// رد منفذ: رمز + بايتات الجسم + رؤوس (أسماء صغيرة).
+pub struct NetResponse {
+    pub status: u16,
+    pub body: Vec<u8>,
+    pub headers: Vec<(String, String)>,
+    pub bytes: u64,
+}
+
+// ترميز Base64 صغير (للمصادقة الأساسية ومصادقة الوكيل) —
+// بلا اعتماد جديد.
+pub fn b64_encode(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for c in data.chunks(3) {
+        let b = [c[0], *c.get(1).unwrap_or(&0), *c.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(T[(n >> 18 & 63) as usize] as char);
+        out.push(T[(n >> 12 & 63) as usize] as char);
+        out.push(if c.len() > 1 { T[(n >> 6 & 63) as usize] as char } else { '=' });
+        out.push(if c.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
+fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+    let mut k = [0u8; 64];
+    if key.len() > 64 {
+        let h = crate::crypto::sha256(key);
+        k[..32].copy_from_slice(&h);
+    } else {
+        k[..key.len()].copy_from_slice(key);
+    }
+    let mut ipad = [0x36u8; 64];
+    let mut opad = [0x5cu8; 64];
+    for i in 0..64 {
+        ipad[i] ^= k[i];
+        opad[i] ^= k[i];
+    }
+    let mut inner = ipad.to_vec();
+    inner.extend_from_slice(msg);
+    let ih = crate::crypto::sha256(&inner);
+    let mut outer = opad.to_vec();
+    outer.extend_from_slice(&ih);
+    crate::crypto::sha256(&outer)
+}
+
+fn hex_bytes(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{:02x}", x)).collect()
+}
+
+// ----- لينكس8: تحويل قاموس الخيارات + المنفذ -----
+
+fn opt_get<'a>(pairs: &'a [(String, Value)], key: &str) -> Option<&'a Value> {
+    pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+}
+
+fn opt_bad(display: &str, key: &str, line: usize, col: usize) -> RioError {
+    RioError::typ(
+        format!("الدالة {} {} غير صالح", display, key),
+        line,
+        col,
+    )
+}
+
+fn opt_bool(
+    pairs: &[(String, Value)],
+    key: &str,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<bool>> {
+    match opt_get(pairs, key) {
+        None => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(opt_bad(display, key, line, col)),
+    }
+}
+
+fn opt_num(
+    pairs: &[(String, Value)],
+    key: &str,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<f64>> {
+    match opt_get(pairs, key) {
+        None => Ok(None),
+        Some(Value::Number(n)) => Ok(Some(*n)),
+        Some(_) => Err(opt_bad(display, key, line, col)),
+    }
+}
+
+fn opt_int(
+    pairs: &[(String, Value)],
+    key: &str,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<i64>> {
+    match opt_num(pairs, key, display, line, col)? {
+        None => Ok(None),
+        Some(n) => {
+            if n.fract() != 0.0 || n.abs() >= 9.0e15 {
+                Err(opt_bad(display, key, line, col))
+            } else {
+                Ok(Some(n as i64))
+            }
+        }
+    }
+}
+
+fn opt_str(
+    pairs: &[(String, Value)],
+    key: &str,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<String>> {
+    match opt_get(pairs, key) {
+        None => Ok(None),
+        Some(Value::Str(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(opt_bad(display, key, line, col)),
+    }
+}
+
+fn opt_list_str(
+    pairs: &[(String, Value)],
+    key: &str,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<Vec<String>>> {
+    match opt_get(pairs, key) {
+        None => Ok(None),
+        Some(Value::List(items)) => {
+            let mut out = Vec::new();
+            for it in items {
+                match it {
+                    Value::Str(s) => out.push(s.clone()),
+                    _ => return Err(opt_bad(display, key, line, col)),
+                }
+            }
+            Ok(Some(out))
+        }
+        Some(_) => Err(opt_bad(display, key, line, col)),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn opt_dict_str(
+    pairs: &[(String, Value)],
+    key: &str,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Option<Vec<(String, String)>>> {
+    match opt_get(pairs, key) {
+        None => Ok(None),
+        Some(Value::Dict(items)) => {
+            let mut out = Vec::new();
+            for (k, v) in items {
+                match v {
+                    Value::Str(s) => out.push((k.clone(), s.clone())),
+                    _ => return Err(opt_bad(display, key, line, col)),
+                }
+            }
+            Ok(Some(out))
+        }
+        Some(_) => Err(opt_bad(display, key, line, col)),
+    }
+}
+
+/// قاموس طلب نيفا → خيارات تنفيذ. المفاتيح البنيوية
+/// (رابط/طريقة/رؤوس/كوكيز/جسم/نوع_المحتوى) تُقرأ في
+/// الغلاف لا هنا؛ وأي مفتاح غير معروف خطأ (حماية من
+/// خطأ إملائي في اسم الخيار).
+pub fn exec_opts_from_dict(
+    pairs: &[(String, Value)],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<ExecOpts> {
+    const KNOWN: &[&str] = &[
+        "مهلة", "مهلة_النقل", "محاولات", "تأخير", "أقصى_زمن_المحاولات",
+        "أعد_عند_الرفض", "أعد_بلا_نهاية", "اتباع_التوجيه", "أقصى_التوجيه",
+        "بروتوكولات_التوجيه", "أبق_الجسم_بعد_التوجيه", "توجيه_لموثوق_فقط",
+        "تحقق_الشهادة", "ضغط", "تحقق_من_الحالة", "اسمح_http", "إصدار_http",
+        "إرسال_متقطع", "ترميز_الرد", "حفظ_في", "حد_الحجم", "منع_الكتابة",
+        "تخط_الموجود", "حفظ_وقت_التعديل", "استئناف", "مدى", "وسم_الكيان",
+        "شرط_زمني", "وكيل_المستخدم", "إحالة", "لغة", "تتبع_في", "تتبع_نصي",
+        "صامت", "مفصل", "أخطاء_فقط", "أظهر_التقدم", "حد_سرعة_التنزيل",
+        "حد_سرعة_الرفع", "وكيل", "مصادقة_الوكيل", "بلا_وكيل_ل", "وكيل_socks5",
+        "نفق_الوكيل", "ملف_شهادات", "مجلد_شهادات", "شهادة_عميل",
+        "منع_بيانات_الدخول", "رؤوس_محذوفة", "تجاهل_كوكيز_الجلسة",
+        "مصادقة", "سجل_التنزيل", "إلحاق_السجل", "مجلد_التنزيل",
+        "عمق_التكرار", "حوّل_الروابط", "احترام_الروبوتات", "البقاء_في_المضيف",
+        "البقاء_في_المجلد", "أنواع_مقبولة", "أنواع_مرفوضة", "أنماط_مقبولة",
+        "تتبع_الصور", "تتبع_css", "سطّح_المجلدات", "حد_الملفات",
+        "بنية_المجلدات", "أنشئ_المجلدات", "أنشئ_مجلدات_ftp", "حذف_عند_الفشل",
+    ];
+    for (k, _) in pairs {
+        if !KNOWN.contains(&k.as_str())
+            && !matches!(
+                k.as_str(),
+                "رابط" | "طريقة" | "رؤوس" | "كوكيز" | "جسم" | "نوع_المحتوى"
+            )
+        {
+            let safe = !k.is_empty()
+                && k.chars()
+                    .all(|c| c.is_alphanumeric() || c == '_');
+            return Err(RioError::typ(
+                if safe {
+                    format!("الدالة {} خيار غير معروف: {}", display, k)
+                } else {
+                    format!("الدالة {} خيار غير معروف", display)
+                },
+                line,
+                col,
+            ));
+        }
+    }
+    let mut o = ExecOpts::default();
+    if let Some(v) = opt_num(pairs, "مهلة", display, line, col)? {
+        if !(v > 0.0) || !v.is_finite() {
+            return Err(opt_bad(display, "مهلة", line, col));
+        }
+        o.timeout_secs = v as u64;
+    }
+    if let Some(v) = opt_num(pairs, "مهلة_النقل", display, line, col)? {
+        if !(v > 0.0) || !v.is_finite() {
+            return Err(opt_bad(display, "مهلة_النقل", line, col));
+        }
+        o.stall_secs = v as u64;
+    }
+    if let Some(v) = opt_int(pairs, "محاولات", display, line, col)? {
+        if v < 1 || v > 100 {
+            return Err(opt_bad(display, "محاولات", line, col));
+        }
+        o.retries = v as u32;
+    }
+    if let Some(v) = opt_num(pairs, "تأخير", display, line, col)? {
+        if v < 0.0 || !v.is_finite() {
+            return Err(opt_bad(display, "تأخير", line, col));
+        }
+        o.retry_delay_ms = (v * 1000.0) as u64;
+    }
+    if let Some(v) = opt_num(pairs, "أقصى_زمن_المحاولات", display, line, col)? {
+        if !(v > 0.0) || !v.is_finite() {
+            return Err(opt_bad(display, "أقصى_زمن_المحاولات", line, col));
+        }
+        o.max_retry_ms = (v * 1000.0) as u64;
+    }
+    if let Some(v) = opt_bool(pairs, "أعد_عند_الرفض", display, line, col)? {
+        o.retry_on_refused = v;
+    }
+    if let Some(v) = opt_bool(pairs, "أعد_بلا_نهاية", display, line, col)? {
+        o.retry_forever = v;
+    }
+    if let Some(v) = opt_bool(pairs, "اتباع_التوجيه", display, line, col)? {
+        o.follow_redirects = v;
+    }
+    if let Some(v) = opt_int(pairs, "أقصى_التوجيه", display, line, col)? {
+        if v < 0 || v > 100 {
+            return Err(opt_bad(display, "أقصى_التوجيه", line, col));
+        }
+        o.max_redirects = v as usize;
+    }
+    if let Some(v) = opt_list_str(pairs, "بروتوكولات_التوجيه", display, line, col)? {
+        for p in &v {
+            if p != "http" && p != "https" {
+                return Err(opt_bad(display, "بروتوكولات_التوجيه", line, col));
+            }
+        }
+        o.redirect_protocols = v;
+    }
+    if let Some(v) = opt_bool(pairs, "أبق_الجسم_بعد_التوجيه", display, line, col)? {
+        o.keep_body_on_redirect = v;
+    }
+    if let Some(v) = opt_bool(pairs, "توجيه_لموثوق_فقط", display, line, col)? {
+        o.trusted_only_redirect = v;
+    }
+    if let Some(v) = opt_bool(pairs, "تحقق_الشهادة", display, line, col)? {
+        if !v {
+            return Err(RioError::runtime(
+                "تجاهل التحقق من الشهادة مرفوض — الشهادة تُتحقق دائما",
+                line,
+                col,
+            ));
+        }
+        o.verify_cert = true;
+    }
+    if let Some(v) = opt_bool(pairs, "ضغط", display, line, col)? {
+        o.gzip = v;
+    }
+    if let Some(v) = opt_bool(pairs, "تحقق_من_الحالة", display, line, col)? {
+        o.check_status = v;
+    }
+    if let Some(v) = opt_bool(pairs, "اسمح_http", display, line, col)? {
+        o.allow_http = v;
+    }
+    if let Some(v) = opt_str(pairs, "إصدار_http", display, line, col)? {
+        if v != "1.0" && v != "1.1" {
+            return Err(opt_bad(display, "إصدار_http", line, col));
+        }
+        o.http_version = v;
+    }
+    if let Some(v) = opt_bool(pairs, "إرسال_متقطع", display, line, col)? {
+        o.chunked = v;
+    }
+    if let Some(v) = opt_str(pairs, "ترميز_الرد", display, line, col)? {
+        if v != "utf-8" && v != "latin1" {
+            return Err(opt_bad(display, "ترميز_الرد", line, col));
+        }
+        o.response_encoding = v;
+    }
+    if let Some(v) = opt_str(pairs, "حفظ_في", display, line, col)? {
+        if v.is_empty() {
+            return Err(opt_bad(display, "حفظ_في", line, col));
+        }
+        o.save_to = Some(v);
+    }
+    if let Some(v) = opt_int(pairs, "حد_الحجم", display, line, col)? {
+        if v <= 0 {
+            return Err(opt_bad(display, "حد_الحجم", line, col));
+        }
+        o.max_size = Some(v as u64);
+    }
+    if let Some(v) = opt_bool(pairs, "منع_الكتابة", display, line, col)? {
+        o.no_overwrite = v;
+    }
+    if let Some(v) = opt_bool(pairs, "تخط_الموجود", display, line, col)? {
+        o.skip_existing = v;
+    }
+    if let Some(v) = opt_bool(pairs, "حفظ_وقت_التعديل", display, line, col)? {
+        o.preserve_mtime = v;
+    }
+    if let Some(v) = opt_bool(pairs, "استئناف", display, line, col)? {
+        o.resume = v;
+    }
+    if let Some(v) = opt_get(pairs, "مدى") {
+        match v {
+            Value::Dict(d) => {
+                let from = d
+                    .iter()
+                    .find(|(k, _)| k == "من")
+                    .and_then(|(_, x)| match x {
+                        Value::Number(n) => Some(*n as i64),
+                        _ => None,
+                    });
+                let to = d
+                    .iter()
+                    .find(|(k, _)| k == "إلى")
+                    .and_then(|(_, x)| match x {
+                        Value::Number(n) => Some(*n as i64),
+                        _ => None,
+                    });
+                match from {
+                    Some(f) if f >= 0 && to.map(|t| t >= f).unwrap_or(true) => {
+                        o.range_from = Some(f as u64);
+                        o.range_to = to.map(|t| t as u64);
+                    }
+                    _ => return Err(opt_bad(display, "مدى", line, col)),
+                }
+            }
+            _ => return Err(opt_bad(display, "مدى", line, col)),
+        }
+    }
+    if let Some(v) = opt_str(pairs, "وسم_الكيان", display, line, col)? {
+        o.etag = Some(v);
+    }
+    if let Some(v) = opt_str(pairs, "شرط_زمني", display, line, col)? {
+        if v.is_empty() {
+            return Err(opt_bad(display, "شرط_زمني", line, col));
+        }
+        o.if_modified_since = Some(v);
+    }
+    if let Some(v) = opt_str(pairs, "وكيل_المستخدم", display, line, col)? {
+        o.user_agent = Some(v);
+    }
+    if let Some(v) = opt_str(pairs, "إحالة", display, line, col)? {
+        o.referer = Some(v);
+    }
+    if let Some(v) = opt_str(pairs, "لغة", display, line, col)? {
+        o.language = Some(v);
+    }
+    if let Some(v) = opt_str(pairs, "تتبع_في", display, line, col)? {
+        o.trace_file = Some(v);
+    }
+    if let Some(v) = opt_bool(pairs, "تتبع_نصي", display, line, col)? {
+        o.trace_text = v;
+    }
+    if let Some(v) = opt_list_str(pairs, "رؤوس_محذوفة", display, line, col)? {
+        o.removed_headers = v;
+    }
+    if let Some(v) = opt_bool(pairs, "صامت", display, line, col)? {
+        o.silent = v;
+    }
+    if let Some(v) = opt_bool(pairs, "مفصل", display, line, col)? {
+        o.verbose = v;
+    }
+    if let Some(v) = opt_bool(pairs, "أخطاء_فقط", display, line, col)? {
+        o.errors_only = v;
+    }
+    if let Some(v) = opt_bool(pairs, "أظهر_التقدم", display, line, col)? {
+        o.show_progress = v;
+    }
+    if let Some(v) = opt_int(pairs, "حد_سرعة_التنزيل", display, line, col)? {
+        if v <= 0 {
+            return Err(opt_bad(display, "حد_سرعة_التنزيل", line, col));
+        }
+        o.max_speed_down = Some(v as u64);
+    }
+    if let Some(v) = opt_int(pairs, "حد_سرعة_الرفع", display, line, col)? {
+        if v <= 0 {
+            return Err(opt_bad(display, "حد_سرعة_الرفع", line, col));
+        }
+        o.max_speed_up = Some(v as u64);
+    }
+    if let Some(v) = opt_str(pairs, "وكيل", display, line, col)? {
+        o.proxy = Some(v);
+    }
+    if let Some(v) = opt_get(pairs, "مصادقة_الوكيل") {
+        match v {
+            Value::Dict(d) => {
+                let u = d.iter().find(|(k, _)| k == "مستخدم");
+                let p = d.iter().find(|(k, _)| k == "كلمة_سر");
+                match (u, p) {
+                    (Some((_, Value::Str(u))), Some((_, Value::Str(p)))) => {
+                        o.proxy_auth = Some((u.clone(), p.clone()));
+                    }
+                    _ => return Err(opt_bad(display, "مصادقة_الوكيل", line, col)),
+                }
+            }
+            _ => return Err(opt_bad(display, "مصادقة_الوكيل", line, col)),
+        }
+    }
+    if let Some(v) = opt_list_str(pairs, "بلا_وكيل_ل", display, line, col)? {
+        o.no_proxy = v;
+    }
+    if let Some(v) = opt_str(pairs, "وكيل_socks5", display, line, col)? {
+        o.socks5 = Some(v);
+    }
+    if let Some(v) = opt_bool(pairs, "نفق_الوكيل", display, line, col)? {
+        o.tunnel_proxy = v;
+    }
+    if let Some(v) = opt_str(pairs, "ملف_شهادات", display, line, col)? {
+        o.ca_file = Some(v);
+    }
+    if let Some(v) = opt_str(pairs, "مجلد_شهادات", display, line, col)? {
+        o.ca_dir = Some(v);
+    }
+    if let Some(v) = opt_get(pairs, "شهادة_عميل") {
+        match v {
+            Value::Dict(d) => {
+                let c = d.iter().find(|(k, _)| k == "شهادة");
+                let k = d.iter().find(|(k, _)| k == "مفتاح");
+                match (c, k) {
+                    (Some((_, Value::Str(c))), Some((_, Value::Str(k)))) => {
+                        o.client_cert = Some((c.clone(), k.clone()));
+                    }
+                    _ => return Err(opt_bad(display, "شهادة_عميل", line, col)),
+                }
+            }
+            _ => return Err(opt_bad(display, "شهادة_عميل", line, col)),
+        }
+    }
+    if let Some(v) = opt_bool(pairs, "منع_بيانات_الدخول", display, line, col)? {
+        o.no_userinfo = v;
+    }
+    if let Some(v) = opt_bool(pairs, "تجاهل_كوكيز_الجلسة", display, line, col)? {
+        o.ignore_session_cookies = v;
+    }
+    if let Some(v) = opt_get(pairs, "مصادقة") {
+        match v {
+            Value::Dict(d) => {
+                let kind = d
+                    .iter()
+                    .find(|(k, _)| k == "نوع")
+                    .and_then(|(_, x)| match x {
+                        Value::Str(s) => Some(s.clone()),
+                        _ => None,
+                    });
+                let gs = |k: &str| {
+                    d.iter().find(|(kk, _)| kk == k).and_then(|(_, x)| match x {
+                        Value::Str(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                };
+                match kind.as_deref() {
+                    Some("أساسية") => match (gs("مستخدم"), gs("كلمة_سر")) {
+                        (Some(u), Some(p)) => o.auth = Some(AuthKind::Basic(u, p)),
+                        _ => return Err(opt_bad(display, "مصادقة", line, col)),
+                    },
+                    Some("هضمية") => match (gs("مستخدم"), gs("كلمة_سر")) {
+                        (Some(u), Some(p)) => o.auth = Some(AuthKind::Digest(u, p)),
+                        _ => return Err(opt_bad(display, "مصادقة", line, col)),
+                    },
+                    Some("تفاوضية") => match (gs("مستخدم"), gs("كلمة_سر")) {
+                        (Some(u), Some(p)) => o.auth = Some(AuthKind::Negotiate(u, p)),
+                        _ => return Err(opt_bad(display, "مصادقة", line, col)),
+                    },
+                    Some("حامل") => match gs("رمز") {
+                        Some(t) => o.auth = Some(AuthKind::Bearer(t)),
+                        _ => return Err(opt_bad(display, "مصادقة", line, col)),
+                    },
+                    Some("أمازون") => match (gs("مفتاح"), gs("سر")) {
+                        (Some(k), Some(s)) => {
+                            o.auth = Some(AuthKind::Amazon {
+                                key: k,
+                                secret: s,
+                                region: gs("منطقة").unwrap_or_else(|| "us-east-1".to_string()),
+                                service: gs("خدمة").unwrap_or_else(|| "s3".to_string()),
+                            })
+                        }
+                        _ => return Err(opt_bad(display, "مصادقة", line, col)),
+                    },
+                    Some("توقيع") => match (gs("معرف"), gs("مفتاح")) {
+                        (Some(id), Some(k)) => {
+                            o.auth = Some(AuthKind::HttpSig {
+                                key_id: id,
+                                key: k,
+                                algorithm: gs("خوارزمية")
+                                    .unwrap_or_else(|| "hmac-sha256".to_string()),
+                            })
+                        }
+                        _ => return Err(opt_bad(display, "مصادقة", line, col)),
+                    },
+                    _ => return Err(opt_bad(display, "مصادقة", line, col)),
+                }
+            }
+            _ => return Err(opt_bad(display, "مصادقة", line, col)),
+        }
+    }
+    if o.retry_forever && o.max_retry_ms == 0 {
+        return Err(RioError::runtime(
+            "إعادة المحاولة بلا نهاية تتطلب أقصى زمن للمحاولات",
+            line,
+            col,
+        ));
+    }
+    Ok(o)
+}
+
+// ----- لينكس8: كتابة مخنوقة + مصرف مقاس -----
+
+#[cfg(not(target_arch = "wasm32"))]
+fn write_throttled<W: std::io::Write>(
+    w: &mut W,
+    data: &[u8],
+    limit: Option<u64>,
+    host: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    use std::io::Write;
+    let mut send = |chunk: &[u8]| -> RioResult<()> {
+        w.write_all(chunk).map_err(|e| {
+            io_timeout_or(
+                e,
+                "انتهت مهلة إرسال الطلب",
+                &format!("تعذر إرسال الطلب إلى {}", host),
+                line,
+                col,
+            )
+        })
+    };
+    match limit {
+        None => send(data),
+        Some(bps) => {
+            let start = std::time::Instant::now();
+            let mut sent: u64 = 0;
+            for chunk in data.chunks(8192) {
+                send(chunk)?;
+                sent += chunk.len() as u64;
+                let expected =
+                    std::time::Duration::from_secs_f64(sent as f64 / bps as f64);
+                let elapsed = start.elapsed();
+                if expected > elapsed {
+                    let mut rest = expected - elapsed;
+                    while !rest.is_zero() {
+                        let step = rest.min(std::time::Duration::from_millis(200));
+                        std::thread::sleep(step);
+                        check_cancelled(line, col)?;
+                        rest = expected.saturating_sub(start.elapsed());
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+/// مصرف يغلّف مصرفا آخر ويفرض: مهلة النقل (فجوة بين
+/// دفعتين)، حد سرعة التنزيل، حد الحجم. بلا حدود يعبر
+/// كما هو — فيمر جلب/نزّل العاديان بلا تغيير سلوك.
+#[cfg(not(target_arch = "wasm32"))]
+struct MeteredSink {
+    inner: Box<dyn BodySink + Send>,
+    stall_secs: u64,
+    max_speed: Option<u64>,
+    max_size: Option<u64>,
+    started: std::time::Instant,
+    last_push: Option<std::time::Instant>,
+    total: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl MeteredSink {
+    fn new(
+        inner: Box<dyn BodySink + Send>,
+        stall_secs: u64,
+        max_speed: Option<u64>,
+        max_size: Option<u64>,
+        line: usize,
+        col: usize,
+    ) -> Self {
+        MeteredSink {
+            inner,
+            stall_secs,
+            max_speed,
+            max_size,
+            started: std::time::Instant::now(),
+            last_push: None,
+            total: 0,
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl BodySink for MeteredSink {
+    fn push(&mut self, chunk: &[u8], line: usize, col: usize) -> RioResult<()> {
+        if self.stall_secs > 0 {
+            if let Some(last) = self.last_push {
+                if last.elapsed().as_secs() >= self.stall_secs {
+                    return Err(RioError::runtime(
+                        "انتهت مهلة النقل — توقف تدفق البيانات",
+                        line,
+                        col,
+                    ));
+                }
+            }
+        }
+        if let Some(cap) = self.max_size {
+            if self.total.saturating_add(chunk.len() as u64) > cap {
+                return Err(RioError::runtime(
+                    format!("تجاوز حد الحجم ({})", cap),
+                    line,
+                    col,
+                ));
+            }
+        }
+        if let Some(bps) = self.max_speed {
+            let expected = std::time::Duration::from_secs_f64(
+                (self.total + chunk.len() as u64) as f64 / bps as f64,
+            );
+            let elapsed = self.started.elapsed();
+            if expected > elapsed {
+                let mut rest = expected - elapsed;
+                while !rest.is_zero() {
+                    let step = rest.min(std::time::Duration::from_millis(200));
+                    std::thread::sleep(step);
+                    check_cancelled(line, col)?;
+                    rest = expected.saturating_sub(self.started.elapsed());
+                }
+            }
+        }
+        self.inner.push(chunk, line, col)?;
+        self.total += chunk.len() as u64;
+        self.last_push = Some(std::time::Instant::now());
+        Ok(())
+    }
+
+    fn reset(&mut self, line: usize, col: usize) -> RioResult<()> {
+        self.inner.reset(line, col)?;
+        self.total = 0;
+        self.started = std::time::Instant::now();
+        self.last_push = None;
+        Ok(())
+    }
+
+    fn set_meta(&mut self, status: u16, headers: Vec<(String, String)>) {
+        self.inner.set_meta(status, headers);
+    }
+
+    fn meta(&self) -> Option<(u16, Vec<(String, String)>)> {
+        self.inner.meta()
+    }
+
+    fn finish_string(self: Box<Self>) -> Option<String> {
+        self.inner.finish_string()
+    }
+
+    fn finish_bytes(&self) -> u64 {
+        self.inner.finish_bytes()
+    }
+
+    fn finish_raw(self: Box<Self>) -> Vec<u8> {
+        self.inner.finish_raw()
+    }
+}
+
+// ----- لينكس8: فك ضغط DEFLATE/gzip (Rust خالص) + تواريخ HTTP -----
+
+#[cfg(not(target_arch = "wasm32"))]
+fn crc32_ieee(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFF_FFFF;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                0xEDB8_8320 ^ (crc >> 1)
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    crc ^ 0xFFFF_FFFF
+}
+
+/// قارئ بتات (الأقل أولا — RFC 1951).
+#[cfg(not(target_arch = "wasm32"))]
+struct BitReader<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<'a> BitReader<'a> {
+    fn bits(&mut self, n: u32) -> RioResult<u32> {
+        let mut v: u32 = 0;
+        for i in 0..n {
+            let byte = self.pos / 8;
+            if byte >= self.data.len() {
+                return Err(RioError::runtime(
+                    "بيانات مضغوطة غير صالحة",
+                    0,
+                    0,
+                ));
+            }
+            let bit = (self.data[byte] >> (self.pos % 8)) & 1;
+            v |= (bit as u32) << i;
+            self.pos += 1;
+        }
+        Ok(v)
+    }
+
+    fn align_byte(&mut self) {
+        self.pos = (self.pos + 7) / 8 * 8;
+    }
+}
+
+/// جدول هوفمان القانوني (أطوال الشفرات → رموز).
+#[cfg(not(target_arch = "wasm32"))]
+struct Huffman {
+    counts: [u16; 16],
+    symbols: Vec<u16>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn huff_build(lengths: &[u8]) -> Huffman {
+    let mut counts = [0u16; 16];
+    for &l in lengths {
+        counts[l as usize] += 1;
+    }
+    counts[0] = 0;
+    let mut offs = [0u16; 16];
+    for i in 1..16 {
+        offs[i] = offs[i - 1] + counts[i - 1];
+    }
+    let mut symbols = vec![0u16; lengths.iter().filter(|&&l| l != 0).count()];
+    for (sym, &l) in lengths.iter().enumerate() {
+        if l != 0 {
+            symbols[offs[l as usize] as usize] = sym as u16;
+            offs[l as usize] += 1;
+        }
+    }
+    Huffman { counts, symbols }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn huff_decode(r: &mut BitReader, h: &Huffman) -> RioResult<u16> {
+    let mut code: i32 = 0;
+    let mut first: i32 = 0;
+    let mut index: i32 = 0;
+    for len in 1..16 {
+        code |= r.bits(1)? as i32;
+        let count = h.counts[len] as i32;
+        if code - first < count {
+            return Ok(h.symbols[(index + (code - first)) as usize]);
+        }
+        index += count;
+        first = (first + count) << 1;
+        code <<= 1;
+    }
+    Err(RioError::runtime("بيانات مضغوطة غير صالحة", 0, 0))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn inflate(data: &[u8]) -> RioResult<Vec<u8>> {
+    const MAX_OUT: usize = 100 * 1024 * 1024;
+    let mut r = BitReader { data, pos: 0 };
+    let mut out: Vec<u8> = Vec::new();
+    loop {
+        let bfinal = r.bits(1)?;
+        let btype = r.bits(2)?;
+        match btype {
+            0 => {
+                r.align_byte();
+                let start = r.pos / 8;
+                if start + 4 > data.len() {
+                    return Err(RioError::runtime("بيانات مضغوطة غير صالحة", 0, 0));
+                }
+                let len = u16::from_le_bytes([data[start], data[start + 1]]) as usize;
+                let nlen = u16::from_le_bytes([data[start + 2], data[start + 3]]) as usize;
+                if len != (!nlen & 0xFFFF) {
+                    return Err(RioError::runtime("بيانات مضغوطة غير صالحة", 0, 0));
+                }
+                if start + 4 + len > data.len() || out.len() + len > MAX_OUT {
+                    return Err(RioError::runtime("بيانات مضغوطة غير صالحة", 0, 0));
+                }
+                out.extend_from_slice(&data[start + 4..start + 4 + len]);
+                r.pos = (start + 4 + len) * 8;
+            }
+            1 => {
+                let mut lit_lengths = [0u8; 288];
+                for (i, l) in lit_lengths.iter_mut().enumerate() {
+                    *l = match i {
+                        0..=143 => 8,
+                        144..=255 => 9,
+                        256..=279 => 7,
+                        _ => 8,
+                    };
+                }
+                let lit = huff_build(&lit_lengths);
+                let dist_lengths = [5u8; 30];
+                let dist = huff_build(&dist_lengths);
+                inflate_block(&mut r, &lit, &dist, &mut out)?;
+            }
+            2 => {
+                let hlit = r.bits(5)? as usize + 257;
+                let hdist = r.bits(5)? as usize + 1;
+                let hclen = r.bits(4)? as usize + 4;
+                const ORDER: [usize; 19] = [
+                    16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15,
+                ];
+                let mut cl_lengths = [0u8; 19];
+                for i in 0..hclen {
+                    cl_lengths[ORDER[i]] = r.bits(3)? as u8;
+                }
+                let cl = huff_build(&cl_lengths);
+                let mut lengths = vec![0u8; hlit + hdist];
+                let mut i = 0;
+                while i < hlit + hdist {
+                    let sym = huff_decode(&mut r, &cl)?;
+                    match sym {
+                        0..=15 => {
+                            lengths[i] = sym as u8;
+                            i += 1;
+                        }
+                        16 => {
+                            if i == 0 {
+                                return Err(RioError::runtime(
+                                    "بيانات مضغوطة غير صالحة",
+                                    0,
+                                    0,
+                                ));
+                            }
+                            let prev = lengths[i - 1];
+                            let rep = 3 + r.bits(2)? as usize;
+                            if i + rep > hlit + hdist {
+                                return Err(RioError::runtime(
+                                    "بيانات مضغوطة غير صالحة",
+                                    0,
+                                    0,
+                                ));
+                            }
+                            for _ in 0..rep {
+                                lengths[i] = prev;
+                                i += 1;
+                            }
+                        }
+                        17 => {
+                            let rep = 3 + r.bits(3)? as usize;
+                            if i + rep > hlit + hdist {
+                                return Err(RioError::runtime(
+                                    "بيانات مضغوطة غير صالحة",
+                                    0,
+                                    0,
+                                ));
+                            }
+                            i += rep;
+                        }
+                        18 => {
+                            let rep = 11 + r.bits(7)? as usize;
+                            if i + rep > hlit + hdist {
+                                return Err(RioError::runtime(
+                                    "بيانات مضغوطة غير صالحة",
+                                    0,
+                                    0,
+                                ));
+                            }
+                            i += rep;
+                        }
+                        _ => {
+                            return Err(RioError::runtime(
+                                "بيانات مضغوطة غير صالحة",
+                                0,
+                                0,
+                            ))
+                        }
+                    }
+                }
+                if lengths[256] == 0 {
+                    return Err(RioError::runtime("بيانات مضغوطة غير صالحة", 0, 0));
+                }
+                let lit = huff_build(&lengths[..hlit]);
+                let dist = huff_build(&lengths[hlit..]);
+                inflate_block(&mut r, &lit, &dist, &mut out)?;
+            }
+            _ => return Err(RioError::runtime("بيانات مضغوطة غير صالحة", 0, 0)),
+        }
+        if out.len() > MAX_OUT {
+            return Err(RioError::runtime(
+                "البيانات المفكوك ضغطها أكبر من الحد (100 ميغابايت)",
+                0,
+                0,
+            ));
+        }
+        if bfinal == 1 {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn inflate_block(
+    r: &mut BitReader,
+    lit: &Huffman,
+    dist: &Huffman,
+    out: &mut Vec<u8>,
+) -> RioResult<()> {
+    const LEN_BASE: [u16; 29] = [
+        3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99,
+        115, 131, 163, 195, 227, 258,
+    ];
+    const LEN_EXTRA: [u32; 29] = [
+        0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
+    ];
+    const DIST_BASE: [u16; 30] = [
+        1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025,
+        1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+    ];
+    const DIST_EXTRA: [u32; 30] = [
+        0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12,
+        12, 13, 13,
+    ];
+    loop {
+        let sym = huff_decode(r, lit)?;
+        if sym == 256 {
+            return Ok(());
+        }
+        if sym < 256 {
+            out.push(sym as u8);
+        } else if sym <= 285 {
+            let li = (sym - 257) as usize;
+            let len = LEN_BASE[li] as usize + r.bits(LEN_EXTRA[li])? as usize;
+            let dsym = huff_decode(r, dist)?;
+            if dsym > 29 {
+                return Err(RioError::runtime("بيانات مضغوطة غير صالحة", 0, 0));
+            }
+            let di = dsym as usize;
+            let d = DIST_BASE[di] as usize + r.bits(DIST_EXTRA[di])? as usize;
+            if d == 0 || d > out.len() {
+                return Err(RioError::runtime("بيانات مضغوطة غير صالحة", 0, 0));
+            }
+            let start = out.len() - d;
+            for i in 0..len {
+                let b = out[start + i];
+                out.push(b);
+            }
+        } else {
+            return Err(RioError::runtime("بيانات مضغوطة غير صالحة", 0, 0));
+        }
+        if out.len() > 100 * 1024 * 1024 {
+            return Err(RioError::runtime(
+                "البيانات المفكوك ضغطها أكبر من الحد (100 ميغابايت)",
+                0,
+                0,
+            ));
+        }
+    }
+}
+
+/// فك gzip كامل (رأس + DEFLATE + تحقق CRC32/الحجم).
+#[cfg(not(target_arch = "wasm32"))]
+fn gunzip(data: &[u8]) -> RioResult<Vec<u8>> {
+    let bad = || RioError::runtime("بيانات مضغوطة غير صالحة", 0, 0);
+    if data.len() < 18 || data[0] != 0x1f || data[1] != 0x8b || data[2] != 8 {
+        return Err(bad());
+    }
+    let flg = data[3];
+    let mut off = 10usize;
+    if flg & 0x04 != 0 {
+        if off + 2 > data.len() {
+            return Err(bad());
+        }
+        let xlen = u16::from_le_bytes([data[off], data[off + 1]]) as usize;
+        off += 2 + xlen;
+        if off > data.len() {
+            return Err(bad());
+        }
+    }
+    if flg & 0x08 != 0 {
+        while off < data.len() && data[off] != 0 {
+            off += 1;
+        }
+        off += 1;
+    }
+    if flg & 0x10 != 0 {
+        while off < data.len() && data[off] != 0 {
+            off += 1;
+        }
+        off += 1;
+    }
+    if flg & 0x02 != 0 {
+        off += 2;
+    }
+    if off + 8 > data.len() {
+        return Err(bad());
+    }
+    let out = inflate(&data[off..data.len() - 8])?;
+    let crc = u32::from_le_bytes([
+        data[data.len() - 8],
+        data[data.len() - 7],
+        data[data.len() - 6],
+        data[data.len() - 5],
+    ]);
+    let isize = u32::from_le_bytes([
+        data[data.len() - 4],
+        data[data.len() - 3],
+        data[data.len() - 2],
+        data[data.len() - 1],
+    ]);
+    if crc32_ieee(&out) != crc || out.len() as u32 != isize {
+        return Err(RioError::runtime("فحص gzip غير مطابق", 0, 0));
+    }
+    Ok(out)
+}
+
+// ----- تواريخ HTTP (IMF-fixdate) -----
+
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = ((m + 9) % 12) as i64;
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+fn http_date_from_unix(secs: u64) -> String {
+    const WEEK: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTH: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let days = (secs / 86400) as i64;
+    let rem = secs % 86400;
+    let (y, m, d) = civil_from_days(days);
+    let wd = WEEK[((days + 4).rem_euclid(7)) as usize];
+    format!(
+        "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
+        wd,
+        d,
+        MONTH[(m - 1) as usize],
+        y,
+        rem / 3600,
+        (rem % 3600) / 60,
+        rem % 60
+    )
+}
+
+/// قراءة IMF-fixdate ("Wed, 21 Oct 2015 07:28:00 GMT").
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_http_date(s: &str) -> Option<std::time::SystemTime> {
+    const MONTH: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let p: Vec<&str> = s.split_whitespace().collect();
+    if p.len() != 6 || p[5] != "GMT" {
+        return None;
+    }
+    let d: u32 = p[1].parse().ok()?;
+    let m = MONTH.iter().position(|&x| x == p[2])? as u32 + 1;
+    let y: i64 = p[3].parse().ok()?;
+    let t: Vec<&str> = p[4].split(':').collect();
+    if t.len() != 3 {
+        return None;
+    }
+    let hh: u64 = t[0].parse().ok()?;
+    let mm: u64 = t[1].parse().ok()?;
+    let ss: u64 = t[2].parse().ok()?;
+    if hh > 23 || mm > 59 || ss > 60 || d == 0 || d > 31 {
+        return None;
+    }
+    let days = days_from_civil(y, m, d);
+    let secs = days * 86400 + (hh * 3600 + mm * 60 + ss) as i64;
+    if secs < 0 {
+        return None;
+    }
+    Some(
+        std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs(secs as u64),
+    )
+}
+
+// ----- لينكس8: المنفذ execute_request -----
+
+#[cfg(not(target_arch = "wasm32"))]
+fn sleep_retry(delay_ms: u64, line: usize, col: usize) -> RioResult<()> {
+    let mut rest = std::time::Duration::from_millis(delay_ms);
+    while !rest.is_zero() {
+        let step = rest.min(std::time::Duration::from_millis(200));
+        std::thread::sleep(step);
+        check_cancelled(line, col)?;
+        rest = rest.saturating_sub(step);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn retryable_error(e: &RioError) -> bool {
+    let m = format!("{}", e);
+    m.contains("تعذر الاتصال")
+        || m.contains("مهلة")
+        || m.contains("تعذر حل اسم")
+        || m.contains("تعذر قراءة")
+        || m.contains("انقطع")
+        || m.contains("رد غير صالح")
+}
+
+/// تنسيق أمازون للتاريخ (YYYYMMDD + YYYYMMDDTHHMMSSZ).
+fn amz_datetime(secs: u64) -> (String, String) {
+    let days = (secs / 86400) as i64;
+    let rem = secs % 86400;
+    let (y, m, d) = civil_from_days(days);
+    (
+        format!("{:04}{:02}{:02}", y, m, d),
+        format!(
+            "{:04}{:02}{:02}T{:02}{:02}{:02}Z",
+            y,
+            m,
+            d,
+            rem / 3600,
+            (rem % 3600) / 60,
+            rem % 60
+        ),
+    )
+}
+
+/// رد المصادقة الهضمية MD5 من تحدٍ (WWW-Authenticate).
+#[cfg(not(target_arch = "wasm32"))]
+fn digest_response(
+    challenge: &str,
+    user: &str,
+    pass: &str,
+    method: &str,
+    uri: &str,
+) -> Option<String> {
+    let get = |key: &str| -> Option<String> {
+        let pat = format!("{}=", key);
+        let i = challenge.find(&pat)?;
+        let rest = &challenge[i + pat.len()..];
+        if let Some(stripped) = rest.strip_prefix('"') {
+            let end = stripped.find('"')?;
+            Some(stripped[..end].to_string())
+        } else {
+            let end = rest.find(|c| c == ',' || c == ' ').unwrap_or(rest.len());
+            Some(rest[..end].trim().to_string())
+        }
+    };
+    let realm = get("realm")?;
+    let nonce = get("nonce")?;
+    let algorithm = get("algorithm").unwrap_or_else(|| "MD5".to_string());
+    if algorithm.to_ascii_uppercase() != "MD5" {
+        return None;
+    }
+    let qop_full = get("qop").unwrap_or_default();
+    let qop = qop_full.split(',').next().unwrap_or("").trim();
+    let opaque = get("opaque");
+    let ha1 = crate::crypto::md5_hex(format!("{}:{}:{}", user, realm, pass).as_bytes());
+    let ha2 = crate::crypto::md5_hex(format!("{}:{}", method, uri).as_bytes());
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let cnonce = format!("{:x}", nanos);
+    let nc = "00000001";
+    let response = if qop == "auth" {
+        crate::crypto::md5_hex(
+            format!("{}:{}:{}:{}:{}:{}", ha1, nonce, nc, cnonce, qop, ha2).as_bytes(),
+        )
+    } else {
+        crate::crypto::md5_hex(format!("{}:{}:{}", ha1, nonce, ha2).as_bytes())
+    };
+    let mut out = format!(
+        "Digest username=\"{}\", realm=\"{}\", nonce=\"{}\", uri=\"{}\", response=\"{}\"",
+        user, realm, nonce, uri, response
+    );
+    if qop == "auth" {
+        out.push_str(&format!(
+            ", algorithm=MD5, qop=auth, nc={}, cnonce=\"{}\"",
+            nc, cnonce
+        ));
+    } else {
+        out.push_str(", algorithm=MD5");
+    }
+    if let Some(o) = opaque {
+        out.push_str(&format!(", opaque=\"{}\"", o));
+    }
+    Some(out)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct SaveCtx {
+    resolved: std::path::PathBuf,
+    display: String,
+    base: std::path::PathBuf,
+    limit: u64,
+    resume_from: u64,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn execute_request_inner(
+    url: &str,
+    method: &str,
+    body: &[u8],
+    content_type: &str,
+    headers: &[(String, String)],
+    opts: &ExecOpts,
+    save: Option<(&crate::permissions::FilePolicy, &std::path::Path, &str)>,
+    line: usize,
+    col: usize,
+) -> RioResult<NetResponse> {
+    // بيانات دخول في العنوان — تُستعمل مصادقة أساسية
+    // فقط إن سمح الخيار (الافتراضي: منع — فيرفضها
+    // محلل العناوين برسالة «رابط غير صالح»).
+    let mut url_owned = url.to_string();
+    let mut userinfo_auth: Option<(String, String)> = None;
+    if !opts.no_userinfo {
+        if let Some(sep) = url_owned.find("://") {
+            let after = &url_owned[sep + 3..];
+            let auth_end = after
+                .find(|c| c == '/' || c == '?' || c == '#')
+                .unwrap_or(after.len());
+            let authority = &after[..auth_end];
+            if let Some(at) = authority.rfind('@') {
+                let userinfo = &authority[..at];
+                let rest_auth = &authority[at + 1..];
+                let (u, p) = match userinfo.split_once(':') {
+                    Some((u, p)) => (u.to_string(), p.to_string()),
+                    None => (userinfo.to_string(), String::new()),
+                };
+                userinfo_auth = Some((u, p));
+                url_owned = format!(
+                    "{}://{}{}",
+                    &url_owned[..sep],
+                    rest_auth,
+                    &after[auth_end..]
+                );
+            }
+        }
+    }
+    let parsed = parse_url(&url_owned, line, col)?;
+    if parsed.scheme == "http" && !opts.allow_http && !local_host_allowed(&parsed.host) {
+        return Err(RioError::runtime(
+            "المخطط http غير مسموح — استخدم https أو فعّل اسمح_http",
+            line,
+            col,
+        ));
+    }
+    validate_caller_headers(headers, line, col)?;
+    let mut eff: Vec<(String, String)> = headers.to_vec();
+    if opts.auth.is_none() {
+        if let Some((u, p)) = &userinfo_auth {
+            eff.push((
+                "Authorization".to_string(),
+                format!("Basic {}", b64_encode(format!("{}:{}", u, p).as_bytes())),
+            ));
+        }
+    }
+    // توقيع أمازون / توقيع HTTP — قبل الحلقة (التاريخ
+    // صالح 15 دقيقة فيمضي مع المحاولات).
+    if let Some(AuthKind::Amazon {
+        key,
+        secret,
+        region,
+        service,
+    }) = &opts.auth
+    {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let (datestamp, amzdate) = amz_datetime(now);
+        let payload_hash = crate::crypto::sha256_hex(body);
+        let (uri, query) = match parsed.path.split_once('?') {
+            Some((u, q)) => (u.to_string(), q.to_string()),
+            None => (parsed.path.clone(), String::new()),
+        };
+        let host_hdr = if (parsed.scheme == "http" && parsed.port == 80)
+            || (parsed.scheme == "https" && parsed.port == 443)
+        {
+            parsed.host.clone()
+        } else {
+            format!("{}:{}", parsed.host, parsed.port)
+        };
+        let canonical_headers = format!(
+            "host:{}\nx-amz-content-sha256:{}\nx-amz-date:{}\n",
+            host_hdr, payload_hash, amzdate
+        );
+        let canonical_request = format!(
+            "{}\n{}\n{}\n{}host;x-amz-content-sha256;x-amz-date\n{}",
+            method.to_ascii_uppercase(),
+            uri,
+            query,
+            canonical_headers,
+            payload_hash
+        );
+        let scope = format!("{}/{}/{}/aws4_request", datestamp, region, service);
+        let to_sign = format!(
+            "AWS4-HMAC-SHA256\n{}\n{}\n{}",
+            amzdate,
+            scope,
+            crate::crypto::sha256_hex(canonical_request.as_bytes())
+        );
+        let k_date = hmac_sha256(format!("AWS4{}", secret).as_bytes(), datestamp.as_bytes());
+        let k_region = hmac_sha256(&k_date, region.as_bytes());
+        let k_service = hmac_sha256(&k_region, service.as_bytes());
+        let k_signing = hmac_sha256(&k_service, b"aws4_request");
+        let signature = hex_bytes(&hmac_sha256(&k_signing, to_sign.as_bytes()));
+        eff.push(("x-amz-date".to_string(), amzdate));
+        eff.push(("x-amz-content-sha256".to_string(), payload_hash));
+        eff.push((
+            "Authorization".to_string(),
+            format!(
+                "AWS4-HMAC-SHA256 Credential={}/{}, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature={}",
+                key, scope, signature
+            ),
+        ));
+    }
+    if let Some(AuthKind::HttpSig {
+        key_id,
+        key,
+        algorithm,
+    }) = &opts.auth
+    {
+        if algorithm != "hmac-sha256" {
+            return Err(RioError::runtime(
+                "خوارزمية التوقيع غير مدعومة — المتاح hmac-sha256 فقط",
+                line,
+                col,
+            ));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let date = http_date_from_unix(now);
+        let host_hdr = if (parsed.scheme == "http" && parsed.port == 80)
+            || (parsed.scheme == "https" && parsed.port == 443)
+        {
+            parsed.host.clone()
+        } else {
+            format!("{}:{}", parsed.host, parsed.port)
+        };
+        let target = format!(
+            "{} {}",
+            method.to_ascii_lowercase(),
+            parsed.path
+        );
+        let signing = format!(
+            "(request-target): {}\nhost: {}\ndate: {}",
+            target, host_hdr, date
+        );
+        let sig = b64_encode(&hmac_sha256(key.as_bytes(), signing.as_bytes()));
+        eff.push(("date".to_string(), date));
+        eff.push((
+            "Authorization".to_string(),
+            format!(
+                "Signature keyId=\"{}\",algorithm=\"hmac-sha256\",headers=\"(request-target) host date\",signature=\"{}\"",
+                key_id, sig
+            ),
+        ));
+    }
+    match &opts.auth {
+        Some(AuthKind::Basic(u, p)) => {
+            eff.push((
+                "Authorization".to_string(),
+                format!("Basic {}", b64_encode(format!("{}:{}", u, p).as_bytes())),
+            ));
+        }
+        Some(AuthKind::Bearer(t)) => {
+            eff.push(("Authorization".to_string(), format!("Bearer {}", t)));
+        }
+        _ => {}
+    }
+    // إعداد الحفظ (قبل الخيط — فالحل خارج الخيط).
+    let save_ctx: Option<SaveCtx> = match save {
+        None => None,
+        Some((policy, cwd, path_str)) => {
+            let resolved = policy.resolve_in_for_write(cwd, path_str, line, col)?;
+            let display = policy.display_path(&resolved);
+            let base = policy.base.clone();
+            let existing = std::fs::metadata(&resolved).map(|m| m.len()).ok();
+            if opts.no_overwrite && existing.is_some() {
+                return Err(RioError::runtime(
+                    "الملف موجود — الكتابة مرفوضة",
+                    line,
+                    col,
+                ));
+            }
+            if opts.skip_existing {
+                if let Some(size) = existing {
+                    return Ok(NetResponse {
+                        status: 0,
+                        body: Vec::new(),
+                        headers: Vec::new(),
+                        bytes: size,
+                    });
+                }
+            }
+            let resume_from = if opts.resume { existing.unwrap_or(0) } else { 0 };
+            let mut budget = 10000usize;
+            let used = crate::interpreter::Interpreter::dir_size(&base, &mut budget);
+            let limit = crate::interpreter::Interpreter::DISK_QUOTA_BYTES
+                .saturating_sub(used)
+                .saturating_add(existing.unwrap_or(0));
+            Some(SaveCtx {
+                resolved,
+                display,
+                base,
+                limit,
+                resume_from,
+            })
+        }
+    };
+    // المدى / الشرط الزمني / وسم الكيان / الكوكيز.
+    match (opts.range_from, opts.range_to) {
+        (Some(f), Some(t)) => {
+            eff.push(("Range".to_string(), format!("bytes={}-{}", f, t)));
+        }
+        (Some(f), None) => {
+            eff.push(("Range".to_string(), format!("bytes={}-", f)));
+        }
+        (None, _) => {
+            if let Some(sc) = &save_ctx {
+                if sc.resume_from > 0 {
+                    eff.push((
+                        "Range".to_string(),
+                        format!("bytes={}-", sc.resume_from),
+                    ));
+                }
+            }
+        }
+    }
+    if let Some(e) = &opts.etag {
+        eff.push(("If-None-Match".to_string(), e.clone()));
+    }
+    if let Some(s) = &opts.if_modified_since {
+        eff.push(("If-Modified-Since".to_string(), s.clone()));
+    }
+    let mut cookie_parts: Vec<String> = Vec::new();
+    if !opts.ignore_session_cookies {
+        for (k, v) in &opts.session_cookies {
+            cookie_parts.push(format!("{}={}", k, v));
+        }
+    }
+    for (k, v) in &opts.cookies {
+        cookie_parts.push(format!("{}={}", k, v));
+    }
+    if !cookie_parts.is_empty() {
+        eff.push(("Cookie".to_string(), cookie_parts.join("; ")));
+    }
+    let saved_path = save_ctx.as_ref().map(|s| s.resolved.clone());
+    let delete_on_fail = opts.delete_on_fail;
+    // لينكس8-طبقة1-أغلفة: صامت يلغي التقدم والتتبع،
+    // وأخطاء-فقط تلغي التقدم؛ والمفصل يطبع الطلب والرد.
+    let show_progress = opts.show_progress && !opts.silent && !opts.errors_only;
+    let trace_on = !opts.silent && opts.trace_text;
+    let verbose = opts.verbose;
+    let trace_file = opts.trace_file.clone();
+    let preserve_mtime = opts.preserve_mtime;
+    let url2 = url_owned.clone();
+    let path2 = parsed.path.clone();
+    let method2 = method.to_string();
+    let body2 = body.to_vec();
+    let ct2 = content_type.to_string();
+    let eff2 = eff.clone();
+    let mut opts2 = opts.clone();
+    opts2.return_all_status = true;
+    if show_progress {
+        eprintln!("جلب {} ...", url2);
+    }
+    // لينكس8-طبقة1-نواة: نسخ للاستعمال بعد الإغلاق
+    // (فالإغلاق ينقل url2/method2).
+    let url3 = url2.clone();
+    let method3 = method2.clone();
+    let result = run_cancellable(
+        move || {
+            let _write_guard = crate::files::FILE_WRITE_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            let start = std::time::Instant::now();
+            let total_attempts: u64 = if opts2.retry_forever {
+                u64::MAX
+            } else {
+                opts2.retries as u64
+            };
+            let mut attempt: u64 = 0;
+            let mut last_err: Option<RioError> = None;
+            let mut digest_auth: Option<String> = None;
+            loop {
+                attempt += 1;
+                check_cancelled(line, col)?;
+                let (sink, is_file): (Box<dyn BodySink + Send>, bool) = match &save_ctx {
+                    Some(sc) => {
+                        let file = if sc.resume_from > 0 {
+                            let f = std::fs::OpenOptions::new()
+                                .write(true)
+                                .create(true)
+                                .append(true)
+                                .open(&sc.resolved)
+                                .map_err(|_| {
+                                    RioError::new(
+                                        crate::error::ErrorKind::Io,
+                                        format!("تعذر كتابة الملف {}", sc.display),
+                                        line,
+                                        col,
+                                    )
+                                })?;
+                            let _ = f.set_len(sc.resume_from);
+                            f
+                        } else {
+                            std::fs::File::create(&sc.resolved).map_err(|_| {
+                                RioError::new(
+                                    crate::error::ErrorKind::Io,
+                                    format!("تعذر كتابة الملف {}", sc.display),
+                                    line,
+                                    col,
+                                )
+                            })?
+                        };
+                        let written = if sc.resume_from > 0 {
+                            sc.resume_from
+                        } else {
+                            0
+                        };
+                        (
+                            Box::new(FileSink {
+                                file,
+                                written,
+                                limit: sc.limit,
+                                display: sc.display.clone(),
+                                meta: None,
+                            }),
+                            true,
+                        )
+                    }
+                    None => (Box::new(MemorySink::new()), false),
+                };
+                let mut headers_try = eff2.clone();
+                if let Some(d) = &digest_auth {
+                    headers_try.push(("Authorization".to_string(), d.clone()));
+                }
+                if verbose {
+                    eprintln!("{} {}", method2, url2);
+                }
+                let freq =
+                    FetchRequest::with_method(&method2, &body2, &ct2, &headers_try, opts2.clone());
+                let outcome = fetch_loop(&url2, &freq, opts2.timeout_secs, line, col, sink);
+                match outcome {
+                    Ok(sink) => {
+                        let (status, resp_headers) =
+                            sink.meta().unwrap_or((0, Vec::new()));
+                        if verbose {
+                            eprintln!("{} {} -> {}", method2, url2, status);
+                            for (n, v) in &resp_headers {
+                                eprintln!("  {}: {}", n, v);
+                            }
+                        }
+                        if status == 401 && digest_auth.is_none() {
+                            if let Some(AuthKind::Digest(u, p)) = &opts2.auth {
+                                if let Some(ch) = resp_headers
+                                    .iter()
+                                    .find(|(n, _)| n == "www-authenticate")
+                                    .map(|(_, v)| v.clone())
+                                {
+                                    if let Some(h) = digest_response(
+                                        &ch, u, p, &method2, &path2,
+                                    ) {
+                                        digest_auth = Some(h);
+                                        continue;
+                                    }
+                                }
+                            }
+                            if let Some(AuthKind::Negotiate(..)) = &opts2.auth {
+                                return Err(RioError::runtime(
+                                    "المصادقة التفاوضية غير مدعومة في هذا البناء",
+                                    line,
+                                    col,
+                                ));
+                            }
+                        }
+                        if (status == 429 || (500..600).contains(&status))
+                            && attempt < total_attempts
+                        {
+                            let over_time = !opts2.retry_forever
+                                && opts2.max_retry_ms > 0
+                                && start.elapsed().as_millis() as u64 >= opts2.max_retry_ms;
+                            if !over_time {
+                                sleep_retry(opts2.retry_delay_ms, line, col)?;
+                                continue;
+                            }
+                        }
+                        if opts2.check_status && !(200..300).contains(&status) {
+                            return Err(RioError::runtime(
+                                format!("الخادم رد برمز الحالة {}", status),
+                                line,
+                                col,
+                            ));
+                        }
+                        let is_gzip = opts2.gzip
+                            && resp_headers.iter().any(|(n, v)| {
+                                n == "content-encoding"
+                                    && v.to_ascii_lowercase().contains("gzip")
+                            });
+                        let bytes = sink.finish_bytes();
+                        if is_file {
+                            let mut nbytes = bytes;
+                            if is_gzip {
+                                if let Some(sc) = &save_ctx {
+                                    if let Ok(raw) = std::fs::read(&sc.resolved) {
+                                        if let Ok(dec) = gunzip(&raw) {
+                                            nbytes = dec.len() as u64;
+                                            let _ = std::fs::write(&sc.resolved, &dec);
+                                        }
+                                    }
+                                }
+                            }
+                            return Ok(NetResponse {
+                                status,
+                                body: Vec::new(),
+                                headers: resp_headers,
+                                bytes: nbytes,
+                            });
+                        }
+                        let raw = sink.finish_raw();
+                        let raw = if is_gzip { gunzip(&raw)? } else { raw };
+                        let nbytes = raw.len() as u64;
+                        return Ok(NetResponse {
+                            status,
+                            body: raw,
+                            headers: resp_headers,
+                            bytes: nbytes,
+                        });
+                    }
+                    Err(e) => {
+                        let msg = format!("{}", e);
+                        let is_refused = msg.contains("تعذر الاتصال");
+                        if is_refused && !opts2.retry_on_refused {
+                            return Err(e);
+                        }
+                        if !retryable_error(&e) {
+                            return Err(e);
+                        }
+                        last_err = Some(e);
+                        if attempt >= total_attempts {
+                            break;
+                        }
+                        if !opts2.retry_forever
+                            && opts2.max_retry_ms > 0
+                            && start.elapsed().as_millis() as u64 >= opts2.max_retry_ms
+                        {
+                            break;
+                        }
+                        sleep_retry(opts2.retry_delay_ms, line, col)?;
+                        continue;
+                    }
+                }
+            }
+            Err(last_err.unwrap_or_else(|| {
+                RioError::runtime("فشل الطلب", line, col)
+            }))
+        },
+        line,
+        col,
+    );
+    match result {
+        Ok(resp) => {
+            if show_progress {
+                eprintln!("اكتمل {} — رمز {} ({} بايت)", url3, resp.status, resp.bytes);
+            }
+            if trace_on {
+            if let Some(path) = &trace_file {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
+                    use std::io::Write;
+                    let _ = writeln!(
+                        f,
+                        "{} {} -> {} ({} بايت)",
+                        method3, url3, resp.status, resp.bytes
+                    );
+                }
+            }
+            }
+            if preserve_mtime {
+                if let Some(sp) = &saved_path {
+                    if let Some((_, lm)) = resp
+                        .headers
+                        .iter()
+                        .find(|(n, _)| n == "last-modified")
+                    {
+                        if let Some(t) = parse_http_date(lm) {
+                            if let Ok(f) = std::fs::File::options().write(true).open(sp) {
+                                let _ = f.set_times(
+                                    std::fs::FileTimes::new().set_modified(t),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(resp)
+        }
+        Err(e) => {
+            if delete_on_fail {
+                if let Some(sp) = &saved_path {
+                    let _ = std::fs::remove_file(sp);
+                }
+            }
+            Err(e)
+        }
+    }
+}
+
+/// منفذ الطلب الموحد: طلب مبني + خيارات + حفظ اختياري.
+/// يُرجع الرد كاملا (الرمز والجسم والرؤوس والبايتات).
+pub fn execute_request(
+    url: &str,
+    method: &str,
+    body: &[u8],
+    content_type: &str,
+    headers: &[(String, String)],
+    opts: &ExecOpts,
+    save: Option<(&crate::permissions::FilePolicy, &std::path::Path, &str)>,
+    line: usize,
+    col: usize,
+) -> RioResult<NetResponse> {
+    if !network_allowed() {
+        return Err(RioError::runtime(
+            "الشبكة مغلقة افتراضيا — استخدم --اسمح-بالشبكة للسماح بالشبكة، أو وافق عند أول استخدام في الكونسول",
+            line,
+            col,
+        ));
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (url, method, body, content_type, headers, opts, save);
+        Err(RioError::runtime(
+            "هذه الدالة غير مدعومة في متصفح الويب",
+            line,
+            col,
+        ))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        execute_request_inner(
+            url,
+            method,
+            body,
+            content_type,
+            headers,
+            opts,
+            save,
+            line,
+            col,
+        )
+    }
+}
+
+// ----- لينكس8-وكيل: اتصال مباشر أو عبر وكيل -----
+
+#[cfg(not(target_arch = "wasm32"))]
+fn tcp_connect(
+    addr: &std::net::SocketAddr,
+    host: &str,
+    deadline: std::time::Instant,
+    line: usize,
+    col: usize,
+) -> RioResult<std::net::TcpStream> {
+    let timeout = time_left(deadline, line, col)?;
+    let stream = std::net::TcpStream::connect_timeout(addr, timeout).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            RioError::runtime("انتهت مهلة الاتصال (30 ثانية)", line, col)
+        } else {
+            RioError::runtime(format!("تعذر الاتصال بالمضيف {}", host), line, col)
+        }
+    })?;
+    let _ = stream.set_read_timeout(Some(time_left(deadline, line, col)?));
+    let _ = stream.set_write_timeout(Some(time_left(deadline, line, col)?));
+    Ok(stream)
+}
+
+/// حل اسم + فحص IP (§7) لمضيف ما — رسائل المباشر نفسها.
+#[cfg(not(target_arch = "wasm32"))]
+fn resolve_and_check(
+    host: &str,
+    port: u16,
+    line: usize,
+    col: usize,
+) -> RioResult<std::net::SocketAddr> {
+    use std::net::ToSocketAddrs;
+    let addr = (host, port)
+        .to_socket_addrs()
+        .map_err(|_| {
+            RioError::runtime(format!("تعذر حل اسم المضيف {}", host), line, col)
+        })?
+        .next()
+        .ok_or_else(|| {
+            RioError::runtime(format!("تعذر حل اسم المضيف {}", host), line, col)
+        })?;
+    if let Some(class) = ip_class(&addr.ip()) {
+        if !local_host_allowed(host) {
+            return Err(RioError::runtime(
+                format!("الوصول إلى العنوان {} مرفوض (عنوان {})", addr.ip(), class),
+                line,
+                col,
+            ));
+        }
+    }
+    Ok(addr)
+}
+
+/// "مضيف:منفذ" أو "مخطط://مضيف:منفذ" (المنفذ افتراضي).
+#[cfg(not(target_arch = "wasm32"))]
+fn parse_proxy_hostport(spec: &str, default_port: u16) -> Option<(String, u16)> {
+    let s = spec.trim();
+    let s = match s.split_once("://") {
+        Some((_, rest)) => rest,
+        None => s,
+    };
+    let s = s.split('/').next().unwrap_or(s);
+    if s.is_empty() {
+        return None;
+    }
+    if let Some(bracketed) = s.strip_prefix('[') {
+        let (host, after) = bracketed.split_once(']')?;
+        let port = after.strip_prefix(':').and_then(|p| p.parse::<u16>().ok()).unwrap_or(default_port);
+        if host.is_empty() {
+            return None;
+        }
+        return Some((host.to_string(), port));
+    }
+    match s.rsplit_once(':') {
+        Some((h, p)) if !h.is_empty() => match p.parse::<u16>() {
+            Ok(port) if port != 0 => Some((h.to_string(), port)),
+            _ => None,
+        },
+        _ => Some((s.to_string(), default_port)),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_until_headers(
+    stream: &mut std::net::TcpStream,
+    deadline: std::time::Instant,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<u8>> {
+    use std::io::Read;
+    let mut head: Vec<u8> = Vec::new();
+    let mut byte = [0u8; 1];
+    while head.len() < 65536 {
+        let _ = stream.set_read_timeout(Some(time_left(deadline, line, col)?));
+        match stream.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) => {
+                head.push(byte[0]);
+                check_cancelled(line, col)?;
+                if head.len() >= 4 && &head[head.len() - 4..] == b"\r\n\r\n" {
+                    break;
+                }
+            }
+            Err(e)
+                if e.kind() == std::io::ErrorKind::TimedOut
+                    || e.kind() == std::io::ErrorKind::WouldBlock =>
+            {
+                if std::time::Instant::now() >= deadline {
+                    return Err(RioError::runtime(
+                        "انتهت مهلة قراءة الرد (30 ثانية)",
+                        line,
+                        col,
+                    ));
+                }
+                continue;
+            }
+            Err(_) => {
+                return Err(RioError::runtime(
+                    "تعذر قراءة الرد من الخادم",
+                    line,
+                    col,
+                ))
+            }
+        }
+    }
+    Ok(head)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_exact_timeout(
+    stream: &mut std::net::TcpStream,
+    buf: &mut [u8],
+    deadline: std::time::Instant,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    use std::io::Read;
+    let _ = stream.set_read_timeout(Some(time_left(deadline, line, col)?));
+    stream.read_exact(buf).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            RioError::runtime("انتهت مهلة قراءة الرد (30 ثانية)", line, col)
+        } else {
+            RioError::runtime("تعذر قراءة الرد من الوكيل", line, col)
+        }
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn http_proxy_connect(
+    url: &ParsedUrl,
+    spec: &str,
+    req: &FetchRequest,
+    deadline: std::time::Instant,
+    line: usize,
+    col: usize,
+) -> RioResult<(std::net::TcpStream, bool)> {
+    use std::io::Write;
+    let (phost, pport) = parse_proxy_hostport(spec, 8080)
+        .ok_or_else(|| RioError::runtime("وكيل غير صالح", line, col))?;
+    let paddr = resolve_and_check(&phost, pport, line, col)?;
+    let mut stream = tcp_connect(&paddr, &phost, deadline, line, col)?;
+    if url.scheme == "https" {
+        if !req.opts.tunnel_proxy {
+            return Err(RioError::runtime(
+                "الوكيل يحتاج نفقا لـ HTTPS — فعّل نفق_الوكيل",
+                line,
+                col,
+            ));
+        }
+        let mut text = format!(
+            "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\n",
+            url.host, url.port, url.host, url.port
+        );
+        if let Some((u, p)) = &req.opts.proxy_auth {
+            text.push_str(&format!(
+                "Proxy-Authorization: Basic {}\r\n",
+                b64_encode(format!("{}:{}", u, p).as_bytes())
+            ));
+        }
+        text.push_str("\r\n");
+        stream.write_all(text.as_bytes()).map_err(|e| {
+            io_timeout_or(
+                e,
+                "انتهت مهلة إرسال الطلب",
+                &format!("تعذر إرسال الطلب إلى {}", phost),
+                line,
+                col,
+            )
+        })?;
+        let head = read_until_headers(&mut stream, deadline, line, col)?;
+        let text = String::from_utf8_lossy(&head);
+        let status: u16 = text
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        if status != 200 {
+            return Err(RioError::runtime(
+                format!("الوكيل رفض النفق (رمز {})", status),
+                line,
+                col,
+            ));
+        }
+        Ok((stream, false))
+    } else {
+        Ok((stream, true))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn socks5_connect(
+    url: &ParsedUrl,
+    spec: &str,
+    req: &FetchRequest,
+    deadline: std::time::Instant,
+    line: usize,
+    col: usize,
+) -> RioResult<std::net::TcpStream> {
+    use std::io::Write;
+    let (phost, pport) = parse_proxy_hostport(spec, 1080)
+        .ok_or_else(|| RioError::runtime("وكيل غير صالح", line, col))?;
+    let paddr = resolve_and_check(&phost, pport, line, col)?;
+    let mut stream = tcp_connect(&paddr, &phost, deadline, line, col)?;
+    let send = |stream: &mut std::net::TcpStream, data: &[u8]| -> RioResult<()> {
+        stream.write_all(data).map_err(|e| {
+            io_timeout_or(
+                e,
+                "انتهت مهلة إرسال الطلب",
+                &format!("تعذر إرسال الطلب إلى {}", phost),
+                line,
+                col,
+            )
+        })
+    };
+    let greeting: Vec<u8> = if req.opts.proxy_auth.is_some() {
+        vec![5, 2, 0, 2]
+    } else {
+        vec![5, 1, 0]
+    };
+    send(&mut stream, &greeting)?;
+    let mut resp = [0u8; 2];
+    read_exact_timeout(&mut stream, &mut resp, deadline, line, col)?;
+    if resp[0] != 5 {
+        return Err(RioError::runtime("رد غير صالح من الوكيل", line, col));
+    }
+    if resp[1] == 2 {
+        let (u, p) = req.opts.proxy_auth.as_ref().unwrap();
+        let mut auth = vec![1u8, u.len() as u8];
+        auth.extend_from_slice(u.as_bytes());
+        auth.push(p.len() as u8);
+        auth.extend_from_slice(p.as_bytes());
+        send(&mut stream, &auth)?;
+        let mut aresp = [0u8; 2];
+        read_exact_timeout(&mut stream, &mut aresp, deadline, line, col)?;
+        if aresp[1] != 0 {
+            return Err(RioError::runtime("الوكيل رفض المصادقة", line, col));
+        }
+    } else if resp[1] != 0 {
+        return Err(RioError::runtime("الوكيل رفض الاتصال", line, col));
+    }
+    if url.host.len() > 255 {
+        return Err(RioError::runtime("اسم مضيف طويل للوكيل", line, col));
+    }
+    let mut creq = vec![5u8, 1, 0];
+    if let Ok(ip) = url.host.parse::<std::net::IpAddr>() {
+        match ip {
+            std::net::IpAddr::V4(v4) => {
+                creq.push(1);
+                creq.extend_from_slice(&v4.octets());
+            }
+            std::net::IpAddr::V6(v6) => {
+                creq.push(4);
+                creq.extend_from_slice(&v6.octets());
+            }
+        }
+    } else {
+        creq.push(3);
+        creq.push(url.host.len() as u8);
+        creq.extend_from_slice(url.host.as_bytes());
+    }
+    creq.extend_from_slice(&url.port.to_be_bytes());
+    send(&mut stream, &creq)?;
+    let mut head4 = [0u8; 4];
+    read_exact_timeout(&mut stream, &mut head4, deadline, line, col)?;
+    if head4[0] != 5 {
+        return Err(RioError::runtime("رد غير صالح من الوكيل", line, col));
+    }
+    if head4[1] != 0 {
+        return Err(RioError::runtime(
+            format!("الوكيل SOCKS5 رفض الاتصال (رمز {})", head4[1]),
+            line,
+            col,
+        ));
+    }
+    let rest = match head4[3] {
+        1 => 4 + 2,
+        3 => {
+            let mut l = [0u8; 1];
+            read_exact_timeout(&mut stream, &mut l, deadline, line, col)?;
+            l[0] as usize + 2
+        }
+        4 => 16 + 2,
+        _ => return Err(RioError::runtime("رد غير صالح من الوكيل", line, col)),
+    };
+    let mut tail = vec![0u8; rest];
+    read_exact_timeout(&mut stream, &mut tail, deadline, line, col)?;
+    Ok(stream)
+}
+
+/// الاتصال بالهدف: مباشر، أو عبر وكيل HTTP (نفق لـ HTTPS،
+/// وهدف مطلق لـ HTTP)، أو عبر SOCKS5. فحص IP (§7) يسري
+/// على الوكيل نفسه عند التوكيل (فالوكيل يحل الهدف).
+#[cfg(not(target_arch = "wasm32"))]
+fn connect_target(
+    url: &ParsedUrl,
+    req: &FetchRequest,
+    deadline: std::time::Instant,
+    line: usize,
+    col: usize,
+) -> RioResult<(std::net::TcpStream, bool)> {
+    use std::net::ToSocketAddrs;
+    let host_l = url.host.to_ascii_lowercase();
+    let bypass = req.opts.no_proxy.iter().any(|p| {
+        let p = p.to_ascii_lowercase();
+        host_l == p
+            || (p.starts_with('.') && host_l.ends_with(p.as_str()))
+            || host_l.ends_with(&format!(".{}", p))
+    });
+    if !bypass {
+        if let Some(s5) = &req.opts.socks5 {
+            let stream = socks5_connect(url, s5, req, deadline, line, col)?;
+            return Ok((stream, false));
+        }
+        if let Some(px) = &req.opts.proxy {
+            return http_proxy_connect(url, px, req, deadline, line, col);
+        }
+    }
+    // مباشر (كما كان): DNS مرة واحدة ثم فحص IP ثم الاتصال.
+    let addr = (url.host.as_str(), url.port)
+        .to_socket_addrs()
+        .map_err(|_| {
+            RioError::runtime(
+                format!("تعذر حل اسم المضيف {}", url.host),
+                line,
+                col,
+            )
+        })?
+        .next()
+        .ok_or_else(|| {
+            RioError::runtime(
+                format!("تعذر حل اسم المضيف {}", url.host),
+                line,
+                col,
+            )
+        })?;
+    if let Some(class) = ip_class(&addr.ip()) {
+        if !local_host_allowed(&url.host) {
+            return Err(RioError::runtime(
+                format!(
+                    "الوصول إلى العنوان {} مرفوض (عنوان {})",
+                    addr.ip(),
+                    class
+                ),
+                line,
+                col,
+            ));
+        }
+    }
+    let stream = tcp_connect(&addr, &url.host, deadline, line, col)?;
+    Ok((stream, false))
+}
+
+// ---------- لينكس8-طبقة3: FTP/FTPS/MQTT (اجتماع 90 §105) ----------
+use std::io::{Read, Write};
+
+/// تحليل رابط مضيف: مخطط://[مستخدم[:كلمة]@]مضيف[:منفذ][/مسار].
+pub struct HostUrl {
+    pub host: String,
+    pub port: u16,
+    pub path: String,
+    pub user: Option<String>,
+    pub pass: Option<String>,
+}
+
+pub fn parse_host_url(
+    url: &str,
+    scheme: &str,
+    default_port: u16,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<HostUrl> {
+    let rest = match url.split_once("://") {
+        Some((s, r)) if s == scheme => r,
+        _ => {
+            return Err(RioError::typ(
+                format!("الدالة {} تتوقع رابط {}", display, scheme),
+                line,
+                col,
+            ))
+        }
+    };
+    let (authority, path) = match rest.split_once('/') {
+        Some((a, p)) => (a, format!("/{}", p)),
+        None => (rest, "/".to_string()),
+    };
+    let (userinfo, hostport) = match authority.rsplit_once('@') {
+        Some((u, h)) => (Some(u), h),
+        None => (None, authority),
+    };
+    let (user, pass) = match userinfo {
+        Some(u) => match u.split_once(':') {
+            Some((a, b)) => (Some(a.to_string()), Some(b.to_string())),
+            None => (Some(u.to_string()), None),
+        },
+        None => (None, None),
+    };
+    let (host, port) = if let Some(bracketed) = hostport.strip_prefix('[') {
+        match bracketed.split_once(']') {
+            Some((h, rest2)) => {
+                let p = match rest2.strip_prefix(':') {
+                    Some(ps) if !ps.is_empty() => ps.parse::<u16>().map_err(|_| {
+                        RioError::typ(
+                            format!("الدالة {} تتوقع منفذا صحيحا", display),
+                            line,
+                            col,
+                        )
+                    })?,
+                    _ => default_port,
+                };
+                (h.to_string(), p)
+            }
+            None => {
+                return Err(RioError::typ(
+                    format!("الدالة {} تتوقع مضيفا صحيحا", display),
+                    line,
+                    col,
+                ))
+            }
+        }
+    } else {
+        match hostport.rsplit_once(':') {
+            Some((h, ps)) => {
+                if ps.is_empty() {
+                    (h.to_string(), default_port)
+                } else {
+                    match ps.parse::<u16>() {
+                        Ok(p) => (h.to_string(), p),
+                        Err(_) => {
+                            return Err(RioError::typ(
+                                format!("الدالة {} تتوقع منفذا صحيحا", display),
+                                line,
+                                col,
+                            ))
+                        }
+                    }
+                }
+            }
+            None => (hostport.to_string(), default_port),
+        }
+    };
+    if host.is_empty() {
+        return Err(RioError::typ(
+            format!("الدالة {} تتوقع مضيفا غير فارغ", display),
+            line,
+            col,
+        ));
+    }
+    Ok(HostUrl {
+        host,
+        port,
+        path,
+        user,
+        pass,
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+trait FtpIo: Read + Write {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Read + Write> FtpIo for T {}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ftp_read_line<S: FtpIo>(
+    s: &mut S,
+    deadline: std::time::Instant,
+    line: usize,
+    col: usize,
+) -> RioResult<String> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut one = [0u8; 1];
+    loop {
+        let _ = time_left(deadline, line, col)?;
+        match s.read(&mut one) {
+            Ok(0) => return Err(RioError::runtime("انقطع الاتصال بالخادم", line, col)),
+            Ok(_) => {
+                if one[0] == b'\n' {
+                    break;
+                }
+                buf.push(one[0]);
+                if buf.len() > 4096 {
+                    return Err(RioError::runtime("رد طويل جدا من الخادم", line, col));
+                }
+            }
+            Err(e) => {
+                return Err(io_timeout_or(
+                    e,
+                    "انتهت مهلة القراءة من الخادم",
+                    "تعذر قراءة الرد من الخادم",
+                    line,
+                    col,
+                ));
+            }
+        }
+    }
+    if buf.last() == Some(&b'\r') {
+        buf.pop();
+    }
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ftp_read_reply<S: FtpIo>(
+    s: &mut S,
+    deadline: std::time::Instant,
+    line: usize,
+    col: usize,
+) -> RioResult<(u16, String)> {
+    let first = ftp_read_line(s, deadline, line, col)?;
+    let code: u16 = first
+        .get(0..3)
+        .and_then(|c| c.parse().ok())
+        .ok_or_else(|| RioError::runtime("رد غير صالح من الخادم", line, col))?;
+    let mut text = first.clone();
+    if first.as_bytes().get(3) == Some(&b'-') {
+        loop {
+            let l = ftp_read_line(s, deadline, line, col)?;
+            text.push('\n');
+            text.push_str(&l);
+            if l.len() >= 4 && l.as_bytes()[3] == b' ' && l.get(0..3) == Some(&first[0..3]) {
+                break;
+            }
+        }
+    }
+    Ok((code, text))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ftp_cmd<S: FtpIo>(
+    s: &mut S,
+    cmd: &str,
+    deadline: std::time::Instant,
+    line: usize,
+    col: usize,
+) -> RioResult<(u16, String)> {
+    let send = |s: &mut S, b: &[u8]| -> RioResult<()> {
+        s.write_all(b).map_err(|e| {
+            io_timeout_or(
+                e,
+                "انتهت مهلة الإرسال إلى الخادم",
+                "تعذر إرسال الطلب إلى الخادم",
+                line,
+                col,
+            )
+        })
+    };
+    send(s, cmd.as_bytes())?;
+    send(s, b"\r\n")?;
+    s.flush().map_err(|e| {
+        io_timeout_or(
+            e,
+            "انتهت مهلة الإرسال إلى الخادم",
+            "تعذر إرسال الطلب إلى الخادم",
+            line,
+            col,
+        )
+    })?;
+    ftp_read_reply(s, deadline, line, col)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ftp_expect(code: u16, want: &[u16], line: usize, col: usize) -> RioResult<()> {
+    if want.contains(&code) {
+        Ok(())
+    } else {
+        Err(RioError::runtime(
+            format!("خادم FTP رد برمز {}", code),
+            line,
+            col,
+        ))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ftp_parse_pasv(text: &str, line: usize, col: usize) -> RioResult<(String, u16)> {
+    let bad = || RioError::runtime("رد غير صالح من الخادم", line, col);
+    let start = text.find('(').ok_or_else(bad)?;
+    let end = text[start..]
+        .find(')')
+        .map(|i| start + i)
+        .ok_or_else(bad)?;
+    let nums: Vec<u16> = text[start + 1..end]
+        .split(',')
+        .map(|p| p.trim().parse::<u16>())
+        .collect::<Result<_, _>>()
+        .map_err(|_| bad())?;
+    if nums.len() != 6 {
+        return Err(bad());
+    }
+    let host = format!("{}.{}.{}.{}", nums[0], nums[1], nums[2], nums[3]);
+    let port = nums[4] * 256 + nums[5];
+    Ok((host, port))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+enum FtpOp {
+    Retr,
+    Stor(Vec<u8>),
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ftp_transfer<S: FtpIo, D: FtpIo>(
+    ctrl: &mut S,
+    user: &str,
+    pass: &str,
+    path: &str,
+    op: FtpOp,
+    skip_greeting: bool,
+    mut connect_data: impl FnMut(&str, u16, std::time::Instant, usize, usize) -> RioResult<D>,
+    mut finish_data: impl FnMut(&mut D, usize, usize) -> RioResult<()>,
+    deadline: std::time::Instant,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<u8>> {
+    if !skip_greeting {
+        let (code, _) = ftp_read_reply(ctrl, deadline, line, col)?;
+        ftp_expect(code, &[220], line, col)?;
+    }
+    let (code, _) = ftp_cmd(ctrl, &format!("USER {}", user), deadline, line, col)?;
+    if code == 331 {
+        let (code, _) = ftp_cmd(ctrl, &format!("PASS {}", pass), deadline, line, col)?;
+        ftp_expect(code, &[202, 230], line, col)?;
+    } else {
+        ftp_expect(code, &[202, 230], line, col)?;
+    }
+    let (code, _) = ftp_cmd(ctrl, "TYPE I", deadline, line, col)?;
+    ftp_expect(code, &[200], line, col)?;
+    let (code, text) = ftp_cmd(ctrl, "PASV", deadline, line, col)?;
+    ftp_expect(code, &[227], line, col)?;
+    let (dhost, dport) = ftp_parse_pasv(&text, line, col)?;
+    let mut data = connect_data(&dhost, dport, deadline, line, col)?;
+    let (is_retr, up): (bool, Vec<u8>) = match op {
+        FtpOp::Retr => (true, Vec::new()),
+        FtpOp::Stor(b) => (false, b),
+    };
+    let cmd = if is_retr {
+        format!("RETR {}", path)
+    } else {
+        format!("STOR {}", path)
+    };
+    let (code, _) = ftp_cmd(ctrl, &cmd, deadline, line, col)?;
+    ftp_expect(code, &[125, 150], line, col)?;
+    let out = if is_retr {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 8192];
+        loop {
+            let _ = time_left(deadline, line, col)?;
+            match data.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                Err(e) => {
+                    return Err(io_timeout_or(
+                        e,
+                        "انتهت مهلة القراءة من الخادم",
+                        "تعذر قراءة الرد من الخادم",
+                        line,
+                        col,
+                    ));
+                }
+            }
+        }
+        buf
+    } else {
+        data.write_all(&up).map_err(|e| {
+            io_timeout_or(
+                e,
+                "انتهت مهلة الإرسال إلى الخادم",
+                "تعذر إرسال الطلب إلى الخادم",
+                line,
+                col,
+            )
+        })?;
+        data.flush().map_err(|e| {
+            io_timeout_or(
+                e,
+                "انتهت مهلة الإرسال إلى الخادم",
+                "تعذر إرسال الطلب إلى الخادم",
+                line,
+                col,
+            )
+        })?;
+        finish_data(&mut data, line, col)?;
+        up
+    };
+    drop(data);
+    let (code, _) = ftp_read_reply(ctrl, deadline, line, col)?;
+    ftp_expect(code, &[226, 250], line, col)?;
+    let _ = ftp_cmd(ctrl, "QUIT", deadline, line, col);
+    Ok(out)
+}
+
+pub fn ftp_fetch(url: &str, display: &str, line: usize, col: usize) -> RioResult<Vec<u8>> {
+    require_network_allowed(line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (url, display);
+        Err(RioError::runtime("FTP غير مدعوم على هذه المنصة", line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        ftp_fetch_native(url, display, line, col)
+    }
+}
+
+pub fn ftp_upload(
+    url: &str,
+    data: &[u8],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    require_network_allowed(line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (url, data, display);
+        Err(RioError::runtime("FTP غير مدعوم على هذه المنصة", line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        ftp_upload_native(url, data, display, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ftp_plain_data(
+    dh: &str,
+    dp: u16,
+    dl: std::time::Instant,
+    l: usize,
+    c: usize,
+) -> RioResult<std::net::TcpStream> {
+    let a = resolve_and_check(dh, dp, l, c)?;
+    tcp_connect(&a, dh, dl, l, c)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ftp_fetch_native(url: &str, display: &str, line: usize, col: usize) -> RioResult<Vec<u8>> {
+    let u = parse_host_url(url, "ftp", 21, display, line, col)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TIMEOUT_SECS);
+    let addr = resolve_and_check(&u.host, u.port, line, col)?;
+    let mut ctrl = tcp_connect(&addr, &u.host, deadline, line, col)?;
+    let user = u.user.clone().unwrap_or_else(|| "anonymous".to_string());
+    let pass = u.pass.clone().unwrap_or_else(|| "niva@".to_string());
+    ftp_transfer(
+        &mut ctrl,
+        &user,
+        &pass,
+        &u.path,
+        FtpOp::Retr,
+        false,
+        ftp_plain_data,
+        |d: &mut std::net::TcpStream, l, c| {
+            d.shutdown(std::net::Shutdown::Write)
+                .map_err(|_| RioError::runtime("تعذر إرسال الطلب إلى الخادم", l, c))
+        },
+        deadline,
+        line,
+        col,
+    )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn ftp_upload_native(
+    url: &str,
+    data: &[u8],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    let u = parse_host_url(url, "ftp", 21, display, line, col)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TIMEOUT_SECS);
+    let addr = resolve_and_check(&u.host, u.port, line, col)?;
+    let mut ctrl = tcp_connect(&addr, &u.host, deadline, line, col)?;
+    let user = u.user.clone().unwrap_or_else(|| "anonymous".to_string());
+    let pass = u.pass.clone().unwrap_or_else(|| "niva@".to_string());
+    let _ = ftp_transfer(
+        &mut ctrl,
+        &user,
+        &pass,
+        &u.path,
+        FtpOp::Stor(data.to_vec()),
+        false,
+        ftp_plain_data,
+        |d: &mut std::net::TcpStream, l, c| {
+            d.shutdown(std::net::Shutdown::Write)
+                .map_err(|_| RioError::runtime("تعذر إرسال الطلب إلى الخادم", l, c))
+        },
+        deadline,
+        line,
+        col,
+    )?;
+    Ok(())
+}
+
+pub fn ftps_fetch(url: &str, display: &str, line: usize, col: usize) -> RioResult<Vec<u8>> {
+    require_network_allowed(line, col)?;
+    #[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+    {
+        ftps_fetch_native(url, display, line, col)
+    }
+    #[cfg(any(target_arch = "wasm32", not(feature = "https")))]
+    {
+        let _ = (url, display);
+        Err(RioError::runtime("FTPS غير مدعوم في هذا البناء", line, col))
+    }
+}
+
+pub fn ftps_upload(
+    url: &str,
+    data: &[u8],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    require_network_allowed(line, col)?;
+    #[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+    {
+        ftps_upload_native(url, data, display, line, col)
+    }
+    #[cfg(any(target_arch = "wasm32", not(feature = "https")))]
+    {
+        let _ = (url, data, display);
+        Err(RioError::runtime("FTPS غير مدعوم في هذا البناء", line, col))
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+fn ftps_tls_wrap(
+    stream: std::net::TcpStream,
+    host: &str,
+    deadline: std::time::Instant,
+    line: usize,
+    col: usize,
+) -> RioResult<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>> {
+    let config = std::sync::Arc::new(tls_client_config());
+    let server_name =
+        rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|_| {
+            RioError::runtime(format!("اسم مضيف غير صالح لـ FTPS: {}", host), line, col)
+        })?;
+    let conn = rustls::ClientConnection::new(config, server_name)
+        .map_err(|_| RioError::runtime("تعذر بدء اتصال FTPS", line, col))?;
+    let mut tls = rustls::StreamOwned::new(conn, stream);
+    let left = time_left(deadline, line, col)?;
+    let _ = tls.get_mut().set_read_timeout(Some(left));
+    let _ = tls.get_mut().set_write_timeout(Some(left));
+    Ok(tls)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+fn ftps_setup(
+    url: &str,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(
+    rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>,
+    HostUrl,
+    std::time::Instant,
+)> {
+    let u = parse_host_url(url, "ftps", 990, display, line, col)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TIMEOUT_SECS);
+    let addr = resolve_and_check(&u.host, u.port, line, col)?;
+    let mut plain = tcp_connect(&addr, &u.host, deadline, line, col)?;
+    let (code, _) = ftp_read_reply(&mut plain, deadline, line, col)?;
+    ftp_expect(code, &[220], line, col)?;
+    let (code, _) = ftp_cmd(&mut plain, "AUTH TLS", deadline, line, col)?;
+    ftp_expect(code, &[234], line, col)?;
+    let mut ctrl = ftps_tls_wrap(plain, &u.host, deadline, line, col)?;
+    let (code, _) = ftp_cmd(&mut ctrl, "PBSZ 0", deadline, line, col)?;
+    ftp_expect(code, &[200], line, col)?;
+    let (code, _) = ftp_cmd(&mut ctrl, "PROT P", deadline, line, col)?;
+    ftp_expect(code, &[200], line, col)?;
+    Ok((ctrl, u, deadline))
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+fn ftps_fetch_native(url: &str, display: &str, line: usize, col: usize) -> RioResult<Vec<u8>> {
+    let (mut ctrl, u, deadline) = ftps_setup(url, display, line, col)?;
+    let user = u.user.clone().unwrap_or_else(|| "anonymous".to_string());
+    let pass = u.pass.clone().unwrap_or_else(|| "niva@".to_string());
+    ftp_transfer(
+        &mut ctrl,
+        &user,
+        &pass,
+        &u.path,
+        FtpOp::Retr,
+        true,
+        |dh, dp, dl, l, c| {
+            let a = resolve_and_check(dh, dp, l, c)?;
+            let s = tcp_connect(&a, dh, dl, l, c)?;
+            ftps_tls_wrap(s, dh, dl, l, c)
+        },
+        |d: &mut rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>, l, c| {
+            d.conn.send_close_notify();
+            d.flush().map_err(|e| {
+                io_timeout_or(
+                    e,
+                    "انتهت مهلة الإرسال إلى الخادم",
+                    "تعذر إرسال الطلب إلى الخادم",
+                    l,
+                    c,
+                )
+            })
+        },
+        deadline,
+        line,
+        col,
+    )
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+fn ftps_upload_native(
+    url: &str,
+    data: &[u8],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    let (mut ctrl, u, deadline) = ftps_setup(url, display, line, col)?;
+    let user = u.user.clone().unwrap_or_else(|| "anonymous".to_string());
+    let pass = u.pass.clone().unwrap_or_else(|| "niva@".to_string());
+    let _ = ftp_transfer(
+        &mut ctrl,
+        &user,
+        &pass,
+        &u.path,
+        FtpOp::Stor(data.to_vec()),
+        true,
+        |dh, dp, dl, l, c| {
+            let a = resolve_and_check(dh, dp, l, c)?;
+            let s = tcp_connect(&a, dh, dl, l, c)?;
+            ftps_tls_wrap(s, dh, dl, l, c)
+        },
+        |d: &mut rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>, l, c| {
+            d.conn.send_close_notify();
+            d.flush().map_err(|e| {
+                io_timeout_or(
+                    e,
+                    "انتهت مهلة الإرسال إلى الخادم",
+                    "تعذر إرسال الطلب إلى الخادم",
+                    l,
+                    c,
+                )
+            })
+        },
+        deadline,
+        line,
+        col,
+    )?;
+    Ok(())
+}
+
+// ---------- MQTT 3.1.1 (عميل متزامن، QoS 0) ----------
+#[cfg(not(target_arch = "wasm32"))]
+fn mqtt_len(mut n: usize, out: &mut Vec<u8>) {
+    loop {
+        let mut b = (n % 128) as u8;
+        n /= 128;
+        if n > 0 {
+            b |= 0x80;
+        }
+        out.push(b);
+        if n == 0 {
+            break;
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn mqtt_packet(cmd: u8, body: &[u8]) -> Vec<u8> {
+    let mut out = vec![cmd];
+    mqtt_len(body.len(), &mut out);
+    out.extend_from_slice(body);
+    out
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn mqtt_str(s: &str, out: &mut Vec<u8>) {
+    out.extend_from_slice(&(s.len() as u16).to_be_bytes());
+    out.extend_from_slice(s.as_bytes());
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn mqtt_connect_packet() -> Vec<u8> {
+    let mut body = Vec::new();
+    mqtt_str("MQTT", &mut body);
+    body.push(0x04);
+    body.push(0x02);
+    body.extend_from_slice(&60u16.to_be_bytes());
+    mqtt_str("niva", &mut body);
+    mqtt_packet(0x10, &body)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn mqtt_read_exact(
+    s: &mut std::net::TcpStream,
+    mut buf: &mut [u8],
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    while !buf.is_empty() {
+        match s.read(buf) {
+            Ok(0) => return Err(RioError::runtime("انقطع الاتصال بالخادم", line, col)),
+            Ok(n) => {
+                let tmp = buf;
+                buf = &mut tmp[n..];
+            }
+            Err(e) => {
+                return Err(io_timeout_or(
+                    e,
+                    "انتهت مهلة القراءة من الخادم",
+                    "تعذر قراءة الرد من الخادم",
+                    line,
+                    col,
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn mqtt_read_packet(
+    s: &mut std::net::TcpStream,
+    until: std::time::Instant,
+    line: usize,
+    col: usize,
+) -> RioResult<(u8, Vec<u8>)> {
+    // مهلة الشريحة = المتبقي حتى `until` بحد 30ث؛
+    // والحزم صغيرة تصل كاملة — فانتهاء الشريحة في
+    // منتصف حزمة لا يحدث عمليا على المضيف المحلي.
+    let now = std::time::Instant::now();
+    if now >= until {
+        return Err(RioError::runtime("انتهت مهلة القراءة من الخادم", line, col));
+    }
+    let slice = until
+        .duration_since(now)
+        .min(std::time::Duration::from_secs(30));
+    let _ = s.set_read_timeout(Some(slice));
+    let mut h = [0u8; 1];
+    mqtt_read_exact(s, &mut h, line, col)?;
+    let cmd = h[0];
+    let mut len: usize = 0;
+    let mut mult = 1usize;
+    loop {
+        let mut b = [0u8; 1];
+        mqtt_read_exact(s, &mut b, line, col)?;
+        len += (b[0] as usize & 0x7F) * mult;
+        mult *= 128;
+        if b[0] & 0x80 == 0 {
+            break;
+        }
+        if mult > 128 * 128 * 128 {
+            return Err(RioError::runtime("رد غير صالح من الخادم", line, col));
+        }
+    }
+    if len > 10 * 1024 * 1024 {
+        return Err(RioError::runtime("رد طويل جدا من الخادم", line, col));
+    }
+    let mut body = vec![0u8; len];
+    mqtt_read_exact(s, &mut body, line, col)?;
+    Ok((cmd, body))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn mqtt_connect_stream(
+    broker: &str,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(std::net::TcpStream, std::time::Instant)> {
+    let u = parse_host_url(broker, "mqtt", 1883, display, line, col)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TIMEOUT_SECS);
+    let addr = resolve_and_check(&u.host, u.port, line, col)?;
+    let mut stream = tcp_connect(&addr, &u.host, deadline, line, col)?;
+    stream
+        .write_all(&mqtt_connect_packet())
+        .map_err(|e| {
+            io_timeout_or(
+                e,
+                "انتهت مهلة الإرسال إلى الخادم",
+                "تعذر إرسال الطلب إلى الخادم",
+                line,
+                col,
+            )
+        })?;
+    stream.flush().map_err(|e| {
+        io_timeout_or(
+            e,
+            "انتهت مهلة الإرسال إلى الخادم",
+            "تعذر إرسال الطلب إلى الخادم",
+            line,
+            col,
+        )
+    })?;
+    let (cmd, body) = mqtt_read_packet(&mut stream, deadline, line, col)?;
+    if cmd != 0x20 || body.len() != 2 || body[1] != 0 {
+        return Err(RioError::runtime(
+            format!(
+                "وسيط MQTT رفض الاتصال (رمز {})",
+                body.get(1).copied().unwrap_or(0)
+            ),
+            line,
+            col,
+        ));
+    }
+    Ok((stream, deadline))
+}
+
+pub fn mqtt_subscribe(
+    broker: &str,
+    topic: &str,
+    timeout_secs: u64,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<String>> {
+    require_network_allowed(line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (broker, topic, timeout_secs, display);
+        Err(RioError::runtime("MQTT غير مدعوم على هذه المنصة", line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        mqtt_subscribe_native(broker, topic, timeout_secs, display, line, col)
+    }
+}
+
+pub fn mqtt_publish(
+    broker: &str,
+    topic: &str,
+    payload: &[u8],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    require_network_allowed(line, col)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (broker, topic, payload, display);
+        Err(RioError::runtime("MQTT غير مدعوم على هذه المنصة", line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        mqtt_publish_native(broker, topic, payload, display, line, col)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn mqtt_subscribe_native(
+    broker: &str,
+    topic: &str,
+    timeout_secs: u64,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<String>> {
+    let (mut stream, deadline) = mqtt_connect_stream(broker, display, line, col)?;
+    let mut sub = Vec::new();
+    mqtt_str(topic, &mut sub);
+    sub.push(0x00);
+    let mut pkt = vec![0x82];
+    mqtt_len(sub.len() + 2, &mut pkt);
+    pkt.extend_from_slice(&1u16.to_be_bytes());
+    pkt.extend_from_slice(&sub);
+    stream.write_all(&pkt).map_err(|e| {
+        io_timeout_or(
+            e,
+            "انتهت مهلة الإرسال إلى الخادم",
+            "تعذر إرسال الطلب إلى الخادم",
+            line,
+            col,
+        )
+    })?;
+    stream.flush().map_err(|e| {
+        io_timeout_or(
+            e,
+            "انتهت مهلة الإرسال إلى الخادم",
+            "تعذر إرسال الطلب إلى الخادم",
+            line,
+            col,
+        )
+    })?;
+    let (cmd, _) = mqtt_read_packet(&mut stream, deadline, line, col)?;
+    if cmd != 0x90 {
+        return Err(RioError::runtime("رد غير صالح من الخادم", line, col));
+    }
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    let mut out: Vec<String> = Vec::new();
+    let mut last_ping = std::time::Instant::now();
+    loop {
+        let now = std::time::Instant::now();
+        if now >= until {
+            break;
+        }
+        match mqtt_read_packet(&mut stream, until, line, col) {
+            Ok((cmd, body)) => {
+                if cmd == 0xD0 {
+                    continue;
+                }
+                if cmd & 0xF0 == 0x30 && body.len() >= 2 {
+                    let tlen = ((body[0] as usize) << 8) | body[1] as usize;
+                    if body.len() >= 2 + tlen {
+                        let payload = &body[2 + tlen..];
+                        out.push(String::from_utf8_lossy(payload).into_owned());
+                    }
+                }
+            }
+            Err(_) => {
+                let now2 = std::time::Instant::now();
+                if now2 >= until {
+                    break;
+                }
+                if now2.duration_since(last_ping).as_secs() >= 30 {
+                    let _ = stream.write_all(&[0xC0, 0x00]);
+                    let _ = stream.flush();
+                    last_ping = now2;
+                }
+                continue;
+            }
+        }
+    }
+    let _ = stream.write_all(&[0xE0, 0x00]);
+    let _ = stream.flush();
+    Ok(out)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn mqtt_publish_native(
+    broker: &str,
+    topic: &str,
+    payload: &[u8],
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<()> {
+    let (mut stream, deadline) = mqtt_connect_stream(broker, display, line, col)?;
+    let mut body = Vec::new();
+    mqtt_str(topic, &mut body);
+    body.extend_from_slice(payload);
+    let pkt = mqtt_packet(0x30, &body);
+    stream.write_all(&pkt).map_err(|e| {
+        io_timeout_or(
+            e,
+            "انتهت مهلة الإرسال إلى الخادم",
+            "تعذر إرسال الطلب إلى الخادم",
+            line,
+            col,
+        )
+    })?;
+    stream.flush().map_err(|e| {
+        io_timeout_or(
+            e,
+            "انتهت مهلة الإرسال إلى الخادم",
+            "تعذر إرسال الطلب إلى الخادم",
+            line,
+            col,
+        )
+    })?;
+    let _ = stream.write_all(&[0xE0, 0x00]);
+    let _ = stream.flush();
+    Ok(())
+}
+
+// ---------- لينكس8-طبقة4: توقيع مستقل (نسخة من كتلتي
+// execute_request_inner؛ بلا مساس بالمسار الحي) ----------
+pub fn sign_amazon_headers(
+    method: &str,
+    url: &str,
+    body: &[u8],
+    key: &str,
+    secret: &str,
+    region: &str,
+    service: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<(String, String)>> {
+    let parsed = parse_url(url, line, col)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let (datestamp, amzdate) = amz_datetime(now);
+    let payload_hash = crate::crypto::sha256_hex(body);
+    let (uri, query) = match parsed.path.split_once('?') {
+        Some((u, q)) => (u.to_string(), q.to_string()),
+        None => (parsed.path.clone(), String::new()),
+    };
+    let host_hdr = if (parsed.scheme == "http" && parsed.port == 80)
+        || (parsed.scheme == "https" && parsed.port == 443)
+    {
+        parsed.host.clone()
+    } else {
+        format!("{}:{}", parsed.host, parsed.port)
+    };
+    let canonical_headers = format!(
+        "host:{}\nx-amz-content-sha256:{}\nx-amz-date:{}\n",
+        host_hdr, payload_hash, amzdate
+    );
+    let canonical_request = format!(
+        "{}\n{}\n{}\n{}host;x-amz-content-sha256;x-amz-date\n{}",
+        method.to_ascii_uppercase(),
+        uri,
+        query,
+        canonical_headers,
+        payload_hash
+    );
+    let scope = format!("{}/{}/{}/aws4_request", datestamp, region, service);
+    let to_sign = format!(
+        "AWS4-HMAC-SHA256\n{}\n{}\n{}",
+        amzdate,
+        scope,
+        crate::crypto::sha256_hex(canonical_request.as_bytes())
+    );
+    let k_date = hmac_sha256(format!("AWS4{}", secret).as_bytes(), datestamp.as_bytes());
+    let k_region = hmac_sha256(&k_date, region.as_bytes());
+    let k_service = hmac_sha256(&k_region, service.as_bytes());
+    let k_signing = hmac_sha256(&k_service, b"aws4_request");
+    let signature = hex_bytes(&hmac_sha256(&k_signing, to_sign.as_bytes()));
+    Ok(vec![
+        ("x-amz-date".to_string(), amzdate),
+        ("x-amz-content-sha256".to_string(), payload_hash),
+        (
+            "Authorization".to_string(),
+            format!(
+                "AWS4-HMAC-SHA256 Credential={}/{}, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature={}",
+                key, scope, signature
+            ),
+        ),
+    ])
+}
+
+pub fn sign_http_sig(
+    method: &str,
+    url: &str,
+    key_id: &str,
+    key: &str,
+    algorithm: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(String, String)> {
+    if algorithm != "hmac-sha256" {
+        return Err(RioError::runtime(
+            "خوارزمية التوقيع غير مدعومة — المتاح hmac-sha256 فقط",
+            line,
+            col,
+        ));
+    }
+    let parsed = parse_url(url, line, col)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let date = http_date_from_unix(now);
+    let host_hdr = if (parsed.scheme == "http" && parsed.port == 80)
+        || (parsed.scheme == "https" && parsed.port == 443)
+    {
+        parsed.host.clone()
+    } else {
+        format!("{}:{}", parsed.host, parsed.port)
+    };
+    let target = format!("{} {}", method.to_ascii_lowercase(), parsed.path);
+    let signing = format!(
+        "(request-target): {}\nhost: {}\ndate: {}",
+        target, host_hdr, date
+    );
+    let sig = b64_encode(&hmac_sha256(key.as_bytes(), signing.as_bytes()));
+    Ok((
+        date,
+        format!(
+            "Signature keyId=\"{}\",algorithm=\"hmac-sha256\",headers=\"(request-target) host date\",signature=\"{}\"",
+            key_id, sig
+        ),
+    ))
+}
+
+// ---------- لينكس8-طبقة5ب: فحص واتصال (اجتماع 90 §105) ----------
+
+/// فحص اتصال TCP: صحيح إن نجح خلال المهلة، خطأ إن رُفض
+/// أو انتهت المهلة. خطأ DNS ينتشر كخطأ عربي.
+pub fn net_probe_tcp(host: &str, port: u16, timeout_ms: u64, display: &str, line: usize, col: usize) -> RioResult<bool> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (host, port, timeout_ms);
+        Err(RioError::runtime(format!("{} غير مدعوم على هذه المنصة", display), line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        require_network_allowed(line, col)?;
+        let addr = resolve_and_check(host, port, line, col)?;
+        let dur = std::time::Duration::from_millis(timeout_ms);
+        Ok(std::net::TcpStream::connect_timeout(&addr, dur).is_ok())
+    }
+}
+
+/// فحص منفذ UDP: "مغلق" عند ECONNREFUSED، "مفتوح" عند
+/// وصول رد، "مفلتر" عند المهلة أو عند فشل الإرسال نفسه
+/// (لا رد يمكن ملاحظته — منها EPERM في صندوق الرمل).
+pub fn net_probe_udp(host: &str, port: u16, timeout_ms: u64, display: &str, line: usize, col: usize) -> RioResult<&'static str> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (host, port, timeout_ms);
+        Err(RioError::runtime(format!("{} غير مدعوم على هذه المنصة", display), line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        require_network_allowed(line, col)?;
+        let addr = resolve_and_check(host, port, line, col)?;
+        let sock = std::net::UdpSocket::bind("0.0.0.0:0")
+            .map_err(|_| RioError::runtime("تعذر فتح مقبس UDP", line, col))?;
+        sock.connect(addr)
+            .map_err(|_| RioError::runtime("تعذر الاتصال بمقبس UDP", line, col))?;
+        let _ = sock.set_read_timeout(Some(std::time::Duration::from_millis(timeout_ms)));
+        match sock.send(&[0u8]) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => return Ok("مغلق"),
+            Err(_) => return Ok("مفلتر"),
+        }
+        let mut buf = [0u8; 512];
+        match sock.recv(&mut buf) {
+            Ok(_) => Ok("مفتوح"),
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => Ok("مغلق"),
+            Err(_) => Ok("مفلتر"),
+        }
+    }
+}
+
+fn icmp_checksum(data: &[u8]) -> u16 {
+    let mut sum: u32 = 0;
+    let mut i = 0;
+    while i + 1 < data.len() {
+        sum += u16::from_be_bytes([data[i], data[i + 1]]) as u32;
+        i += 2;
+    }
+    if i < data.len() {
+        sum += (data[i] as u32) << 8;
+    }
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    !(sum as u16)
+}
+
+/// نبض ICMP عبر مقبس ping غير المميز (SOCK_DGRAM):
+/// لينكس فقط؛ فشل فتح المقبس (بلا صلاحية) يعني خطأ
+/// لا خطأ عربي — النبض لم يصل.
+pub fn net_probe_icmp(host: &str, timeout_ms: u64, display: &str, line: usize, col: usize) -> RioResult<bool> {
+    #[cfg(any(target_arch = "wasm32", not(target_os = "linux")))]
+    {
+        let _ = (host, timeout_ms);
+        Err(RioError::runtime(format!("{} غير مدعوم على هذه المنصة", display), line, col))
+    }
+    #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+    {
+        require_network_allowed(line, col)?;
+        let addr = resolve_and_check(host, 0, line, col)?;
+        let ip = match addr.ip() {
+            std::net::IpAddr::V4(v4) => v4,
+            _ => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} النبض يدعم IPv4 فقط", display),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_ICMP) };
+        if fd < 0 {
+            return Ok(false);
+        }
+        let id = (std::process::id() & 0xFFFF) as u16;
+        let mut pkt = [0u8; 64];
+        pkt[0] = 8;
+        pkt[1] = 0;
+        pkt[4] = (id >> 8) as u8;
+        pkt[5] = (id & 0xFF) as u8;
+        pkt[6] = 0;
+        pkt[7] = 1;
+        for (i, b) in b"niva".iter().enumerate() {
+            pkt[8 + i] = *b;
+        }
+        let csum = icmp_checksum(&pkt);
+        pkt[2] = (csum >> 8) as u8;
+        pkt[3] = (csum & 0xFF) as u8;
+        let sent = unsafe {
+            let mut sa: libc::sockaddr_in = std::mem::zeroed();
+            sa.sin_family = libc::AF_INET as libc::sa_family_t;
+            sa.sin_port = 0;
+            sa.sin_addr = libc::in_addr { s_addr: u32::from_ne_bytes(ip.octets()) };
+            libc::sendto(
+                fd,
+                pkt.as_ptr() as *const libc::c_void,
+                pkt.len(),
+                0,
+                &sa as *const libc::sockaddr_in as *const libc::sockaddr,
+                std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+            )
+        };
+        if sent < 0 {
+            unsafe { libc::close(fd) };
+            return Ok(false);
+        }
+        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let pr = unsafe { libc::poll(&mut pfd, 1, timeout_ms as i32) };
+        if pr <= 0 {
+            unsafe { libc::close(fd) };
+            return Ok(false);
+        }
+        let mut buf = [0u8; 512];
+        let n = unsafe { libc::recv(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
+        unsafe { libc::close(fd) };
+        if n < 20 {
+            return Ok(false);
+        }
+        Ok(buf[0] == 0 && buf[4] == pkt[4] && buf[5] == pkt[5])
+    }
+}
+
+/// تتبع المسار عبر UDP + IP_RECVERR (لينكس فقط):
+/// كل قفزة (رقم، عنوان أو لا شيء عند المهلة، زمن بالمللي).
+/// فشل الإرسال (منه EPERM) يُعامل كقفزة مهلة — لا رد
+/// يمكن ملاحظته. يتوقف عند وصول ICMP «المنفذ لا يستجيب».
+pub fn net_probe_trace(host: &str, max_hops: u32, display: &str, line: usize, col: usize) -> RioResult<Vec<(u32, Option<String>, u64)>> {
+    #[cfg(any(target_arch = "wasm32", not(target_os = "linux")))]
+    {
+        let _ = (host, max_hops);
+        Err(RioError::runtime(format!("{} غير مدعوم على هذه المنصة", display), line, col))
+    }
+    #[cfg(all(not(target_arch = "wasm32"), target_os = "linux"))]
+    {
+        require_network_allowed(line, col)?;
+        let addr = resolve_and_check(host, 33434, line, col)?;
+        let ip = match addr.ip() {
+            std::net::IpAddr::V4(v4) => v4,
+            _ => {
+                return Err(RioError::runtime(
+                    format!("الدالة {} التتبع يدعم IPv4 فقط", display),
+                    line,
+                    col,
+                ))
+            }
+        };
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, libc::IPPROTO_UDP) };
+        if fd < 0 {
+            return Err(RioError::runtime("تعذر فتح مقبس التتبع", line, col));
+        }
+        let on: libc::c_int = 1;
+        unsafe {
+            libc::setsockopt(
+                fd,
+                libc::IPPROTO_IP,
+                libc::IP_RECVERR,
+                &on as *const libc::c_int as *const libc::c_void,
+                std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+            );
+        }
+        let mut hops = Vec::new();
+        let payload = [0u8; 32];
+        for ttl in 1..=max_hops {
+            let ttl_i = ttl as libc::c_int;
+            unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::IPPROTO_IP,
+                    libc::IP_TTL,
+                    &ttl_i as *const libc::c_int as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                );
+            }
+            let start = std::time::Instant::now();
+            let dest_port = 33434 + ttl as u16;
+            let sent = unsafe {
+                let mut sa: libc::sockaddr_in = std::mem::zeroed();
+                sa.sin_family = libc::AF_INET as libc::sa_family_t;
+                sa.sin_port = dest_port.to_be();
+                sa.sin_addr = libc::in_addr { s_addr: u32::from_ne_bytes(ip.octets()) };
+                libc::sendto(
+                    fd,
+                    payload.as_ptr() as *const libc::c_void,
+                    payload.len(),
+                    0,
+                    &sa as *const libc::sockaddr_in as *const libc::sockaddr,
+                    std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                )
+            };
+            if sent < 0 {
+                hops.push((ttl, None, start.elapsed().as_millis() as u64));
+                continue;
+            }
+            let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+            let pr = unsafe { libc::poll(&mut pfd, 1, 1000) };
+            if pr <= 0 {
+                hops.push((ttl, None, start.elapsed().as_millis() as u64));
+                continue;
+            }
+            let mut buf = [0u8; 512];
+            let mut ctrl = [0u8; 512];
+            let mut src: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+            let mut iov = libc::iovec { iov_base: buf.as_mut_ptr() as *mut libc::c_void, iov_len: buf.len() };
+            let mut msg: libc::msghdr = unsafe { std::mem::zeroed() };
+            msg.msg_name = &mut src as *mut libc::sockaddr_storage as *mut libc::c_void;
+            msg.msg_namelen = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+            msg.msg_iov = &mut iov;
+            msg.msg_iovlen = 1;
+            msg.msg_control = ctrl.as_mut_ptr() as *mut libc::c_void;
+            msg.msg_controllen = ctrl.len();
+            let n = unsafe { libc::recvmsg(fd, &mut msg, 0) };
+            let elapsed = start.elapsed().as_millis() as u64;
+            if n < 0 {
+                hops.push((ttl, None, elapsed));
+                continue;
+            }
+            let sender: Option<String> = unsafe {
+                if src.ss_family == libc::AF_INET as libc::sa_family_t {
+                    let sin = &*(&src as *const libc::sockaddr_storage as *const libc::sockaddr_in);
+                    let oct = sin.sin_addr.s_addr.to_ne_bytes();
+                    Some(format!("{}.{}.{}.{}", oct[0], oct[1], oct[2], oct[3]))
+                } else {
+                    None
+                }
+            };
+            let mut reached = false;
+            unsafe {
+                let mut cmsg = libc::CMSG_FIRSTHDR(&msg);
+                while !cmsg.is_null() {
+                    if (*cmsg).cmsg_level == libc::IPPROTO_IP && (*cmsg).cmsg_type == libc::IP_RECVERR {
+                        let ee = &*(libc::CMSG_DATA(cmsg) as *const libc::sock_extended_err);
+                        if ee.ee_type == 3 && ee.ee_code == 3 {
+                            reached = true;
+                        }
+                    }
+                    cmsg = libc::CMSG_NXTHDR(&msg, cmsg);
+                }
+            }
+            hops.push((ttl, sender, elapsed));
+            if reached {
+                break;
+            }
+        }
+        unsafe { libc::close(fd) };
+        Ok(hops)
+    }
+}
+
+/// لف تدفق TCP عادي بـ TLS (لاتصل_مشفر) — رسائل عامة بلا ذكر FTPS.
+#[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+pub(crate) fn tls_wrap_stream(
+    stream: std::net::TcpStream,
+    host: &str,
+    deadline: std::time::Instant,
+    line: usize,
+    col: usize,
+) -> RioResult<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>> {
+    let config = std::sync::Arc::new(tls_client_config());
+    let server_name = rustls::pki_types::ServerName::try_from(host.to_string()).map_err(|_| {
+        RioError::runtime(format!("اسم مضيف غير صالح: {}", host), line, col)
+    })?;
+    let conn = rustls::ClientConnection::new(config, server_name)
+        .map_err(|_| RioError::runtime("تعذر بدء اتصال TLS", line, col))?;
+    let mut tls = rustls::StreamOwned::new(conn, stream);
+    let left = time_left(deadline, line, col)?;
+    let _ = tls.get_mut().set_read_timeout(Some(left));
+    let _ = tls.get_mut().set_write_timeout(Some(left));
+    Ok(tls)
 }

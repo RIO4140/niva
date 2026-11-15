@@ -69,6 +69,14 @@ enum SocketEntry {
 static REGISTRY: LazyLock<Mutex<HashMap<u64, SocketEntry>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Live TLS sockets (اتصل_مشفر): kept apart from the plain
+/// registry because StreamOwned cannot be cloned — send/recv
+/// take the entry out, do blocking I/O, and put it back.
+#[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+static TLS_REGISTRY: LazyLock<Mutex<HashMap<u64, rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+
 /// Socket handles start at 1 and never repeat in one run.
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -174,6 +182,45 @@ fn put_back_entry(id: u64, entry: SocketEntry) {
         reg.insert(id, entry);
     }
 }
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+fn tls_take(id: u64) -> Option<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>> {
+    TLS_REGISTRY.lock().ok()?.remove(&id)
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+fn tls_put_back(id: u64, stream: rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>) {
+    if let Ok(mut reg) = TLS_REGISTRY.lock() {
+        reg.insert(id, stream);
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+fn tls_insert(stream: rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>, line: usize, col: usize) -> RioResult<u64> {
+    let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
+    let plain = REGISTRY.lock().map(|r| r.len()).unwrap_or(0);
+    match TLS_REGISTRY.lock() {
+        Ok(mut reg) => {
+            if plain + reg.len() >= MAX_LIVE_SOCKETS {
+                return Err(RioError::runtime(
+                    "تجاوز عدد المقابس الحية الحد (٦٤) — أغلق بعض المقابس",
+                    line,
+                    col,
+                ));
+            }
+            reg.insert(id, stream);
+        }
+        Err(_) => {
+            return Err(RioError::runtime(
+                "تعذّر تسجيل المقبس الجديد",
+                line,
+                col,
+            ));
+        }
+    }
+    Ok(id)
+}
+
 
 /// A cloned TCP stream for I/O without holding the registry
 /// lock while the call blocks (the clone shares the same
@@ -457,6 +504,60 @@ fn connect_existing_native(
     Ok(id)
 }
 
+
+/// TLS connect: `شبكة.اتصل_مشفر(مضيف، منفذ)` — returns a
+/// handle in the TLS registry; send/recv work on it through
+/// the same names. The handshake happens lazily on first I/O.
+pub fn connect_tls(host: &str, port: i64, line: usize, col: usize) -> RioResult<u64> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (host, port);
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(all(not(target_arch = "wasm32"), not(feature = "https")))]
+    {
+        let _ = (host, port);
+        Err(RioError::runtime("اتصل_مشفر غير مدعوم في هذا البناء", line, col))
+    }
+    #[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+    {
+        connect_tls_native(host, port, line, col)
+    }
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+fn connect_tls_native(host: &str, port: i64, line: usize, col: usize) -> RioResult<u64> {
+    network::require_network_allowed(line, col)?;
+    let port = check_port(port, "شبكة.اتصل_مشفر", false, line, col)?;
+    let addr = network::resolve_checked(host, port, line, col)?;
+    let stream = TcpStream::connect_timeout(&addr, TIMEOUT)
+        .map_err(|e| connect_error(host, &e, line, col))?;
+    arm_timeouts(&stream);
+    let deadline = std::time::Instant::now() + TIMEOUT;
+    let tls = network::tls_wrap_stream(stream, host, deadline, line, col)?;
+    tls_insert(tls, line, col)
+}
+
+/// TCP connect with a caller timeout: `شبكة.اتصل_بمهلة(مضيف، منفذ، ثوان)`.
+pub fn connect_timeout_new(host: &str, port: i64, secs: i64, line: usize, col: usize) -> RioResult<u64> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (host, port, secs);
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        network::require_network_allowed(line, col)?;
+        let port = check_port(port, "شبكة.اتصل_بمهلة", false, line, col)?;
+        let addr = network::resolve_checked(host, port, line, col)?;
+        let dur = std::time::Duration::from_secs(secs as u64);
+        let stream = TcpStream::connect_timeout(&addr, dur)
+            .map_err(|e| connect_error(host, &e, line, col))?;
+        arm_timeouts(&stream);
+        insert_entry(SocketEntry::TcpConnected(stream), line, col)
+    }
+}
+
 /// Listen for TCP connections: `شبكة.استمع(منفذ)` binds
 /// 127.0.0.1; `شبكة.استمع(منفذ، مضيف)` binds the given
 /// host, which must be 127.0.0.1 or 0.0.0.0 (the server's
@@ -661,6 +762,23 @@ pub fn send(id: u64, text: &str, line: usize, col: usize) -> RioResult<u64> {
 #[cfg(not(target_arch = "wasm32"))]
 fn send_native(id: u64, text: &str, line: usize, col: usize) -> RioResult<u64> {
     network::require_network_allowed(line, col)?;
+    #[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+    {
+        if let Some(mut tls) = tls_take(id) {
+            let result = (|| -> RioResult<u64> {
+                tls.write_all(text.as_bytes()).map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::TimedOut {
+                        RioError::runtime("انتهت مهلة الإرسال (30 ثانية)", line, col)
+                    } else {
+                        RioError::runtime("تعذر الإرسال على المقبس", line, col)
+                    }
+                })?;
+                Ok(text.len() as u64)
+            })();
+            tls_put_back(id, tls);
+            return result;
+        }
+    }
     let mut stream = clone_tcp(id, line, col)?;
     stream.write_all(text.as_bytes()).map_err(|e| {
         if e.kind() == std::io::ErrorKind::TimedOut {
@@ -691,6 +809,38 @@ pub fn recv(id: u64, line: usize, col: usize) -> RioResult<String> {
 #[cfg(not(target_arch = "wasm32"))]
 fn recv_native(id: u64, line: usize, col: usize) -> RioResult<String> {
     network::require_network_allowed(line, col)?;
+    #[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+    {
+        if let Some(mut tls) = tls_take(id) {
+            let result = (|| -> RioResult<String> {
+                let mut buf = vec![0u8; MAX_RECV_BYTES];
+                let n = tls.read(&mut buf).map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::TimedOut {
+                        RioError::runtime("انتهت مهلة الاستقبال (30 ثانية)", line, col)
+                    } else {
+                        RioError::runtime("تعذر الاستقبال من المقبس", line, col)
+                    }
+                })?;
+                if n == 0 {
+                    return Err(RioError::runtime(
+                        "أغلق الطرف الآخر الاتصال",
+                        line,
+                        col,
+                    ));
+                }
+                buf.truncate(n);
+                String::from_utf8(buf).map_err(|_| {
+                    RioError::runtime(
+                        "البيانات المستقبلة ليست نصا صالحا (UTF-8)",
+                        line,
+                        col,
+                    )
+                })
+            })();
+            tls_put_back(id, tls);
+            return result;
+        }
+    }
     let mut stream = clone_tcp(id, line, col)?;
     let mut buf = vec![0u8; MAX_RECV_BYTES];
     let n = stream.read(&mut buf).map_err(|e| {
@@ -819,6 +969,18 @@ pub fn local_port(id: u64, line: usize, col: usize) -> RioResult<u16> {
 #[cfg(not(target_arch = "wasm32"))]
 fn local_port_native(id: u64, line: usize, col: usize) -> RioResult<u16> {
     network::require_network_allowed(line, col)?;
+    #[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+    {
+        if let Ok(reg) = TLS_REGISTRY.lock() {
+            if let Some(tls) = reg.get(&id) {
+                return tls
+                    .get_ref()
+                    .local_addr()
+                    .map(|a| a.port())
+                    .map_err(|_| RioError::runtime("تعذّر قراءة منفذ المقبس", line, col));
+            }
+        }
+    }
     match REGISTRY.lock() {
         Ok(reg) => match reg.get(&id) {
             Some(SocketEntry::TcpConnected(s)) => s
@@ -869,6 +1031,12 @@ pub fn close_socket(id: u64, line: usize, col: usize) -> RioResult<()> {
 #[cfg(not(target_arch = "wasm32"))]
 fn close_socket_native(id: u64, line: usize, col: usize) -> RioResult<()> {
     network::require_network_allowed(line, col)?;
+    #[cfg(all(not(target_arch = "wasm32"), feature = "https"))]
+    {
+        if tls_take(id).is_some() {
+            return Ok(());
+        }
+    }
     take_entry(id, line, col)?;
     Ok(())
 }
@@ -1068,6 +1236,16 @@ mod tests {
     }
 
     #[test]
+
+    /// اتصل_مشفر على منفذ مغلق: يجب أن يفشل بخطأ عربي لا بانهيار.
+    /// (لا خادم TLS محليا — هذا الاختبار يغطي مسار الفشل فقط.)
+    #[test]
+    fn connect_tls_refused() {
+        let _g = gate_open();
+        let r = connect_tls("127.0.0.1", 1, 1, 1);
+        assert!(r.is_err());
+    }
+
     fn connect_existing_roundtrip() {
         let _g = gate_open();
         let (port, server) = tcp_echo_server("127.0.0.1");

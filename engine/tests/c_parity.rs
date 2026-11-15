@@ -330,7 +330,7 @@ fn c_parity_package_import() {
 /// «تنفيذ-ج3-69» و«تنفيذ-ج3-69-أخطاء»: تنفيذ نص بلا
 /// مفسر مضمّن في الثنائي الأصلي (J3-69) — فحالتا
 /// التكافؤ في بوابة المفسر/الآلة فقط.
-const C_SKIP: &[&str] = &["تثبيت-محلي", "تنفيذ-ج3-69", "تنفيذ-ج3-69-أخطاء", "مولدات-أساسية", "مولدات-كسل", "مولدات-حالة", "مولدات-لانهائي", "مولدات-استنفاد", "مولدات-ولد-من", "مولدات-اغلاق", "مولدات-استئناف-متداخل", "مولدات-تعبير", "مولدات-تعبير-كسل", "مولدات-خطأ-داخلي", "مولدات-متداخل-دالتان", "مولدات-نوع-وطباعة", "مولدات-ولد-من-خطأ", "مولدات-اغلاق-جديد", "مولدات-ولد-بلا-قيمة", "مولدات-ارجاع-مولد", "مولدات-مهمل-بلا-اغلاق", "مولدات-تعليق-داخل-اذا"];
+const C_SKIP: &[&str] = &["تثبيت-محلي", "تنفيذ-ج3-69", "تنفيذ-ج3-69-أخطاء", "مولدات-أساسية", "مولدات-كسل", "مولدات-حالة", "مولدات-لانهائي", "مولدات-استنفاد", "مولدات-ولد-من", "مولدات-اغلاق", "مولدات-استئناف-متداخل", "مولدات-تعبير", "مولدات-تعبير-كسل", "مولدات-خطأ-داخلي", "مولدات-متداخل-دالتان", "مولدات-نوع-وطباعة", "مولدات-ولد-من-خطأ", "مولدات-اغلاق-جديد", "مولدات-ولد-بلا-قيمة", "مولدات-ارجاع-مولد", "مولدات-مهمل-بلا-اغلاق", "مولدات-تعليق-داخل-اذا", "شبكة8-طلب-جديد", "شبكة8-ضوابط-سلسلة", "شبكة8-مصادقة-سلسلة", "شبكة8-توقيع-شهادة", "شبكة8-بلا-رأس-مكرر", "شبكة8-ضابط-مهلة-صفر", "شبكة8-ضابط-محاولات-كثيرة", "شبكة8-ضابط-ترميز-خطأ", "شبكة8-ضابط-تحقق-شهادة", "شبكة8-نفذ-بلا-رابط", "شبكة8-نفذ-طريقة-فارغة", "شبكة8-نفذ-خيار-مجهول", "شبكة8-نفذ-رأس-سيئ", "شبكة8-نفذ-جسم-سيئ", "شبكة8-نفذ-مدى-مقلوب", "شبكة8-طلب-رابط-فارغ", "شبكة8-نفذ-شبكة-مغلقة", "شبكة8-مع-كوكيز", "شبكة8-أرسل-json-بلا-رابط", "شبكة8-أرسل-نموذج-حقول-سيئة", "شبكة8-أرسل-نموذج-زوج-سيئ", "شبكة8-أرسل-خام-جسم-سيئ", "شبكة8-اطلب-مخصص-طريقة-فارغة", "شبكة8-ارفع-ملف-غائب", "شبكة8-نزل-الكل-روابط-سيئة", "شبكة8-نزل-من-قائمة-غائبة", "شبكة8-بحفظ-في", "شبكة8-اجلب-ftp-رابط-سيئ", "شبكة8-نزل-ftp-مسار-فارغ", "شبكة8-ارفع-ftp-ملف-غائب", "شبكة8-اشترك-mqtt-وسيط-سيئ", "شبكة8-اشترك-mqtt-مهلة-سيئة", "شبكة8-انشر-mqtt-موضوع-فارغ", "شبكة8-اجلب-sftp-مرفوض", "شبكة8-نزل-sftp-مرفوض", "شبكة8-اطلب-http3-مرفوض", "شبكة8-نزل-خلفية-مرفوض", "شبكة8-اجلب-ftps-رابط-سيئ", "شبكة8-جلسة-جديدة", "شبكة8-جلسة-مسماة", "شبكة8-جلسة-حفظ-قراءة", "شبكة8-اقرأ-جلسة-غائبة-قراءة", "شبكة8-اقرأ-جلسة-غائبة", "شبكة8-اقرأ-كوكيز-غائب", "شبكة8-اقرأ-وسم-غائب", "شبكة8-رمز-عنوان", "شبكة8-أضف-معامل", "شبكة8-رد-عرض", "شبكة8-نسق-json", "شبكة8-نسق-json-سيئ", "شبكة8-وقع-طلب-خوارزمية", "شبكة8-احفظ-وسم-بلا-وسم", "شبكة8-عناويني-قائمة", "شبكة8-عنوان-واجهة-lo", "شبكة8-عنوان-واجهة-غائبة", "شبكة8-عناويني-مختصرة", "شبكة8-مساراتي-عدد", "شبكة8-مسار-لمضيف", "شبكة8-حالة-الشبكة-عدد", "شبكة8-جيراني-نوع", "شبكة8-جار-غائب", "شبكة8-إحصاءات-بروتوكول", "شبكة8-قواعد-توجيه", "شبكة8-معلومات-جهاز", "شبكة8-افحص-منفذ-خطأ", "شبكة8-افحص-نطاق-كبير", "شبكة8-تتبع-أقصى-سيئ", "شبكة8-اتصل-مشفر-مغلق", "شبكة8-اتصل-بمهلة-ثوان-سيئة", "شبكة8-انبض-مستمر-عدد-سيئ", "شبكة8-حل-اسم-فارغ", "شبكة8-افحص-udp-منفذ-سيئ", "شبكة8-قواعد-جدار-نوع", "شبكة8-اتصالاتي-نوع"];
 
 #[test]
 fn c_parity_integration_scenarios() {
@@ -826,6 +826,1261 @@ fn c_parity_server_http() {
         String::from_utf8_lossy(&out_c.stderr)
     );
     let _ = fs::remove_dir_all(&dir);
+}
+
+
+// ----- الدفعة 8 — الطبقة 1 (اجتماع 90 §105) -----
+
+#[test]
+#[cfg(unix)]
+fn c_parity_batch8_pure() {
+    // الحالات النقية أصليا (المفسر مقابل الثنائي
+    // الأصلي)؛ وهي في INTEGRATION_CASES وفي C_SKIP
+    // (سابقة المولدات).
+    for (name, lines) in pc::INTEGRATION_CASES {
+        if name.starts_with("شبكة8-") {
+            assert_native_src(name, lines);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn b8_crc32(data: &[u8]) -> u32 {
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        crc ^= b as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB8_8320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    crc ^ 0xFFFF_FFFF
+}
+
+/// gzip بكتلة مخزنة (بلا ضغط فعلي) — حتمي.
+#[cfg(unix)]
+fn b8_gzip_stored(data: &[u8]) -> Vec<u8> {
+    let mut out = vec![0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0x00, 0x03];
+    out.push(0x01);
+    let len = data.len() as u16;
+    out.extend_from_slice(&len.to_le_bytes());
+    out.extend_from_slice(&(!len).to_le_bytes());
+    out.extend_from_slice(data);
+    out.extend_from_slice(&b8_crc32(data).to_le_bytes());
+    out.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    out
+}
+
+#[cfg(unix)]
+struct B8Req {
+    method: String,
+    target: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+#[cfg(unix)]
+fn b8_read_req(stream: &mut std::net::TcpStream) -> Option<B8Req> {
+    use std::io::Read;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut byte = [0u8; 1];
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+    while !buf.ends_with(b"\r\n\r\n") {
+        match stream.read(&mut byte) {
+            Ok(0) => return None,
+            Ok(_) => buf.push(byte[0]),
+            Err(_) => return None,
+        }
+        if buf.len() > 65536 {
+            return None;
+        }
+    }
+    let head = String::from_utf8_lossy(&buf).into_owned();
+    let mut lines = head.lines();
+    let first = lines.next().unwrap_or("");
+    let mut parts = first.split_whitespace();
+    let method = parts.next().unwrap_or("").to_string();
+    let target = parts.next().unwrap_or("").to_string();
+    let mut headers: Vec<(String, String)> = Vec::new();
+    for ln in lines {
+        if let Some((n, v)) = ln.split_once(':') {
+            headers.push((n.trim().to_ascii_lowercase(), v.trim().to_string()));
+        }
+    }
+    let get = |n: &str| {
+        headers
+            .iter()
+            .find(|(k, _)| k == n)
+            .map(|(_, v)| v.clone())
+    };
+    let mut body = Vec::new();
+    if let Some(te) = get("transfer-encoding") {
+        if te.to_ascii_lowercase().contains("chunked") {
+            loop {
+                let mut line: Vec<u8> = Vec::new();
+                let mut b = [0u8; 1];
+                while !line.ends_with(b"\r\n") {
+                    match stream.read(&mut b) {
+                        Ok(0) => break,
+                        Ok(_) => line.push(b[0]),
+                        Err(_) => break,
+                    }
+                }
+                let size_str = String::from_utf8_lossy(&line).trim().to_string();
+                let size = usize::from_str_radix(size_str.trim(), 16).unwrap_or(0);
+                if size == 0 {
+                    let mut tail = [0u8; 2];
+                    let _ = stream.read_exact(&mut tail);
+                    break;
+                }
+                let mut chunk = vec![0u8; size];
+                stream.read_exact(&mut chunk).ok()?;
+                body.extend_from_slice(&chunk);
+                let mut crlf = [0u8; 2];
+                stream.read_exact(&mut crlf).ok()?;
+            }
+        }
+    } else if let Some(cl) = get("content-length") {
+        let n: usize = cl.parse().unwrap_or(0);
+        let mut b = vec![0u8; n];
+        stream.read_exact(&mut b).ok()?;
+        body = b;
+    }
+    Some(B8Req {
+        method,
+        target,
+        headers,
+        body,
+    })
+}
+
+#[cfg(unix)]
+fn b8_respond(
+    stream: &mut std::net::TcpStream,
+    status: u16,
+    reason: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) {
+    use std::io::Write;
+    let mut out = format!("HTTP/1.1 {} {}\r\n", status, reason);
+    for (n, v) in headers {
+        out.push_str(&format!("{}: {}\r\n", n, v));
+    }
+    out.push_str(&format!(
+        "Content-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    ));
+    let mut bytes = out.into_bytes();
+    bytes.extend_from_slice(body);
+    let _ = stream.write_all(&bytes);
+    let _ = stream.flush();
+}
+
+#[cfg(unix)]
+fn b8_route(req: &B8Req) -> (u16, &'static str, Vec<(String, String)>, Vec<u8>) {
+    let get = |n: &str| {
+        req.headers
+            .iter()
+            .find(|(k, _)| k == n)
+            .map(|(_, v)| v.as_str())
+    };
+    let ct = ("Content-Type".to_string(), "text/plain; charset=utf-8".to_string());
+    let path = req.target.split('?').next().unwrap_or("");
+    match (req.method.as_str(), path) {
+        ("GET", "/hello") => (200, "OK", vec![ct], b"hello world".to_vec()),
+        ("GET", "/redir") | ("POST", "/redir-post") => (
+            302,
+            "Found",
+            vec![ct, ("Location".to_string(), "/hello".to_string())],
+            Vec::new(),
+        ),
+        ("GET", "/gzip") => (
+            200,
+            "OK",
+            vec![
+                ct,
+                ("Content-Encoding".to_string(), "gzip".to_string()),
+            ],
+            b8_gzip_stored(b"compressed text here"),
+        ),
+        ("GET", "/notfound") => (404, "Not Found", vec![ct], b"missing".to_vec()),
+        ("GET", "/range") => {
+            let full = b"0123456789ABCDEFGHIJ";
+            if let Some(r) = get("range") {
+                let spec = r.strip_prefix("bytes=").unwrap_or("");
+                let mut it = spec.split('-');
+                let a: usize = it.next().unwrap_or("").parse().unwrap_or(0);
+                let b: usize = it.next().unwrap_or("").parse().unwrap_or(full.len() - 1);
+                let b = b.min(full.len() - 1);
+                let slice = &full[a..=b];
+                (
+                    206,
+                    "Partial Content",
+                    vec![
+                        ct,
+                        (
+                            "Content-Range".to_string(),
+                            format!("bytes {}-{}/{}", a, b, full.len()),
+                        ),
+                    ],
+                    slice.to_vec(),
+                )
+            } else {
+                (200, "OK", vec![ct], full.to_vec())
+            }
+        }
+        ("GET", "/cookie") => (
+            200,
+            "OK",
+            vec![ct],
+            get("cookie").unwrap_or("بلا").as_bytes().to_vec(),
+        ),
+        ("GET", "/basic") => {
+            if get("authorization")
+                .map(|v| v.starts_with("Basic "))
+                .unwrap_or(false)
+            {
+                (200, "OK", vec![ct], b"basic ok".to_vec())
+            } else {
+                (
+                    401,
+                    "Unauthorized",
+                    vec![
+                        ct,
+                        (
+                            "WWW-Authenticate".to_string(),
+                            "Basic realm=\"test\"".to_string(),
+                        ),
+                    ],
+                    b"need basic".to_vec(),
+                )
+            }
+        }
+        ("GET", "/bearer") => {
+            if get("authorization")
+                .map(|v| v == "Bearer رمز-اختبار")
+                .unwrap_or(false)
+            {
+                (200, "OK", vec![ct], b"bearer ok".to_vec())
+            } else {
+                (401, "Unauthorized", vec![ct], b"need bearer".to_vec())
+            }
+        }
+        ("GET", "/digest") => {
+            if get("authorization")
+                .map(|v| v.starts_with("Digest "))
+                .unwrap_or(false)
+            {
+                (200, "OK", vec![ct], b"secret data".to_vec())
+            } else {
+                (
+                    401,
+                    "Unauthorized",
+                    vec![
+                        ct,
+                        (
+                            "WWW-Authenticate".to_string(),
+                            "Digest realm=\"test\", nonce=\"abc123\", qop=\"auth\", algorithm=MD5"
+                                .to_string(),
+                        ),
+                    ],
+                    b"need digest".to_vec(),
+                )
+            }
+        }
+        ("GET", "/sigv4") => {
+            let ok = get("authorization")
+                .map(|v| v.starts_with("AWS4-HMAC-SHA256 Credential=مفتاح-اختبار/"))
+                .unwrap_or(false)
+                && get("x-amz-date").is_some()
+                && get("x-amz-content-sha256").is_some();
+            if ok {
+                (200, "OK", vec![ct], b"signed ok".to_vec())
+            } else {
+                (401, "Unauthorized", vec![ct], b"need sigv4".to_vec())
+            }
+        }
+        ("GET", "/httpsig") => {
+            let ok = get("authorization")
+                .map(|v| v.starts_with("Signature keyId=\"معرف-اختبار\""))
+                .unwrap_or(false)
+                && get("date").is_some();
+            if ok {
+                (200, "OK", vec![ct], b"signed ok".to_vec())
+            } else {
+                (401, "Unauthorized", vec![ct], b"need httpsig".to_vec())
+            }
+        }
+        ("GET", "/headers") => {
+            let mut hs: Vec<(String, String)> = req.headers.clone();
+            hs.sort_by(|a, b| a.0.cmp(&b.0));
+            let body = hs
+                .iter()
+                .map(|(n, v)| format!("{}: {}", n, v))
+                .collect::<Vec<_>>()
+                .join("\n");
+            (200, "OK", vec![ct], body.into_bytes())
+        }
+        ("POST", "/echo-chunked") => (200, "OK", vec![ct], req.body.clone()),
+        ("HEAD", "/echo") => (200, "OK", vec![ct], Vec::new()),
+        (_, "/echo") => {
+            let mut b = format!("{} {}", req.method, req.target).into_bytes();
+            if !req.body.is_empty() {
+                b.push(b':');
+                b.extend_from_slice(&req.body);
+            }
+            (200, "OK", vec![ct], b)
+        }
+        ("GET", "/site") => (
+            200,
+            "OK",
+            vec![ct],
+            b"<html><body><a href=\"/site/a\">\xd8\xa3</a><a href=\"b\">\xd8\xa8</a></body></html>".to_vec(),
+        ),
+        ("GET", "/site/a") => (200, "OK", vec![ct], "صفحة أ".as_bytes().to_vec()),
+        ("GET", "/b") => (200, "OK", vec![ct], "صفحة ب".as_bytes().to_vec()),
+        ("GET", "/dl-name") => (
+            200,
+            "OK",
+            vec![
+                ct,
+                (
+                    "Content-Disposition".to_string(),
+                    "attachment; filename=\"اسم-ملف.txt\"".to_string(),
+                ),
+            ],
+            "محتوى الملف".as_bytes().to_vec(),
+        ),
+        _ => (404, "Not Found", vec![ct], b"missing".to_vec()),
+    }
+}
+
+#[cfg(unix)]
+fn b8_serve_forever(listener: std::net::TcpListener) {
+    for stream in listener.incoming() {
+        if let Ok(mut s) = stream {
+            if let Some(req) = b8_read_req(&mut s) {
+                let (st, reason, hdrs, body) = b8_route(&req);
+                let hrefs: Vec<(&str, &str)> = hdrs
+                    .iter()
+                    .map(|(n, v)| (n.as_str(), v.as_str()))
+                    .collect();
+                b8_respond(&mut s, st, reason, &hrefs, &body);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn b8_serve_proxy_forever(listener: std::net::TcpListener) {
+    use std::io::{Read, Write};
+    for stream in listener.incoming() {
+        if let Ok(mut client) = stream {
+            let req = match b8_read_req(&mut client) {
+                Some(r) => r,
+                None => continue,
+            };
+            let rest = req.target.strip_prefix("http://").unwrap_or(&req.target);
+            let (hostport, path) = match rest.find('/') {
+                Some(i) => (&rest[..i], &rest[i..]),
+                None => (rest, "/"),
+            };
+            let (host, port) = match hostport.rfind(':') {
+                Some(i) => (&hostport[..i], hostport[i + 1..].parse().unwrap_or(80)),
+                None => (hostport, 80),
+            };
+            if let Ok(mut upstream) = std::net::TcpStream::connect((host, port)) {
+                let mut out = format!("{} {} HTTP/1.1\r\n", req.method, path);
+                for (n, v) in &req.headers {
+                    if n == "proxy-authorization" {
+                        continue;
+                    }
+                    out.push_str(&format!("{}: {}\r\n", n, v));
+                }
+                out.push_str("\r\n");
+                let mut bytes = out.into_bytes();
+                bytes.extend_from_slice(&req.body);
+                if upstream.write_all(&bytes).is_ok() {
+                    let mut resp = Vec::new();
+                    let _ = upstream.read_to_end(&mut resp);
+                    let _ = client.write_all(&resp);
+                }
+            }
+            let _ = client.flush();
+        }
+    }
+}
+
+#[cfg(unix)]
+fn b8_serve_socks5_forever(listener: std::net::TcpListener) {
+    use std::io::{Read, Write};
+    for stream in listener.incoming() {
+        if let Ok(mut client) = stream {
+            std::thread::spawn(move || {
+                let _ = client.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+                let mut hdr = [0u8; 2];
+                if client.read_exact(&mut hdr).is_err() {
+                    return;
+                }
+                let n = hdr[1] as usize;
+                let mut methods = vec![0u8; n];
+                if client.read_exact(&mut methods).is_err() {
+                    return;
+                }
+                if client.write_all(&[5, 0]).is_err() {
+                    return;
+                }
+                let mut req4 = [0u8; 4];
+                if client.read_exact(&mut req4).is_err() {
+                    return;
+                }
+                if req4[0] != 5 || req4[1] != 1 {
+                    return;
+                }
+                let (host, port) = match req4[3] {
+                    1 => {
+                        let mut ip = [0u8; 4];
+                        if client.read_exact(&mut ip).is_err() {
+                            return;
+                        }
+                        let mut pb = [0u8; 2];
+                        if client.read_exact(&mut pb).is_err() {
+                            return;
+                        }
+                        (
+                            format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]),
+                            u16::from_be_bytes(pb),
+                        )
+                    }
+                    3 => {
+                        let mut l = [0u8; 1];
+                        if client.read_exact(&mut l).is_err() {
+                            return;
+                        }
+                        let mut name = vec![0u8; l[0] as usize];
+                        if client.read_exact(&mut name).is_err() {
+                            return;
+                        }
+                        let mut pb = [0u8; 2];
+                        if client.read_exact(&mut pb).is_err() {
+                            return;
+                        }
+                        (
+                            String::from_utf8_lossy(&name).into_owned(),
+                            u16::from_be_bytes(pb),
+                        )
+                    }
+                    _ => return,
+                };
+                match std::net::TcpStream::connect((host.as_str(), port)) {
+                    Ok(mut upstream) => {
+                        if client.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0]).is_err() {
+                            return;
+                        }
+                        let mut up2 = match upstream.try_clone() {
+                            Ok(c) => c,
+                            Err(_) => return,
+                        };
+                        let mut c2 = match client.try_clone() {
+                            Ok(c) => c,
+                            Err(_) => return,
+                        };
+                        let t = std::thread::spawn(move || {
+                            let mut buf = [0u8; 8192];
+                            loop {
+                                match up2.read(&mut buf) {
+                                    Ok(0) => break,
+                                    Ok(n) => {
+                                        if c2.write_all(&buf[..n]).is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                            let _ = c2.shutdown(std::net::Shutdown::Write);
+                        });
+                        let mut buf = [0u8; 8192];
+                        loop {
+                            match client.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    if upstream.write_all(&buf[..n]).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
+                            }
+                        }
+                        let _ = upstream.shutdown(std::net::Shutdown::Write);
+                        let _ = t.join();
+                    }
+                    Err(_) => {
+                        let _ = client.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]);
+                    }
+                }
+            });
+        }
+    }
+}
+
+/// شغّل جالبا بالمفسر وبالثنائي الأصلي (بأعلام
+/// الشبكة) وقارنهما حرفيا — في مجلدين منفصلين
+/// (فالحفظ يكتب ملفات).
+#[cfg(unix)]
+fn b8_fetch_pair(name: &str, src: &str) {
+    let dir_i = pc::fresh_dir();
+    let dir_c = pc::fresh_dir();
+    fs::write(dir_i.join("prog.نيفا"), src).unwrap();
+    fs::write(dir_c.join("prog.نيفا"), src).unwrap();
+    let out_i = Command::new(pc::bin())
+        .args(["--مفسر", "--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"])
+        .arg(dir_i.join("prog.نيفا"))
+        .current_dir(&dir_i)
+        .output()
+        .expect("run جالب مفسر");
+    let build = Command::new(pc::bin())
+        .args(["ابن", "--أصلي", "prog.نيفا"])
+        .current_dir(&dir_c)
+        .output()
+        .expect("run نيفا ابن --أصلي");
+    assert!(
+        build.status.success(),
+        "فشل بناء جالب أصلي {}: {}",
+        name,
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let out_c = Command::new(dir_c.join("prog"))
+        .args(["--اسمح-بالشبكة", "--مضيف-محلي", "127.0.0.1"])
+        .current_dir(&dir_c)
+        .output()
+        .expect("run جالب أصلي");
+    let oi = String::from_utf8_lossy(&out_i.stdout).to_string();
+    let ei = pc::normalize_temp_dir(String::from_utf8_lossy(&out_i.stderr).to_string(), &dir_i);
+    let oc = String::from_utf8_lossy(&out_c.stdout).to_string();
+    let ec = pc::normalize_temp_dir(String::from_utf8_lossy(&out_c.stderr).to_string(), &dir_c);
+    assert_eq!(
+        (
+            oi.clone(),
+            ei.clone(),
+            out_i.status.code().unwrap_or(-1)
+        ),
+        (
+            oc.clone(),
+            ec.clone(),
+            out_c.status.code().unwrap_or(-1)
+        ),
+        "اختلاف تكافؤ أصلي في «{}»:\n--- المفسر:\nمخرج:\n{}\nخطأ:\n{}\n--- الأصلي:\nمخرج:\n{}\nخطأ:\n{}",
+        name, oi, ei, oc, ec
+    );
+    let _ = fs::remove_dir_all(&dir_i);
+    let _ = fs::remove_dir_all(&dir_c);
+}
+
+#[test]
+#[cfg(unix)]
+fn c_parity_batch8_http() {
+    // الدفعة 8 — الطبقة 1 (اجتماع 90 §105): جلب
+    // حي من خادم محلي (المفسر مقابل الأصلي) — على
+    // نمط c_parity_server_http.
+    for port in ["18109", "18110", "18111"] {
+        let _ = Command::new("fuser")
+            .args(["-k", &format!("{}/tcp", port)])
+            .output();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let http = std::net::TcpListener::bind("127.0.0.1:18109").expect("bind http");
+    let proxy = std::net::TcpListener::bind("127.0.0.1:18110").expect("bind proxy");
+    let socks = std::net::TcpListener::bind("127.0.0.1:18111").expect("bind socks5");
+    std::thread::spawn(move || b8_serve_forever(http));
+    std::thread::spawn(move || b8_serve_proxy_forever(proxy));
+    std::thread::spawn(move || b8_serve_socks5_forever(socks));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    b8_fetch_pair(
+        "شبكة8-حي-أساسي",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"طلب = شبكة.طلب_جديد("http://127.0.0.1:18109/hello")"#,
+            "رد = شبكة.نفذ(طلب)",
+            "اطبع رد",
+            r#"طلب2 = شبكة.طلب_جديد("http://127.0.0.1:18109/redir")"#,
+            "رد2 = شبكة.نفذ(طلب2)",
+            r#"اطبع رد2["رمز"]"#,
+            r#"اطبع رد2["جسم"]"#,
+            r#"طلب3 = شبكة.طلب_جديد("http://127.0.0.1:18109/gzip")"#,
+            "رد3 = شبكة.نفذ(طلب3)",
+            r#"اطبع رد3["جسم"]"#,
+            r#"طلب4 = شبكة.طلب_جديد("http://127.0.0.1:18109/notfound")"#,
+            "رد4 = شبكة.نفذ(طلب4)",
+            r#"اطبع رد4["رمز"]"#,
+            r#"اطبع رد4["جسم"]"#,
+            r#"اطبع رد4["بايتات"]"#,
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-طرق",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"طلب = {"رابط": "http://127.0.0.1:18109/echo"، "طريقة": "PUT"، "جسم": "جسم-وضع"، "نوع_المحتوى": "text/plain"}"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["جسم"]"#,
+            r#"طلب = {"رابط": "http://127.0.0.1:18109/echo"، "طريقة": "DELETE"}"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["جسم"]"#,
+            r#"طلب = {"رابط": "http://127.0.0.1:18109/echo"، "طريقة": "تتبع"}"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["جسم"]"#,
+            r#"طلب = {"رابط": "http://127.0.0.1:18109/echo"، "طريقة": "POST"، "جسم": "مرحبا"، "نوع_المحتوى": "text/plain"}"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["جسم"]"#,
+            r#"طلب = {"رابط": "http://127.0.0.1:18109/echo"، "طريقة": "HEAD"}"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["رمز"]"#,
+            r#"اطبع رد["بايتات"]"#,
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-متقطع-مدى-كوكيز-ترويسات",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"طلب = {"رابط": "http://127.0.0.1:18109/echo-chunked"، "طريقة": "POST"، "جسم": "جسم-متقطع-طويل-للفحص"، "نوع_المحتوى": "text/plain"}"#,
+            "طلب = شبكة.بإرسال_متقطع(طلب، صحيح)",
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["جسم"]"#,
+            r#"طلب = شبكة.طلب_جديد("http://127.0.0.1:18109/range")"#,
+            "طلب = شبكة.بمدى(طلب، ٥، ٩)",
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["رمز"]"#,
+            r#"اطبع رد["جسم"]"#,
+            r#"طلب = شبكة.طلب_جديد("http://127.0.0.1:18109/cookie")"#,
+            r#"طلب = شبكة.مع_كوكيز(طلب، "جلسة"، "قيمة-١")"#,
+            r#"طلب = شبكة.مع_كوكيز(طلب، "لغة"، "عربي")"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["جسم"]"#,
+            r#"طلب = شبكة.طلب_جديد("http://127.0.0.1:18109/headers")"#,
+            r#"طلب = شبكة.باسم_متصفح(طلب، "وكيل-اختبار")"#,
+            r#"طلب = شبكة.بإحالة(طلب، "http://مرجع.example/")"#,
+            r#"طلب = شبكة.باللغة(طلب، "ar")"#,
+            r#"طلب = شبكة.مع_رأس(طلب، "X-مخصص"، "نعم")"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["جسم"]"#,
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-مصادقة",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"طلب = شبكة.طلب_جديد("http://127.0.0.1:18109/basic")"#,
+            r#"طلب = شبكة.باسم_وكلمة_سر(طلب، "مستخدم"، "سر")"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["جسم"]"#,
+            r#"طلب = شبكة.طلب_جديد("http://127.0.0.1:18109/bearer")"#,
+            r#"طلب = شبكة.برمز(طلب، "رمز-اختبار")"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["جسم"]"#,
+            r#"طلب = شبكة.طلب_جديد("http://127.0.0.1:18109/digest")"#,
+            r#"طلب = شبكة.بمصادقة_هضمية(طلب، "مستخدم"، "سر")"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["جسم"]"#,
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-توقيع",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"طلب = شبكة.طلب_جديد("http://127.0.0.1:18109/sigv4")"#,
+            r#"طلب = شبكة.بتوقيع_أمازون(طلب، "مفتاح-اختبار"، "سر-اختبار")"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["جسم"]"#,
+            r#"طلب = شبكة.طلب_جديد("http://127.0.0.1:18109/httpsig")"#,
+            r#"طلب = شبكة.بتوقيع_طلب(طلب، "معرف-اختبار"، "مفتاح-اختبار")"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["جسم"]"#,
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-حفظ-تتبع",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"طلب = {"رابط": "http://127.0.0.1:18109/hello"، "حفظ_في": "محفوظ.txt"}"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["رمز"]"#,
+            r#"اطبع رد["بايتات"]"#,
+            r#"اطبع اقرأ_ملف("محفوظ.txt")"#,
+            r#"طلب = شبكة.طلب_جديد("http://127.0.0.1:18109/hello")"#,
+            r#"طلب = شبكة.بتتبع(طلب، "تتبع.txt")"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع اقرأ_ملف("تتبع.txt")"#,
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-تحقق-حالة",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"طلب = شبكة.طلب_جديد("http://127.0.0.1:18109/notfound")"#,
+            "طلب = شبكة.بتحقق_الحالة(طلب، صحيح)",
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["رمز"]"#,
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-وكيل",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"طلب = شبكة.طلب_جديد("http://127.0.0.1:18109/hello")"#,
+            r#"طلب = شبكة.عبر_وكيل(طلب، "127.0.0.1:18110")"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["جسم"]"#,
+            r#"طلب = شبكة.طلب_جديد("http://127.0.0.1:18109/hello")"#,
+            r#"طلب = شبكة.عبر_وكيل_socks5(طلب، "127.0.0.1:18111")"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["جسم"]"#,
+            r#"طلب = شبكة.طلب_جديد("http://127.0.0.1:18109/hello")"#,
+            r#"طلب = شبكة.عبر_وكيل(طلب، "127.0.0.1:18110")"#,
+            r#"طلب = شبكة.بلا_وكيل_ل(طلب، ["127.0.0.1"])"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["جسم"]"#,
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-توجيه",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"طلب = شبكة.طلب_جديد("http://127.0.0.1:18109/redir")"#,
+            "طلب = شبكة.باتباع_التوجيه(طلب، خطأ)",
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["رمز"]"#,
+            r#"اطبع رد["بايتات"]"#,
+            r#"طلب = {"رابط": "http://127.0.0.1:18109/redir-post"، "طريقة": "POST"، "جسم": "بيانات"، "نوع_المحتوى": "text/plain"}"#,
+            "رد = شبكة.نفذ(طلب)",
+            r#"اطبع رد["رمز"]"#,
+            r#"اطبع رد["جسم"]"#,
+        ]),
+    );
+}
+
+
+#[cfg(unix)]
+fn b8_ftp_read_line(stream: &mut std::net::TcpStream) -> Option<String> {
+    use std::io::Read;
+    let mut out: Vec<u8> = Vec::new();
+    let mut b = [0u8; 1];
+    loop {
+        match stream.read(&mut b) {
+            Ok(0) => return None,
+            Ok(_) => {
+                if b[0] == b'\n' {
+                    break;
+                }
+                out.push(b[0]);
+            }
+            Err(_) => return None,
+        }
+    }
+    if out.last() == Some(&b'\r') {
+        out.pop();
+    }
+    Some(String::from_utf8_lossy(&out).into_owned())
+}
+
+#[cfg(unix)]
+fn b8_serve_ftp_forever(listener: std::net::TcpListener) {
+    use std::io::Write;
+    let files: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<String, (Vec<u8>, bool)>>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::from([(
+        "/hello.txt".to_string(),
+        ("محتوى ftp".as_bytes().to_vec(), false),
+    )])));
+    for stream in listener.incoming() {
+        if let Ok(mut s) = stream {
+            let files = files.clone();
+            std::thread::spawn(move || {
+                let _ = s.write_all("220 بسيط جاهز\r\n".as_bytes());
+                let mut data_listener: Option<std::net::TcpListener> = None;
+                loop {
+                    let line = match b8_ftp_read_line(&mut s) {
+                        Some(l) => l,
+                        None => break,
+                    };
+                    let mut parts = line.splitn(2, ' ');
+                    let cmd = parts.next().unwrap_or("").to_uppercase();
+                    let arg = parts.next().unwrap_or("").to_string();
+                    match cmd.as_str() {
+                        "USER" | "PASS" => {
+                            let _ = s.write_all("230 دخول مقبول\r\n".as_bytes());
+                        }
+                        "TYPE" => {
+                            let _ = s.write_all("200 نوع ثنائي\r\n".as_bytes());
+                        }
+                        "PASV" => match std::net::TcpListener::bind("127.0.0.1:0") {
+                            Ok(l) => {
+                                let port = l.local_addr().map(|a| a.port()).unwrap_or(0);
+                                data_listener = Some(l);
+                                let _ = s.write_all(
+                                    format!(
+                                        "227 دخول سلبي (127,0,0,1,{},{})\r\n",
+                                        port / 256,
+                                        port % 256
+                                    )
+                                    .as_bytes(),
+                                );
+                            }
+                            Err(_) => {
+                                let _ = s.write_all("425 لا منفذ\r\n".as_bytes());
+                            }
+                        },
+                        "RETR" => {
+                            let entry = files.lock().unwrap().get(&arg).cloned();
+                            match entry {
+                                Some((data, once)) => {
+                                    if once {
+                                        files.lock().unwrap().remove(&arg);
+                                    }
+                                    let _ = s.write_all("150 فتح\r\n".as_bytes());
+                                    if let Some(l) = data_listener.take() {
+                                        if let Ok((mut d, _)) = l.accept() {
+                                            let _ = d.write_all(&data);
+                                        }
+                                    }
+                                    let _ = s.write_all("226 اكتمل\r\n".as_bytes());
+                                }
+                                None => {
+                                    let _ = s.write_all("550 غير موجود\r\n".as_bytes());
+                                }
+                            }
+                        }
+                        "STOR" => {
+                            let _ = s.write_all("150 فتح\r\n".as_bytes());
+                            let mut data: Vec<u8> = Vec::new();
+                            if let Some(l) = data_listener.take() {
+                                if let Ok((mut d, _)) = l.accept() {
+                                    use std::io::Read;
+                                    let _ = d.read_to_end(&mut data);
+                                }
+                            }
+                            files.lock().unwrap().insert(arg, (data, true));
+                            let _ = s.write_all("226 اكتمل\r\n".as_bytes());
+                        }
+                        "QUIT" => {
+                            let _ = s.write_all("221 وداعا\r\n".as_bytes());
+                            break;
+                        }
+                        _ => {
+                            let _ = s.write_all("500 غير معروف\r\n".as_bytes());
+                        }
+                    }
+                }
+            });
+        }
+    }
+}
+
+#[cfg(unix)]
+fn b8_mqtt_read_varint(stream: &mut std::net::TcpStream) -> Option<usize> {
+    use std::io::Read;
+    let mut len: usize = 0;
+    let mut mult: usize = 1;
+    loop {
+        let mut b = [0u8; 1];
+        if stream.read_exact(&mut b).is_err() {
+            return None;
+        }
+        len += ((b[0] & 0x7F) as usize) * mult;
+        if b[0] & 0x80 == 0 {
+            break;
+        }
+        mult *= 128;
+    }
+    Some(len)
+}
+
+#[cfg(unix)]
+fn b8_mqtt_read_packet(stream: &mut std::net::TcpStream) -> Option<(u8, Vec<u8>)> {
+    use std::io::Read;
+    let mut h = [0u8; 1];
+    if stream.read_exact(&mut h).is_err() {
+        return None;
+    }
+    let len = b8_mqtt_read_varint(stream)?;
+    let mut body = vec![0u8; len];
+    if stream.read_exact(&mut body).is_err() {
+        return None;
+    }
+    Some((h[0], body))
+}
+
+#[cfg(unix)]
+fn b8_mqtt_write_packet(stream: &mut std::net::TcpStream, cmd: u8, body: &[u8]) {
+    use std::io::Write;
+    let mut out: Vec<u8> = vec![cmd];
+    let mut n = body.len();
+    loop {
+        let mut b = (n % 128) as u8;
+        n /= 128;
+        if n > 0 {
+            b |= 0x80;
+        }
+        out.push(b);
+        if n == 0 {
+            break;
+        }
+    }
+    out.extend_from_slice(body);
+    let _ = stream.write_all(&out);
+}
+
+#[cfg(unix)]
+fn b8_serve_mqtt_forever(listener: std::net::TcpListener) {
+    let store: std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<u8>)>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    for stream in listener.incoming() {
+        if let Ok(mut s) = stream {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                let Some(_) = b8_mqtt_read_packet(&mut s) else {
+                    return;
+                };
+                b8_mqtt_write_packet(&mut s, 0x20, &[0x00, 0x00]);
+                loop {
+                    let (cmd, body) = match b8_mqtt_read_packet(&mut s) {
+                        Some(p) => p,
+                        None => return,
+                    };
+                    match cmd {
+                        0x82 => {
+                            if body.len() >= 4 {
+                                let tlen =
+                                    ((body[2] as usize) << 8) | body[3] as usize;
+                                if body.len() >= 4 + tlen {
+                                    let topic = String::from_utf8_lossy(
+                                        &body[4..4 + tlen],
+                                    )
+                                    .into_owned();
+                                    b8_mqtt_write_packet(
+                                        &mut s,
+                                        0x90,
+                                        &[body[0], body[1], 0x00],
+                                    );
+                                    let mut held = store.lock().unwrap();
+                                    let mut i = 0;
+                                    while i < held.len() {
+                                        if held[i].0 == topic {
+                                            let (_, payload) = held.remove(i);
+                                            let mut pb: Vec<u8> = Vec::new();
+                                            pb.push(((topic.len() >> 8) & 0xFF) as u8);
+                                            pb.push((topic.len() & 0xFF) as u8);
+                                            pb.extend_from_slice(topic.as_bytes());
+                                            pb.extend_from_slice(&payload);
+                                            b8_mqtt_write_packet(&mut s, 0x30, &pb);
+                                        } else {
+                                            i += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        0x30 => {
+                            if body.len() >= 2 {
+                                let tlen =
+                                    ((body[0] as usize) << 8) | body[1] as usize;
+                                if body.len() >= 2 + tlen {
+                                    let topic = String::from_utf8_lossy(
+                                        &body[2..2 + tlen],
+                                    )
+                                    .into_owned();
+                                    let payload = body[2 + tlen..].to_vec();
+                                    store.lock().unwrap().push((topic, payload));
+                                }
+                            }
+                        }
+                        0xC0 => {
+                            b8_mqtt_write_packet(&mut s, 0xD0, &[]);
+                        }
+                        0xE0 => return,
+                        _ => {}
+                    }
+                }
+            });
+        }
+    }
+}
+
+
+#[test]
+#[cfg(unix)]
+fn c_parity_batch8_live3() {
+    // الدفعة 8 — الطبقة 3 (اجتماع 90 §105): FTP/MQTT حي
+    // من خادمين محليين (المفسر مقابل الأصلي).
+    let _ = Command::new("fuser")
+        .args(["-k", "18113/tcp"])
+        .output();
+    let _ = Command::new("fuser")
+        .args(["-k", "18114/tcp"])
+        .output();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let ftp = std::net::TcpListener::bind("127.0.0.1:18113").expect("bind live3 ftp");
+    let mqtt =
+        std::net::TcpListener::bind("127.0.0.1:18114").expect("bind live3 mqtt");
+    std::thread::spawn(move || b8_serve_ftp_forever(ftp));
+    std::thread::spawn(move || b8_serve_mqtt_forever(mqtt));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    b8_fetch_pair(
+        "شبكة8-حي-ftp",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"نص = شبكة.اجلب_ftp("ftp://127.0.0.1:18113/hello.txt")"#,
+            "اطبع نص",
+            r#"عدد = شبكة.نزل_ftp("ftp://127.0.0.1:18113/hello.txt"، "نزل.txt")"#,
+            "اطبع عدد",
+            r#"اطبع اقرأ_ملف("نزل.txt")"#,
+            r#"اكتب_ملف("رفع.txt"، "محتوى الرفع")"#,
+            r#"عدد = شبكة.ارفع_ftp("ftp://127.0.0.1:18113/رفع-ftp.txt"، "رفع.txt")"#,
+            "اطبع عدد",
+            r#"نص = شبكة.اجلب_ftp("ftp://127.0.0.1:18113/رفع-ftp.txt")"#,
+            "اطبع نص",
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-mqtt",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"نتيجة = شبكة.انشر_mqtt("mqtt://127.0.0.1:18114"، "اختبار/موضوع"، "رسالة اختبار")"#,
+            "اطبع نتيجة",
+            r#"رسائل = شبكة.اشترك_mqtt("mqtt://127.0.0.1:18114"، "اختبار/موضوع"، ٣)"#,
+            "اطبع رسائل",
+            r#"رسائل = شبكة.اشترك_mqtt("mqtt://127.0.0.1:18114"، "موضوع/آخر"، ٢)"#,
+            "اطبع رسائل",
+        ]),
+    );
+}
+
+
+#[test]
+#[cfg(unix)]
+fn c_parity_batch8_live5() {
+    // الدفعة 8 — الطبقة 5ب (اجتماع 90 §105): فحص واتصال
+    // حي من خادم HTTP محلي (المفسر مقابل الأصلي).
+    let _ = Command::new("fuser")
+        .args(["-k", "18115/tcp"])
+        .output();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let http = std::net::TcpListener::bind("127.0.0.1:18115").expect("bind live5 http");
+    std::thread::spawn(move || b8_serve_forever(http));
+    b8_fetch_pair(
+        "شبكة8-حي-نبض",
+        r#"استورد شبكة
+اطبع شبكة.انبض("127.0.0.1"، ١٨١١٥)
+اطبع شبكة.انبض("127.0.0.1"، ١)
+م = شبكة.انبض_مستمر("127.0.0.1"، ٢، ٠)
+اطبع م
+اطبع شبكة.زمن_الذهاب_والعودة("127.0.0.1"، ١٨١١٥) > ٠
+اطبع شبكة.زمن_الذهاب_والعودة("127.0.0.1"، ١)
+اطبع طول(شبكة.حل_الاسم("localhost"))"#,
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-فحص",
+        r#"استورد شبكة
+اطبع شبكة.افحص_المنفذ("127.0.0.1"، ١٨١١٥)
+اطبع شبكة.افحص_المنفذ("127.0.0.1"، ١)
+ف = شبكة.افحص_المنافذ("127.0.0.1"، [١٨١١٥، ١])
+اطبع ف["18115"]
+اطبع ف["1"]
+اطبع شبكة.افحص_نطاق("127.0.0.1"، ١٨١١٥، ١٨١١٥)
+اطبع طول(شبكة.افحص_سريع("127.0.0.1"))
+اطبع شبكة.افحص_udp("127.0.0.1"، ١٨١١٥)
+اطبع شبكة.انبض_icmp("127.0.0.1")"#,
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-تتبع",
+        r#"استورد شبكة
+ق = شبكة.تتبع_المسار("127.0.0.1"، ٢)
+اطبع طول(ق)
+أول = ق[٠]
+اطبع أول["قفزة"]
+اطبع أول["عنوان"]"#,
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-اتصال",
+        r#"استورد شبكة
+معرف = شبكة.اتصل_بمهلة("127.0.0.1"، ١٨١١٥، ٥)
+اطبع معرف > ٠
+شبكة.أرسل(معرف، "GET /hello HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+اطبع شبكة.استقبل(معرف)
+شبكة.أغلق(معرف)"#,
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-معلومات",
+        r#"استورد شبكة
+اطبع طول(شبكة.عناويني())
+ع = شبكة.عناويني()
+أول = ع[٠]
+اطبع أول["عنوان"]
+ج = شبكة.معلومات_الجهاز("lo")
+اطبع ج["وحدة"]
+اطبع طول(شبكة.إحصاءات_الشبكة())
+إ = شبكة.إحصاءات_الشبكة()
+أول2 = إ[٠]
+اطبع أول2["اسم"]"#,
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn c_parity_batch8_live4() {
+    // الدفعة 8 — الطبقة 4 (اجتماع 90 §105): جلسات +
+    // نقية + توقيع — حي بلا خادم (المفسر مقابل الأصلي).
+    // قيم التوقيع المعتمدة على الوقت لا تُطبع (التنفيذان
+    // يفصل بينهما بناء)؛ الثابت منها فقط (هاش الجسم +
+    // مفاتيح القاموس) + التحقق العميق في verify_sign4.py.
+    b8_fetch_pair(
+        "شبكة8-حي-جلسات",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"اكتب_ملف("كوكيز.txt"، "example.com\tTRUE\t/\tFALSE\t1893456000\tجلسة\t١٢٣\n")"#,
+            r#"كوكيز = شبكة.اقرأ_كوكيز("كوكيز.txt")"#,
+            r#"اطبع كوكيز["جلسة"]"#,
+            r#"اكتب_ملف("دخول.txt"، "example.com مستخدم كلمة-سر\n")"#,
+            r#"دخول = شبكة.اقرأ_بيانات_الدخول("دخول.txt")"#,
+            r#"حساب = دخول["example.com"]"#,
+            r#"اطبع حساب["مستخدم"]"#,
+            r#"اطبع حساب["كلمة_سر"]"#,
+            r#"اكتب_ملف("خيارات.txt"، "مهلة=٥\nمحاولات=٣\nصامت=صحيح\n")"#,
+            r#"خيارات = شبكة.اقرأ_إعدادات_التنزيل("خيارات.txt")"#,
+            r#"اطبع خيارات["مهلة"]"#,
+            r#"اطبع خيارات["صامت"]"#,
+            r#"شبكة.اكتب_إعدادات_التنزيل({"مهلة": ١٠، "صامت": خطأ}، "خيارات2.txt")"#,
+            r#"اطبع اقرأ_ملف("خيارات2.txt")"#,
+            r#"رد = {"رمز": ٢٠٠، "جسم": "نص"، "رؤوس": {"etag": "\"أ-١\""}}"#,
+            r#"وسم = شبكة.احفظ_الوسم(رد، "وسم.txt")"#,
+            "اطبع وسم",
+            r#"اطبع شبكة.اقرأ_الوسم("وسم.txt")"#,
+            r#"عدد = شبكة.احفظ_الرؤوس(رد، "رؤوس.txt")"#,
+            "اطبع عدد",
+            r#"اطبع اقرأ_ملف("رؤوس.txt")"#,
+            r#"شبكة.اكتب_الفحص("الفحص ناجح"، "فحص.txt")"#,
+            r#"اطبع اقرأ_ملف("فحص.txt")"#,
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-نقية",
+        &pc::src(&[
+            "استورد شبكة",
+            "استورد جسون",
+            r#"اطبع شبكة.رمز_العنوان("أهلا/عالم؟")"#,
+            r#"اطبع شبكة.أضف_معامل("https://x/y#جزء"، "بحث"، "أهلا")"#,
+            r#"رد = {"رمز": ٤٠٤، "جسم": جسون.اكتب({"خطأ": "غير موجود"، "عدد": [١، ٢]})، "رؤوس": {"نوع": "تطبيق/json"}}"#,
+            "اطبع شبكة.نسق_json(رد)",
+            "اطبع شبكة.اعرض_ملونا(رد)",
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-توقيع",
+        &pc::src(&[
+            "استورد شبكة",
+            "استورد جسون",
+            r#"طلب = {"رابط": "http://127.0.0.1:18109/hello"، "طريقة": "POST"، "جسم": "جسم الاختبار"}"#,
+            r#"ترويسات = شبكة.وقع_أمازون(طلب، "مفتاح-اختبار"، "سر-اختبار")"#,
+            r#"اطبع ترويسات["x-amz-content-sha256"]"#,
+            "اطبع جسون.مفاتيح(ترويسات)",
+            r#"شبكة.وقع_الطلب(طلب، "معرف-اختبار"، "مفتاح-اختبار")"#,
+            r#"اطبع "وقع الطلب كما يجب""#,
+        ]),
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn c_parity_batch8_live2() {
+    // الدفعة 8 — الطبقة 2 (اجتماع 90 §105): أغلفة
+    // فورية وتنزيل — حي من خادم محلي (المفسر مقابل
+    // الأصلي)، على نمط c_parity_batch8_http.
+    let _ = Command::new("fuser")
+        .args(["-k", "18112/tcp"])
+        .output();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let http = std::net::TcpListener::bind("127.0.0.1:18112").expect("bind live2");
+    std::thread::spawn(move || b8_serve_forever(http));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    b8_fetch_pair(
+        "شبكة8-حي-إرسال",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"رد = شبكة.أرسل_json("http://127.0.0.1:18112/echo"، {"اسم": "اختبار"، "عدد": ٣})"#,
+            r#"اطبع رد["جسم"]"#,
+            r#"رد = شبكة.أرسل_نموذج("http://127.0.0.1:18112/echo"، {"اسم": "اختبار"، "عدد": ٣})"#,
+            r#"اطبع رد["جسم"]"#,
+            r#"رد = شبكة.أرسل_خام("http://127.0.0.1:18112/echo"، "خام")"#,
+            r#"اطبع رد["جسم"]"#,
+            r#"رد = شبكة.أرسل_ثنائي("http://127.0.0.1:18112/echo"، [٧٢، ١٠٥])"#,
+            r#"اطبع رد["جسم"]"#,
+            r#"اكتب_ملف("ملف.txt"، "محتوى الملف")"#,
+            r#"رد = شبكة.أرسل_من_ملف("http://127.0.0.1:18112/echo"، "ملف.txt")"#,
+            r#"اطبع رد["جسم"]"#,
+            r#"رد = شبكة.أرسل_من_المدخل("http://127.0.0.1:18112/echo")"#,
+            r#"اطبع رد["جسم"]"#,
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-طرق2",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"رد = شبكة.استبدل("http://127.0.0.1:18112/echo"، "جديد")"#,
+            r#"اطبع رد["جسم"]"#,
+            r#"رد = شبكة.عدل("http://127.0.0.1:18112/echo"، "تعديل")"#,
+            r#"اطبع رد["جسم"]"#,
+            r#"رد = شبكة.احذف_مورد("http://127.0.0.1:18112/echo")"#,
+            r#"اطبع رد["جسم"]"#,
+            r#"رد = شبكة.افحص_رؤوس("http://127.0.0.1:18112/echo")"#,
+            "اطبع رد",
+            r#"رد = شبكة.اطلب_خيارات("http://127.0.0.1:18112/echo")"#,
+            r#"اطبع رد["جسم"]"#,
+            r#"رد = شبكة.اطلب_مخصص("http://127.0.0.1:18112/echo"، "تتبع"، "جسم")"#,
+            r#"اطبع رد["جسم"]"#,
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-رفع",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"اكتب_ملف("رفع.txt"، "بيانات الرفع")"#,
+            r#"رد = شبكة.ارفع_ملف("http://127.0.0.1:18112/echo"، "رفع.txt"، {"وصف": "اختبار"})"#,
+            r#"اطبع رد["جسم"]"#,
+            r#"رد = شبكة.ارفع_جسم_ملف("http://127.0.0.1:18112/echo"، "رفع.txt")"#,
+            r#"اطبع رد["جسم"]"#,
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة8-حي-تنزيل2",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"رد = شبكة.نزل_باسم_الخادم("http://127.0.0.1:18112/dl-name")"#,
+            r#"اطبع اقرأ_ملف("اسم-ملف.txt")"#,
+            r#"رد = شبكة.نزل_الكل(["http://127.0.0.1:18112/hello"، "http://127.0.0.1:18112/notfound"])"#,
+            "اطبع رد",
+            r#"اطبع اقرأ_ملف("hello")"#,
+            r#"اطبع اقرأ_ملف("notfound")"#,
+            r#"اكتب_ملف("جزئي.txt"، "01234")"#,
+            r#"رد = شبكة.أكمل_التنزيل("http://127.0.0.1:18112/range"، "جزئي.txt")"#,
+            r#"اطبع اقرأ_ملف("جزئي.txt")"#,
+            r#"اكتب_ملف("قائمة.txt"، "http://127.0.0.1:18112/hello\nhttp://127.0.0.1:18112/gzip\n")"#,
+            r#"رد = شبكة.نزل_من_قائمة("قائمة.txt")"#,
+            "اطبع رد",
+            r#"اطبع اقرأ_ملف("gzip")"#,
+            r#"رد = شبكة.نزل_الموقع("http://127.0.0.1:18112/site")"#,
+            "اطبع رد",
+            r#"اطبع اقرأ_ملف("site")"#,
+            r#"اطبع اقرأ_ملف("a")"#,
+            r#"اطبع اقرأ_ملف("b")"#,
+        ]),
+    );
 }
 
 // الدفعة 1 — رموز الخروج (اجتماع 54 §69): تكافؤ
