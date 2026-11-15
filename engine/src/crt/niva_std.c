@@ -7839,6 +7839,37 @@ static NvValue b7_files_reserve_fn(NvValue *args, int nargs, int line, int col) 
     return nv_bool(1);
 }
 
+/* لينكس7-ز6ج-اسم-حقيقي-ويندوز: عنصر واحد في قائمة
+   اعرض_اسم_حقيقي — نوع المكون من فحص probe. */
+static void b7_realname_push_c(NvValue out, const char *comp, const char *probe) {
+    struct stat st;
+    const char *kind = "غير موجود";
+    NvValue target = nv_nil();
+    char linkbuf[4096];
+    if (nv_lstat(probe, &st) == 0) {
+#ifdef S_ISLNK
+        if (S_ISLNK(st.st_mode)) {
+            kind = "رابط";
+            ssize_t n = readlink(probe, linkbuf, sizeof(linkbuf) - 1);
+            if (n >= 0) {
+                linkbuf[n] = '\0';
+                target = nv_str_cstr(linkbuf);
+            } else {
+                target = nv_str_cstr("");
+            }
+        } else
+#endif
+        if (S_ISDIR(st.st_mode)) kind = "مجلد";
+        else if (S_ISREG(st.st_mode)) kind = "ملف";
+        else kind = "أخرى";
+    }
+    NvValue item = nv_dict_new();
+    nv_dict_set_raw(item.u.dict, "مكون", nv_str_cstr(comp));
+    nv_dict_set_raw(item.u.dict, "نوع", nv_str_cstr(kind));
+    nv_dict_set_raw(item.u.dict, "هدف", target);
+    nv_list_push_raw(out.u.list, item);
+}
+
 static NvValue b7_files_realname_fn(NvValue *args, int nargs, int line, int col) {
     const char *D = "ملفات.اعرض_اسم_حقيقي";
     nv_std_need_args(D, args, nargs, 1, line, col);
@@ -7849,17 +7880,26 @@ static NvValue b7_files_realname_fn(NvValue *args, int nargs, int line, int col)
     *nv_root_slot(ridx) = out;
     char prefix[8192];
     prefix[0] = '\0';
-    /* المكون الأول: الجذر. */
-    {
-        NvValue item = nv_dict_new();
-        nv_dict_set_raw(item.u.dict, "مكون", nv_str_cstr("/"));
-        nv_dict_set_raw(item.u.dict, "نوع", nv_str_cstr("مجلد"));
-        nv_dict_set_raw(item.u.dict, "هدف", nv_nil());
-        nv_list_push_raw(out.u.list, item);
-        snprintf(prefix, sizeof(prefix), "/");
-    }
     const char *s = resolved;
-    if (s[0] == '/') s++;
+    /* بادئة محرك ويندوز (D:) كمكوّن أول — مرآة
+       Component::Prefix في Rust؛ بلا هذه المعالجة يصير
+       البناء «/D:/...» غير صالح على ويندوز فتبدو كل
+       المكونات «غير موجود». */
+    if (s[0] && s[1] == ':'
+        && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z'))) {
+        char comp[4];
+        comp[0] = s[0]; comp[1] = ':'; comp[2] = '\0';
+        snprintf(prefix, sizeof(prefix), "%s", comp);
+        b7_realname_push_c(out, comp, prefix);
+        s += 2;
+    }
+    /* الجذر «/» — مرآة Component::RootDir (يعيد ضبط
+       البادئة إلى «/» كما في Rust). */
+    if (s[0] == '/') {
+        snprintf(prefix, sizeof(prefix), "/");
+        b7_realname_push_c(out, "/", prefix);
+        s++;
+    }
     while (*s) {
         const char *slash = strchr(s, '/');
         size_t clen = slash ? (size_t)(slash - s) : strlen(s);
@@ -7872,32 +7912,7 @@ static NvValue b7_files_realname_fn(NvValue *args, int nargs, int line, int col)
             size_t plen = strlen(prefix);
             snprintf(prefix + plen, sizeof(prefix) - plen, "/%s", comp);
         }
-        struct stat st;
-        const char *kind = "غير موجود";
-        NvValue target = nv_nil();
-        char linkbuf[4096];
-        if (nv_lstat(prefix, &st) == 0) {
-#ifdef S_ISLNK
-            if (S_ISLNK(st.st_mode)) {
-                kind = "رابط";
-                ssize_t n = readlink(prefix, linkbuf, sizeof(linkbuf) - 1);
-                if (n >= 0) {
-                    linkbuf[n] = '\0';
-                    target = nv_str_cstr(linkbuf);
-                } else {
-                    target = nv_str_cstr("");
-                }
-            } else
-#endif
-            if (S_ISDIR(st.st_mode)) kind = "مجلد";
-            else if (S_ISREG(st.st_mode)) kind = "ملف";
-            else kind = "أخرى";
-        }
-        NvValue item = nv_dict_new();
-        nv_dict_set_raw(item.u.dict, "مكون", nv_str_cstr(comp));
-        nv_dict_set_raw(item.u.dict, "نوع", nv_str_cstr(kind));
-        nv_dict_set_raw(item.u.dict, "هدف", target);
-        nv_list_push_raw(out.u.list, item);
+        b7_realname_push_c(out, comp, prefix);
         if (!slash) break;
         s = slash + 1;
     }
