@@ -7251,6 +7251,10 @@ static unsigned int b7_parse_sym_mode_c(const char *pat, unsigned int cur, int i
     return mode;
 }
 
+/* تصريح مسبق: b6_fstype_c معرّف بعد تضمين sys/mount.h
+   (لينكس6) — يُستدعى من b7_files_statvfs_full_c أدناه. */
+static char *b6_fstype_c(const char *path);
+
 /* statvfs الكامل: كتل + عقد + نوع نظام الملفات. */
 static void b7_files_statvfs_full_c(const char *path, const char *display, int line, int col,
                                     unsigned long long *total, unsigned long long *used, unsigned long long *free_out,
@@ -7275,13 +7279,13 @@ static void b7_files_statvfs_full_c(const char *path, const char *display, int l
     *ifree_out = (unsigned long long)st.f_ffree;
     *iused = *itotal >= *ifree_out ? *itotal - *ifree_out : 0;
 #ifdef __APPLE__
-    /* لينكس7-ز6ج-مساحة-قرص-ماك-statfs: statvfs على ماك بلا
-       f_fstypename — النوع من statfs. */
+    /* لينكس7-ز6ج-مساحة-قرص-ماك-statfs-مساعد: statvfs على
+       ماك بلا f_fstypename — النوع من b6_fstype_c
+       (يستدعي statfs بعد تضمين sys/mount.h؛ الاستدعاء
+       المباشر هنا يسبق التضمين فيكسر تجميع ماك). */
     {
         char *resolved2 = b6_resolve_plain_c(path);
-        struct statfs sfs;
-        if (statfs(resolved2, &sfs) != 0) *fstype_out = j14_strdup("غير معروف");
-        else *fstype_out = j14_strndup(sfs.f_fstypename, sizeof(sfs.f_fstypename));
+        *fstype_out = b6_fstype_c(resolved2);
         free(resolved2);
     }
 #else
