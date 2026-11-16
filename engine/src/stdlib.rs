@@ -14329,18 +14329,28 @@ fn net5b_ping_loop_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize,
     Ok(Value::List(out))
 }
 
+fn net5b_rtt_probe(host: &str, port: u16, line: usize, col: usize) -> RioResult<f64> {
+    // محاولة واحدة قد تصيب عطلا عابرا على عدّاء مثقل
+    // (فشل نبضة واحدة في CI ماك بينما نجحت المنشأة) —
+    // يعيد حتى 3 مرات، ويعيد زمن المحاولة الناجحة،
+    // أو -1 إن فشلت كلها.
+    for _ in 0..3 {
+        let start = std::time::Instant::now();
+        if crate::network::net_probe_tcp(host, port, 2000, "شبكة.زمن_الذهاب_والعودة", line, col)? {
+            return Ok(start.elapsed().as_millis() as f64);
+        }
+    }
+    Ok(-1.0)
+}
+
 fn net5b_rtt_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
     if args.len() == 1 {
         let host = net5b_host(&args[0], "شبكة.زمن_الذهاب_والعودة", line, col)?;
-        let start = std::time::Instant::now();
-        let ok = crate::network::net_probe_tcp(&host, 80, 2000, "شبكة.زمن_الذهاب_والعودة", line, col)?;
-        Ok(Value::Number(if ok { start.elapsed().as_millis() as f64 } else { -1.0 }))
+        Ok(Value::Number(net5b_rtt_probe(&host, 80, line, col)?))
     } else if args.len() == 2 {
         let host = net5b_host(&args[0], "شبكة.زمن_الذهاب_والعودة", line, col)?;
         let port = net5b_port(&args[1], "شبكة.زمن_الذهاب_والعودة", line, col)?;
-        let start = std::time::Instant::now();
-        let ok = crate::network::net_probe_tcp(&host, port, 2000, "شبكة.زمن_الذهاب_والعودة", line, col)?;
-        Ok(Value::Number(if ok { start.elapsed().as_millis() as f64 } else { -1.0 }))
+        Ok(Value::Number(net5b_rtt_probe(&host, port, line, col)?))
     } else {
         Err(RioError::typ(
             "الدالة شبكة.زمن_الذهاب_والعودة تتوقع معاملا واحدا (مضيف) أو معاملين (مضيف، منفذ)",

@@ -7908,10 +7908,13 @@ static NvValue nv5b_rtt(NvValue *args, int nargs, int line, int col) {
     const char *host = nv5b_host_arg(args, nargs, 0, "زمن_الذهاب_والعودة", line, col);
     int port = 80;
     if (nargs == 2) port = nv5b_port_arg(args, 1, "زمن_الذهاب_والعودة", line, col);
-    long long start = nv_net_now_ms();
-    int ok = nv5b_tcp_probe(host, port, 2000, line, col);
-    if (!ok) return nv_num(-1);
-    return nv_num((double)(nv_net_now_ms() - start));
+    for (int attempt = 0; attempt < 3; attempt++) {
+        long long start = nv_net_now_ms();
+        if (nv5b_tcp_probe(host, port, 2000, line, col)) {
+            return nv_num((double)(nv_net_now_ms() - start));
+        }
+    }
+    return nv_num(-1);
 }
 
 static NvValue nv5b_resolve(NvValue *args, int nargs, int line, int col) {
