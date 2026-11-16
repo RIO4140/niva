@@ -14595,11 +14595,11 @@ fn net5_ifaces() -> Vec<Net5Iface> {
                     }
                     let mut bcast = None;
                     // البث: لينكس يسميه ifa_ifu، وماك/BSD يسميه
-                    // ifa_broadaddr مباشرة (الاتحاد بلا اسم هناك).
+                    // ifa_dstaddr (البث اسم مستعار له هناك).
                     #[cfg(target_os = "linux")]
                     let bcast_ptr = ifa.ifa_ifu;
                     #[cfg(not(target_os = "linux"))]
-                    let bcast_ptr = ifa.ifa_broadaddr;
+                    let bcast_ptr = ifa.ifa_dstaddr;
                     if (flags & (libc::IFF_BROADCAST as u32)) != 0
                         && !bcast_ptr.is_null()
                     {

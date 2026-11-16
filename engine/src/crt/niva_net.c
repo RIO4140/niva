@@ -6637,9 +6637,9 @@ static void nv5_hex_ip_le(const char *hex, char *out) {
 }
 
 // البث: لينكس يسميه ifa_ifu.ifu_broadaddr، وماك/BSD يسميه
-// ifa_broadaddr مباشرة (الاتحاد بلا اسم هناك).
+// ifa_dstaddr (البث اسم مستعار له هناك).
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
-#define NV5_BROADADDR(ifa) ((ifa)->ifa_broadaddr)
+#define NV5_BROADADDR(ifa) ((ifa)->ifa_dstaddr)
 #else
 #define NV5_BROADADDR(ifa) ((ifa)->ifa_ifu.ifu_broadaddr)
 #endif
