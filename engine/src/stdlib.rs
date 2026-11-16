@@ -14594,11 +14594,17 @@ fn net5_ifaces() -> Vec<Net5Iface> {
                         mask = net5_ipv4_str(msin.sin_addr.s_addr.to_ne_bytes());
                     }
                     let mut bcast = None;
+                    // البث: لينكس يسميه ifa_ifu، وماك/BSD يسميه
+                    // ifa_broadaddr مباشرة (الاتحاد بلا اسم هناك).
+                    #[cfg(target_os = "linux")]
+                    let bcast_ptr = ifa.ifa_ifu;
+                    #[cfg(not(target_os = "linux"))]
+                    let bcast_ptr = ifa.ifa_broadaddr;
                     if (flags & (libc::IFF_BROADCAST as u32)) != 0
-                        && !ifa.ifa_ifu.is_null()
+                        && !bcast_ptr.is_null()
                     {
                         let bsin =
-                            &*(ifa.ifa_ifu as *const libc::sockaddr_in);
+                            &*(bcast_ptr as *const libc::sockaddr_in);
                         bcast = Some(net5_ipv4_str(
                             bsin.sin_addr.s_addr.to_ne_bytes(),
                         ));

@@ -6636,6 +6636,13 @@ static void nv5_hex_ip_le(const char *hex, char *out) {
     nv5_ipv4_str(o, out);
 }
 
+// البث: لينكس يسميه ifa_ifu.ifu_broadaddr، وماك/BSD يسميه
+// ifa_broadaddr مباشرة (الاتحاد بلا اسم هناك).
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+#define NV5_BROADADDR(ifa) ((ifa)->ifa_broadaddr)
+#else
+#define NV5_BROADADDR(ifa) ((ifa)->ifa_ifu.ifu_broadaddr)
+#endif
 typedef struct { char addr[64]; char mask[64]; char bcast[64]; int has_bcast; int v6; } Nv5Addr;
 typedef struct { char name[64]; Nv5Addr *addrs; int naddrs; int cap; int up; int loopback; } Nv5Iface;
 
@@ -6687,9 +6694,9 @@ static int nv5_ifaces(Nv5Iface **out, int *n_out) {
             } else {
                 snprintf(a->mask, sizeof(a->mask), "255.255.255.255");
             }
-            if ((flags & IFF_BROADCAST) != 0 && ifa->ifa_ifu.ifu_broadaddr
-                && ifa->ifa_ifu.ifu_broadaddr->sa_family == AF_INET) {
-                struct sockaddr_in *bsin = (struct sockaddr_in *)ifa->ifa_ifu.ifu_broadaddr;
+            if ((flags & IFF_BROADCAST) != 0 && NV5_BROADADDR(ifa)
+                && NV5_BROADADDR(ifa)->sa_family == AF_INET) {
+                struct sockaddr_in *bsin = (struct sockaddr_in *)NV5_BROADADDR(ifa);
                 unsigned char boct[4];
                 memcpy(boct, &bsin->sin_addr.s_addr, 4);
                 nv5_ipv4_str(boct, a->bcast);
