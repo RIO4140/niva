@@ -1,5 +1,4 @@
-# Step 2 (Meeting 16): test on every push/PR (Linux + Windows +
-# macOS), and publish a binary for each platform on version tags.
+# Step 2 (Meeting 16): test on every push/PR, and publish a binary for each platform on version tags.
 # The release job only runs on tags, only from the tagged commit,
 # and only after the test job passes on all three platforms.
 name: CI
