@@ -2083,6 +2083,83 @@ fn c_parity_batch8_live2() {
     );
 }
 
+#[cfg(unix)]
+fn b9_serve_banner_forever(listener: std::net::TcpListener) {
+    use std::io::Write;
+    for stream in listener.incoming() {
+        if let Ok(mut s) = stream {
+            let _ = s.write_all(b"SSH-2.0-OpenSSH_9.0\r\n");
+            let _ = s.flush();
+        }
+    }
+}
+
+#[cfg(unix)]
+fn b9_serve_connect_forever(listener: std::net::TcpListener) {
+    use std::io::{Read, Write};
+    for stream in listener.incoming() {
+        if let Ok(mut s) = stream {
+            let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+            let mut buf = [0u8; 1024];
+            let _ = s.read(&mut buf);
+            let _ = s.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n");
+            let _ = s.flush();
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn c_parity_batch9_live() {
+    // الدفعة 9 — شبكة 9: ربط UDP + بانر SSH +
+    // وكيل CONNECT — حي من خوادم محلية (المفسر
+    // مقابل الأصلي)، على نمط c_parity_batch8_live2.
+    // ملاحظة بيئة: رمل هذا الجهاز يحظر إرسال UDP
+    // (sendto → EPERM) فزوج UDP بلا إرسال — ربط
+    // ومنفذ واتصال فقط.
+    for port in ["18120", "18121", "18122"] {
+        let _ = Command::new("fuser")
+            .args(["-k", &format!("{}/tcp", port)])
+            .output();
+    }
+    let _ = Command::new("fuser")
+        .args(["-k", "18120/udp"])
+        .output();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let banner = std::net::TcpListener::bind("127.0.0.1:18121").expect("bind banner9");
+    let proxy = std::net::TcpListener::bind("127.0.0.1:18122").expect("bind proxy9");
+    std::thread::spawn(move || b9_serve_banner_forever(banner));
+    std::thread::spawn(move || b9_serve_connect_forever(proxy));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    b8_fetch_pair(
+        "شبكة9-حي-udp",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"مستمع = شبكة.استمع_udp(١٨١٢٠)"#,
+            r#"اطبع شبكة.المنفذ(مستمع)"#,
+            r#"متصل = شبكة.اتصل_udp("127.0.0.1"، ١٨١٢١)"#,
+            "اطبع متصل >= ٠",
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة9-حي-بانر",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"خدمة = شبكة.اكشف_الخدمة("127.0.0.1"، ١٨١٢١)"#,
+            "اطبع خدمة",
+        ]),
+    );
+    b8_fetch_pair(
+        "شبكة9-حي-وكيل",
+        &pc::src(&[
+            "استورد شبكة",
+            r#"مقبس = شبكة.اتصل_عبر_وكيل("127.0.0.1"، ١٨١٢٣، "127.0.0.1:18122")"#,
+            "اطبع مقبس > ٠",
+        ]),
+    );
+}
+
 // الدفعة 1 — رموز الخروج (اجتماع 54 §69): تكافؤ
 // المفسر والخلفية الأصلية C في رموز الخروج.
 #[test]

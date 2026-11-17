@@ -16966,7 +16966,211 @@ fn network_entries() -> Vec<(&'static str, Value)> {
         ("تتبع_المسار", native("تتبع_المسار", net5b_trace_fn)),
         ("اتصل_مشفر", native("اتصل_مشفر", net5b_tls_connect_fn)),
         ("اتصل_بمهلة", native("اتصل_بمهلة", net5b_timeout_connect_fn)),
+        ("انبض_udp", native("انبض_udp", net9_udp_ping_fn)),
+        ("اكشف_الخدمة", native("اكشف_الخدمة", net9_detect_service_fn)),
+        ("اكتب_الفحص_xml", native("اكتب_الفحص_xml", net9_write_xml_fn)),
+        ("اكتب_الفحص_بحث", native("اكتب_الفحص_بحث", net9_write_search_fn)),
+        ("اكتب_الفحص_كل_الصيغ", native("اكتب_الفحص_كل_الصيغ", net9_write_all_fn)),
+        ("أكمل_الفحص", native("أكمل_الفحص", net9_resume_fn)),
+        ("اتصل_udp", native("اتصل_udp", net9_connect_udp_fn)),
+        ("استمع_udp", native("استمع_udp", net9_listen_udp_fn)),
+        ("اتصل_عبر_وكيل", native("اتصل_عبر_وكيل", net9_connect_proxy_fn)),
     ]
+}
+
+// ---------- لينكس9-شبكة: أغلفة (اجتماع 92 §107 — آخر الشبكة) ----------
+fn net9_udp_ping_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    if args.is_empty() || args.len() > 2 {
+        return Err(RioError::runtime(
+            "الدالة شبكة.انبض_udp تتوقع معاملا واحدا (مضيف) أو معاملين (مضيف، منفذ)",
+            line,
+            col,
+        ));
+    }
+    let host = net5b_host(&args[0], "شبكة.انبض_udp", line, col)?;
+    let port = if args.len() == 2 {
+        net5b_port(&args[1], "شبكة.انبض_udp", line, col)?
+    } else {
+        33434
+    };
+    Ok(Value::Bool(crate::network::net_probe_udp_ping(
+        &host, port, 1000, "شبكة.انبض_udp", line, col,
+    )?))
+}
+
+fn net9_detect_service_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.اكشف_الخدمة", args, 2, line, col)?;
+    let host = net5b_host(&args[0], "شبكة.اكشف_الخدمة", line, col)?;
+    let port = net5b_port(&args[1], "شبكة.اكشف_الخدمة", line, col)?;
+    let (service, version) =
+        crate::network::net_detect_service(&host, port, "شبكة.اكشف_الخدمة", line, col)?;
+    let mut d: Vec<(String, Value)> = Vec::new();
+    d.push(("خدمة".to_string(), Value::Str(service.into())));
+    d.push(("إصدار".to_string(), Value::Str(version.into())));
+    Ok(Value::Dict(d))
+}
+
+fn net9_write_xml_fn(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.اكتب_الفحص_xml", args, 2, line, col)?;
+    let text = need_string("شبكة.اكتب_الفحص_xml", &args[0], line, col)?;
+    let path = net_path_arg(args, 1, "اكتب_الفحص_xml", line, col)?;
+    let xml = crate::network::net_scan_to_xml(&text);
+    net_write_file(ctx, &path, xml.as_bytes(), "اكتب_الفحص_xml", line, col)?;
+    Ok(Value::Bool(true))
+}
+
+fn net9_write_search_fn(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.اكتب_الفحص_بحث", args, 2, line, col)?;
+    let text = need_string("شبكة.اكتب_الفحص_بحث", &args[0], line, col)?;
+    let path = net_path_arg(args, 1, "اكتب_الفحص_بحث", line, col)?;
+    let search = crate::network::net_scan_to_search(&text);
+    net_write_file(ctx, &path, search.as_bytes(), "اكتب_الفحص_بحث", line, col)?;
+    Ok(Value::Bool(true))
+}
+
+fn net9_write_all_fn(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.اكتب_الفحص_كل_الصيغ", args, 2, line, col)?;
+    let text = need_string("شبكة.اكتب_الفحص_كل_الصيغ", &args[0], line, col)?;
+    let dir = net_path_arg(args, 1, "اكتب_الفحص_كل_الصيغ", line, col)?;
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    let resolved = policy.resolve_in_for_write(&cwd, &dir, line, col)?;
+    std::fs::create_dir_all(&resolved).map_err(|_| {
+        RioError::runtime("الدالة شبكة.اكتب_الفحص_كل_الصيغ تعذر إنشاء المجلد", line, col)
+    })?;
+    let plain = resolved.join("فحص.txt");
+    let xml = resolved.join("فحص.xml");
+    let search = resolved.join("فحص.بحث");
+    std::fs::write(&plain, text.as_bytes()).map_err(|_| {
+        RioError::runtime("الدالة شبكة.اكتب_الفحص_كل_الصيغ تعذر كتابة الملف", line, col)
+    })?;
+    std::fs::write(&xml, crate::network::net_scan_to_xml(&text).as_bytes()).map_err(|_| {
+        RioError::runtime("الدالة شبكة.اكتب_الفحص_كل_الصيغ تعذر كتابة الملف", line, col)
+    })?;
+    std::fs::write(&search, crate::network::net_scan_to_search(&text).as_bytes()).map_err(|_| {
+        RioError::runtime("الدالة شبكة.اكتب_الفحص_كل_الصيغ تعذر كتابة الملف", line, col)
+    })?;
+    Ok(Value::Bool(true))
+}
+
+fn net9_resume_fn(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    if args.len() < 2 || args.len() > 4 {
+        return Err(RioError::runtime(
+            "الدالة شبكة.أكمل_الفحص تتوقع معاملين (مسار، مضيف) إلى أربعة (مسار، مضيف، من، إلى)",
+            line,
+            col,
+        ));
+    }
+    let path = net_path_arg(args, 0, "أكمل_الفحص", line, col)?;
+    let host = net5b_host(&args[1], "شبكة.أكمل_الفحص", line, col)?;
+    let from = if args.len() >= 3 {
+        let f = need_integer("شبكة.أكمل_الفحص", &args[2], line, col)?;
+        if !(1..=65535).contains(&f) {
+            return Err(RioError::runtime("الدالة شبكة.أكمل_الفحص تتوقع منفذا بين 1 و 65535", line, col));
+        }
+        f as u16
+    } else {
+        1
+    };
+    let to = if args.len() >= 4 {
+        let t = need_integer("شبكة.أكمل_الفحص", &args[3], line, col)?;
+        if !(1..=65535).contains(&t) {
+            return Err(RioError::runtime("الدالة شبكة.أكمل_الفحص تتوقع منفذا بين 1 و 65535", line, col));
+        }
+        t as u16
+    } else {
+        1024
+    };
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    let resolved = policy.resolve_in_for_write(&cwd, &path, line, col)?;
+    let resolved_str = resolved.to_string_lossy().into_owned();
+    let open = crate::network::net_scan_resume(&resolved_str, &host, from, to, "شبكة.أكمل_الفحص", line, col)?;
+    let mut out: Vec<Value> = Vec::new();
+    for p in open {
+        out.push(Value::Number(p as f64));
+    }
+    Ok(Value::List(out))
+}
+
+fn net9_connect_udp_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.اتصل_udp", args, 2, line, col)?;
+    let host = net5b_host(&args[0], "شبكة.اتصل_udp", line, col)?;
+    let port = need_integer("شبكة.اتصل_udp", &args[1], line, col)?;
+    Ok(Value::Number(
+        crate::sockets::connect_udp_new(&host, port, line, col)? as f64,
+    ))
+}
+
+fn net9_listen_udp_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.استمع_udp", args, 1, line, col)?;
+    let port = need_integer("شبكة.استمع_udp", &args[0], line, col)?;
+    Ok(Value::Number(
+        crate::sockets::listen_udp_new(port, line, col)? as f64,
+    ))
+}
+
+fn net9_connect_proxy_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("شبكة.اتصل_عبر_وكيل", args, 3, line, col)?;
+    let host = net5b_host(&args[0], "شبكة.اتصل_عبر_وكيل", line, col)?;
+    let port = need_integer("شبكة.اتصل_عبر_وكيل", &args[1], line, col)?;
+    let proxy = need_string("شبكة.اتصل_عبر_وكيل", &args[2], line, col)?;
+    Ok(Value::Number(
+        crate::sockets::connect_via_proxy(&host, port, &proxy, line, col)? as f64,
+    ))
+}
+
+// ---------- لينكس9-حزم: ملفات.بيانات_المسار (لحزم-121) ----------
+// {موجود، حجم، وقت_التعديل (ثواني يونكس)، صلاحيات (ثماني)}؛
+// الغائب يرجع {موجود: خطأ} بلا خطأ — ليفحص المفصّل كل ملف على حدة.
+fn b9_files_stat(ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args("ملفات.بيانات_المسار", args, 1, line, col)?;
+    let path = need_string("ملفات.بيانات_المسار", &args[0], line, col)?;
+    if path.is_empty() {
+        return Err(RioError::typ(
+            "الدالة ملفات.بيانات_المسار تتوقع مسارا غير فارغ",
+            line,
+            col,
+        ));
+    }
+    let mut d: Vec<(String, Value)> = Vec::new();
+    // حل المسار عبر سياسة الملفات نفسها التي تستخدمها باقي بدائيات
+    // الملفات (موجود/حجم_المسار/اكتب_ملف) — بلا حل يرى المسار النسبي
+    // في موضع خاطئ فيرجع الغائب لملف موجود.
+    let policy = ctx.server_file_policy();
+    let cwd = ctx.server_cwd();
+    let resolved = policy.resolve_in(&cwd, &path, line, col).ok();
+    let meta = resolved
+        .as_ref()
+        .and_then(|r| std::fs::metadata(r).ok());
+    match meta {
+        Some(m) => {
+            d.push(("موجود".to_string(), Value::Bool(true)));
+            d.push(("حجم".to_string(), Value::Number(m.len() as f64)));
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                d.push(("وقت_التعديل".to_string(), Value::Number(m.mtime() as f64)));
+                d.push(("صلاحيات".to_string(), Value::Number((m.mode() & 0o7777) as f64)));
+            }
+            #[cfg(not(unix))]
+            {
+                let secs = m
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as f64)
+                    .unwrap_or(0.0);
+                d.push(("وقت_التعديل".to_string(), Value::Number(secs)));
+                let mode = if m.permissions().readonly() { 0o444 } else { 0o666 };
+                d.push(("صلاحيات".to_string(), Value::Number(mode as f64)));
+            }
+        }
+        None => {
+            d.push(("موجود".to_string(), Value::Bool(false)));
+        }
+    }
+    Ok(Value::Dict(d))
 }
 
 fn network_fetch(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
@@ -18717,6 +18921,7 @@ fn files_entries() -> Vec<(&'static str, Value)> {
         ("انسخ_منخفض_المستوى", native("انسخ_منخفض_المستوى", b7_files_copy_lowlevel)),
         ("احجز_مساحة", native("احجز_مساحة", b7_files_reserve)),
         ("اعرض_اسم_حقيقي", native("اعرض_اسم_حقيقي", b7_files_realname)),
+        ("بيانات_المسار", native("بيانات_المسار", b9_files_stat)),
     ]
 }
 

@@ -8100,6 +8100,477 @@ static NvValue nv5b_timeout_connect(NvValue *args, int nargs, int line, int col)
     return nv_num((double)id);
 }
 
+// ---------- لينكس9-شبكة: مرآة C (اجتماع 92 §107 — آخر الشبكة) ----------
+// مخزن نصي نامٍ (للتحويلات النقية).
+typedef struct { char *data; size_t len; size_t cap; } Nv9Buf;
+static void nv9_buf_init(Nv9Buf *b) {
+    b->cap = 256; b->len = 0;
+    b->data = (char *)malloc(b->cap);
+    b->data[0] = '\0';
+}
+static void nv9_buf_addn(Nv9Buf *b, const char *s, size_t n) {
+    if (b->len + n + 1 > b->cap) {
+        while (b->len + n + 1 > b->cap) b->cap *= 2;
+        b->data = (char *)realloc(b->data, b->cap);
+    }
+    memcpy(b->data + b->len, s, n);
+    b->len += n;
+    b->data[b->len] = '\0';
+}
+static void nv9_buf_add(Nv9Buf *b, const char *s) { nv9_buf_addn(b, s, strlen(s)); }
+static void nv9_buf_free(Nv9Buf *b) { free(b->data); b->data = NULL; b->len = 0; b->cap = 0; }
+
+// هل السطر «منفذ: حالة»؟ يعيد المنفذ أو -1.
+static int nv9_scan_port_of(const char *line) {
+    while (*line == ' ' || *line == '\t') line++;
+    if (*line < '0' || *line > '9') return -1;
+    long v = 0;
+    while (*line >= '0' && *line <= '9') { v = v * 10 + (*line - '0'); line++; if (v > 65535) return -1; }
+    while (*line == ' ' || *line == '\t') line++;
+    if (*line != ':') return -1;
+    if (v < 1) return -1;
+    return (int)v;
+}
+
+// حالة السطر بعد النقطتين (بلا مسافات بادئة/لاحقة).
+static void nv9_scan_state_of(const char *line, char *out, size_t cap) {
+    const char *c = strchr(line, ':');
+    if (!c) { out[0] = '\0'; return; }
+    c++;
+    while (*c == ' ' || *c == '\t') c++;
+    size_t n = strlen(c);
+    while (n > 0 && (c[n - 1] == ' ' || c[n - 1] == '\t' || c[n - 1] == '\r' || c[n - 1] == '\n')) n--;
+    if (n >= cap) n = cap - 1;
+    memcpy(out, c, n);
+    out[n] = '\0';
+}
+
+static void nv9_xml_escape_into(Nv9Buf *b, const char *s) {
+    for (const char *p = s; *p; p++) {
+        if (*p == '&') nv9_buf_add(b, "&amp;");
+        else if (*p == '<') nv9_buf_add(b, "&lt;");
+        else if (*p == '>') nv9_buf_add(b, "&gt;");
+        else if (*p == '"') nv9_buf_add(b, "&quot;");
+        else nv9_buf_addn(b, p, 1);
+    }
+}
+
+// تحليل البانر — المنطق نفسه حرفيا في Rust (net_detect_service_parse).
+static void nv9_parse_banner(const char *banner, char *service, size_t scap, char *version, size_t vcap) {
+    char first[512];
+    size_t fi = 0;
+    while (banner[fi] && banner[fi] != '\n' && fi < sizeof(first) - 1) { first[fi] = banner[fi]; fi++; }
+    first[fi] = '\0';
+    while (fi > 0 && (first[fi - 1] == '\r' || first[fi - 1] == ' ' || first[fi - 1] == '\t')) first[--fi] = '\0';
+    if (strncmp(first, "SSH-", 4) == 0) {
+        snprintf(service, scap, "SSH");
+        const char *r = first + 4;
+        size_t n = 0;
+        while (r[n] && r[n] != ' ' && r[n] != '\r' && r[n] != '\t' && n < 32) n++;
+        if (n >= vcap) n = vcap - 1;
+        memcpy(version, r, n);
+        version[n] = '\0';
+        return;
+    }
+    if (strncmp(first, "220", 3) == 0) {
+        if (strstr(first, "FTP")) snprintf(service, scap, "FTP");
+        else if (strstr(first, "SMTP") || strstr(first, "ESMTP")) snprintf(service, scap, "SMTP");
+        else snprintf(service, scap, "غير معروفة");
+        snprintf(version, vcap, "%s", first);
+        return;
+    }
+    if (strncmp(first, "HTTP/", 5) == 0) {
+        snprintf(service, scap, "HTTP");
+        const char *r = first + 5;
+        size_t n = 0;
+        while (r[n] && r[n] != ' ' && r[n] != '\r' && r[n] != '\t' && n < 16) n++;
+        char tok[17];
+        if (n >= sizeof(tok)) n = sizeof(tok) - 1;
+        memcpy(tok, r, n);
+        tok[n] = '\0';
+        snprintf(version, vcap, "HTTP/%s", tok);
+        return;
+    }
+    if (first[0] == '\0') {
+        snprintf(service, scap, "غير معروفة");
+        version[0] = '\0';
+        return;
+    }
+    snprintf(service, scap, "غير معروفة");
+    snprintf(version, vcap, "%s", first);
+}
+
+static NvValue nv9_udp_ping(NvValue *args, int nargs, int line, int col) {
+    if (nargs < 1 || nargs > 2) {
+        nv_error(NV_ERR_RUNTIME, "الدالة شبكة.انبض_udp تتوقع معاملا واحدا (مضيف) أو معاملين (مضيف، منفذ)", line, col);
+    }
+    const char *host = nv5b_host_arg(args, nargs, 0, "انبض_udp", line, col);
+    int port = 33434;
+    if (nargs == 2) port = nv5b_port_arg(args, 1, "انبض_udp", line, col);
+    const char *state = nv5b_udp_probe(host, port, 1000, line, col);
+    return nv_bool(strcmp(state, "مفلتر") != 0);
+}
+
+static NvValue nv9_detect_service(NvValue *args, int nargs, int line, int col) {
+    if (nargs != 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة شبكة.اكشف_الخدمة تتوقع 2 معاملات لكن أعطيت %d", nargs);
+    }
+    const char *host = nv5b_host_arg(args, nargs, 0, "اكشف_الخدمة", line, col);
+    int port = nv5b_port_arg(args, 1, "اكشف_الخدمة", line, col);
+    nv_sock_require_net(line, col);
+    struct sockaddr_storage ss;
+    socklen_t slen = 0;
+    nv_resolve_checked(host, port, &ss, &slen, line, col);
+    int fd = nv_connect_timeout((const struct sockaddr *)&ss, slen, nv_net_now_ms() + 2000);
+    if (fd < 0) {
+        if (errno == ETIMEDOUT) {
+            nv_error(NV_ERR_RUNTIME, "انتهت مهلة الاتصال (30 ثانية)", line, col);
+        }
+        nv_net_err_runtime(line, col, "تعذر الاتصال بالمضيف %s", host);
+    }
+    struct timeval tv;
+    tv.tv_sec = 1; tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    char banner[513];
+    ssize_t n = recv(fd, banner, 512, 0);
+    if (n <= 0) {
+        const char *probe = "HEAD / HTTP/1.0\r\n\r\n";
+        send(fd, probe, strlen(probe), 0);
+        n = recv(fd, banner, 512, 0);
+    }
+    if (n < 0) n = 0;
+    banner[n] = '\0';
+    close(fd);
+    char service[32]; char version[65];
+    nv9_parse_banner(banner, service, sizeof(service), version, sizeof(version));
+    NvValue d = nv_dict_new();
+    nv_dict_set_raw(d.u.dict, "خدمة", nv_str_cstr(service));
+    nv_dict_set_raw(d.u.dict, "إصدار", nv_str_cstr(version));
+    return d;
+}
+
+static NvValue nv9_write_xml(NvValue *args, int nargs, int line, int col) {
+    if (nargs != 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة شبكة.اكتب_الفحص_xml تتوقع 2 معاملات لكن أعطيت %d", nargs);
+    }
+    if (args[0].tag != NV_STR) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة شبكة.اكتب_الفحص_xml تتوقع نصا لكن أعطيت %s", nv_type_name(args[0]));
+    }
+    const char *text = args[0].u.str->data;
+    const char *path = nv2_path_arg(args, 1, "اكتب_الفحص_xml", line, col);
+    Nv9Buf b; nv9_buf_init(&b);
+    nv9_buf_add(&b, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<فحص>\n");
+    const char *p = text;
+    while (*p) {
+        const char *eol = strchr(p, '\n');
+        size_t len = eol ? (size_t)(eol - p) : strlen(p);
+        char linebuf[1024];
+        if (len >= sizeof(linebuf)) len = sizeof(linebuf) - 1;
+        memcpy(linebuf, p, len);
+        linebuf[len] = '\0';
+        int port = nv9_scan_port_of(linebuf);
+        if (port > 0) {
+            char state[128];
+            nv9_scan_state_of(linebuf, state, sizeof(state));
+            char num[16];
+            snprintf(num, sizeof(num), "%d", port);
+            nv9_buf_add(&b, "  <منفذ رقم=\"");
+            nv9_buf_add(&b, num);
+            nv9_buf_add(&b, "\" حالة=\"");
+            nv9_xml_escape_into(&b, state);
+            nv9_buf_add(&b, "\" />\n");
+        }
+        if (!eol) break;
+        p = eol + 1;
+    }
+    nv9_buf_add(&b, "</فحص>\n");
+    nv2_write_file(path, (const unsigned char *)b.data, b.len, "اكتب_الفحص_xml", line, col);
+    nv9_buf_free(&b);
+    return nv_bool(1);
+}
+
+static NvValue nv9_write_search(NvValue *args, int nargs, int line, int col) {
+    if (nargs != 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة شبكة.اكتب_الفحص_بحث تتوقع 2 معاملات لكن أعطيت %d", nargs);
+    }
+    if (args[0].tag != NV_STR) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة شبكة.اكتب_الفحص_بحث تتوقع نصا لكن أعطيت %s", nv_type_name(args[0]));
+    }
+    const char *text = args[0].u.str->data;
+    const char *path = nv2_path_arg(args, 1, "اكتب_الفحص_بحث", line, col);
+    Nv9Buf b; nv9_buf_init(&b);
+    const char *p = text;
+    while (*p) {
+        const char *eol = strchr(p, '\n');
+        size_t len = eol ? (size_t)(eol - p) : strlen(p);
+        char linebuf[1024];
+        if (len >= sizeof(linebuf)) len = sizeof(linebuf) - 1;
+        memcpy(linebuf, p, len);
+        linebuf[len] = '\0';
+        int port = nv9_scan_port_of(linebuf);
+        if (port > 0) {
+            char state[128];
+            nv9_scan_state_of(linebuf, state, sizeof(state));
+            char num[16];
+            snprintf(num, sizeof(num), "%d", port);
+            nv9_buf_add(&b, num);
+            nv9_buf_add(&b, " ");
+            nv9_buf_add(&b, state);
+            nv9_buf_add(&b, "\n");
+        }
+        if (!eol) break;
+        p = eol + 1;
+    }
+    nv2_write_file(path, (const unsigned char *)b.data, b.len, "اكتب_الفحص_بحث", line, col);
+    nv9_buf_free(&b);
+    return nv_bool(1);
+}
+
+static void nv9_mkdir_p(const char *path) {
+    char tmp[4096];
+    snprintf(tmp, sizeof(tmp), "%s", path);
+    size_t n = strlen(tmp);
+    for (size_t i = 1; i <= n; i++) {
+        if (tmp[i] == '/' || tmp[i] == '\0') {
+            char save = tmp[i];
+            tmp[i] = '\0';
+            mkdir(tmp, 0755);
+            tmp[i] = save;
+        }
+    }
+}
+
+static NvValue nv9_write_all(NvValue *args, int nargs, int line, int col) {
+    if (nargs != 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة شبكة.اكتب_الفحص_كل_الصيغ تتوقع 2 معاملات لكن أعطيت %d", nargs);
+    }
+    if (args[0].tag != NV_STR) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة شبكة.اكتب_الفحص_كل_الصيغ تتوقع نصا لكن أعطيت %s", nv_type_name(args[0]));
+    }
+    const char *text = args[0].u.str->data;
+    const char *dir = nv2_path_arg(args, 1, "اكتب_الفحص_كل_الصيغ", line, col);
+    char *resolved = nv_resolve_path(dir, line, col);
+    nv9_mkdir_p(resolved);
+    free(resolved);
+    char ptxt[4096]; char pxml[4096]; char psrch[4096];
+    snprintf(ptxt, sizeof(ptxt), "%s/فحص.txt", dir);
+    snprintf(pxml, sizeof(pxml), "%s/فحص.xml", dir);
+    snprintf(psrch, sizeof(psrch), "%s/فحص.بحث", dir);
+    nv2_write_file(ptxt, (const unsigned char *)text, strlen(text), "اكتب_الفحص_كل_الصيغ", line, col);
+    NvValue xml_args[2];
+    xml_args[0] = args[0];
+    xml_args[1] = nv_str_new(pxml, strlen(pxml));
+    nv9_write_xml(xml_args, 2, line, col);
+    NvValue srch_args[2];
+    srch_args[0] = args[0];
+    srch_args[1] = nv_str_new(psrch, strlen(psrch));
+    nv9_write_search(srch_args, 2, line, col);
+    return nv_bool(1);
+}
+
+static NvValue nv9_resume_scan(NvValue *args, int nargs, int line, int col) {
+    if (nargs < 2 || nargs > 4) {
+        nv_error(NV_ERR_RUNTIME, "الدالة شبكة.أكمل_الفحص تتوقع معاملين (مسار، مضيف) إلى أربعة (مسار، مضيف، من، إلى)", line, col);
+    }
+    const char *path = nv2_path_arg(args, 0, "أكمل_الفحص", line, col);
+    const char *host = nv5b_host_arg(args, nargs, 1, "أكمل_الفحص", line, col);
+    long long from = 1, to = 1024;
+    if (nargs >= 3) {
+        from = nv5b_int_arg(args, 2, "أكمل_الفحص", line, col);
+        if (from < 1 || from > 65535) {
+            nv_error(NV_ERR_RUNTIME, "الدالة شبكة.أكمل_الفحص تتوقع منفذا بين 1 و 65535", line, col);
+        }
+    }
+    if (nargs >= 4) {
+        to = nv5b_int_arg(args, 3, "أكمل_الفحص", line, col);
+        if (to < 1 || to > 65535) {
+            nv_error(NV_ERR_RUNTIME, "الدالة شبكة.أكمل_الفحص تتوقع منفذا بين 1 و 65535", line, col);
+        }
+    }
+    if (to < from || (to - from + 1) > 1024) {
+        nv_error(NV_ERR_RUNTIME, "الدالة شبكة.أكمل_الفحص نطاق كبير جدا (الحد 1024)", line, col);
+    }
+    char *resolved = nv_resolve_path(path, line, col);
+    FILE *f = fopen(resolved, "rb");
+    if (!f) {
+        free(resolved);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "ملف الفحص غير موجود: %s", path);
+    }
+    Nv9Buf old; nv9_buf_init(&old);
+    char chunk[4096];
+    size_t n;
+    while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0) nv9_buf_addn(&old, chunk, n);
+    fclose(f);
+    NvValue out = nv_list_new();
+    Nv9Buf extra; nv9_buf_init(&extra);
+    for (long long p = from; p <= to; p++) {
+        int seen = 0;
+        const char *q = old.data;
+        while (*q) {
+            const char *eol = strchr(q, '\n');
+            size_t len = eol ? (size_t)(eol - q) : strlen(q);
+            char linebuf[1024];
+            if (len >= sizeof(linebuf)) len = sizeof(linebuf) - 1;
+            memcpy(linebuf, q, len);
+            linebuf[len] = '\0';
+            if (nv9_scan_port_of(linebuf) == (int)p) { seen = 1; break; }
+            if (!eol) break;
+            q = eol + 1;
+        }
+        if (seen) continue;
+        if (nv5b_tcp_probe(host, (int)p, 200, line, col)) {
+            nv_list_push_raw(out.u.list, nv_num((double)p));
+            char lb[32];
+            snprintf(lb, sizeof(lb), "%lld: مفتوح\n", p);
+            nv9_buf_add(&extra, lb);
+        } else {
+            char lb[32];
+            snprintf(lb, sizeof(lb), "%lld: مغلق\n", p);
+            nv9_buf_add(&extra, lb);
+        }
+    }
+    FILE *fa = fopen(resolved, "ab");
+    if (!fa) {
+        free(resolved);
+        nv9_buf_free(&old);
+        nv9_buf_free(&extra);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة شبكة.أكمل_الفحص تعذر كتابة الملف");
+    }
+    if (old.len > 0 && old.data[old.len - 1] != '\n') fputc('\n', fa);
+    if (extra.len > 0) fwrite(extra.data, 1, extra.len, fa);
+    fclose(fa);
+    free(resolved);
+    nv9_buf_free(&old);
+    nv9_buf_free(&extra);
+    return out;
+}
+
+static NvValue nv9_connect_udp(NvValue *args, int nargs, int line, int col) {
+    if (nargs != 2) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة شبكة.اتصل_udp تتوقع 2 معاملات لكن أعطيت %d", nargs);
+    }
+    const char *host = nv5b_host_arg(args, nargs, 0, "اتصل_udp", line, col);
+    long long port = nv5b_int_arg(args, 1, "اتصل_udp", line, col);
+    nv_sock_require_net(line, col);
+    nv_sock_check_port(port, "شبكة.اتصل_udp", 0, line, col);
+    struct sockaddr_storage ss;
+    socklen_t slen = 0;
+    nv_resolve_checked(host, (int)port, &ss, &slen, line, col);
+    int fd = socket(ss.ss_family, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        nv_error(NV_ERR_RUNTIME, "تعذر فتح مقبس UDP", line, col);
+    }
+    if (connect(fd, (const struct sockaddr *)&ss, slen) != 0) {
+        close(fd);
+        nv_error(NV_ERR_RUNTIME, "تعذر الاتصال بمقبس UDP", line, col);
+    }
+    nv_sock_arm_timeout(fd, nv_net_deadline_ms());
+    unsigned long long id = nv_sock_insert2(3, fd, line, col);
+    return nv_num((double)id);
+}
+
+static NvValue nv9_listen_udp(NvValue *args, int nargs, int line, int col) {
+    if (nargs != 1) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة شبكة.استمع_udp تتوقع 1 معاملات لكن أعطيت %d", nargs);
+    }
+    long long port = nv5b_int_arg(args, 0, "استمع_udp", line, col);
+    nv_sock_require_net(line, col);
+    nv_sock_check_port(port, "شبكة.استمع_udp", 1, line, col);
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) {
+        nv_error(NV_ERR_RUNTIME, "تعذر فتح مقبس UDP", line, col);
+    }
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = htons((unsigned short)port);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        close(fd);
+        nv_error(NV_ERR_RUNTIME, "تعذر ربط المقبس على 127.0.0.1", line, col);
+    }
+    nv_sock_arm_timeout(fd, nv_net_deadline_ms());
+    unsigned long long id = nv_sock_insert2(3, fd, line, col);
+    return nv_num((double)id);
+}
+
+static NvValue nv9_connect_proxy(NvValue *args, int nargs, int line, int col) {
+    if (nargs != 3) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة شبكة.اتصل_عبر_وكيل تتوقع 3 معاملات لكن أعطيت %d", nargs);
+    }
+    const char *host = nv5b_host_arg(args, nargs, 0, "اتصل_عبر_وكيل", line, col);
+    long long port = nv5b_int_arg(args, 1, "اتصل_عبر_وكيل", line, col);
+    if (args[2].tag != NV_STR) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة شبكة.اتصل_عبر_وكيل تتوقع نصا لكن أعطيت %s", nv_type_name(args[2]));
+    }
+    const char *proxy = args[2].u.str->data;
+    nv_sock_require_net(line, col);
+    nv_sock_check_port(port, "شبكة.اتصل_عبر_وكيل", 0, line, col);
+    const char *colon = strrchr(proxy, ':');
+    if (!colon || colon == proxy || colon[1] == '\0') {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "عنوان الوكيل غير صالح: %s", proxy);
+    }
+    char phost[256];
+    size_t hlen = (size_t)(colon - proxy);
+    if (hlen >= sizeof(phost)) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "عنوان الوكيل غير صالح: %s", proxy);
+    }
+    memcpy(phost, proxy, hlen);
+    phost[hlen] = '\0';
+    long long pport = 0;
+    for (const char *q = colon + 1; *q; q++) {
+        if (*q < '0' || *q > '9') {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "عنوان الوكيل غير صالح: %s", proxy);
+        }
+        pport = pport * 10 + (*q - '0');
+        if (pport > 65535) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "عنوان الوكيل غير صالح: %s", proxy);
+        }
+    }
+    nv_sock_check_port(pport, "شبكة.اتصل_عبر_وكيل", 0, line, col);
+    struct sockaddr_storage ss;
+    socklen_t slen = 0;
+    nv_resolve_checked(phost, (int)pport, &ss, &slen, line, col);
+    int fd = nv_connect_timeout((const struct sockaddr *)&ss, slen, nv_net_deadline_ms());
+    if (fd < 0) {
+        if (errno == ETIMEDOUT) {
+            nv_error(NV_ERR_RUNTIME, "انتهت مهلة الاتصال (30 ثانية)", line, col);
+        }
+        nv_net_err_runtime(line, col, "تعذر الاتصال بالمضيف %s", phost);
+    }
+    char req[1024];
+    snprintf(req, sizeof(req), "CONNECT %s:%lld HTTP/1.1\r\nHost: %s:%lld\r\n\r\n", host, port, host, port);
+    if (send(fd, req, strlen(req), 0) < 0) {
+        close(fd);
+        nv_net_err_runtime(line, col, "تعذر الاتصال بالوكيل %s", phost);
+    }
+    struct timeval tv;
+    tv.tv_sec = 30; tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    char resp[4097];
+    size_t got = 0;
+    while (got < 4096) {
+        ssize_t r = recv(fd, resp + got, 4096 - got, 0);
+        if (r <= 0) break;
+        got += (size_t)r;
+        resp[got] = '\0';
+        if (strstr(resp, "\r\n\r\n")) break;
+    }
+    resp[got] = '\0';
+    int code = 0;
+    if (strncmp(resp, "HTTP/", 5) == 0) {
+        const char *sp = strchr(resp, ' ');
+        if (sp) code = atoi(sp + 1);
+    }
+    if (code != 200) {
+        close(fd);
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "رفض الوكيل الاتصال: %d", code);
+    }
+    nv_sock_arm_timeout(fd, nv_net_deadline_ms());
+    unsigned long long id = nv_sock_insert2(1, fd, line, col);
+    return nv_num((double)id);
+}
+
 // نزّل: رابط، مسار → عدد البايتات.
 NvValue nv_net_download(NvValue *args, int nargs, int line, int col) {
     if (nargs != 2) {
@@ -8984,13 +9455,13 @@ static NvValue nv_sock_send_to(NvValue *args, int nargs, int line, int col) {
     if (args[1].tag != NV_STR) {
         nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة شبكة.أرسل_إلى تتوقع نصا لكن أعطيت %s", nv_type_name(args[1]));
     }
-    if (args[2].tag != NV_STR) {
-        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة شبكة.أرسل_إلى تتوقع نصا لكن أعطيت %s", nv_type_name(args[2]));
-    }
-    if (args[3].tag != NV_NUM || args[3].u.num != trunc(args[3].u.num)) {
+    if (args[2].tag != NV_NUM || args[2].u.num != trunc(args[2].u.num)) {
         nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة شبكة.أرسل_إلى تتوقع عددا صحيحا", line, col);
     }
-    long long port = (long long)args[3].u.num;
+    if (args[3].tag != NV_STR) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة شبكة.أرسل_إلى تتوقع نصا لكن أعطيت %s", nv_type_name(args[3]));
+    }
+    long long port = (long long)args[2].u.num;
     nv_sock_check_port(port, "شبكة.أرسل_إلى", 0, line, col);
     NvSocketEntry *e = nv_sock_lookup((unsigned long long)id, line, col);
     if (e->kind != 3) {
@@ -8998,9 +9469,9 @@ static NvValue nv_sock_send_to(NvValue *args, int nargs, int line, int col) {
     }
     struct sockaddr_storage ss;
     socklen_t slen = 0;
-    nv_resolve_checked(args[2].u.str->data, (int)port, &ss, &slen, line, col);
-    const char *text = args[1].u.str->data;
-    size_t len = args[1].u.str->len;
+    nv_resolve_checked(args[1].u.str->data, (int)port, &ss, &slen, line, col);
+    const char *text = args[3].u.str->data;
+    size_t len = args[3].u.str->len;
     long long deadline_ms = nv_net_deadline_ms();
     size_t sent = 0;
     while (sent < len) {
@@ -10547,6 +11018,51 @@ static NvValue nv5b_timeout_connect(NvValue *args, int nargs, int line, int col)
     nv_net_win32_refuse("شبكة.اتصل_بمهلة", line, col);
     return nv_nil();
 }
+static NvValue nv9_udp_ping(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.انبض_udp", line, col);
+    return nv_nil();
+}
+static NvValue nv9_detect_service(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.اكشف_الخدمة", line, col);
+    return nv_nil();
+}
+static NvValue nv9_write_xml(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.اكتب_الفحص_xml", line, col);
+    return nv_nil();
+}
+static NvValue nv9_write_search(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.اكتب_الفحص_بحث", line, col);
+    return nv_nil();
+}
+static NvValue nv9_write_all(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.اكتب_الفحص_كل_الصيغ", line, col);
+    return nv_nil();
+}
+static NvValue nv9_resume_scan(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.أكمل_الفحص", line, col);
+    return nv_nil();
+}
+static NvValue nv9_connect_udp(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.اتصل_udp", line, col);
+    return nv_nil();
+}
+static NvValue nv9_listen_udp(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.استمع_udp", line, col);
+    return nv_nil();
+}
+static NvValue nv9_connect_proxy(NvValue *args, int nargs, int line, int col) {
+    (void)args; (void)nargs;
+    nv_net_win32_refuse("شبكة.اتصل_عبر_وكيل", line, col);
+    return nv_nil();
+}
 /* انسخ_الموقع يشارك الدالة نفسها (بلا تعريف مكرر)؛
    ورفض Win32 يسمي نزل_الموقع في الحالين. */
 
@@ -11183,4 +11699,13 @@ void nv_std_network_fill(NvDict *d) {
     nv_dict_set_raw(d, "تتبع_المسار", nv_native_new("تتبع_المسار", nv5b_trace));
     nv_dict_set_raw(d, "اتصل_مشفر", nv_native_new("اتصل_مشفر", nv5b_tls_connect));
     nv_dict_set_raw(d, "اتصل_بمهلة", nv_native_new("اتصل_بمهلة", nv5b_timeout_connect));
+    nv_dict_set_raw(d, "انبض_udp", nv_native_new("انبض_udp", nv9_udp_ping));
+    nv_dict_set_raw(d, "اكشف_الخدمة", nv_native_new("اكشف_الخدمة", nv9_detect_service));
+    nv_dict_set_raw(d, "اكتب_الفحص_xml", nv_native_new("اكتب_الفحص_xml", nv9_write_xml));
+    nv_dict_set_raw(d, "اكتب_الفحص_بحث", nv_native_new("اكتب_الفحص_بحث", nv9_write_search));
+    nv_dict_set_raw(d, "اكتب_الفحص_كل_الصيغ", nv_native_new("اكتب_الفحص_كل_الصيغ", nv9_write_all));
+    nv_dict_set_raw(d, "أكمل_الفحص", nv_native_new("أكمل_الفحص", nv9_resume_scan));
+    nv_dict_set_raw(d, "اتصل_udp", nv_native_new("اتصل_udp", nv9_connect_udp));
+    nv_dict_set_raw(d, "استمع_udp", nv_native_new("استمع_udp", nv9_listen_udp));
+    nv_dict_set_raw(d, "اتصل_عبر_وكيل", nv_native_new("اتصل_عبر_وكيل", nv9_connect_proxy));
 }

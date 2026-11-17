@@ -7557,6 +7557,40 @@ static NvValue b7_files_newer_fn(NvValue *args, int nargs, int line, int col) {
     return nv_bool(t1s > t2s || (t1s == t2s && t1n > t2n));
 }
 
+// ---------- لينكس9-حزم: ملفات.بيانات_المسار (لحزم-121) ----------
+// {موجود، حجم، وقت_التعديل (ثواني يونكس)، صلاحيات (ثماني)}؛
+// الغائب يرجع {موجود: خطأ} بلا خطأ — ليفحص المفصّل كل ملف على حدة.
+static NvValue b9_files_stat_fn(NvValue *args, int nargs, int line, int col) {
+    const char *D = "ملفات.بيانات_المسار";
+    nv_std_need_args(D, args, nargs, 1, line, col);
+    const char *p = nv_std_need_string(D, args[0], line, col);
+    if (p[0] == '\0') {
+        nv_error(NV_ERR_TYPE, "الدالة ملفات.بيانات_المسار تتوقع مسارا غير فارغ", line, col);
+    }
+    char *r = b6_resolve_plain_c(p);
+    struct stat st;
+    NvValue d = nv_dict_new();
+    if (stat(r, &st) != 0) {
+        free(r);
+        nv_dict_set_raw(d.u.dict, "موجود", nv_bool(0));
+        return d;
+    }
+#if defined(__linux__)
+    long long mtime = (long long)st.st_mtim.tv_sec;
+#elif defined(__APPLE__)
+    long long mtime = (long long)st.st_mtimespec.tv_sec;
+#else
+    long long mtime = (long long)st.st_mtime;
+#endif
+    long long mode = (long long)(st.st_mode & 07777);
+    free(r);
+    nv_dict_set_raw(d.u.dict, "موجود", nv_bool(1));
+    nv_dict_set_raw(d.u.dict, "حجم", nv_num((double)st.st_size));
+    nv_dict_set_raw(d.u.dict, "وقت_التعديل", nv_num((double)mtime));
+    nv_dict_set_raw(d.u.dict, "صلاحيات", nv_num((double)mode));
+    return d;
+}
+
 static NvValue b7_files_validate_path_fn(NvValue *args, int nargs, int line, int col) {
     const char *D = "ملفات.تحقق_مسار";
     nv_std_need_args(D, args, nargs, 1, line, col);
@@ -7954,6 +7988,7 @@ void nv_std_files_fill(NvDict *d) {
     nv_std_add_fn(d, "اقفل_ملفا", b7_files_lock_fn);
     nv_std_add_fn(d, "أعد_تسمية_بنمط", b7_files_rename_pattern_fn);
     nv_std_add_fn(d, "أحدث_من", b7_files_newer_fn);
+    nv_std_add_fn(d, "بيانات_المسار", b9_files_stat_fn);
     nv_std_add_fn(d, "تحقق_مسار", b7_files_validate_path_fn);
     nv_std_add_fn(d, "ثبت_ملفا", b7_files_install_fn);
     nv_std_add_fn(d, "أنشئ_رابط_صلب", b7_files_hardlink_fn);

@@ -3866,11 +3866,18 @@ static NvValue nv_call_func_impl(NvFunc *f, NvValue self, int has_self,
     NvScope *parent = NULL;
     if (f->module) {
         parent = nv_module_call_scope(f);
+        // جذّر الاستنساخ حتى يُربط بالإطار: تخصيص
+        // الإطار قد يطلق الجامعة، والاستنساخ لا يمسكه
+        // إلا متغير C محلي حتى ذلك الحين (كما في
+        // nv_scope_clone أثناء البناء).
+        if (parent) nv_scope_root_push(parent);
     } else {
         parent = f->captured;
     }
     NvScope *frame = nv_scope_new(parent);
     nv_frames_push(frame);
+    // الإطار يمسك الأب الآن عبر التمييز (آباء النطاق).
+    if (f->module && parent) nv_scope_root_pop_n(1);
     // نفس (للميتدات) ثم المعاملات المحلولة.
     if (has_self) {
         nv_scope_define(frame, "نفس", self);

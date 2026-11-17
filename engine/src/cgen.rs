@@ -75,6 +75,11 @@ struct ModuleInfo {
 struct LoopCtx {
     head: String,
     end: String,
+    // هدف «تابع»: في «بينما» هو الرأس (إعادة فحص
+    // الشرط)، وفي «لكل»/«كرر» تسمية قبل الزيادة —
+    // فالقفز إلى الرأس مباشرة يتخطى الزيادة ويعيد
+    // العنصر نفسه إلى الأبد.
+    cont: String,
 }
 
 #[derive(Clone)]
@@ -1518,7 +1523,7 @@ impl Gen {
             }
             "NV_FLOW_CONTINUE" => {
                 let l = ctx.loop_stack.last().unwrap();
-                out.push_str(&format!("goto {};\n", l.head));
+                out.push_str(&format!("goto {};\n", l.cont));
             }
             _ => unreachable!(),
         }
@@ -1533,7 +1538,7 @@ impl Gen {
         out.push_str(&format!("long _iter{} = 0;\n", self.tmp));
         self.tmp += 1;
         let iter_var = format!("_iter{}", self.tmp - 1);
-        ctx.loop_stack.push(LoopCtx { head: head.clone(), end: end.clone() });
+        ctx.loop_stack.push(LoopCtx { head: head.clone(), end: end.clone(), cont: head.clone() });
         out.push_str(&format!("{}:;\n", head));
         // الشرط (في كل دورة).
         let ct = self.eval_into_temp(cond, ctx, out);
@@ -1572,7 +1577,8 @@ impl Gen {
         let idx = format!("_fi{}", self.tmp);
         self.tmp += 1;
         out.push_str(&format!("size_t {} = 0;\n", idx));
-        ctx.loop_stack.push(LoopCtx { head: head.clone(), end: end.clone() });
+        let cont = self.fresh_label("lc");
+        ctx.loop_stack.push(LoopCtx { head: head.clone(), end: end.clone(), cont: cont.clone() });
         out.push_str(&format!("{}:;\n", head));
         out.push_str(&format!(
             "if ({} >= {}.u.list->len) goto {};\n",
@@ -1595,6 +1601,7 @@ impl Gen {
         self.unroot(out, n);
         self.release(&vt);
         self.emit_stmts(body, ctx, out)?;
+        out.push_str(&format!("{}:;\n", cont));
         out.push_str(&format!("{}++;\n", idx));
         out.push_str(&format!("goto {};\n", head));
         out.push_str(&format!("{}:;\n", end));
@@ -1620,10 +1627,12 @@ impl Gen {
         let idx = format!("_ri{}", self.tmp);
         self.tmp += 1;
         out.push_str(&format!("long {} = 0;\n", idx));
-        ctx.loop_stack.push(LoopCtx { head: head.clone(), end: end.clone() });
+        let cont = self.fresh_label("lc");
+        ctx.loop_stack.push(LoopCtx { head: head.clone(), end: end.clone(), cont: cont.clone() });
         out.push_str(&format!("{}:;\n", head));
         out.push_str(&format!("if ({} >= {}) goto {};\n", idx, rep_var, end));
         self.emit_stmts(body, ctx, out)?;
+        out.push_str(&format!("{}:;\n", cont));
         out.push_str(&format!("{}++;\n", idx));
         out.push_str(&format!("goto {};\n", head));
         out.push_str(&format!("{}:;\n", end));
@@ -2279,22 +2288,38 @@ impl Gen {
             RioError::new(ErrorKind::Io, msg, line, col)
                 .with_file_if_none(Some(self.files[cur_file_idx].clone()))
         })?;
-        let path = match found.found {
-            Some(p) => p,
-            None => {
-                let searched = found
-                    .searched
-                    .iter()
-                    .map(|p| crate::permissions::slash_display(p))
-                    .collect::<Vec<_>>()
-                    .join("؛ ");
-                return Err(RioError::module_not_found(module, &searched, line, col)
-                    .with_file_if_none(Some(self.files[cur_file_idx].clone())));
+        // ملف على القرص أولا، ثم المدمج (كما في المفسر وVM:
+        // packages.rs: مصدر_مدمج ملاذ أخير بعد فشل بحث
+        // القرص كله) — وإلا خطأ «وحدة غير موجودة».
+        // العرض للمدمج «مدمج/<وحدة>.نيفا» كما في المفسر حرفيا.
+        let (source, display) = match found.found {
+            Some(p) => {
+                let src = std::fs::read_to_string(&p).map_err(|e| {
+                    RioError::new(
+                        ErrorKind::Io,
+                        format!("تعذر قراءة الوحدة {}: {}", module, e),
+                        line,
+                        col,
+                    )
+                    .with_file_if_none(Some(self.files[cur_file_idx].clone()))
+                })?;
+                (src, crate::permissions::slash_display(&p))
             }
+            None => match crate::packages::مصدر_مدمج(module) {
+                Some(src) => (src.to_string(), format!("مدمج/{}.نيفا", module)),
+                None => {
+                    let searched = found
+                        .searched
+                        .iter()
+                        .map(|p| crate::permissions::slash_display(p))
+                        .collect::<Vec<_>>()
+                        .join("؛ ");
+                    return Err(RioError::module_not_found(module, &searched, line, col)
+                        .with_file_if_none(Some(self.files[cur_file_idx].clone())));
+                }
+            },
         };
-        // عرض مسار الوحدة بشرطة مائلة كما في المفسر،
-        // وسجّله في جدول ملفات المصدر (أو أعد فهرسه).
-        let display = crate::permissions::slash_display(&path);
+        // سجّل العرض في جدول ملفات المصدر (أو أعد فهرسه).
         let file_idx = match self.files.iter().position(|f| f == &display) {
             Some(i) => i,
             None => {
@@ -2302,15 +2327,6 @@ impl Gen {
                 self.files.len() - 1
             }
         };
-        let source = std::fs::read_to_string(&path).map_err(|e| {
-            RioError::new(
-                ErrorKind::Io,
-                format!("تعذر قراءة الوحدة {}: {}", module, e),
-                line,
-                col,
-            )
-            .with_file_if_none(Some(self.files[cur_file_idx].clone()))
-        })?;
         let tokens = tokenize(&source).map_err(|e| {
             RioError::new(
                 e.kind,

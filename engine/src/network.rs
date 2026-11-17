@@ -10301,6 +10301,210 @@ pub fn net_probe_udp(host: &str, port: u16, timeout_ms: u64, display: &str, line
     }
 }
 
+// ---------- لينكس9-شبكة: صيغة نتيجة الفحص السطرية ----------
+// الصيغة القانونية: سطر لكل منفذ مفحوص «منفذ: حالة»
+// (الحالة: مفتوح/مغلق/مفلتر)؛ الأسطر الأخرى تُتجاهل.
+pub fn net_scan_parse_ports(text: &str) -> Vec<u16> {
+    let mut out: Vec<u16> = Vec::new();
+    for line in text.lines() {
+        let t = line.trim();
+        let Some((num, _rest)) = t.split_once(':') else { continue };
+        if let Ok(p) = num.trim().parse::<u32>() {
+            if (1..=65535).contains(&p) && !out.contains(&(p as u16)) {
+                out.push(p as u16);
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+fn net_scan_escape_xml(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+pub fn net_scan_to_xml(text: &str) -> String {
+    let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<فحص>\n");
+    for line in text.lines() {
+        let t = line.trim();
+        let Some((num, state)) = t.split_once(':') else { continue };
+        let Ok(p) = num.trim().parse::<u32>() else { continue };
+        if !(1..=65535).contains(&p) { continue }
+        out.push_str(&format!(
+            "  <منفذ رقم=\"{}\" حالة=\"{}\" />\n",
+            p,
+            net_scan_escape_xml(state.trim())
+        ));
+    }
+    out.push_str("</فحص>\n");
+    out
+}
+
+pub fn net_scan_to_search(text: &str) -> String {
+    let mut out = String::new();
+    for line in text.lines() {
+        let t = line.trim();
+        let Some((num, state)) = t.split_once(':') else { continue };
+        let Ok(p) = num.trim().parse::<u32>() else { continue };
+        if !(1..=65535).contains(&p) { continue }
+        out.push_str(&format!("{} {}\n", p, state.trim()));
+    }
+    out
+}
+
+// ---------- لينكس9-شبكة: نبضة UDP (363) ----------
+// حياة المضيف = رد أو رفض ICMP؛ الصمت وحده «مفلتر» = غير حي.
+pub fn net_probe_udp_ping(
+    host: &str,
+    port: u16,
+    timeout_ms: u64,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<bool> {
+    let state = net_probe_udp(host, port, timeout_ms, display, line, col)?;
+    Ok(state != "مفلتر")
+}
+
+// ---------- لينكس9-شبكة: كشف الخدمة والإصدار (365) ----------
+// تحليل البانر — المنطق نفسه حرفيا في مرآة C.
+pub fn net_detect_service_parse(banner: &str) -> (String, String) {
+    let first = banner.lines().next().unwrap_or("").trim();
+    if let Some(rest) = first.strip_prefix("SSH-") {
+        let ver: String = rest.split([' ', '\r', '\t']).next().unwrap_or("").chars().take(32).collect();
+        return ("SSH".to_string(), ver);
+    }
+    if first.starts_with("220") {
+        if first.contains("FTP") {
+            return ("FTP".to_string(), first.chars().take(64).collect());
+        }
+        if first.contains("SMTP") || first.contains("ESMTP") {
+            return ("SMTP".to_string(), first.chars().take(64).collect());
+        }
+        return ("غير معروفة".to_string(), first.chars().take(64).collect());
+    }
+    if let Some(rest) = first.strip_prefix("HTTP/") {
+        let ver: String = rest.split([' ', '\r', '\t']).next().unwrap_or("").chars().take(16).collect();
+        return ("HTTP".to_string(), format!("HTTP/{}", ver));
+    }
+    if first.is_empty() {
+        return ("غير معروفة".to_string(), String::new());
+    }
+    ("غير معروفة".to_string(), first.chars().take(64).collect())
+}
+
+pub fn net_detect_service(
+    host: &str,
+    port: u16,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<(String, String)> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (host, port);
+        Err(RioError::runtime(format!("{} غير مدعوم على هذه المنصة", display), line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        require_network_allowed(line, col)?;
+        let addr = resolve_and_check(host, port, line, col)?;
+        let dur = std::time::Duration::from_millis(2000);
+        let mut stream = std::net::TcpStream::connect_timeout(&addr, dur).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::TimedOut {
+                RioError::runtime("انتهت مهلة الاتصال (30 ثانية)", line, col)
+            } else {
+                RioError::runtime(format!("تعذر الاتصال بالمضيف {}", host), line, col)
+            }
+        })?;
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(1000)));
+        let mut buf = [0u8; 512];
+        let mut banner = String::new();
+        match stream.read(&mut buf) {
+            Ok(n) if n > 0 => {
+                banner = String::from_utf8_lossy(&buf[..n]).into_owned();
+            }
+            _ => {
+                // بلا بانر تلقائيا: جرّب طلب HEAD فيكشف HTTP.
+                let _ = stream.write_all(b"HEAD / HTTP/1.0\r\n\r\n");
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(1000)));
+                if let Ok(n) = stream.read(&mut buf) {
+                    if n > 0 {
+                        banner = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    }
+                }
+            }
+        }
+        Ok(net_detect_service_parse(&banner))
+    }
+}
+
+// ---------- لينكس9-شبكة: استئناف فحص متوقف (374) ----------
+// يقرأ ملف الفحص السطري، يفحص باقي المنافذ في [من، إلى]
+// (السقف 1024 منفذا كافحص_نطاق)، يلحق النتائج بالملف،
+// ويرجع قائمة المنافذ المفتوحة المكتشفة حديثا.
+pub fn net_scan_resume(
+    path: &str,
+    host: &str,
+    from: u16,
+    to: u16,
+    display: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<Vec<u16>> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (path, host, from, to);
+        Err(RioError::runtime(format!("{} غير مدعوم على هذه المنصة", display), line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let old = std::fs::read_to_string(path).map_err(|_| {
+            RioError::runtime(format!("ملف الفحص غير موجود: {}", path), line, col)
+        })?;
+        if to < from || (to - from + 1) > 1024 {
+            return Err(RioError::runtime(
+                "الدالة شبكة.أكمل_الفحص نطاق كبير جدا (الحد 1024)",
+                line,
+                col,
+            ));
+        }
+        let scanned = net_scan_parse_ports(&old);
+        let mut open: Vec<u16> = Vec::new();
+        let mut extra = String::new();
+        for p in from..=to {
+            if scanned.contains(&p) {
+                continue;
+            }
+            if net_probe_tcp(host, p, 200, display, line, col)? {
+                open.push(p);
+                extra.push_str(&format!("{}: مفتوح\n", p));
+            } else {
+                extra.push_str(&format!("{}: مغلق\n", p));
+            }
+        }
+        let mut new_text = old;
+        if !new_text.is_empty() && !new_text.ends_with('\n') {
+            new_text.push('\n');
+        }
+        new_text.push_str(&extra);
+        std::fs::write(path, new_text.as_bytes()).map_err(|_| {
+            RioError::runtime(format!("الدالة {} تعذر كتابة الملف", display), line, col)
+        })?;
+        Ok(open)
+    }
+}
+
 fn icmp_checksum(data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
     let mut i = 0;

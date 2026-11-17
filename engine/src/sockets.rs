@@ -418,6 +418,132 @@ fn connect_new_native(host: &str, port: i64, line: usize, col: usize) -> RioResu
     insert_entry(SocketEntry::TcpConnected(stream), line, col)
 }
 
+/// Connect a UDP socket: `شبكة.اتصل_udp(مضيف، منفذ)` — creates
+/// a connected UDP socket (loopback bind) and returns its handle.
+/// `أرسل` works on it directly; `أرسل_إلى`/`استقبل_من` stay for
+/// unconnected UDP sockets.
+pub fn connect_udp_new(host: &str, port: i64, line: usize, col: usize) -> RioResult<u64> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (host, port);
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        network::require_network_allowed(line, col)?;
+        let port = check_port(port, "شبكة.اتصل_udp", false, line, col)?;
+        let addr = network::resolve_checked(host, port, line, col)?;
+        let sock = std::net::UdpSocket::bind("127.0.0.1:0").map_err(|e| {
+            RioError::runtime(bind_error_message("المقبس", "127.0.0.1", 0, &e), line, col)
+        })?;
+        sock.connect(addr).map_err(|_| {
+            RioError::runtime(format!("تعذر الاتصال بالمضيف {}", host), line, col)
+        })?;
+        let _ = sock.set_read_timeout(Some(TIMEOUT));
+        let _ = sock.set_write_timeout(Some(TIMEOUT));
+        insert_entry(SocketEntry::Udp(sock), line, col)
+    }
+}
+
+/// Listen on UDP: `شبكة.استمع_udp(منفذ)` — binds a UDP socket
+/// to 127.0.0.1:port and returns its handle for `استقبل_من`.
+pub fn listen_udp_new(port: i64, line: usize, col: usize) -> RioResult<u64> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = port;
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        network::require_network_allowed(line, col)?;
+        let port = check_port(port, "شبكة.استمع_udp", true, line, col)?;
+        let sock = std::net::UdpSocket::bind(("127.0.0.1", port)).map_err(|e| {
+            RioError::runtime(bind_error_message("المقبس", "127.0.0.1", port, &e), line, col)
+        })?;
+        let _ = sock.set_read_timeout(Some(TIMEOUT));
+        let _ = sock.set_write_timeout(Some(TIMEOUT));
+        insert_entry(SocketEntry::Udp(sock), line, col)
+    }
+}
+
+/// Connect through an HTTP proxy: `شبكة.اتصل_عبر_وكيل(مضيف،
+/// منفذ، وكيل)` — وكيل بصيغة «مضيف:منفذ»؛ يرسل CONNECT
+/// ويرجع معرف المقبس المتصل عند 200، وإلا خطأ عربي.
+pub fn connect_via_proxy(
+    host: &str,
+    port: i64,
+    proxy: &str,
+    line: usize,
+    col: usize,
+) -> RioResult<u64> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (host, port, proxy);
+        Err(RioError::runtime(WASM_REFUSAL, line, col))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::io::{Read, Write};
+        network::require_network_allowed(line, col)?;
+        let port = check_port(port, "شبكة.اتصل_عبر_وكيل", false, line, col)?;
+        let (phost, pport) = match proxy.rsplit_once(':') {
+            Some((h, p)) if !h.is_empty() => {
+                let pn: i64 = p.parse().map_err(|_| {
+                    RioError::runtime(format!("عنوان الوكيل غير صالح: {}", proxy), line, col)
+                })?;
+                (h.to_string(), pn)
+            }
+            _ => {
+                return Err(RioError::runtime(
+                    format!("عنوان الوكيل غير صالح: {}", proxy),
+                    line,
+                    col,
+                ));
+            }
+        };
+        let pport = check_port(pport, "شبكة.اتصل_عبر_وكيل", false, line, col)?;
+        let paddr = network::resolve_checked(&phost, pport, line, col)?;
+        let mut stream = std::net::TcpStream::connect_timeout(&paddr, TIMEOUT)
+            .map_err(|e| connect_error(&phost, &e, line, col))?;
+        arm_timeouts(&stream);
+        let req = format!(
+            "CONNECT {}:{} HTTP/1.1\r\nHost: {}:{}\r\n\r\n",
+            host, port, host, port
+        );
+        stream.write_all(req.as_bytes()).map_err(|_| {
+            RioError::runtime(format!("تعذر الاتصال بالوكيل {}", phost), line, col)
+        })?;
+        let mut buf = [0u8; 4096];
+        let mut got: Vec<u8> = Vec::new();
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    got.extend_from_slice(&buf[..n]);
+                    if got.windows(4).any(|w| w == b"\r\n\r\n") || got.len() >= 4096 {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let head = String::from_utf8_lossy(&got).into_owned();
+        let code = head
+            .split_whitespace()
+            .nth(1)
+            .and_then(|c| c.parse::<u32>().ok())
+            .unwrap_or(0);
+        if code != 200 {
+            return Err(RioError::runtime(
+                format!("رفض الوكيل الاتصال: {}", code),
+                line,
+                col,
+            ));
+        }
+        insert_entry(SocketEntry::TcpConnected(stream), line, col)
+    }
+}
+
 /// Connect an existing socket: `شبكة.اتصل(معرف، مضيف،
 /// منفذ)` — connects a socket made by `مقبس("tcp")` and
 /// returns the same handle. An already-connected socket, a
