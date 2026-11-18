@@ -8278,6 +8278,16 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
             }
             if (rename(src_path, dst_path) != 0) {
                 int e = errno;
+#ifdef _WIN32
+                // الاجتماع 97 §112: على ويندوز rename يرفض الهدف الموجود،
+                // فيُحذف الهدف أولا ثم يُعاد النقل مرة واحدة، على غرار
+                // flow_write_atomic_c.
+                if (e == EEXIST && remove(dst_path) == 0 && rename(src_path, dst_path) == 0) {
+                    free(src_path);
+                    free(dst_path);
+                    return nv_nil();
+                }
+#endif
                 if (e != EXDEV) {
                     char osb[256];
                     nv_os_error_str(e, osb, sizeof(osb));
