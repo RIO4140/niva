@@ -124,16 +124,16 @@ jobs:
     # ملاحظة: خطوات GitHub تعمل bash مع -e (أي أمر يرجع غير صفر
     # يوقف الخطوة فورا) — فكل أمر قد يرجع غير صفر محمي هنا
     # بنمط الالتقاط (X=0; cmd || X=$?) أو || true.
-    # الاجتماع 98 §113: الخليتان A وB تشغّلان اختبار
-    # التكامل الكامل فتضربان مهلة 6 ساعات — فالوظيفة
-    # مصفوفة على الشرائح الست نفسها، والخليتان C وD
+    # الاجتماع 99 §114: الخليتان A وB تشغّلان اختبار
+    # التكامل فتضربان مهلة 6 ساعات على الشريحة الأبطأ —
+    # فالوظيفة مصفوفة على 12 شريحة، والخليتان C وD
     # تعملان مرة واحدة فقط (الشريحة 0).
-    name: verify-clang-o2 (Windows, slice ${{ matrix.part }}/6)
+    name: verify-clang-o2 (Windows, slice ${{ matrix.part }}/12)
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        part: [0, 1, 2, 3, 4, 5]
+        part: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -155,9 +155,9 @@ jobs:
       - name: Cell A - clang parity (default clang -O2)
         shell: bash
         run: |
-          echo "===== cell-a: c_parity_integration_scenarios slice ${{ matrix.part }}/6 under DEFAULT clang -O2 (switch)"
+          echo "===== cell-a: c_parity_integration_scenarios slice ${{ matrix.part }}/12 under DEFAULT clang -O2 (switch)"
           PARITY_CODE=0
-          NIVA_CPARITY_SLICE=${{ matrix.part }}/6 cargo test --manifest-path engine/Cargo.toml --test c_parity c_parity_integration_scenarios -- --test-threads=1 > parity-clang.log 2>&1 || PARITY_CODE=$?
+          NIVA_CPARITY_SLICE=${{ matrix.part }}/12 cargo test --manifest-path engine/Cargo.toml --test c_parity c_parity_integration_scenarios -- --test-threads=1 > parity-clang.log 2>&1 || PARITY_CODE=$?
           echo "PARITY-EXIT=$PARITY_CODE"
           echo "--- failing scenario (if any):"
           grep -iE "FAILED|panicked|test result|نظام-جدول|مقابس-بوابة-مغلقة|مقابس-وسائط-خاطئة" parity-clang.log | head -20 || true
@@ -167,7 +167,7 @@ jobs:
       - name: Cell B - GCC control (same test under GCC -O2 via wrapper)
         shell: bash
         run: |
-          echo "===== cell-b: GCC control - c_parity_integration_scenarios slice ${{ matrix.part }}/6 under GCC -O2 (wrapper swaps -O0 -> -O2)"
+          echo "===== cell-b: GCC control - c_parity_integration_scenarios slice ${{ matrix.part }}/12 under GCC -O2 (wrapper swaps -O0 -> -O2)"
           mkdir -p "$GITHUB_WORKSPACE/gcc-o2"
           cat > /tmp/gcc-o2.c <<'EOF'
           #include <string.h>
@@ -192,7 +192,7 @@ jobs:
           export PATH="$GITHUB_WORKSPACE/gcc-o2:$PATH"
           if command -v gcc-o2 >/dev/null 2>&1; then gcc-o2 --version | head -1 || true; echo "GCC-WRAPPER-FOUND"; else echo "GCC-WRAPPER-NOT-FOUND"; fi
           GCC_CODE=0
-          NIVA_CPARITY_SLICE=${{ matrix.part }}/6 NIVA_CC=gcc-o2 cargo test --manifest-path engine/Cargo.toml --test c_parity c_parity_integration_scenarios -- --test-threads=1 > parity-gcc.log 2>&1 || GCC_CODE=$?
+          NIVA_CPARITY_SLICE=${{ matrix.part }}/12 NIVA_CC=gcc-o2 cargo test --manifest-path engine/Cargo.toml --test c_parity c_parity_integration_scenarios -- --test-threads=1 > parity-gcc.log 2>&1 || GCC_CODE=$?
           echo "GCC-CONTROL-EXIT=$GCC_CODE"
           echo "--- failing scenario (if any):"
           grep -iE "FAILED|panicked|test result|نظام-جدول|مقابس-بوابة-مغلقة|مقابس-وسائط-خاطئة" parity-gcc.log | head -20 || true
