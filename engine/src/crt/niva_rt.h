@@ -117,7 +117,9 @@ typedef enum {
     NV_OBJ_BIGINT,  // عدد صحيح ممتد (سلسلة عشرية موحدة)
     NV_OBJ_RATIONAL, // كسر دقيق (بسط/مقام من كبيرين)
     NV_OBJ_BITS,    // بتات 0/1 (بايتات معبأة، الأهم أولا)
-    NV_OBJ_BOXED    // معلب (قيمة واحدة داخله)
+    NV_OBJ_BOXED,   // معلب (قيمة واحدة داخله)
+    // المولدات (الاجتماع 101 §116) — في آخر التعداد عمدا.
+    NV_OBJ_GEN      // مولد معلق (آلة حالة)
 } NvObjKind;
 
 // ---------- القيم ----------
@@ -145,6 +147,7 @@ typedef struct NvBigInt NvBigInt;
 typedef struct NvRational NvRational;
 typedef struct NvBits NvBits;
 typedef struct NvBoxed NvBoxed;
+typedef struct NvGen NvGen;
 
 typedef enum {
     NV_NUM = 1,
@@ -175,7 +178,10 @@ typedef enum {
     NV_RATIONAL,
     NV_COMPLEX,
     NV_BITS,
-    NV_BOXED
+    NV_BOXED,
+    // المولدات (الاجتماع 101 §116): تخفيض آلة-حالة
+    // في cgen — في آخر التعداد عمدا.
+    NV_GEN
 } NvTag;
 
 typedef struct {
@@ -198,6 +204,7 @@ typedef struct {
         struct { double re, im; } complex;
         NvBits *bits;
         NvBoxed *boxed;
+        NvGen *gen;
         NvFunc *func;
         NvNative *native;
         NvModule *module;
@@ -214,6 +221,10 @@ typedef struct {
 // أبوه السلسلة الملتقَطة أو نطاق الوحدة) والوسائط.
 typedef NvValue (*NvCFunc)(NvScope *frame, NvValue *args, int nargs,
                             int line, int col);
+// دالة مولد مولدة (آلة حالة — الاجتماع 101 §116):
+// تستلم المولد المعلق؛ تعيد 0 = أنتجت قيمة (في
+// G->yielded)، و1 = انتهت (قيمة الإرجاع في G->retval).
+typedef int (*NvGenFunc)(NvGen *);
 // دالة أصلية: تستلم الوسائط والموضع، وتعيد قيمة.
 typedef NvValue (*NvNativeFn)(NvValue *args, int nargs, int line, int col);
 
@@ -270,6 +281,19 @@ struct NvFunc {
     char **tp_defaults;
     int ntype_params;
     char **type_binding; // NULL إن لم تُخصَّص بعد
+    // المولدات (الاجتماع 101 §116): دالة مولد — جسمها
+    // آلة حالة (genfunc) لا دالة C عادية؛ وcfunc تحمل
+    // مؤشر آلة الحالة نفسه (لا تُستدعى أبدا — الاستدعاء
+    // ينشئ مولدا؛ والمؤشر يميّز الدوال المولدة بعضها
+    // عن بعض في فحص الهوية). والعدادات أعداد الحالة
+    // (بينما/كرر/لكل)، والحالات قيم (لقطات لكل ثم
+    // tmpsave)، ومعالجات حاول على الكومة.
+    int is_generator;
+    NvGenFunc genfunc;
+    int gen_ncounters;
+    int gen_nslots;
+    int gen_ntmpsave;
+    int gen_ntries;
 };
 
 struct NvNative {
@@ -460,6 +484,73 @@ typedef struct {
 NvCheckpoint nv_checkpoint(void);
 void nv_restore_checkpoint(NvCheckpoint cp);
 
+// ---------- المولد (آلة حالة) ----------
+// الاجتماع 101 §116: مولد معلق — إطار دالته (النطاق)
+// وحالة الاستئناف (state) وعدادات الحلقات وحالات القيم
+// ومعالجات حاول على الكومة والتفويض النشط (ولد من).
+// نوعان: دالة (جسم آلة حالة يولده cgen) وتعبير توليدي
+// (خطوات داخلية في وقت التشغيل).
+#define NV_GEN_NEW 0
+#define NV_GEN_SUSPENDED 1
+#define NV_GEN_EXHAUSTED 2
+#define NV_GEN_CLOSED 3
+
+typedef struct NvGenTry {
+    NvHandler h;
+    NvCheckpoint cp;
+} NvGenTry;
+
+typedef enum {
+    NV_GEN_FUNC = 0, // دالة مولد (آلة حالة في cgen)
+    NV_GEN_EXPR = 1, // تعبير توليدي (__مولد_تعبير)
+} NvGenKind;
+
+struct NvGen {
+    NvObj hdr;
+    char *name;          // اسم الدالة أو «تعبير مولد»
+    NvGenKind kind;
+    NvFunc *func;        // دالة المولد (NV_GEN_FUNC) أو NULL
+    NvScope *frame;      // إطار الدالة المعلق
+    char *eff_ret;       // نوع الإرجاع الفعال أو NULL (لفحص الاستنفاد)
+    int state;           // نقطة الاستئناف (0 = البداية)
+    int status;          // جديد/معلق/مستنفد/مغلق
+    int running;         // حارس إعادة الدخول
+    int closing;         // إغلاق جارٍ (يُمنع الولد أثناءه)
+    NvValue delegate;    // الفرعي النشط (ولد من) أو لاشيء
+    NvValue yielded;     // آخر قيمة مولدة
+    NvValue retval;      // قيمة الإرجاع عند الاستنفاد
+    int returned_explicit; // ارجع صريح قبل الاستنفاد
+    long *counters;      // عدادات الحلقات (بينما/كرر/لكل)
+    int ncounters;
+    NvValue *slots;      // حالات القيم: لقطات لكل ثم tmpsave
+    int nslots;
+    int tmpsave_base;    // بداية tmpsave في slots (= nslots - ntmpsave)
+    NvGenTry *tries;     // معالجات حاول على الكومة
+    int ntries;
+    // تعبير توليدي: دالة العنصر والشرط (أو لاشيء) والقابل
+    // (لقطة قائمة أو مولد يُستأنف) وفهرس اللقطة.
+    NvValue ge_elem;
+    NvValue ge_cond;
+    NvValue ge_iter;
+    size_t ge_idx;
+};
+
+// طلب إغلاق معلق (نظير nv_exit_requested): يضبطه
+// nv_gen_close_jump أثناء تشغيل أخيرا في الإغلاق،
+// فيتخطى ماعدا كما يتخطى الخروج، ويعيد الرفع.
+extern int nv_gen_close_requested;
+void nv_gen_close_jump(void);
+// استئناف مولد: 0 = أنتجت قيمة (في out)، 1 = انتهى
+// (قيمة الإرجاع في out)؛ ويرفع خطأ لغير مولد أو
+// المستنفد/المغلق أو إعادة الدخول أو خطأ الجسم.
+// need_word: «التالي» أو «ولد من» لرسالة النوع.
+int nv_gen_step_value(NvValue gen, NvValue *out, const char *need_word, int line, int col);
+// استئناف لحلقة لكل: 0 = قيمة، 1 = انتهى بصمت (بلا
+// خطأ)؛ ويرفع خطأ لغير مولد أو خطأ الجسم.
+int nv_gen_step_for(NvValue gen, NvValue *out, int line, int col);
+// إغلاق مولد صراحة (يشغّل أخيرا المعلقة).
+void nv_gen_close(NvValue gen, int line, int col);
+
 // جذور مؤقتة: مكدس قيم يحمي الوسائط أثناء التخصيص.
 NvValue *nv_root_push(void);
 void nv_root_pop(void);
@@ -492,7 +583,10 @@ NvValue nv_func_new(const char *name, NvCFunc cfunc, NvScope *captured,
                     const char *return_type, int nparams,
                     NvValue *defaults, int *has_default,
                     const char *vararg, const char *kwarg,
-                    const char *type_params);
+                    const char *type_params,
+                    int is_generator, NvGenFunc genfunc,
+                    int gen_ncounters, int gen_nslots, int gen_ntmpsave,
+                    int gen_ntries);
 NvValue nv_native_new(const char *name, NvNativeFn fn);
 NvValue nv_module_new(const char *name, NvScope *scope);
 NvValue nv_class_new(const char *name, NvClass *base, const char *type_params);

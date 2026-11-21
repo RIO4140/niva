@@ -24920,6 +24920,9 @@ static int nv_values_identical(NvValue a, NvValue b) {
                 && nv_values_identical(a.u.bound->func, b.u.bound->func);
         case NV_HANDLE: return a.u.handle == b.u.handle;
         case NV_BYTES: return a.u.bytes == b.u.bytes;
+        // المولدات (الاجتماع 101 §116): الهوية بمؤشر
+        // الكائن نفسه، كالدوال (مرآة nv_eq).
+        case NV_GEN: return a.u.gen == b.u.gen;
         default: return 0;
     }
 }

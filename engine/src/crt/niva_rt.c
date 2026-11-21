@@ -36,6 +36,10 @@
 NvFlow nv_flow = NV_FLOW_NORMAL;
 NvValue nv_retval;
 NvHandler *nv_handlers = NULL;
+// المولدات (الاجتماع 101 §116): طلب إغلاق معلق
+// (نظير nv_exit_requested) وعمق الاستئناف المتداخل.
+int nv_gen_close_requested = 0;
+static int nv_gen_resume_depth = 0;
 
 char *nv_program_dir = NULL;
 char *nv_home_dir = NULL;
@@ -224,6 +228,7 @@ static NvObj *nv_obj_of(NvValue v) {
         case NV_BOUND: return (NvObj *)v.u.bound;
         case NV_HANDLE: return (NvObj *)v.u.handle;
         case NV_BYTES: return (NvObj *)v.u.bytes;
+        case NV_GEN: return (NvObj *)v.u.gen;
         default: return NULL;
     }
 }
@@ -232,6 +237,9 @@ static NvObj *nv_obj_of(NvValue v) {
 static void nv_mark_obj(NvObj *o);
 // البنود 145–147: تحرير مصفوفة نصوص (تعريفها لاحقا).
 static void nv_free_str_array(char **arr, int n);
+// المولدات (الاجتماع 101 §116): إعلانات أمامية —
+// الإنشاء يُستدعى من nv_call_func_impl قبل تعريف النواة.
+static NvValue nv_gen_new(NvFunc *f, NvScope *frame, const char *eff_ret);
 static void nv_mark_value(NvValue v) {
     if (v.tag == NV_NUM || v.tag == NV_BOOL || v.tag == NV_NIL || v.tag == NV_COMPLEX) return;
     NvObj *o = NULL;
@@ -250,6 +258,8 @@ static void nv_mark_value(NvValue v) {
         case NV_BOUND: o = (NvObj *)v.u.bound; break;
         case NV_HANDLE: o = (NvObj *)v.u.handle; break;
         case NV_BYTES: o = (NvObj *)v.u.bytes; break;
+        // المولدات (الاجتماع 101 §116).
+        case NV_GEN: o = (NvObj *)v.u.gen; break;
         // ج6: الكبير والكسر والبت والمعلب كائنات جامع.
         case NV_BIGINT: o = (NvObj *)v.u.bigint; break;
         case NV_RATIONAL: o = (NvObj *)v.u.rational; break;
@@ -350,6 +360,24 @@ static void nv_mark_obj(NvObj *o) {
         case NV_OBJ_NATIVE:
         case NV_OBJ_HANDLE:
             break;
+        // المولدات (الاجتماع 101 §116): الدالة والإطار
+        // والتفويض والقيم المعلقة وحالات القيم وحقول
+        // التعبير التوليدي — أما العدادات فأعداد بلا مراجع.
+        case NV_OBJ_GEN: {
+            NvGen *g = (NvGen *)o;
+            if (g->func) nv_mark_obj((NvObj *)g->func);
+            nv_mark_scope(g->frame);
+            nv_mark_value(g->delegate);
+            nv_mark_value(g->yielded);
+            nv_mark_value(g->retval);
+            if (g->slots) {
+                for (int i = 0; i < g->nslots; i++) nv_mark_value(g->slots[i]);
+            }
+            nv_mark_value(g->ge_elem);
+            nv_mark_value(g->ge_cond);
+            nv_mark_value(g->ge_iter);
+            break;
+        }
         default:
             break;
     }
@@ -603,6 +631,20 @@ void nv_error(NvErrKind kind, const char *message, int line, int col) {
 
 // أعد رفع الخطأ الحالي (بعد أخيرا) إلى المعالج الأعمق.
 void nv_reraise_current(void) {
+    // المولدات (الاجتماع 101 §116): طلب إغلاق معلق
+    // يصعد كما هو — أخيرا الجارية انتهت، والإغلاق يواصل
+    // إلى المعالج الأعمق (لا ماعدا في طريقه أبدا، كما
+    // الخروج)؛ وبلا معالج يُمسح الطلب ويعود صامتا (لا
+    // خروج من البرنامج أبدا على إغلاق).
+    if (nv_gen_close_requested) {
+        if (nv_handlers) {
+            NvHandler *h = nv_handlers;
+            nv_handlers = h->prev;
+            longjmp(h->jb, 1);
+        }
+        nv_gen_close_requested = 0;
+        return;
+    }
     // الدفعة 1 — رموز الخروج (اجتماع 54 §69): طلب
     // خروج معلق يصعد كما هو — أخيرا الجارية انتهت،
     // والخروج يواصل إلى المعالج الأعمق (لا ماعدا
@@ -643,6 +685,23 @@ void nv_exit_jump(void) {
     // بلا معالج (لا يحدث داخل الجسم — المعالج
     // العلوي حاضر دائما): اخرج بالرمز مباشرة.
     exit(nv_exit_code);
+}
+
+// المولدات (الاجتماع 101 §116): اقفز بطلب إغلاق
+// معلق إلى أعمق معالج، بلا ضبط خطأ — فمسار الخطأ
+// في حاول يميّز الإغلاق فيشغّل أخيرا وحدها (بلا
+// ماعدا) ثم يعيد رفع الطلب. يُستدعى من فحص الإغلاق
+// بعد كل ولد أثناء إغلاق؛ والمعالج الغلاف في
+// nv_gen_step حاضر دائما، فبلا معالج يُمسح الطلب
+// ويعود (لا خروج من البرنامج أبدا على إغلاق).
+void nv_gen_close_jump(void) {
+    nv_gen_close_requested = 1;
+    if (nv_handlers) {
+        NvHandler *h = nv_handlers;
+        nv_handlers = h->prev;
+        longjmp(h->jb, 1);
+    }
+    nv_gen_close_requested = 0;
 }
 
 // أضف بادئة إلى رسالة الخطأ الحالي دون تغيير ملفه
@@ -1862,7 +1921,10 @@ NvValue nv_func_new(const char *name, NvCFunc cfunc, NvScope *captured,
                     const char *return_type, int nparams,
                     NvValue *defaults, int *has_default,
                     const char *vararg, const char *kwarg,
-                    const char *type_params) {
+                    const char *type_params,
+                    int is_generator, NvGenFunc genfunc,
+                    int gen_ncounters, int gen_nslots, int gen_ntmpsave,
+                    int gen_ntries) {
     NvFunc *f = (NvFunc *)nv_alloc(sizeof(NvFunc), NV_OBJ_FUNC);
     f->name = nv_strdup(name);
     f->cfunc = cfunc;
@@ -1904,6 +1966,13 @@ NvValue nv_func_new(const char *name, NvCFunc cfunc, NvScope *captured,
     nv_parse_type_params(type_params, &f->tp_names, &f->tp_bounds, &f->tp_defaults,
                          &f->ntype_params);
     f->type_binding = NULL;
+    // المولدات (الاجتماع 101 §116).
+    f->is_generator = is_generator;
+    f->genfunc = genfunc;
+    f->gen_ncounters = gen_ncounters;
+    f->gen_nslots = gen_nslots;
+    f->gen_ntmpsave = gen_ntmpsave;
+    f->gen_ntries = gen_ntries;
     NvValue v;
     v.tag = NV_FUNC;
     v.u.func = f;
@@ -2171,6 +2240,8 @@ const char *nv_type_name(NvValue v) {
         case NV_COMPLEX: return "مركب";
         case NV_BITS: return "بت";
         case NV_BOXED: return "معلب";
+        // المولدات (الاجتماع 101 §116).
+        case NV_GEN: return "مولد";
     }
     return "لاشيء";
 }
@@ -2499,6 +2570,12 @@ static void nv_fmt_into(NvValue v, int in_collection, char **buf, size_t *blen, 
             break;
         case NV_FUNC:
             snprintf(tmp, sizeof(tmp), "<دالة %s>", v.u.func->name);
+            nv_buf_append(buf, blen, bcap, tmp, strlen(tmp));
+            break;
+        // المولدات (الاجتماع 101 §116): مرآة fmt_value
+        // في Rust — `<مولد {name}>`.
+        case NV_GEN:
+            snprintf(tmp, sizeof(tmp), "<مولد %s>", v.u.gen->name);
             nv_buf_append(buf, blen, bcap, tmp, strlen(tmp));
             break;
         case NV_NATIVE:
@@ -3161,6 +3238,9 @@ int nv_eq(NvValue l, NvValue r) {
             return 1;
         }
         case NV_FUNC: return l.u.func == r.u.func;
+        // المولدات (الاجتماع 101 §116): مولدان متساويان
+        // إن كانا الكائن نفسه (مرآة value.rs).
+        case NV_GEN: return l.u.gen == r.u.gen;
         case NV_NATIVE: return l.u.native == r.u.native;
         case NV_MODULE: return l.u.module == r.u.module;
         case NV_CLASS: return l.u.klass == r.u.klass;
@@ -3887,6 +3967,24 @@ static NvValue nv_call_func_impl(NvFunc *f, NvValue self, int has_self,
     }
     free(bound);
     free(bound_names);
+    // المولدات (الاجتماع 101 §116): استدعاء دالة مولد
+    // لا ينفذ الجسم — ينشئ مولدا معلقا بإطاره الكامل
+    // (المعاملات مربوطة) ويعيده فورا. الإطار يُسحب من
+    // قائمة الإطارات الحية (يمسكه المولد ويُعلِّمه
+    // الجامع) فلا يتسرب رابطا ولا يفسد عدّاد نقاط
+    // التفتيش. ونوع الإرجاع الفعال يُحفظ للفحص عند
+    // الاستنفاد (مرآة check_gen_return في الآلة).
+    if (f->is_generator) {
+        NvValue g = nv_gen_new(f, frame, eff_ret);
+        nv_frames_pop();
+        if (eff_types) {
+            for (int i = 0; i < f->nparams; i++) free(eff_types[i]);
+            free(eff_types);
+        }
+        free(eff_ret);
+        free(eff_binding_owned);
+        return g;
+    }
     nv_call_depth++;
     NvFlow saved_flow = nv_flow;
     nv_flow = NV_FLOW_NORMAL;
@@ -4144,6 +4242,346 @@ NvValue nv_call_ident_at_nonlocal_kw(NvScope *scope, const char *name, NvValue *
 
 NvValue nv_call_ident(NvScope *scope, const char *name, NvValue *args, int nargs, int line, int col) {
     return nv_call_ident_at(scope, name, args, nargs, line, col, line, col);
+}
+
+// ---------- المولدات (آلة حالة) ----------
+// الاجتماع 101 §116: تخفيض المولدات في cgen — دالة
+// المولد آلة حالة في C (static int gen_N(NvGen *G))،
+// تستأنف من G->state، وتعلق عند كل ولد (تعيد 0)،
+// وتنتهي (تعيد 1). وهذا القسم نواة وقت التشغيل:
+// الإنشاء والاستئناف والإغلاق والتعبير التوليدي.
+
+// فحص نوع إرجاع مولد عند استنفاده — مرآة
+// check_gen_return في الآلة وفحص الدالة العادية
+// (يُستدعى بعد ضبط الحالة مستنفدا، فيرفع الخطأ
+// والمولد مستنفد كما في الآلة).
+static void nv_gen_check_return(NvGen *g, int line, int col) {
+    const char *rt = g->eff_ret;
+    if (!rt || strcmp(rt, "أي") == 0) return;
+    if (g->returned_explicit) {
+        if (!nv_value_matches_decl(rt, g->retval)) {
+            nv_error_fmt(NV_ERR_TYPE, line, col,
+                         "نوع غير متطابق: الدالة %s معلنة أن ترجع %s، لكن رجعت %s",
+                         g->name, rt, nv_type_name(g->retval));
+        }
+    } else if (strcmp(rt, "لاشيء") != 0) {
+        nv_error_fmt(NV_ERR_TYPE, line, col,
+                     "نوع غير متطابق: الدالة %s معلنة أن ترجع %s، لكن لم ترجع شيئا",
+                     g->name, rt);
+    }
+}
+
+// أنشئ مولدا معلقا لدالة مولد — بلا تنفيذ للجسم.
+// الإطار كامل (المعاملات مربوطة فيه)؛ والحالات
+// (لقطات + tmpsave) لاشيء أولا؛ والعدادات صفر.
+static NvValue nv_gen_new(NvFunc *f, NvScope *frame, const char *eff_ret) {
+    size_t ri = nv_root_push_idx();
+    NvGen *g = (NvGen *)nv_alloc(sizeof(NvGen), NV_OBJ_GEN);
+    NvValue gv;
+    gv.tag = NV_GEN;
+    gv.u.gen = g;
+    *nv_root_slot(ri) = gv;
+    g->name = nv_strdup(f->name);
+    g->kind = NV_GEN_FUNC;
+    g->func = f;
+    g->frame = frame;
+    g->eff_ret = eff_ret ? nv_strdup(eff_ret) : NULL;
+    g->state = 0;
+    g->status = NV_GEN_NEW;
+    g->running = 0;
+    g->closing = 0;
+    g->delegate = nv_nil();
+    g->yielded = nv_nil();
+    g->retval = nv_nil();
+    g->returned_explicit = 0;
+    g->ncounters = f->gen_ncounters;
+    g->counters = g->ncounters > 0 ? (long *)calloc((size_t)g->ncounters, sizeof(long)) : NULL;
+    g->nslots = f->gen_nslots;
+    g->slots = g->nslots > 0 ? (NvValue *)calloc((size_t)g->nslots, sizeof(NvValue)) : NULL;
+    // حالات القيم لاشيء أولا (calloc وحده يترك الوسم 0،
+    // والجامع يتجاهله — لكن لاشيء أنظف وأصرح).
+    if (g->slots) {
+        for (int i = 0; i < g->nslots; i++) g->slots[i] = nv_nil();
+    }
+    g->tmpsave_base = g->nslots - f->gen_ntmpsave;
+    g->ntries = f->gen_ntries;
+    g->tries = g->ntries > 0 ? (NvGenTry *)calloc((size_t)g->ntries, sizeof(NvGenTry)) : NULL;
+    g->ge_elem = nv_nil();
+    g->ge_cond = nv_nil();
+    g->ge_iter = nv_nil();
+    g->ge_idx = 0;
+    nv_root_pop_n(1);
+    return gv;
+}
+
+// خطوة تعبير توليدي: لكل عنصر في القابل (لقطة قائمة
+// أو مولد يُستأنف) طبق الشرط (إن وجد) ثم العنصر؛
+// وأنتج القيمة. مرآة genexpr_body في الآلة: الشرط
+// لاشيء أو شرط(س)؛ والاستنفاد ينهي التعبير.
+static int nv_genexpr_step(NvGen *g, int line, int col) {
+    for (;;) {
+        NvValue item;
+        if (g->ge_iter.tag == NV_GEN) {
+            // قابل مولد: استأنفه؛ واستنفاده ينهي التعبير.
+            NvValue out;
+            int r = nv_gen_step_value(g->ge_iter, &out, "التالي", line, col);
+            if (r == 1) {
+                g->retval = nv_nil();
+                return 1;
+            }
+            item = out;
+        } else {
+            // لقطة قائمة (أُخذت عند الإنشاء).
+            if (g->ge_idx >= g->ge_iter.u.list->len) {
+                g->retval = nv_nil();
+                return 1;
+            }
+            item = g->ge_iter.u.list->items[g->ge_idx++];
+        }
+        // الشرط: لاشيء يعني بلا شرط.
+        if (g->ge_cond.tag != NV_NIL) {
+            NvValue arg = item;
+            NvValue ok = nv_call(g->ge_cond, &arg, 1, line, col);
+            if (!nv_check_bool(ok, "شرط إذا", line, col)) continue;
+        }
+        NvValue arg = item;
+        g->yielded = nv_call(g->ge_elem, &arg, 1, line, col);
+        return 0;
+    }
+}
+
+// أنشئ مولد تعبير توليدي من معامله الثلاثة (دالة
+// العنصر، دالة الشرط أو لاشيء، القابل) — مرآة
+// make_genexpr في الآلة. القابل قائمة/مترابطة/
+// تشكيلة/نص/بت يُلقط حالا (كما في لكل)؛ ومولد
+// يُستأنف كسولا؛ وغير ذلك خطأ نوع برسالة لكل.
+static NvValue nv_genexpr_new(NvValue elem, NvValue cond, NvValue iter, int line, int col) {
+    size_t ri = nv_root_push_idx();
+    NvGen *g = (NvGen *)nv_alloc(sizeof(NvGen), NV_OBJ_GEN);
+    NvValue gv;
+    gv.tag = NV_GEN;
+    gv.u.gen = g;
+    *nv_root_slot(ri) = gv;
+    g->name = nv_strdup("تعبير مولد");
+    g->kind = NV_GEN_EXPR;
+    g->func = NULL;
+    g->frame = NULL;
+    g->eff_ret = NULL;
+    g->state = 0;
+    g->status = NV_GEN_NEW;
+    g->running = 0;
+    g->closing = 0;
+    g->delegate = nv_nil();
+    g->yielded = nv_nil();
+    g->retval = nv_nil();
+    g->returned_explicit = 0;
+    g->ncounters = 0;
+    g->counters = NULL;
+    g->nslots = 0;
+    g->slots = NULL;
+    g->tmpsave_base = 0;
+    g->ntries = 0;
+    g->tries = NULL;
+    g->ge_elem = elem;
+    g->ge_cond = cond;
+    // القابل: لقطة حالا، أو مولد كما هو.
+    if (iter.tag == NV_GEN) {
+        g->ge_iter = iter;
+    } else {
+        size_t ri2 = nv_root_push_idx();
+        *nv_root_slot(ri2) = gv;
+        g->ge_iter = nv_for_snapshot(iter, line, col);
+        nv_root_pop_n(1);
+    }
+    g->ge_idx = 0;
+    nv_root_pop_n(1);
+    return gv;
+}
+
+// استئناف مولد واحد (نواة الخطوة): يغلّف استدعاء آلة
+// الحالة بمعالج يحمي الاستئناف ونقطة تفتيش. يعيد
+// 0 = أنتجت قيمة (في G->yielded)، 1 = انتهت
+// (قيمة الإرجاع في G->retval). الخطأ داخل الجسم
+// ينتشر والمولد مستنفد بعده؛ وطلب الخروج ينتشر كما
+// هو (بلا ضبط مستنفد — الخروج ينهي البرنامج لا
+// المولد وحده)؛ وطلب الإغلاق ينتشر إلى nv_gen_close.
+// بعد كل عودة (ولد/انتهاء) تُستعاد نقطة التفتيش،
+// فجذور المقطع المؤقتة لا تتسرب عبر الاستئنافات.
+static int nv_gen_step(NvGen *g, int line, int col) {
+    if (g->kind == NV_GEN_EXPR) {
+        return nv_genexpr_step(g, line, col);
+    }
+    NvHandler h;
+    h.prev = nv_handlers;
+    h.has_except = 0;
+    nv_handlers = &h;
+    NvCheckpoint cp = nv_checkpoint();
+    int r;
+    if (setjmp(h.jb) == 0) {
+        r = g->func->genfunc(g);
+        nv_handlers = h.prev;
+        nv_restore_checkpoint(cp);
+        if (r == 0) {
+            // أنتجت قيمة أثناء إغلاق: خطأ، والمولد مغلق.
+            if (g->closing) {
+                g->status = NV_GEN_CLOSED;
+                g->closing = 0;
+                nv_error_fmt(NV_ERR_RUNTIME, line, col,
+                             "المولد %s أنتج قيمة أثناء الإغلاق", g->name);
+            }
+            g->status = NV_GEN_SUSPENDED;
+        } else {
+            // انتهى الجسم: مستنفد، ثم فحص نوع الإرجاع —
+            // إلا أثناء إغلاق (الإغلاق يتجاهل قيمة الإرجاع
+            // كما في الآلة؛ وnv_gen_close يضبط مغلقا بعده).
+            g->status = NV_GEN_EXHAUSTED;
+            if (!g->closing) nv_gen_check_return(g, line, col);
+        }
+        return r;
+    }
+    // مسار الخطأ (longjmp من الجسم): استعد النقاط.
+    nv_handlers = h.prev;
+    nv_restore_checkpoint(cp);
+    if (nv_gen_close_requested) {
+        // الإغلاق اكتمل (أخيرا شُغلت حتى النهاية): المولد
+        // مغلق، والطلب يُستهلك هنا عند حدود الاستئناف —
+        // عودة عادية (انتهى)، لا قفز إلى المتصل.
+        g->status = NV_GEN_CLOSED;
+        g->closing = 0;
+        nv_gen_close_requested = 0;
+        return 1;
+    }
+    if (nv_exit_requested) {
+        // خروج داخل مولد: ينتشر كما هو (لا ضبط مستنفد).
+        nv_reraise_current();
+        return 1; // لا يصل — nv_reraise_current تقفز أو تخرج.
+    }
+    // خطأ حقيقي داخل الجسم: مستنفد (أو مغلق إن كان
+    // إغلاقا جاريا — كما في الآلة)، والخطأ ينتشر.
+    g->status = g->closing ? NV_GEN_CLOSED : NV_GEN_EXHAUSTED;
+    g->closing = 0;
+    nv_reraise_current();
+    return 1; // لا يصل.
+}
+
+// استئناف مولد لطالب (التالي/ولد من/لكل-داخلي):
+// 0 = قيمة في out، 1 = انتهى (قيمة الإرجاع في out).
+// يرفع خطأ لغير مولد (برسالة الطالب)، وللمستنفد/
+// المغلق، ولإعادة الدخول، ولخطأ الجسم. حارس العمق
+// مرآة GEN_RESUME_DEPTH في الآلة (حد الاستدعاء نفسه).
+int nv_gen_step_value(NvValue gen, NvValue *out, const char *need_word, int line, int col) {
+    if (gen.tag != NV_GEN) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "%s يتطلب مولدا، وليس %s",
+                     need_word, nv_type_name(gen));
+    }
+    NvGen *g = gen.u.gen;
+    if (g->status == NV_GEN_EXHAUSTED) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col,
+                     "المولد %s مستنفد — لا قيم بعد", g->name);
+    }
+    if (g->status == NV_GEN_CLOSED) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col,
+                     "المولد %s مغلق — لا قيم بعد", g->name);
+    }
+    if (g->running) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col,
+                     "لا يمكن استئناف المولد %s وهو قيد التنفيذ", g->name);
+    }
+    if (nv_gen_resume_depth >= NV_MAX_CALL_DEPTH) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col,
+                     "تجاوز حد عمق الاستدعاء (%d). أوقف الاستدعاء الذاتي أو قلل عمقه",
+                     NV_MAX_CALL_DEPTH);
+    }
+    g->running = 1;
+    nv_gen_resume_depth++;
+    int r = nv_gen_step(g, line, col);
+    nv_gen_resume_depth--;
+    g->running = 0;
+    if (r == 0) {
+        *out = g->yielded;
+    } else {
+        *out = g->retval;
+    }
+    return r;
+}
+
+// استئناف مولد لحلقة لكل: 0 = قيمة في out، 1 = انتهى
+// بصمت (مستنفد أو مغلق — بلا خطأ، كما في الآلة).
+// يرفع خطأ لغير مولد أو خطأ الجسم أو إعادة الدخول.
+int nv_gen_step_for(NvValue gen, NvValue *out, int line, int col) {
+    if (gen.tag != NV_GEN) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "التالي يتطلب مولدا، وليس %s",
+                     nv_type_name(gen));
+    }
+    NvGen *g = gen.u.gen;
+    if (g->status == NV_GEN_EXHAUSTED || g->status == NV_GEN_CLOSED) {
+        return 1;
+    }
+    if (g->running) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col,
+                     "لا يمكن استئناف المولد %s وهو قيد التنفيذ", g->name);
+    }
+    if (nv_gen_resume_depth >= NV_MAX_CALL_DEPTH) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col,
+                     "تجاوز حد عمق الاستدعاء (%d). أوقف الاستدعاء الذاتي أو قلل عمقه",
+                     NV_MAX_CALL_DEPTH);
+    }
+    g->running = 1;
+    nv_gen_resume_depth++;
+    int r = nv_gen_step(g, line, col);
+    nv_gen_resume_depth--;
+    g->running = 0;
+    if (r == 0) {
+        *out = g->yielded;
+    } else {
+        *out = g->retval;
+    }
+    return r;
+}
+
+// إغلاق مولد صراحة — مرآة close_generator في الآلة:
+// جديد يُغلق بلا تشغيل لجسمه؛ والمستنفد أو المغلق
+// لا-عملية؛ والمعلق يُغلق فرعيه النشط أولا ثم يُستأنف
+// في وضع الإغلاق فيشغّل أخيرا المعلقة، ثم يتخلص من
+// الإطار. خطأ أثناء الإغلاق ينتشر والمولد مغلق.
+void nv_gen_close(NvValue gen, int line, int col) {
+    if (gen.tag != NV_GEN) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "أغلق_المولد يتطلب مولدا، وليس %s",
+                     nv_type_name(gen));
+    }
+    NvGen *g = gen.u.gen;
+    if (g->status == NV_GEN_NEW) {
+        g->status = NV_GEN_CLOSED;
+        g->frame = NULL;
+        return;
+    }
+    if (g->status == NV_GEN_EXHAUSTED || g->status == NV_GEN_CLOSED) {
+        return;
+    }
+    if (g->running) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col,
+                     "لا يمكن إغلاق المولد %s وهو قيد التنفيذ", g->name);
+    }
+    // التفويض النشط أولا (ولد من): الإغلاق ينتقل
+    // إلى الفرعي؛ وخطأ إغلاق الفرعي ينتشر.
+    if (g->delegate.tag == NV_GEN) {
+        NvValue d = g->delegate;
+        g->delegate = nv_nil();
+        nv_gen_close(d, line, col);
+    }
+    // استئناف في وضع الإغلاق: كل ولد بعده يقفز
+    // بطلب الإغلاق (فيشغّل أخيرا وحدها)؛ وولد أثناء
+    // الإغلاق خطأ؛ وخطأ حقيقي ينتشر.
+    g->closing = 1;
+    g->running = 1;
+    nv_gen_resume_depth++;
+    int r = nv_gen_step(g, line, col);
+    nv_gen_resume_depth--;
+    g->running = 0;
+    g->closing = 0;
+    g->status = NV_GEN_CLOSED;
+    g->frame = NULL;
+    (void)r;
 }
 
 // إنشاء كائن بالاسم (بحث النطاق أولا برسائل المفسر).
@@ -6121,11 +6559,15 @@ int nv_is_builtin(const char *name) {
         "مترابطة", "تشكيلة", "افهم_قائمة", "افهم_تشكيلة", "افهم_فهرس",
         // ج6 — مدمجات الصيغ الحرفية المفككة في المحلل.
         "عدد_كبير", "كسر", "مركب", "كسر_حرفي", "مركب_حرفي",
-        // ب6 — الاستدعاءات الداخلية المفككة في المحلل
-        // (`ولد`/`ولد من`/التعبير التوليدي): الثنائي
-        // الأصلي يرفضها بالرسالة القانونية (انظر
-        // nv_call_builtin) — بلا تغيير في cgen.rs.
+        // ب6 — المولدات (الاجتماع 85 §100 + 101 §116):
+        // `التالي` و`أغلق_المولد` مدمجتان (الاستئناف
+        // والإغلاق)؛ و`__ولد`/`__ولد_من` استدعاءان
+        // داخليان مفككان في المحلل — يعترضهما cgen في
+        // دالة مولد، فإن وصلا إلى وقت التشغيل رُفضا
+        // بالرسالة القانونية (حارس دفاعي)؛ و
+        // `__مولد_تعبير` مدمج حقيقي (ينشئ التعبير).
         "__ولد", "__ولد_من", "__مولد_تعبير",
+        "التالي", "أغلق_المولد",
         // البند 88 — مدير السياق (الاجتماع 88 §103):
         // الاستدعاءات الداخلية المفككة في المحلل من `عند`.
         "__عند_افحص", "__عند_خطأ", "__عند_أعد_رفع", NULL
@@ -7109,16 +7551,43 @@ NvValue nv_call_builtin(const char *name, NvValue *args, int nargs, int line, in
         nv_root_pop_n(1);
         return out;
     }
-    // ب6 — المولدات (الاجتماع 85 §100): الرفض الأصلي.
-    // `ولد`/`ولد من`/التعبير التوليدي تُفكَّك في المحلل
-    // إلى هذه الاستدعاءات الداخلية؛ والثنائي الأصلي
-    // بلا آلة حالات ولا إطار معلق، فيرفضها بالرسالة
-    // القانونية حرفيا (خروج 1 بلا معالج؛ و`ماعدا`
-    // يلتقطها كأي خطأ وقت تشغيل، كما في باقي المدمجات).
-    // لا تخفيض آلة-حالة هنا — عمل مستقبلي مسمى.
-    if (strcmp(name, "__ولد") == 0 || strcmp(name, "__ولد_من") == 0
-        || strcmp(name, "__مولد_تعبير") == 0) {
+    // ب6 — المولدات (الاجتماع 85 §100 + 101 §116):
+    // `ولد`/`ولد من` تُفكَّكان في المحلل إلى هذين
+    // الاستدعاءين الداخليين، ويعترضهما cgen في دالة
+    // مولد (تخفيض آلة-حالة) فلا يصلان هنا أبدا في
+    // برنامج مولد صحيح؛ وإن وصلا (خلل مولد) يُرفضان
+    // بالرسالة القانونية حرفيا (خروج 1 بلا معالج؛
+    // و`ماعدا` يلتقطها كأي خطأ وقت تشغيل).
+    if (strcmp(name, "__ولد") == 0 || strcmp(name, "__ولد_من") == 0) {
         nv_error(NV_ERR_RUNTIME, "المولدات غير مدعومة في الثنائي الأصلي — شغّل في المفسر أو آلة البايت كود", line, col);
+    }
+    // ب6 — التعبير التوليدي: مدمج حقيقي ينشئ مولدا
+    // (دالة العنصر، دالة الشرط أو لاشيء، القابل) —
+    // مرآة make_genexpr في الآلة.
+    if (strcmp(name, "__مولد_تعبير") == 0) {
+        nv_arity(args, nargs, 3, name, line, col);
+        return nv_genexpr_new(args[0], args[1], args[2], line, col);
+    }
+    // ب6 — `التالي(مولد)`: استئناف مولد وإعادة قيمته
+    // المولدة؛ والمستنفد/المغلق/غير المولد خطأ برسائل
+    // الآلة نفسها.
+    if (strcmp(name, "التالي") == 0) {
+        nv_arity(args, nargs, 1, name, line, col);
+        NvValue out;
+        int r = nv_gen_step_value(args[0], &out, "التالي", line, col);
+        if (r == 1) {
+            NvGen *g = args[0].u.gen;
+            nv_error_fmt(NV_ERR_RUNTIME, line, col,
+                         "المولد %s مستنفد — لا قيم بعد", g->name);
+        }
+        return out;
+    }
+    // ب6 — `أغلق_المولد(مولد)`: إغلاق صريح يشغّل
+    // أخيرا المعلقة؛ ويعيد لاشيء.
+    if (strcmp(name, "أغلق_المولد") == 0) {
+        nv_arity(args, nargs, 1, name, line, col);
+        nv_gen_close(args[0], line, col);
+        return nv_nil();
     }
     // البند 88 — مدير السياق (الاجتماع 88 §103):
     // الاستدعاءات الداخلية المفككة في المحلل من `عند`

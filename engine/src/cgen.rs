@@ -86,11 +86,22 @@ struct LoopCtx {
 struct TryCtx {
     handler: String,
     finally_body: Option<Vec<Stmt>>,
+    // المولدات (الاجتماع 101 §116): في دالة مولد
+    // المعالج فتحة كومة (G->tries[k].h) وتسمية مسار
+    // الخطأ (لإعادة التثبيت عند الاستئناف)؛ وفي
+    // الدالة العادية كلاهما None.
+    slot: Option<usize>,
+    err_label: Option<String>,
+    has_except: bool,
 }
 
 struct Ctx {
     scope_var: String,
     in_function: bool,
+    // المولدات (الاجتماع 101 §116): الجسم دالة مولد
+    // (آلة حالة) — يؤثر في emit_try والحلقات والخروج
+    // والاستدعاءات الداخلية.
+    in_generator: bool,
     func_end: String,
     loop_stack: Vec<LoopCtx>,
     try_stack: Vec<TryCtx>,
@@ -117,6 +128,7 @@ impl Ctx {
         Ctx {
             scope_var: scope_var.to_string(),
             in_function: false,
+            in_generator: false,
             func_end: func_end.to_string(),
             loop_stack: Vec::new(),
             try_stack: Vec::new(),
@@ -127,6 +139,58 @@ impl Ctx {
             global_names: HashSet::new(),
             nonlocal_names: HashSet::new(),
         }
+    }
+}
+
+// ---------- المولدات (آلة حالة) ----------
+// الاجتماع 101 §116: سياق دالة مولد واحدة — عدّادات
+// الحالة (عدادات/حالات/معالجات) ونقاط الولد المسجلة
+// (لإعادة التثبيت عند الاستئناف). يُدفع عند دخول دالة
+// مولد ويُسحب عند خروجها (كدخول دالة متداخلة).
+struct YieldPoint {
+    state: usize,
+    resume_label: String,
+    // المحاولات المحيطة بنقطة الولد (من الخارج إلى
+    // الداخل): فتحة المعالج + وجود ماعدا + تسمية مسار
+    // الخطأ (للقفز إليها عند خطأ أثناء المقطع).
+    tries: Vec<(usize, bool, String)>,
+}
+
+struct GenFnCtx {
+    gen_name: String,
+    next_state: usize,
+    next_counter: usize,
+    next_slot: usize,
+    next_try: usize,
+    max_live: usize,
+    yield_points: Vec<YieldPoint>,
+}
+
+impl GenFnCtx {
+    fn new(gen_name: String) -> Self {
+        GenFnCtx {
+            gen_name,
+            next_state: 1,
+            next_counter: 0,
+            next_slot: 0,
+            next_try: 0,
+            max_live: 0,
+            yield_points: Vec::new(),
+        }
+    }
+    // الأعداد النهائية لـ nv_func_new: الحالات =
+    // لقطات لكل + tmpsave (أقصى مؤقتات حية عند ولد).
+    fn ncounters(&self) -> usize {
+        self.next_counter
+    }
+    fn nslots(&self) -> usize {
+        self.next_slot + self.max_live
+    }
+    fn ntmpsave(&self) -> usize {
+        self.max_live
+    }
+    fn ntries(&self) -> usize {
+        self.next_try
     }
 }
 
@@ -145,6 +209,10 @@ pub struct Gen {
     // يولَّد في الكود ([0] الملف الرئيسي ثم كل وحدة
     // مستوردة) — العرض بشرطة مائلة كما في المفسر.
     files: Vec<String>,
+    // المولدات (الاجتماع 101 §116): مكدس سياقات دوال
+    // المولدات الجاري توليدها، وعدّاد دوال آلة الحالة.
+    gen_stack: Vec<GenFnCtx>,
+    next_gen: usize,
 }
 
 impl Gen {
@@ -159,6 +227,8 @@ impl Gen {
             import_stack: Vec::new(),
             program_dir,
             files: vec![main_file],
+            gen_stack: Vec::new(),
+            next_gen: 0,
         }
     }
 
@@ -166,6 +236,14 @@ impl Gen {
         let id = self.next_func;
         self.next_func += 1;
         format!("nv_f{}", id)
+    }
+
+    // المولدات (الاجتماع 101 §116): اسم دالة آلة حالة
+    // جديد (static int nv_gN(NvGen *G)).
+    fn fresh_gen_func(&mut self) -> String {
+        let id = self.next_gen;
+        self.next_gen += 1;
+        format!("nv_g{}", id)
     }
 
     fn fresh_label(&mut self, prefix: &str) -> String {
@@ -236,6 +314,229 @@ impl Gen {
 
     fn exit_nested_fn(&mut self, saved: Vec<String>) {
         self.live = saved;
+    }
+
+    // ---------- المولدات (آلة حالة) ----------
+    // الاجتماع 101 §116: مساعدات تخفيض المولدات.
+
+    /// هل يحوي تعبير استدعاء `ولد`/`ولد من` (بعد
+    /// التفكيك) — للامدا (جسمها تعبير واحد). مرآة
+    /// expr_has_yield في ast.rs (خاصة هناك)؛ ولا
+    /// ينزل إلى لامدا متداخلة.
+    fn expr_has_yield(&self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Call { callee, args, kwargs, .. } => {
+                if let ExprKind::Ident(name) = &callee.kind {
+                    if name == crate::ast::YIELD_CALL || name == crate::ast::YIELD_FROM_CALL {
+                        return true;
+                    }
+                }
+                self.expr_has_yield(callee)
+                    || args.iter().any(|a| self.expr_has_yield(a))
+                    || kwargs.iter().any(|(_, v)| self.expr_has_yield(v))
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.expr_has_yield(left) || self.expr_has_yield(right)
+            }
+            ExprKind::Unary { expr: inner, .. } => self.expr_has_yield(inner),
+            ExprKind::AssignExpr { value, .. } => self.expr_has_yield(value),
+            ExprKind::List(elems) => elems.iter().any(|el| self.expr_has_yield(el)),
+            ExprKind::Dict(entries) => entries.iter().any(|(_, v)| self.expr_has_yield(v)),
+            ExprKind::Index { target, index } => {
+                self.expr_has_yield(target) || self.expr_has_yield(index)
+            }
+            ExprKind::Dot { target, .. } => self.expr_has_yield(target),
+            ExprKind::Create { args, kwargs, .. } => {
+                args.iter().any(|a| self.expr_has_yield(a))
+                    || kwargs.iter().any(|(_, v)| self.expr_has_yield(v))
+            }
+            ExprKind::Lambda { .. } => false,
+            ExprKind::Number(_)
+            | ExprKind::Str(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Nil
+            | ExprKind::Ident(_) => false,
+        }
+    }
+
+    /// خصّص عدّاد حلقة (بينما/كرر/لكل) في دالة المولد.
+    fn gen_alloc_counter(&mut self) -> usize {
+        let g = self.gen_stack.last_mut().expect("gen_alloc_counter بلا سياق مولد");
+        let c = g.next_counter;
+        g.next_counter += 1;
+        c
+    }
+
+    /// خصّص حالة قيمة (لقطة لكل) في دالة المولد.
+    fn gen_alloc_slot(&mut self) -> usize {
+        let g = self.gen_stack.last_mut().expect("gen_alloc_slot بلا سياق مولد");
+        let s = g.next_slot;
+        g.next_slot += 1;
+        s
+    }
+
+    /// خصّص معالج حاول (فتحة كومة) في دالة المولد.
+    fn gen_alloc_try(&mut self) -> usize {
+        let g = self.gen_stack.last_mut().expect("gen_alloc_try بلا سياق مولد");
+        let k = g.next_try;
+        g.next_try += 1;
+        k
+    }
+
+    /// سجّل نقطة ولد: خصّص رقم حالة وتسميتي الاستئناف
+    /// والمتابعة، واحفظ المحاولات المحيطة (من
+    /// ctx.try_stack)؛ وحدّث أقصى المؤقتات الحية.
+    /// يعيد (رقم الحالة، تسمية الاستئناف، تسمية المتابعة).
+    fn gen_alloc_yield(&mut self, ctx: &Ctx, live: &[String]) -> (usize, String, String) {
+        let resume_label = self.fresh_label("gr");
+        let cont_label = self.fresh_label("gl");
+        let g = self.gen_stack.last_mut().expect("gen_alloc_yield بلا سياق مولد");
+        let state = g.next_state;
+        g.next_state += 1;
+        if live.len() > g.max_live {
+            g.max_live = live.len();
+        }
+        let tries: Vec<(usize, bool, String)> = ctx
+            .try_stack
+            .iter()
+            .map(|tr| {
+                (
+                    tr.slot.expect("محاولة في مولد بلا فتحة"),
+                    tr.has_except,
+                    tr.err_label.clone().expect("محاولة في مولد بلا تسمية خطأ"),
+                )
+            })
+            .collect();
+        g.yield_points.push(YieldPoint { state, resume_label: resume_label.clone(), tries });
+        (state, resume_label, cont_label)
+    }
+
+    /// ابنِ توزيع الاستئناف (switch على G->state) من
+    /// نقاط الولد المسجلة: كل حالة تعيد تثبيت محاولاتها
+    // (من الخارج إلى الداخل، setjmp جديد لكل) ثم تقفز
+    // إلى تسمية استئنافها؛ وخطأ أثناء المقطع يقفز إلى
+    // مسار خطأ المحاولة الأعمق.
+    fn gen_dispatch(&self, gen: &GenFnCtx, start_label: &str) -> String {
+        let mut s = String::new();
+        s.push_str("switch (G->state) {\n");
+        s.push_str(&format!("case 0: goto {};\n", start_label));
+        for yp in &gen.yield_points {
+            s.push_str(&format!("case {}: {{\n", yp.state));
+            let mut closings: Vec<String> = Vec::new();
+            for (slot, has_except, err_label) in &yp.tries {
+                s.push_str(&format!("G->tries[{}].h.prev = nv_handlers;\n", slot));
+                s.push_str(&format!(
+                    "G->tries[{}].h.has_except = {};\n",
+                    slot,
+                    if *has_except { 1 } else { 0 }
+                ));
+                s.push_str(&format!("nv_handlers = &G->tries[{}].h;\n", slot));
+                s.push_str(&format!("G->tries[{}].cp = nv_checkpoint();\n", slot));
+                s.push_str(&format!("if (setjmp(G->tries[{}].h.jb) == 0) {{\n", slot));
+                closings.push(format!("}} else {{\n goto {};\n}}\n", err_label));
+            }
+            s.push_str(&format!("goto {};\n", yp.resume_label));
+            for c in closings.iter().rev() {
+                s.push_str(c);
+            }
+            s.push_str("}\n");
+        }
+        s.push_str(&format!("default: goto {};\n}}\n", start_label));
+        s
+    }
+
+    /// جمّع دالة آلة حالة كاملة: الترويسة + التوزيع +
+    /// تسمية البداية + الجسم + السقوط (انتهاء بلاشيء).
+    fn gen_assemble(&self, gen: &GenFnCtx, start_label: &str, gbody: &str) -> String {
+        let mut f = String::new();
+        f.push_str(&format!("static int {}(NvGen *G) {{\n", gen.gen_name));
+        f.push_str("NvScope *frame = G->frame;\n");
+        f.push_str("(void)frame;\n");
+        f.push_str("NvHandler *gen_saved_handlers = nv_handlers;\n");
+        f.push_str(&self.gen_dispatch(gen, start_label));
+        f.push_str(&format!("{}:;\n", start_label));
+        f.push_str(gbody);
+        f.push_str("G->retval = nv_nil();\n");
+        f.push_str("G->returned_explicit = 0;\n");
+        f.push_str("nv_handlers = gen_saved_handlers;\n");
+        f.push_str("return 1;\n}\n");
+        f
+    }
+
+    /// حفظ المؤقتات الحية في tmpsave قبل الولد.
+    fn gen_save_live(&self, live: &[String], out: &mut String) {
+        for (j, t) in live.iter().enumerate() {
+            out.push_str(&format!("G->slots[G->tmpsave_base + {}] = {};\n", j, t));
+        }
+    }
+
+    /// استعادة المؤقتات الحية من tmpsave بعد الولد.
+    fn gen_restore_live(&self, live: &[String], out: &mut String) {
+        for (j, t) in live.iter().enumerate() {
+            out.push_str(&format!("{} = G->slots[G->tmpsave_base + {}];\n", t, j));
+        }
+    }
+
+    /// `ولد قيمة` في دالة مولد: قيّم القيمة، علّق (أعد 0)،
+    /// واستأنف بعدها. يعيد مؤقتا يحمل لاشيء (قيمة
+    /// الاستدعاء المهملة في جملة تعبير).
+    fn emit_gen_yield(&mut self, value: &Expr, ctx: &mut Ctx, out: &mut String) -> String {
+        let at = self.eval_into_temp(value, ctx, out);
+        let live: Vec<String> = self.live.clone();
+        let (state, resume_label, cont_label) = self.gen_alloc_yield(ctx, &live);
+        self.gen_save_live(&live, out);
+        out.push_str(&format!("G->yielded = {};\n", at));
+        out.push_str(&format!("G->state = {};\n", state));
+        out.push_str("nv_handlers = gen_saved_handlers;\n");
+        out.push_str("return 0;\n");
+        out.push_str(&format!("{}:;\n", resume_label));
+        self.gen_restore_live(&live, out);
+        // الإغلاق (الاجتماع 101 §116): استئناف أثناء
+        // الإغلاق لا يكمل الجسم — يقفز إلى معالج
+        // المحاولة الأعمق ليشغّل أخيرا ثم ينهي.
+        out.push_str("if (G->closing) nv_gen_close_jump();\n");
+        out.push_str(&format!("{}:;\n", cont_label));
+        self.release(&at);
+        let t = self.new_temp();
+        out.push_str(&format!("NvValue {} = nv_nil();\n", t));
+        self.live.push(t.clone());
+        t
+    }
+
+    /// `ولد من مولد` في دالة مولد: فوّض إلى الفرعي؛ كل
+    /// قيمة ينتجها الفرعي تخرج من الخارجي، وانتهاؤه
+    /// يجعل قيمة التعبير قيمة إرجاع الفرعي. يعيد مؤقتا
+    /// يحمل قيمة التعبير بعد اكتمال التفويض.
+    fn emit_gen_yield_from(&mut self, sub: &Expr, e: &Expr, ctx: &mut Ctx, out: &mut String) -> String {
+        let st = self.eval_into_temp(sub, ctx, out);
+        let live: Vec<String> = self.live.clone();
+        let (state, resume_label, loop_label) = self.gen_alloc_yield(ctx, &live);
+        out.push_str(&format!("G->delegate = {};\n", st));
+        out.push_str(&format!("goto {};\n", loop_label));
+        out.push_str(&format!("{}:;\n", resume_label));
+        self.gen_restore_live(&live, out);
+        // الإغلاق: كما في ولد — لا يستأنف الفرعي
+        // (أُغلق أولا) ولا يكمل؛ يقفز إلى أخيرا.
+        out.push_str("if (G->closing) nv_gen_close_jump();\n");
+        out.push_str(&format!("{}:;\n", loop_label));
+        let dv = self.new_temp();
+        let dst = format!("_dst{}", self.tmp);
+        self.tmp += 1;
+        out.push_str(&format!(
+            "NvValue {};\nint {} = nv_gen_step_value(G->delegate, &{}, \"ولد من\", {}, {});\n",
+            dv, dst, dv, e.line, e.col
+        ));
+        out.push_str(&format!("if ({} == 0) {{\n", dst));
+        self.gen_save_live(&live, out);
+        out.push_str(&format!("G->yielded = {};\n", dv));
+        out.push_str(&format!("G->state = {};\n", state));
+        out.push_str("nv_handlers = gen_saved_handlers;\n");
+        out.push_str("return 0;\n");
+        out.push_str("}\n");
+        out.push_str("G->delegate = nv_nil();\n");
+        self.release(&st);
+        self.live.push(dv.clone());
+        dv
     }
 
     // ---------- التعابير ----------
@@ -652,46 +953,89 @@ impl Gen {
         ctx: &mut Ctx,
         out: &mut String,
     ) -> String {
-        let fname = self.fresh_func();
-        // جسم الدالة المجهولة: ارجع التعبير وحده.
-        let mut fbody = String::new();
-        fbody.push_str(&format!(
-            "static NvValue {}(NvScope *frame, NvValue *args, int nargs, int line, int col) {{\n",
-            fname
-        ));
-        fbody.push_str("(void)args; (void)nargs; (void)line; (void)col;\n");
-        fbody.push_str("NvValue _ret = nv_nil();\n");
-        fbody.push_str(&format!("nv_cur_file_idx = {};\n", ctx.file_idx));
-        let mut fctx = Ctx::top("frame", "_end");
-        fctx.in_function = true;
-        fctx.module_name = ctx.module_name.clone();
-        fctx.module_scope_var = ctx.module_scope_var.clone();
-        fctx.func_depth = ctx.func_depth + 1;
-        fctx.file_idx = ctx.file_idx;
-        let saved_live = self.enter_nested_fn();
-        let vt = self.eval_into_temp(body, &mut fctx, &mut fbody);
-        fbody.push_str(&format!("_ret = {};\n", vt));
-        self.exit_nested_fn(saved_live);
-        fbody.push_str("nv_flow = NV_FLOW_RETURN;\n");
-        fbody.push_str("_end:;\nreturn _ret;\n}\n");
-        self.funcs.push_str(&fbody);
+        // المولدات (الاجتماع 101 §116): لامدا تحوي ولدا
+        // مولد هي الأخرى (كما في المحلل الدلالي) — جسمها
+        // آلة حالة؛ وإلا دالة عادية كما قبل.
+        let is_gen = self.expr_has_yield(body);
+        let (cfunc_arg, gen_args) = if is_gen {
+            let genfname = self.fresh_gen_func();
+            // جسم الدالة المجهولة: ارجع التعبير وحده.
+            let mut gbody = String::new();
+            gbody.push_str(&format!("nv_cur_file_idx = {};\n", ctx.file_idx));
+            let mut fctx = Ctx::top("frame", "_end");
+            fctx.in_function = true;
+            fctx.in_generator = true;
+            fctx.module_name = ctx.module_name.clone();
+            fctx.module_scope_var = ctx.module_scope_var.clone();
+            fctx.func_depth = ctx.func_depth + 1;
+            fctx.file_idx = ctx.file_idx;
+            self.gen_stack.push(GenFnCtx::new(genfname.clone()));
+            let saved_live = self.enter_nested_fn();
+            let vt = self.eval_into_temp(body, &mut fctx, &mut gbody);
+            gbody.push_str(&format!("G->retval = {};\n", vt));
+            gbody.push_str("G->returned_explicit = 1;\n");
+            gbody.push_str("nv_handlers = gen_saved_handlers;\n");
+            gbody.push_str("return 1;\n");
+            self.exit_nested_fn(saved_live);
+            let gen = self.gen_stack.pop().expect("سياق مولد مفقود");
+            let start_label = self.fresh_label("gs");
+            let fbody = self.gen_assemble(&gen, &start_label, &gbody);
+            self.funcs.push_str(&fbody);
+            (
+                format!("(NvCFunc){}", genfname),
+                format!(
+                    "1, {}, {}, {}, {}, {}",
+                    genfname,
+                    gen.ncounters(),
+                    gen.nslots(),
+                    gen.ntmpsave(),
+                    gen.ntries()
+                ),
+            )
+        } else {
+            let fname = self.fresh_func();
+            // جسم الدالة المجهولة: ارجع التعبير وحده.
+            let mut fbody = String::new();
+            fbody.push_str(&format!(
+                "static NvValue {}(NvScope *frame, NvValue *args, int nargs, int line, int col) {{\n",
+                fname
+            ));
+            fbody.push_str("(void)args; (void)nargs; (void)line; (void)col;\n");
+            fbody.push_str("NvValue _ret = nv_nil();\n");
+            fbody.push_str(&format!("nv_cur_file_idx = {};\n", ctx.file_idx));
+            let mut fctx = Ctx::top("frame", "_end");
+            fctx.in_function = true;
+            fctx.module_name = ctx.module_name.clone();
+            fctx.module_scope_var = ctx.module_scope_var.clone();
+            fctx.func_depth = ctx.func_depth + 1;
+            fctx.file_idx = ctx.file_idx;
+            let saved_live = self.enter_nested_fn();
+            let vt = self.eval_into_temp(body, &mut fctx, &mut fbody);
+            fbody.push_str(&format!("_ret = {};\n", vt));
+            self.exit_nested_fn(saved_live);
+            fbody.push_str("nv_flow = NV_FLOW_RETURN;\n");
+            fbody.push_str("_end:;\nreturn _ret;\n}\n");
+            self.funcs.push_str(&fbody);
+            (fname, "0, NULL, 0, 0, 0, 0".to_string())
+        };
         // قيمة الدالة (تلتقط النطاق الحالي).
         let t = self.new_temp();
         let n = self.root_live(out);
         let (pnames, ptypes) = self.param_tables(params, param_types);
         let (mod_arg, mod_scope) = self.func_module_args(ctx);
         out.push_str(&format!(
-            "NvValue {} = nv_func_new({}, {}, {}, {}, {}, {}, {}, {}, {}, NULL, NULL, NULL, NULL, NULL);\n",
+            "NvValue {} = nv_func_new({}, {}, {}, {}, {}, {}, {}, {}, {}, NULL, NULL, NULL, NULL, NULL, {});\n",
             t,
             c_str("مجهولة"),
-            fname,
+            cfunc_arg,
             ctx.scope_var,
             mod_arg,
             mod_scope,
             pnames,
             ptypes,
             "NULL",
-            params.len()
+            params.len(),
+            gen_args
         ));
         self.unroot(out, n);
         self.live.push(t.clone());
@@ -841,6 +1185,20 @@ impl Gen {
         ctx: &mut Ctx,
         out: &mut String,
     ) -> String {
+        // المولدات (الاجتماع 101 §116): اعتراض
+        // الاستدعاءات الداخلية في دالة مولد — تخفيض
+        // آلة-حالة. `__مولد_تعبير` لا يُعترض (مدمج
+        // حقيقي في وقت التشغيل ينشئ التعبير).
+        if ctx.in_generator {
+            if let ExprKind::Ident(name) = &callee.kind {
+                if name == crate::ast::YIELD_CALL && args.len() == 1 && kwargs.is_empty() {
+                    return self.emit_gen_yield(&args[0], ctx, out);
+                }
+                if name == crate::ast::YIELD_FROM_CALL && args.len() == 1 && kwargs.is_empty() {
+                    return self.emit_gen_yield_from(&args[0], e, ctx, out);
+                }
+            }
+        }
         // استدعاء باسم معرّف: النطاق أولا ثم المدمجة.
         // (بلا معاملات نوع — فالمخصَّص يسلك المسار
         // العام: تقييم المستدعى ثم nv_specialize).
@@ -1336,31 +1694,73 @@ impl Gen {
                 type_params,
             } => {
                 let (dvals, dflags, dtemps) = self.defaults_tables(params, defaults, ctx, out);
-                let fname = self.fresh_func();
-                let mut fbody = String::new();
-                fbody.push_str(&format!(
-                    "static NvValue {}(NvScope *frame, NvValue *args, int nargs, int line, int col) {{\n",
-                    fname
-                ));
-                fbody.push_str("(void)args; (void)nargs; (void)line; (void)col;\n");
-                fbody.push_str("NvValue _ret = nv_nil();\n");
-        fbody.push_str(&format!("nv_cur_file_idx = {};\n", ctx.file_idx));
-                let mut fctx = Ctx::top("frame", "_end");
-                fctx.in_function = true;
-                fctx.module_name = ctx.module_name.clone();
-                fctx.module_scope_var = ctx.module_scope_var.clone();
-                fctx.func_depth = ctx.func_depth + 1;
-        fctx.file_idx = ctx.file_idx;
-                // الدفعة الأخيرة DEF (البنود 77 و78):
-                // إعلانات النطاق من الجسم كله.
-                let (f_global, f_nonlocal) = crate::ast::collect_scope_decls(body);
-                fctx.global_names = f_global.into_iter().collect();
-                fctx.nonlocal_names = f_nonlocal.into_iter().collect();
-                let saved_live = self.enter_nested_fn();
-                self.emit_stmts(body, &mut fctx, &mut fbody)?;
-                self.exit_nested_fn(saved_live);
-                fbody.push_str("_end:;\nreturn _ret;\n}\n");
-                self.funcs.push_str(&fbody);
+                // المولدات (الاجتماع 101 §116): دالة تحوي
+                // ولدا مولد — جسمها آلة حالة (static int
+                // gen_N(NvGen *G))، وcfunc تحمل مؤشرها.
+                let is_gen = crate::ast::body_has_yield(body);
+                let (cfunc_arg, gen_args) = if is_gen {
+                    let genfname = self.fresh_gen_func();
+                    let mut gbody = String::new();
+                    gbody.push_str(&format!("nv_cur_file_idx = {};\n", ctx.file_idx));
+                    let mut fctx = Ctx::top("frame", "_end");
+                    fctx.in_function = true;
+                    fctx.in_generator = true;
+                    fctx.module_name = ctx.module_name.clone();
+                    fctx.module_scope_var = ctx.module_scope_var.clone();
+                    fctx.func_depth = ctx.func_depth + 1;
+                    fctx.file_idx = ctx.file_idx;
+                    // الدفعة الأخيرة DEF (البنود 77 و78):
+                    // إعلانات النطاق من الجسم كله.
+                    let (f_global, f_nonlocal) = crate::ast::collect_scope_decls(body);
+                    fctx.global_names = f_global.into_iter().collect();
+                    fctx.nonlocal_names = f_nonlocal.into_iter().collect();
+                    self.gen_stack.push(GenFnCtx::new(genfname.clone()));
+                    let saved_live = self.enter_nested_fn();
+                    self.emit_stmts(body, &mut fctx, &mut gbody)?;
+                    self.exit_nested_fn(saved_live);
+                    let gen = self.gen_stack.pop().expect("سياق مولد مفقود");
+                    let start_label = self.fresh_label("gs");
+                    let fbody = self.gen_assemble(&gen, &start_label, &gbody);
+                    self.funcs.push_str(&fbody);
+                    (
+                        format!("(NvCFunc){}", genfname),
+                        format!(
+                            "1, {}, {}, {}, {}, {}",
+                            genfname,
+                            gen.ncounters(),
+                            gen.nslots(),
+                            gen.ntmpsave(),
+                            gen.ntries()
+                        ),
+                    )
+                } else {
+                    let fname = self.fresh_func();
+                    let mut fbody = String::new();
+                    fbody.push_str(&format!(
+                        "static NvValue {}(NvScope *frame, NvValue *args, int nargs, int line, int col) {{\n",
+                        fname
+                    ));
+                    fbody.push_str("(void)args; (void)nargs; (void)line; (void)col;\n");
+                    fbody.push_str("NvValue _ret = nv_nil();\n");
+                    fbody.push_str(&format!("nv_cur_file_idx = {};\n", ctx.file_idx));
+                    let mut fctx = Ctx::top("frame", "_end");
+                    fctx.in_function = true;
+                    fctx.module_name = ctx.module_name.clone();
+                    fctx.module_scope_var = ctx.module_scope_var.clone();
+                    fctx.func_depth = ctx.func_depth + 1;
+                    fctx.file_idx = ctx.file_idx;
+                    // الدفعة الأخيرة DEF (البنود 77 و78):
+                    // إعلانات النطاق من الجسم كله.
+                    let (f_global, f_nonlocal) = crate::ast::collect_scope_decls(body);
+                    fctx.global_names = f_global.into_iter().collect();
+                    fctx.nonlocal_names = f_nonlocal.into_iter().collect();
+                    let saved_live = self.enter_nested_fn();
+                    self.emit_stmts(body, &mut fctx, &mut fbody)?;
+                    self.exit_nested_fn(saved_live);
+                    fbody.push_str("_end:;\nreturn _ret;\n}\n");
+                    self.funcs.push_str(&fbody);
+                    (fname, "0, NULL, 0, 0, 0, 0".to_string())
+                };
                 let t = self.new_temp();
                 let n = self.root_live(out);
                 let (pnames, ptypes) = self.param_tables(params, param_types);
@@ -1368,10 +1768,10 @@ impl Gen {
                 let varg = vararg.as_deref().map(c_str).unwrap_or_else(|| "NULL".to_string());
                 let kwarg_lit = kwarg.as_deref().map(c_str).unwrap_or_else(|| "NULL".to_string());
                 out.push_str(&format!(
-                    "NvValue {} = nv_func_new({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
+                    "NvValue {} = nv_func_new({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
                     t,
                     c_str(name),
-                    fname,
+                    cfunc_arg,
                     ctx.scope_var,
                     mod_arg,
                     mod_scope,
@@ -1383,7 +1783,8 @@ impl Gen {
                     dflags,
                     varg,
                     kwarg_lit,
-                    self.type_params_table(type_params)
+                    self.type_params_table(type_params),
+                    gen_args
                 ));
                 self.unroot(out, n);
                 for dt in dtemps {
@@ -1480,6 +1881,49 @@ impl Gen {
         flow: &str,
         ret_temp: Option<&str>,
     ) -> RioResult<()> {
+        // المولدات (الاجتماع 101 §116): ارجع في دالة
+        // مولد — فرّغ أخيرا كما في العادي (المعالج
+        // تعبير فتحة كومة هنا)، ثم اجعل قيمة الإرجاع
+        // قيمة المولد عند الاستنفاد وأنهِ (أعد 1)؛ بلا
+        // _ret ولا قفز إلى نهاية الدالة. اكسر/تابع كما
+        // في العادي (قفز إلى تسميات الحلقة).
+        if ctx.in_generator && flow == "NV_FLOW_RETURN" {
+            let tries: Vec<TryCtx> = ctx.try_stack.clone();
+            for tr in tries.iter().rev() {
+                if let Some(fin) = &tr.finally_body {
+                    let fmark = self.checkpoint_live();
+                    let mut fctx = Ctx {
+                        scope_var: ctx.scope_var.clone(),
+                        in_function: ctx.in_function,
+                        in_generator: ctx.in_generator,
+                        func_end: ctx.func_end.clone(),
+                        loop_stack: ctx.loop_stack.clone(),
+                        try_stack: Vec::new(),
+                        module_name: ctx.module_name.clone(),
+                        module_scope_var: ctx.module_scope_var.clone(),
+                        func_depth: ctx.func_depth,
+                        file_idx: ctx.file_idx,
+                        // الدفعة الأخيرة DEF: إعلانات الدالة
+                        // الجارية تُورَّث في أخيرا.
+                        global_names: ctx.global_names.clone(),
+                        nonlocal_names: ctx.nonlocal_names.clone(),
+                    };
+                    self.emit_stmts(fin, &mut fctx, out)?;
+                    self.restore_live(fmark);
+                }
+                out.push_str(&format!("nv_handlers = {}.prev;\n", tr.handler));
+            }
+            if let Some(vt) = ret_temp {
+                out.push_str(&format!("G->retval = {};\n", vt));
+                out.push_str("G->returned_explicit = 1;\n");
+            } else {
+                out.push_str("G->retval = nv_nil();\n");
+                out.push_str("G->returned_explicit = 0;\n");
+            }
+            out.push_str("nv_handlers = gen_saved_handlers;\n");
+            out.push_str("return 1;\n");
+            return Ok(());
+        }
         // احفظ قيمة الإرجاع (إن وجدت) في _ret أولا.
         if let Some(vt) = ret_temp {
             out.push_str(&format!("_ret = {};\n", vt));
@@ -1494,6 +1938,7 @@ impl Gen {
                 let mut fctx = Ctx {
                     scope_var: ctx.scope_var.clone(),
                     in_function: ctx.in_function,
+                    in_generator: ctx.in_generator,
                     func_end: ctx.func_end.clone(),
                     loop_stack: ctx.loop_stack.clone(),
                     try_stack: Vec::new(),
@@ -1535,9 +1980,18 @@ impl Gen {
     fn emit_while(&mut self, cond: &Expr, body: &[Stmt], s: &Stmt, ctx: &mut Ctx, out: &mut String) -> RioResult<()> {
         let head = self.fresh_label("lh");
         let end = self.fresh_label("le");
-        out.push_str(&format!("long _iter{} = 0;\n", self.tmp));
-        self.tmp += 1;
-        let iter_var = format!("_iter{}", self.tmp - 1);
+        // المولدات (الاجتماع 101 §116): عدّاد التكرار
+        // حالة (G->counters) لا متغير C محلي — فيبقى
+        // عبر الولد؛ ويُصفَّر عند كل دخول إلى الحلقة.
+        let iter_var = if ctx.in_generator {
+            let c = self.gen_alloc_counter();
+            out.push_str(&format!("G->counters[{}] = 0;\n", c));
+            format!("G->counters[{}]", c)
+        } else {
+            out.push_str(&format!("long _iter{} = 0;\n", self.tmp));
+            self.tmp += 1;
+            format!("_iter{}", self.tmp - 1)
+        };
         ctx.loop_stack.push(LoopCtx { head: head.clone(), end: end.clone(), cont: head.clone() });
         out.push_str(&format!("{}:;\n", head));
         // الشرط (في كل دورة).
@@ -1563,33 +2017,67 @@ impl Gen {
     fn emit_for(&mut self, var: &str, iter: &Expr, body: &[Stmt], s: &Stmt, ctx: &mut Ctx, out: &mut String) -> RioResult<()> {
         let head = self.fresh_label("lh");
         let end = self.fresh_label("le");
-        // لقطة القائمة/النص (المحرك ينسخ العناصر أولا).
+        // المولدات (الاجتماع 101 §116): لكل فوق مولد
+        // يظهر في أي دالة — وفي المستوى الأعلى أيضا
+        // (مولدات-أساسية) — فالتوزيع مولد/لقطة في كل
+        // الوضعين، والتخزين فقط يختلف: فتحة وعدّاد حالة
+        // (G->slots/G->counters) في دالة مولد — فيبقيا
+        // عبر الولد — ومحليا C في غيرها (لا ولد هناك).
+        // فتحة واحدة تكفي: الفرعان متنافيان (المولد أو
+        // اللقطة)، والوسم يميزهما.
+        let is_gen = ctx.in_generator;
         let it = self.eval_into_temp(iter, ctx, out);
-        let snap = self.new_temp();
+        let (slot, ctr) = if is_gen {
+            let k = self.gen_alloc_slot();
+            let c = self.gen_alloc_counter();
+            (format!("G->slots[{}]", k), format!("G->counters[{}]", c))
+        } else {
+            let gs = format!("_gs{}", self.tmp);
+            self.tmp += 1;
+            let gi = format!("_gi{}", self.tmp);
+            self.tmp += 1;
+            out.push_str(&format!("NvValue {};\n", gs));
+            out.push_str(&format!("size_t {} = 0;\n", gi));
+            (gs, gi)
+        };
         let n = self.root_live(out);
         out.push_str(&format!(
-            "NvValue {} = nv_for_snapshot({}, {}, {});\n",
-            snap, it, s.line, s.col
+            "if ({}.tag == NV_GEN) {{ {} = {}; }} else {{ {} = nv_for_snapshot({}, {}, {}); }}\n",
+            it, slot, it, slot, it, s.line, s.col
         ));
         self.unroot(out, n);
         self.release(&it);
-        self.live.push(snap.clone());
-        let idx = format!("_fi{}", self.tmp);
-        self.tmp += 1;
-        out.push_str(&format!("size_t {} = 0;\n", idx));
+        if is_gen {
+            out.push_str(&format!("{} = 0;\n", ctr));
+        } else {
+            // الفتحة المحلية C تُجذَّر طوال جسم الحلقة
+            // (كما كانت اللقطة قبل) — فيحفظها الجامع.
+            self.live.push(slot.clone());
+        }
         let cont = self.fresh_label("lc");
         ctx.loop_stack.push(LoopCtx { head: head.clone(), end: end.clone(), cont: cont.clone() });
         out.push_str(&format!("{}:;\n", head));
+        let vt = self.new_temp();
+        out.push_str(&format!("NvValue {};\n", vt));
+        out.push_str(&format!("if ({}.tag == NV_GEN) {{\n", slot));
+        let dn = format!("_done{}", self.tmp);
+        self.tmp += 1;
+        out.push_str(&format!(
+            "int {} = nv_gen_step_for({}, &{}, {}, {});\n",
+            dn, slot, vt, s.line, s.col
+        ));
+        out.push_str(&format!("if ({}) goto {};\n", dn, end));
+        out.push_str("} else {\n");
         out.push_str(&format!(
             "if ({} >= {}.u.list->len) goto {};\n",
-            idx, snap, end
+            ctr, slot, end
         ));
-        // اربط متغير الحلقة.
-        let vt = self.new_temp();
         out.push_str(&format!(
-            "NvValue {} = {}.u.list->items[{}];\n",
-            vt, snap, idx
+            "{} = {}.u.list->items[{}];\n",
+            vt, slot, ctr
         ));
+        out.push_str("}\n");
+        // اربط متغير الحلقة.
         self.live.push(vt.clone());
         let n = self.root_live(out);
         out.push_str(&format!(
@@ -1602,11 +2090,16 @@ impl Gen {
         self.release(&vt);
         self.emit_stmts(body, ctx, out)?;
         out.push_str(&format!("{}:;\n", cont));
-        out.push_str(&format!("{}++;\n", idx));
+        out.push_str(&format!(
+            "if ({}.tag != NV_GEN) {}++;\n",
+            slot, ctr
+        ));
         out.push_str(&format!("goto {};\n", head));
         out.push_str(&format!("{}:;\n", end));
         ctx.loop_stack.pop();
-        self.release(&snap);
+        if !is_gen {
+            self.release(&slot);
+        }
         let _ = s;
         Ok(())
     }
@@ -1616,17 +2109,34 @@ impl Gen {
         let end = self.fresh_label("le");
         let ct = self.eval_into_temp(count, ctx, out);
         let n = self.root_live(out);
-        out.push_str(&format!(
-            "long _rep{} = nv_repeat_count({}, {}, {});\n",
-            self.tmp, ct, s.line, s.col
-        ));
-        self.tmp += 1;
-        self.unroot(out, n);
-        self.release(&ct);
-        let rep_var = format!("_rep{}", self.tmp - 1);
-        let idx = format!("_ri{}", self.tmp);
-        self.tmp += 1;
-        out.push_str(&format!("long {} = 0;\n", idx));
+        // المولدات (الاجتماع 101 §116): العدد والفهرس
+        // عدّادا حالة (G->counters) لا متغيرا C محليين
+        // — فيبقيا عبر الولد؛ ويُصفَّر الفهرس عند كل دخول.
+        let (rep_var, idx) = if ctx.in_generator {
+            let crep = self.gen_alloc_counter();
+            let cidx = self.gen_alloc_counter();
+            out.push_str(&format!(
+                "G->counters[{}] = nv_repeat_count({}, {}, {});\n",
+                crep, ct, s.line, s.col
+            ));
+            self.unroot(out, n);
+            self.release(&ct);
+            out.push_str(&format!("G->counters[{}] = 0;\n", cidx));
+            (format!("G->counters[{}]", crep), format!("G->counters[{}]", cidx))
+        } else {
+            out.push_str(&format!(
+                "long _rep{} = nv_repeat_count({}, {}, {});\n",
+                self.tmp, ct, s.line, s.col
+            ));
+            self.tmp += 1;
+            self.unroot(out, n);
+            self.release(&ct);
+            let rep_var = format!("_rep{}", self.tmp - 1);
+            let idx = format!("_ri{}", self.tmp);
+            self.tmp += 1;
+            out.push_str(&format!("long {} = 0;\n", idx));
+            (rep_var, idx)
+        };
         let cont = self.fresh_label("lc");
         ctx.loop_stack.push(LoopCtx { head: head.clone(), end: end.clone(), cont: cont.clone() });
         out.push_str(&format!("{}:;\n", head));
@@ -1884,26 +2394,62 @@ impl Gen {
                 _ => continue,
             };
             let (mname, mparams, mparam_types, mreturn_type, mdefaults, mvararg, mkwarg, mbody, mtype_params) = m;
-            let fname = self.fresh_func();
-            let mut fbody = String::new();
-            fbody.push_str(&format!(
-                "static NvValue {}(NvScope *frame, NvValue *args, int nargs, int line, int col) {{\n",
-                fname
-            ));
-            fbody.push_str("(void)args; (void)nargs; (void)line; (void)col;\n");
-            fbody.push_str("NvValue _ret = nv_nil();\n");
-        fbody.push_str(&format!("nv_cur_file_idx = {};\n", ctx.file_idx));
-            let mut fctx = Ctx::top("frame", "_end");
-            fctx.in_function = true;
-            fctx.module_name = ctx.module_name.clone();
-            fctx.module_scope_var = ctx.module_scope_var.clone();
-            fctx.func_depth = ctx.func_depth + 1;
-        fctx.file_idx = ctx.file_idx;
-            let saved_live = self.enter_nested_fn();
-            self.emit_stmts(mbody, &mut fctx, &mut fbody)?;
-            self.exit_nested_fn(saved_live);
-            fbody.push_str("_end:;\nreturn _ret;\n}\n");
-            self.funcs.push_str(&fbody);
+            // المولدات (الاجتماع 101 §116): طريقة تحوي
+            // ولدا مولد — جسمها آلة حالة، كالدالة العادية.
+            let m_is_gen = crate::ast::body_has_yield(mbody);
+            let (mcfunc_arg, mgen_args) = if m_is_gen {
+                let genfname = self.fresh_gen_func();
+                let mut gbody = String::new();
+                gbody.push_str(&format!("nv_cur_file_idx = {};\n", ctx.file_idx));
+                let mut fctx = Ctx::top("frame", "_end");
+                fctx.in_function = true;
+                fctx.in_generator = true;
+                fctx.module_name = ctx.module_name.clone();
+                fctx.module_scope_var = ctx.module_scope_var.clone();
+                fctx.func_depth = ctx.func_depth + 1;
+                fctx.file_idx = ctx.file_idx;
+                self.gen_stack.push(GenFnCtx::new(genfname.clone()));
+                let saved_live = self.enter_nested_fn();
+                self.emit_stmts(mbody, &mut fctx, &mut gbody)?;
+                self.exit_nested_fn(saved_live);
+                let gen = self.gen_stack.pop().expect("سياق مولد مفقود");
+                let start_label = self.fresh_label("gs");
+                let fbody = self.gen_assemble(&gen, &start_label, &gbody);
+                self.funcs.push_str(&fbody);
+                (
+                    format!("(NvCFunc){}", genfname),
+                    format!(
+                        "1, {}, {}, {}, {}, {}",
+                        genfname,
+                        gen.ncounters(),
+                        gen.nslots(),
+                        gen.ntmpsave(),
+                        gen.ntries()
+                    ),
+                )
+            } else {
+                let fname = self.fresh_func();
+                let mut fbody = String::new();
+                fbody.push_str(&format!(
+                    "static NvValue {}(NvScope *frame, NvValue *args, int nargs, int line, int col) {{\n",
+                    fname
+                ));
+                fbody.push_str("(void)args; (void)nargs; (void)line; (void)col;\n");
+                fbody.push_str("NvValue _ret = nv_nil();\n");
+                fbody.push_str(&format!("nv_cur_file_idx = {};\n", ctx.file_idx));
+                let mut fctx = Ctx::top("frame", "_end");
+                fctx.in_function = true;
+                fctx.module_name = ctx.module_name.clone();
+                fctx.module_scope_var = ctx.module_scope_var.clone();
+                fctx.func_depth = ctx.func_depth + 1;
+                fctx.file_idx = ctx.file_idx;
+                let saved_live = self.enter_nested_fn();
+                self.emit_stmts(mbody, &mut fctx, &mut fbody)?;
+                self.exit_nested_fn(saved_live);
+                fbody.push_str("_end:;\nreturn _ret;\n}\n");
+                self.funcs.push_str(&fbody);
+                (fname, "0, NULL, 0, 0, 0, 0".to_string())
+            };
             let (mdvals, mdflags, mdtemps) = self.defaults_tables(mparams, mdefaults, ctx, out);
             let mt = self.new_temp();
             let n = self.root_live(out);
@@ -1911,10 +2457,10 @@ impl Gen {
             let mvarg = mvararg.as_deref().map(c_str).unwrap_or_else(|| "NULL".to_string());
             let mkwarg_lit = mkwarg.as_deref().map(c_str).unwrap_or_else(|| "NULL".to_string());
             out.push_str(&format!(
-                "NvValue {} = nv_func_new({}, {}, {}, NULL, NULL, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
+                "NvValue {} = nv_func_new({}, {}, {}, NULL, NULL, {}, {}, {}, {}, {}, {}, {}, {}, {}, {});\n",
                 mt,
                 c_str(mname),
-                fname,
+                mcfunc_arg,
                 ctx.scope_var,
                 pnames,
                 ptypes,
@@ -1924,7 +2470,8 @@ impl Gen {
                 mdflags,
                 mvarg,
                 mkwarg_lit,
-                self.type_params_table(mtype_params)
+                self.type_params_table(mtype_params),
+                mgen_args
             ));
             self.unroot(out, n);
             for dt in mdtemps {
@@ -1982,18 +2529,46 @@ impl Gen {
         // كل محاولة تفعل setjmp — حتى أخيرا وحدها — لأن
         // nv_error يقفز إلى المعالج الأعمق، وفرع الخطأ
         // هو الذي يشغّل أخيرا ثم يعيد الرفع.
-        let hid = self.fresh_label("h");
-        let cpid = self.fresh_label("cp");
-        let hpid = self.fresh_label("hp");
-        out.push_str(&format!("NvHandler {};\n", hid));
-        out.push_str(&format!("volatile NvCheckpoint {} = nv_checkpoint();\n", cpid));
-        out.push_str(&format!("{}.prev = nv_handlers;\n", hid));
-        out.push_str(&format!("NvHandler *volatile {} = {}.prev;\n", hpid, hid));
-        out.push_str(&format!("{}.has_except = {};\n", hid, if except.is_some() { 1 } else { 0 }));
-        out.push_str(&format!("nv_handlers = &{};\n", hid));
+        // المولدات (الاجتماع 101 §116): في دالة مولد
+        // المعالج ونقطة التفتيش فتحتا كومة (G->tries[k])
+        // لا متغيرا C محليين — فيبقيا عبر الولد؛ وتسمية
+        // مسار الخطأ لإعادة التثبيت عند الاستئناف.
+        let is_gen = ctx.in_generator;
+        let (hid, cpid, hpid, slot, err_label) = if is_gen {
+            let k = self.gen_alloc_try();
+            let el = self.fresh_label("te");
+            (
+                format!("G->tries[{}].h", k),
+                format!("G->tries[{}].cp", k),
+                format!("G->tries[{}].h.prev", k),
+                Some(k),
+                Some(el),
+            )
+        } else {
+            let hid = self.fresh_label("h");
+            let cpid = self.fresh_label("cp");
+            let hpid = self.fresh_label("hp");
+            (hid, cpid, hpid, None, None)
+        };
+        if is_gen {
+            out.push_str(&format!("{} = nv_checkpoint();\n", cpid));
+            out.push_str(&format!("{}.prev = nv_handlers;\n", hid));
+            out.push_str(&format!("{}.has_except = {};\n", hid, if except.is_some() { 1 } else { 0 }));
+            out.push_str(&format!("nv_handlers = &{};\n", hid));
+        } else {
+            out.push_str(&format!("NvHandler {};\n", hid));
+            out.push_str(&format!("volatile NvCheckpoint {} = nv_checkpoint();\n", cpid));
+            out.push_str(&format!("{}.prev = nv_handlers;\n", hid));
+            out.push_str(&format!("NvHandler *volatile {} = {}.prev;\n", hpid, hid));
+            out.push_str(&format!("{}.has_except = {};\n", hid, if except.is_some() { 1 } else { 0 }));
+            out.push_str(&format!("nv_handlers = &{};\n", hid));
+        }
         ctx.try_stack.push(TryCtx {
             handler: hid.clone(),
             finally_body: finally.clone(),
+            slot,
+            err_label: err_label.clone(),
+            has_except: except.is_some(),
         });
         let has_except = except.is_some();
         out.push_str(&format!("if (setjmp({}.jb) == 0) {{\n", hid));
@@ -2004,6 +2579,11 @@ impl Gen {
             self.emit_stmts(els, ctx, out)?;
         }
         out.push_str("} else {\n");
+        // المولدات: تسمية مسار الخطأ — يقفز إليها
+        // توزيع الاستئناف عند خطأ أثناء مقطع مستأنف.
+        if is_gen {
+            out.push_str(&format!("{}:;\n", err_label.as_ref().unwrap()));
+        }
         // مسار الخطأ: استعد النقاط. (nv_error أزال المعالج
         // نفسه قبل القفز، فـ nv_handlers تحته الآن.)
         out.push_str(&format!("nv_restore_checkpoint({});\n", cpid));
@@ -2015,6 +2595,7 @@ impl Gen {
             let mut fctx = Ctx {
                 scope_var: ctx.scope_var.clone(),
                 in_function: ctx.in_function,
+                in_generator: ctx.in_generator,
                 func_end: ctx.func_end.clone(),
                 loop_stack: ctx.loop_stack.clone(),
                 try_stack: Vec::new(),
@@ -2032,18 +2613,64 @@ impl Gen {
         }
         out.push_str("nv_reraise_current();\n");
         out.push_str("}\n");
+        // المولدات: الإغلاق لا تمسكه ماعدا — أخيرا
+        // وحدها ثم إعادة رفع الطلب (كما الخروج).
+        if is_gen {
+            out.push_str("if (nv_gen_close_requested) {\n");
+            if let Some(fin) = finally {
+                let fmark = self.checkpoint_live();
+                let mut fctx = Ctx {
+                    scope_var: ctx.scope_var.clone(),
+                    in_function: ctx.in_function,
+                    in_generator: ctx.in_generator,
+                    func_end: ctx.func_end.clone(),
+                    loop_stack: ctx.loop_stack.clone(),
+                    try_stack: Vec::new(),
+                    module_name: ctx.module_name.clone(),
+                    module_scope_var: ctx.module_scope_var.clone(),
+                    func_depth: ctx.func_depth,
+                    file_idx: ctx.file_idx,
+                    // الدفعة الأخيرة DEF: إعلانات الدالة
+                    // الجارية تُورَّث في أخيرا.
+                    global_names: ctx.global_names.clone(),
+                    nonlocal_names: ctx.nonlocal_names.clone(),
+                };
+                self.emit_stmts(fin, &mut fctx, out)?;
+                self.restore_live(fmark);
+            }
+            out.push_str("nv_reraise_current();\n");
+            out.push_str("}\n");
+        }
         if has_except {
             // معالج فرعي يحمي ماعدا: إن أخطأت ماعدا شغّل
             // أخيرا ثم أعد الرفع إلى ما تحت هذه المحاولة.
-            let sub = self.fresh_label("hs");
-            let subcp = self.fresh_label("cps");
-            let subhp = self.fresh_label("hps");
-            out.push_str(&format!("NvHandler {};\n", sub));
-            out.push_str(&format!("volatile NvCheckpoint {} = nv_checkpoint();\n", subcp));
-            out.push_str(&format!("{}.prev = nv_handlers;\n", sub));
-            out.push_str(&format!("NvHandler *volatile {} = {}.prev;\n", subhp, sub));
-            out.push_str(&format!("{}.has_except = 0;\n", sub));
-            out.push_str(&format!("nv_handlers = &{};\n", sub));
+            // المولدات: المعالج الفرعي فتحة كومة أيضا.
+            let (sub, subcp, subhp) = if is_gen {
+                let sk = self.gen_alloc_try();
+                (
+                    format!("G->tries[{}].h", sk),
+                    format!("G->tries[{}].cp", sk),
+                    format!("G->tries[{}].h.prev", sk),
+                )
+            } else {
+                let sub = self.fresh_label("hs");
+                let subcp = self.fresh_label("cps");
+                let subhp = self.fresh_label("hps");
+                (sub, subcp, subhp)
+            };
+            if is_gen {
+                out.push_str(&format!("{} = nv_checkpoint();\n", subcp));
+                out.push_str(&format!("{}.prev = nv_handlers;\n", sub));
+                out.push_str(&format!("{}.has_except = 0;\n", sub));
+                out.push_str(&format!("nv_handlers = &{};\n", sub));
+            } else {
+                out.push_str(&format!("NvHandler {};\n", sub));
+                out.push_str(&format!("volatile NvCheckpoint {} = nv_checkpoint();\n", subcp));
+                out.push_str(&format!("{}.prev = nv_handlers;\n", sub));
+                out.push_str(&format!("NvHandler *volatile {} = {}.prev;\n", subhp, sub));
+                out.push_str(&format!("{}.has_except = 0;\n", sub));
+                out.push_str(&format!("nv_handlers = &{};\n", sub));
+            }
             out.push_str(&format!("if (setjmp({}.jb) == 0) {{\n", sub));
             let ebody = except.as_ref().unwrap();
             // الدفعة 1: الخطأ الممسوك رمز خروج 1 —
@@ -2058,6 +2685,7 @@ impl Gen {
                 let mut fctx = Ctx {
                     scope_var: ctx.scope_var.clone(),
                     in_function: ctx.in_function,
+                    in_generator: ctx.in_generator,
                     func_end: ctx.func_end.clone(),
                     loop_stack: ctx.loop_stack.clone(),
                     try_stack: Vec::new(),
@@ -2085,6 +2713,7 @@ impl Gen {
                 let mut fctx = Ctx {
                     scope_var: ctx.scope_var.clone(),
                     in_function: ctx.in_function,
+                    in_generator: ctx.in_generator,
                     func_end: ctx.func_end.clone(),
                     loop_stack: ctx.loop_stack.clone(),
                     try_stack: Vec::new(),
@@ -2109,6 +2738,7 @@ impl Gen {
             let mut fctx = Ctx {
                 scope_var: ctx.scope_var.clone(),
                 in_function: ctx.in_function,
+                in_generator: ctx.in_generator,
                 func_end: ctx.func_end.clone(),
                 loop_stack: ctx.loop_stack.clone(),
                 try_stack: Vec::new(),
@@ -2488,6 +3118,11 @@ pub fn generate_native_c(source: &str, program_dir: &Path, main_file: &str) -> R
             "static NvValue nv_f{}(NvScope *frame, NvValue *args, int nargs, int line, int col);\n",
             i
         ));
+    }
+    // المولدات (الاجتماع 101 §116): إعلانات أمامية
+    // لدوال آلة الحالة (قد تُستدعى قبل تعريفها).
+    for i in 0..gen.next_gen {
+        out.push_str(&format!("static int nv_g{}(NvGen *G);\n", i));
     }
     for i in 0..gen.next_mod {
         out.push_str(&format!("static NvValue nv_mod{}(void);\n", i));
