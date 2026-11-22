@@ -2334,6 +2334,8 @@ pub fn native_module(name: &str) -> Option<Value> {
         "محدد" => fzf_entries(),
         "عرض" => display_entries(),
         "عارض" => less_entries(),
+        // الدفعة 10 الجزء الثاني: وحدة طرفية (§120).
+        "طرفية" => terminal_entries(),
         // لينكس5 موجة الملفات: 6 وحدات جديدة
         // (بحث_ملفات وقاعدة_أسماء ومرر_أسماء
         // وسرد ومزامنة وضغط)؛ وأرشيف امتداد
@@ -54695,3 +54697,2354 @@ fn b6_proc_by_pid(
 // لينكس6-هـ2-إصلاح-قرص.
 
 // لينكس6-هـ2-إصلاح-قرص-ب.
+
+
+// BEGIN طرفية — الدفعة 10 الجزء الثاني (الاجتماع 105 §120).
+// وحدة طرفية واحدة في المكتبة القياسية: دوال عربية بلا تشكيل ولا
+// تطويل، ولا تسلسل خام مكشوف للمستخدم أبدا (الدوال تصدر التسلسلات
+// بنفسها أو ترجع نصا منسقا). بند = حالة تكافؤ.
+// التعايش: جدول قدرات عند البدء (TERM وNO_COLOR وكون المخرج طرفية
+// + إعلان المضيف عبر NIVA_TERM=none)؛ وتدهور آمن (تنسيق يرجع النص
+// عاديا، وشاشة ترجع خطأ، ولا بايت هروب يتسرب)؛ وجلسة محمية بلقطة
+// وخطاف استعادة على كل مسارات الخروج (طبيعي، اخرج، خطأ، استثناء،
+// مقاطعة) لا يلغيه البرنامج. والمكتبة لا تمس جلسات التطبيق أبدا.
+// المنصة: يونكس كاملا (termios)؛ ويندوز وWASM متدهورة (بلا دعم)
+// في هذه الدفعة — وحدة تحكم ويندوز خطوة لاحقة مستقلة.
+// قيمة عودة دوال الشاشة عند مضيف غير داعم: خطأ كقيمة لا استثناء.
+
+// أعلام الحالة (مرآة ذرية يقرأها معالج الإشارات بلا قفل).
+const TERM_F_INTERACTIVE: u32 = 1;
+const TERM_F_ALT: u32 = 2;
+const TERM_F_HIDDEN: u32 = 4;
+const TERM_F_MOUSE: u32 = 8;
+const TERM_F_KEYBOARD: u32 = 16;
+const TERM_F_APPKEYS: u32 = 32;
+const TERM_F_REVERSE: u32 = 64;
+const TERM_F_NOWRAP: u32 = 128;
+const TERM_F_COLORS: u32 = 256;
+
+struct TermCore {
+    caps_done: bool,
+    supported: bool,
+    colors: bool,
+    interactive: bool,
+    alt_screen: bool,
+    cursor_hidden: bool,
+    cursor_shape: u8, // 0 كتلة، 1 خط، 2 شعاع
+    cursor_blink: bool,
+    reverse: bool,
+    app_keys: bool,
+    mouse: bool,
+    keyboard: bool,
+    wrap: bool,
+    colors_changed: bool,
+    hooks: bool,
+}
+
+impl TermCore {
+    fn new() -> Self {
+        TermCore {
+            caps_done: false,
+            supported: false,
+            colors: false,
+            interactive: false,
+            alt_screen: false,
+            cursor_hidden: false,
+            cursor_shape: 0,
+            cursor_blink: true,
+            reverse: false,
+            app_keys: false,
+            mouse: false,
+            keyboard: false,
+            wrap: true,
+            colors_changed: false,
+            hooks: false,
+        }
+    }
+}
+
+// النواة المنطقية وحدها في static (كلها bools فهي Send)؛ أما الخيارات
+// فتحمل Value (فيه Rc فليس Send) فتسكن thread_local لكل خيط.
+// وtermios المحفوظ يسكن static كبايتات ليصل إليه معالج الإشارات.
+static TERM_CORE: std::sync::OnceLock<std::sync::Mutex<TermCore>> =
+    std::sync::OnceLock::new();
+static TERM_FLAGS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+thread_local! {
+    static TERM_OPTS: std::cell::RefCell<Vec<(String, Value)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+#[cfg(unix)]
+static TERM_SAVED: std::sync::OnceLock<std::sync::Mutex<Option<Vec<u8>>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(unix)]
+fn term_saved_set(t: &libc::termios) {
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            t as *const libc::termios as *const u8,
+            std::mem::size_of::<libc::termios>(),
+        )
+        .to_vec()
+    };
+    let m = TERM_SAVED.get_or_init(|| std::sync::Mutex::new(None));
+    *m.lock().unwrap_or_else(|e| e.into_inner()) = Some(bytes);
+}
+
+#[cfg(unix)]
+fn term_saved_take() -> Option<libc::termios> {
+    let m = TERM_SAVED.get_or_init(|| std::sync::Mutex::new(None));
+    let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
+    let bytes = g.take()?;
+    if bytes.len() != std::mem::size_of::<libc::termios>() {
+        return None;
+    }
+    let mut t: libc::termios = unsafe { std::mem::zeroed() };
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            bytes.as_ptr(),
+            &mut t as *mut libc::termios as *mut u8,
+            bytes.len(),
+        );
+    }
+    Some(t)
+}
+
+/// لمعالج الإشارات: محاولة قفل واحدة، بلا أخذ (الاستعادة الكاملة تأتي بعدها).
+#[cfg(unix)]
+fn term_saved_try_restore() {
+    if let Some(m) = TERM_SAVED.get() {
+        if let Ok(g) = m.try_lock() {
+            if let Some(bytes) = g.as_ref() {
+                if bytes.len() == std::mem::size_of::<libc::termios>() {
+                    let mut t: libc::termios = unsafe { std::mem::zeroed() };
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            bytes.as_ptr(),
+                            &mut t as *mut libc::termios as *mut u8,
+                            bytes.len(),
+                        );
+                        libc::tcsetattr(0, libc::TCSANOW, &t);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn term_lock() -> std::sync::MutexGuard<'static, TermCore> {
+    let m = TERM_CORE.get_or_init(|| std::sync::Mutex::new(TermCore::new()));
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn term_flags_of(st: &TermCore) -> u32 {
+    let mut f: u32 = 0;
+    if st.interactive {
+        f |= TERM_F_INTERACTIVE;
+    }
+    if st.alt_screen {
+        f |= TERM_F_ALT;
+    }
+    if st.cursor_hidden {
+        f |= TERM_F_HIDDEN;
+    }
+    if st.mouse {
+        f |= TERM_F_MOUSE;
+    }
+    if st.keyboard {
+        f |= TERM_F_KEYBOARD;
+    }
+    if st.app_keys {
+        f |= TERM_F_APPKEYS;
+    }
+    if st.reverse {
+        f |= TERM_F_REVERSE;
+    }
+    if !st.wrap {
+        f |= TERM_F_NOWRAP;
+    }
+    if st.colors_changed {
+        f |= TERM_F_COLORS;
+    }
+    f
+}
+
+fn term_sync_flags(st: &TermCore) {
+    TERM_FLAGS.store(term_flags_of(st), std::sync::atomic::Ordering::SeqCst);
+}
+
+/// جدول القدرات عند البدء: طرفية حقيقية + TERM صالح + بلا NO_COLOR.
+/// إعلان المضيف: NIVA_TERM=none تعني بلا دعم إطلاقا (التطبيق والملعب).
+fn term_caps(st: &mut TermCore) {
+    if st.caps_done {
+        return;
+    }
+    st.caps_done = true;
+    #[cfg(unix)]
+    {
+        if std::env::var("NIVA_TERM")
+            .map(|v| v == "none")
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let tty = unsafe { libc::isatty(1) } == 1;
+        let term = std::env::var("TERM").unwrap_or_default();
+        if !tty || term.is_empty() || term == "dumb" {
+            return;
+        }
+        st.supported = true;
+        let no_color = std::env::var("NO_COLOR")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        st.colors = !no_color;
+    }
+}
+
+/// كتابة بايتات خام إلى المخرج القياسي (بلا طبقة عرض).
+fn term_emit(bytes: &[u8]) -> bool {
+    use std::io::Write;
+    let out = std::io::stdout();
+    let mut h = out.lock();
+    h.write_all(bytes).is_ok() && h.flush().is_ok()
+}
+
+/// بايتات الاستعادة من الأعلام (ترتيب عكس الدخول: أوضاع ثم مؤشر ثم شاشة ثم ألوان).
+fn term_restore_bytes(flags: u32) -> Vec<u8> {
+    let mut seq: Vec<u8> = Vec::new();
+    if flags & TERM_F_KEYBOARD != 0 {
+        seq.extend_from_slice(b"\x1b[<u");
+    }
+    if flags & TERM_F_MOUSE != 0 {
+        seq.extend_from_slice(b"\x1b[?1000l\x1b[?1002l\x1b[?1006l");
+    }
+    if flags & TERM_F_APPKEYS != 0 {
+        seq.extend_from_slice(b"\x1b>");
+    }
+    if flags & TERM_F_REVERSE != 0 {
+        seq.extend_from_slice(b"\x1b[?5l");
+    }
+    if flags & TERM_F_NOWRAP != 0 {
+        seq.extend_from_slice(b"\x1b[?7h");
+    }
+    if flags & TERM_F_HIDDEN != 0 {
+        seq.extend_from_slice(b"\x1b[?25h");
+    }
+    if flags & TERM_F_ALT != 0 {
+        seq.extend_from_slice(b"\x1b[?1049l");
+    }
+    if flags & TERM_F_COLORS != 0 {
+        seq.extend_from_slice(b"\x1b[0m\x1b]110\x1b\\\x1b]111\x1b\\\x1b]112\x1b\\");
+    }
+    seq
+}
+
+/// الاستعادة الكاملة (مسار عادي: نهاية، اخرج، خطأ، استثناء — عبر atexit).
+fn term_restore() {
+    let mut st = term_lock();
+    let seq = term_restore_bytes(term_flags_of(&st));
+    if !seq.is_empty() {
+        let _ = term_emit(&seq);
+    }
+    #[cfg(unix)]
+    {
+        if let Some(saved) = term_saved_take() {
+            unsafe { libc::tcsetattr(0, libc::TCSANOW, &saved); }
+        }
+    }
+    st.interactive = false;
+    st.alt_screen = false;
+    st.cursor_hidden = false;
+    st.reverse = false;
+    st.app_keys = false;
+    st.mouse = false;
+    st.keyboard = false;
+    st.wrap = true;
+    st.colors_changed = false;
+    TERM_FLAGS.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(unix)]
+extern "C" fn term_atexit_handler() {
+    term_restore();
+}
+
+/// معالج الإشارات: استعادة بأفضل جهد بلا قفل (الأعلام الذرية +
+/// محاولة قفل واحدة لاستعادة termios)، ثم الإشارة الافتراضية وإعادة الرفع.
+#[cfg(unix)]
+extern "C" fn term_signal_handler(sig: libc::c_int) {
+    let flags = TERM_FLAGS.load(std::sync::atomic::Ordering::SeqCst);
+    let seq = term_restore_bytes(flags);
+    if !seq.is_empty() {
+        unsafe {
+            libc::write(1, seq.as_ptr() as *const libc::c_void, seq.len());
+        }
+    }
+    if flags & TERM_F_INTERACTIVE != 0 {
+        term_saved_try_restore();
+    }
+    unsafe {
+        libc::signal(sig, libc::SIG_DFL);
+        libc::raise(sig);
+    }
+}
+
+#[cfg(unix)]
+fn term_install_hooks() {
+    unsafe {
+        libc::atexit(term_atexit_handler);
+        libc::signal(
+            libc::SIGINT,
+            term_signal_handler as *const () as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGTERM,
+            term_signal_handler as *const () as libc::sighandler_t,
+        );
+    }
+}
+
+/// بعد أي تغيير حالة على مضيف داعم: مزامنة الأعلام وتثبيت الخطاف مرة واحدة.
+fn term_touch(st: &mut TermCore) {
+    term_sync_flags(st);
+    #[cfg(unix)]
+    {
+        if !st.hooks && st.supported {
+            st.hooks = true;
+            term_install_hooks();
+        }
+    }
+}
+
+/// دخول الوضع الخام (إدخال خام فقط — الإخراج يبقى معالجا فـ`اطبع` سليم).
+/// يعيد صحيحا إن دخل أو كان داخلا، وخطأ إن لم يكن الدخل طرفية.
+#[cfg(unix)]
+fn term_begin_inner(st: &mut TermCore) -> bool {
+    if st.interactive {
+        return true;
+    }
+    if unsafe { libc::isatty(0) } != 1 {
+        return false;
+    }
+    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(0, &mut saved) } != 0 {
+        return false;
+    }
+    let mut raw = saved;
+    raw.c_iflag &= !(libc::BRKINT | libc::ICRNL | libc::INPCK | libc::ISTRIP | libc::IXON);
+    raw.c_cflag |= libc::CS8;
+    raw.c_lflag &= !(libc::ECHO | libc::ICANON | libc::IEXTEN | libc::ISIG);
+    raw.c_cc[libc::VMIN] = 1;
+    raw.c_cc[libc::VTIME] = 0;
+    if unsafe { libc::tcsetattr(0, libc::TCSANOW, &raw) } != 0 {
+        return false;
+    }
+    term_saved_set(&saved);
+    st.interactive = true;
+    term_touch(st);
+    true
+}
+
+#[cfg(not(unix))]
+fn term_begin_inner(_st: &mut TermCore) -> bool {
+    false
+}
+
+// ---------- الألوان ----------
+
+fn term_named_index(name: &str) -> Option<u8> {
+    match name {
+        "أسود" => Some(0),
+        "أحمر" => Some(1),
+        "أخضر" => Some(2),
+        "أصفر" => Some(3),
+        "أزرق" => Some(4),
+        "أرجواني" => Some(5),
+        "سماوي" => Some(6),
+        "أبيض" => Some(7),
+        "أسود_ساطع" => Some(8),
+        "أحمر_ساطع" => Some(9),
+        "أخضر_ساطع" => Some(10),
+        "أصفر_ساطع" => Some(11),
+        "أزرق_ساطع" => Some(12),
+        "أرجواني_ساطع" => Some(13),
+        "سماوي_ساطع" => Some(14),
+        "أبيض_ساطع" => Some(15),
+        _ => None,
+    }
+}
+
+/// الأسماء الستة عشر (xterm): 0..7 عادية، 8..15 ساطعة.
+fn term_named_rgb(idx: u8) -> (u8, u8, u8) {
+    match idx {
+        0 => (0, 0, 0),
+        1 => (205, 0, 0),
+        2 => (0, 205, 0),
+        3 => (205, 205, 0),
+        4 => (0, 0, 238),
+        5 => (205, 0, 205),
+        6 => (0, 205, 205),
+        7 => (229, 229, 229),
+        8 => (127, 127, 127),
+        9 => (255, 0, 0),
+        10 => (0, 255, 0),
+        11 => (255, 255, 0),
+        12 => (92, 92, 255),
+        13 => (255, 0, 255),
+        14 => (0, 255, 255),
+        _ => (255, 255, 255),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TermColor {
+    Named(u8),
+    Indexed(u8),
+    Rgb(u8, u8, u8),
+}
+
+fn term_color_rgb(c: TermColor) -> (u8, u8, u8) {
+    match c {
+        TermColor::Named(i) => term_named_rgb(i),
+        TermColor::Indexed(n) => {
+            if n < 16 {
+                term_named_rgb(n)
+            } else if n < 232 {
+                let v = n - 16;
+                let lv = [0u8, 95, 135, 175, 215, 255];
+                (
+                    lv[(v / 36) as usize],
+                    lv[((v / 6) % 6) as usize],
+                    lv[(v % 6) as usize],
+                )
+            } else {
+                let g = 8 + 10 * (n - 232);
+                (g, g, g)
+            }
+        }
+        TermColor::Rgb(r, g, b) => (r, g, b),
+    }
+}
+
+fn term_fg_params(c: TermColor) -> String {
+    match c {
+        TermColor::Named(i) => {
+            if i < 8 {
+                format!("{}", 30 + i)
+            } else {
+                format!("{}", 90 + (i - 8))
+            }
+        }
+        TermColor::Indexed(n) => format!("38;5;{}", n),
+        TermColor::Rgb(r, g, b) => format!("38;2;{};{};{}", r, g, b),
+    }
+}
+
+fn term_bg_params(c: TermColor) -> String {
+    match c {
+        TermColor::Named(i) => {
+            if i < 8 {
+                format!("{}", 40 + i)
+            } else {
+                format!("{}", 100 + (i - 8))
+            }
+        }
+        TermColor::Indexed(n) => format!("48;5;{}", n),
+        TermColor::Rgb(r, g, b) => format!("48;2;{};{};{}", r, g, b),
+    }
+}
+
+fn term_ul_params(c: TermColor) -> String {
+    match c {
+        TermColor::Named(i) => format!("58;5;{}", i),
+        TermColor::Indexed(n) => format!("58;5;{}", n),
+        TermColor::Rgb(r, g, b) => format!("58;2;{};{};{}", r, g, b),
+    }
+}
+
+/// تنسيق نقي: بلا ألوان يرجع النص عاديا (التدهور الآمن).
+fn term_format(colors: bool, params: &str, text: &str) -> String {
+    if !colors {
+        text.to_string()
+    } else {
+        format!("\x1b[{}m{}\x1b[0m", params, text)
+    }
+}
+
+/// لون من قيمة نيفا: اسم مسمى، أو رقم 0..255، أو قاموس {أحمر، أخضر، أزرق}.
+fn term_need_color(display: &str, v: &Value, line: usize, col: usize) -> RioResult<TermColor> {
+    match v {
+        Value::Str(s) => match term_named_index(s) {
+            Some(i) => Ok(TermColor::Named(i)),
+            None => Err(RioError::runtime(
+                format!(
+                    "الدالة {} اللون «{}» غير معروف — الألوان المسماة 16: أسود وأحمر وأخضر وأصفر وأزرق وأرجواني وسماوي وأبيض مع ساطع",
+                    display, s
+                ),
+                line,
+                col,
+            )),
+        },
+        Value::Number(n) => {
+            if n.fract() != 0.0 || *n < 0.0 || *n > 255.0 {
+                return Err(RioError::runtime(
+                    format!(
+                        "الدالة {} رقم اللون يجب أن يكون عددا صحيحا بين 0 و255",
+                        display
+                    ),
+                    line,
+                    col,
+                ));
+            }
+            Ok(TermColor::Indexed(*n as u8))
+        }
+        Value::Dict(pairs) => {
+            let get = |k: &str| -> RioResult<i64> {
+                match dict_get(pairs, k) {
+                    Some(Value::Number(n))
+                        if n.fract() == 0.0 && *n >= 0.0 && *n <= 255.0 =>
+                    {
+                        Ok(*n as i64)
+                    }
+                    _ => Err(RioError::runtime(
+                        format!(
+                            "الدالة {} لون حقيقي يحتاج «{}» عددا صحيحا بين 0 و255",
+                            display, k
+                        ),
+                        line,
+                        col,
+                    )),
+                }
+            };
+            Ok(TermColor::Rgb(
+                get("أحمر")? as u8,
+                get("أخضر")? as u8,
+                get("أزرق")? as u8,
+            ))
+        }
+        other => Err(RioError::typ(
+            format!(
+                "الدالة {} تتوقع لونا (اسم أو رقم أو قاموس أحمر/أخضر/أزرق) لكن أعطيت {}",
+                display,
+                other.type_name()
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+/// عدد صحيح 1 على الأقل (مواضع وعدادات المؤشر والشاشة).
+fn term_need_count(display: &str, v: &Value, line: usize, col: usize) -> RioResult<i64> {
+    let n = need_integer(display, v, line, col)?;
+    if n < 1 {
+        return Err(RioError::runtime(
+            format!("الدالة {} العدد يجب أن يكون 1 على الأقل", display),
+            line,
+            col,
+        ));
+    }
+    Ok(n)
+}
+
+/// ترميز قاعدة 64 (OSC 52) — بلا اعتماد خارجي.
+fn term_b64(data: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | (b[2] as u32);
+        out.push(A[((n >> 18) & 63) as usize] as char);
+        out.push(A[((n >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            A[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            A[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// أرقام لاتينية إلى عربية مشرقية (تذييل العارض الخام).
+fn term_arabic_digits(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if ('0'..='9').contains(&c) {
+                char::from_u32(0x660 + (c as u32 - '0' as u32)).unwrap_or(c)
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+fn term_save_cursor(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.احفظ_المؤشر";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b7");
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_restore_cursor(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.استعد_المؤشر";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b8");
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_index_down(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.انزل_سطرا";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1bD");
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_index_up(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.اطلع_سطرا";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1bM");
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_next_line(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.السطر_التالي";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1bE");
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_app_keys_on(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.شغل_مفاتيح_التطبيق";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b=");
+    st.app_keys = true;
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_app_keys_off(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.أوقف_مفاتيح_التطبيق";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b>");
+    st.app_keys = false;
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_reset_terminal(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.أعد_تعيين_الطرفية";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1bc");
+    st.alt_screen = false; st.cursor_hidden = false; st.reverse = false; st.app_keys = false; st.mouse = false; st.keyboard = false; st.wrap = true; st.colors_changed = false;
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_clear_screen(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.امسح_الشاشة";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b[2J");
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_clear_to_end(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.امسح_حتى_نهاية_الشاشة";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b[0J");
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_clear_from_start(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.امسح_من_بداية_الشاشة";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b[1J");
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_clear_line(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.امسح_السطر";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b[2K");
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_clear_to_eol(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.امسح_حتى_نهاية_السطر";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b[0K");
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_clear_from_sol(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.امسح_من_بداية_السطر";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b[1K");
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_save_cursor_attrs(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.احفظ_المؤشر_والسمات";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b[s");
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_restore_cursor_attrs(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.استعد_المؤشر_والسمات";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b[u");
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_hide_cursor(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.أخف_المؤشر";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b[?25l");
+    st.cursor_hidden = true;
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_show_cursor(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.أظهر_المؤشر";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b[?25h");
+    st.cursor_hidden = false;
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_alt_screen_on(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.بدل_للشاشة_البديلة";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b[?1049h");
+    st.alt_screen = true;
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_alt_screen_off(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.عد_للشاشة_الرئيسية";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b[?1049l");
+    st.alt_screen = false;
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_clear_scrollback(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.امسح_المحفوظات";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b[3J");
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_reset_attrs(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.أعد_السمات";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(b"\x1b[0m");
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_cursor_up(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.حرك_المؤشر_لأعلى";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = term_need_count(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(format!("\x1b[{}A", n).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_cursor_down(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.حرك_المؤشر_لأسفل";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = term_need_count(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(format!("\x1b[{}B", n).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_cursor_fwd(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.حرك_المؤشر_للأمام";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = term_need_count(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(format!("\x1b[{}C", n).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_cursor_back(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.حرك_المؤشر_للخلف";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = term_need_count(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(format!("\x1b[{}D", n).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_next_line_n(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.السطر_التالي_بعد";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = term_need_count(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(format!("\x1b[{}E", n).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_prev_line_n(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.السطر_السابق_بعد";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = term_need_count(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(format!("\x1b[{}F", n).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_column(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.عمود";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = term_need_count(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(format!("\x1b[{}G", n).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_insert_lines(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.أدرج_أسطرا";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = term_need_count(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(format!("\x1b[{}L", n).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_delete_lines(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.احذف_أسطرا";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = term_need_count(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(format!("\x1b[{}M", n).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_insert_chars(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.أدرج_أحرفا";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = term_need_count(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(format!("\x1b[{}@", n).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_delete_chars(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.احذف_أحرفا";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = term_need_count(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(format!("\x1b[{}P", n).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_erase_chars(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.امسح_أحرفا";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = term_need_count(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(format!("\x1b[{}X", n).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_scroll_up(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.مرر_لأعلى";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = term_need_count(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(format!("\x1b[{}S", n).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_scroll_down(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.مرر_لأسفل";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = term_need_count(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported { return Ok(Value::Bool(false)); }
+    let ok = term_emit(format!("\x1b[{}T", n).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_palette_reset(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.أعد_لون_اللوحة";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = term_need_count(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.colors { return Ok(Value::Bool(false)); }
+    let ok = term_emit(format!("\x1b]104;{}\x1b\\", n).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+
+// ---------- دوال خاصة: عكس الشاشة، موضع، منطقة، عنوان، OSC، سمات ----------
+
+fn term_reverse_screen(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.اعكس_الشاشة";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported {
+        return Ok(Value::Bool(false));
+    }
+    let on = !st.reverse;
+    let ok = term_emit(if on { b"\x1b[?5h" } else { b"\x1b[?5l" });
+    st.reverse = on;
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_cursor_pos2(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.ضع_المؤشر";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let r = term_need_count(DISPLAY, &args[0], line, col)?;
+    let c = term_need_count(DISPLAY, &args[1], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported {
+        return Ok(Value::Bool(false));
+    }
+    let ok = term_emit(format!("\x1b[{};{}H", r, c).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_scroll_region(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.منطقة_التمرير";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let top = term_need_count(DISPLAY, &args[0], line, col)?;
+    let bot = term_need_count(DISPLAY, &args[1], line, col)?;
+    if bot <= top {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} أسفل المنطقة ({}) يجب أن يكون أكبر من أعلاها ({})",
+                DISPLAY, bot, top
+            ),
+            line,
+            col,
+        ));
+    }
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported {
+        return Ok(Value::Bool(false));
+    }
+    let ok = term_emit(format!("\x1b[{};{}r", top, bot).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_tab_title(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.عنوان_التبويب";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported {
+        return Ok(Value::Bool(false));
+    }
+    // تعقيم: أي بايت تحكم يصير مسافة (النص العربي UTF-8 بايتاته فوق 0x7F فلا يمس).
+    let clean: Vec<u8> = text
+        .bytes()
+        .map(|b| if b < 0x20 || b == 0x7f { b' ' } else { b })
+        .collect();
+    let mut seq = b"\x1b]1;".to_vec();
+    seq.extend_from_slice(&clean);
+    seq.extend_from_slice(b"\x1b\\");
+    let ok = term_emit(&seq);
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+/// ضبط لون OSC واحد (10 مقدمة، 11 خلفية، 12 مؤشر).
+fn term_osc_color(code: u8, display: &str, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args(display, args, 1, line, col)?;
+    let c = term_need_color(display, &args[0], line, col)?;
+    let (r, g, b) = term_color_rgb(c);
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.colors {
+        return Ok(Value::Bool(false));
+    }
+    let ok = term_emit(
+        format!("\x1b]{};rgb:{:02x}/{:02x}/{:02x}\x1b\\", code, r, g, b).as_bytes(),
+    );
+    st.colors_changed = true;
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_fg_osc(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    term_osc_color(10, "طرفية.لون_المقدمة", args, line, col)
+}
+
+fn term_cursor_osc(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    term_osc_color(12, "طرفية.لون_المؤشر", args, line, col)
+}
+
+fn term_palette_color(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.لون_اللوحة";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let n = need_integer(DISPLAY, &args[0], line, col)?;
+    if !(0..=255).contains(&n) {
+        return Err(RioError::runtime(
+            format!("الدالة {} رقم اللون في اللوحة يجب أن يكون بين 0 و255", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let c = term_need_color(DISPLAY, &args[1], line, col)?;
+    let (r, g, b) = term_color_rgb(c);
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.colors {
+        return Ok(Value::Bool(false));
+    }
+    let ok = term_emit(
+        format!("\x1b]4;{};rgb:{:02x}/{:02x}/{:02x}\x1b\\", n, r, g, b).as_bytes(),
+    );
+    st.colors_changed = true;
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_reset_fg_bg(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.أعد_المقدمة_والخلفية";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.colors {
+        return Ok(Value::Bool(false));
+    }
+    let ok = term_emit(b"\x1b]110\x1b\\\x1b]111\x1b\\");
+    st.colors_changed = false;
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+/// لون_الخلفية بمعامل واحد (ضبط OSC 11) أو معاملين (تنسيق نص) — اسم واحد من §120.
+fn term_bg(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.لون_الخلفية";
+    if args.len() == 1 {
+        return term_osc_color(11, DISPLAY, args, line, col);
+    }
+    if args.len() == 2 {
+        let c = term_need_color(DISPLAY, &args[0], line, col)?;
+        let text = need_string(DISPLAY, &args[1], line, col)?;
+        let colors = {
+            let mut st = term_lock();
+            term_caps(&mut st);
+            st.colors
+        };
+        return Ok(Value::Str(term_format(colors, &term_bg_params(c), &text)));
+    }
+    Err(RioError::runtime(
+        format!(
+            "الدالة {} تتوقع 1 أو 2 معاملات لكن أعطيت {}",
+            DISPLAY,
+            args.len()
+        ),
+        line,
+        col,
+    ))
+}
+
+fn term_set_palette(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.اضبط_اللوحة";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let list = match &args[0] {
+        Value::List(l) => l.clone(),
+        other => {
+            return Err(RioError::typ(
+                format!(
+                    "الدالة {} تتوقع قائمة من 16 لونا لكن أعطيت {}",
+                    DISPLAY,
+                    other.type_name()
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    if list.len() != 16 {
+        return Err(RioError::runtime(
+            format!(
+                "الدالة {} القائمة يجب أن تحمل 16 لونا بالضبط لكن أعطيت {}",
+                DISPLAY,
+                list.len()
+            ),
+            line,
+            col,
+        ));
+    }
+    let mut colors = Vec::new();
+    for v in &list {
+        colors.push(term_need_color(DISPLAY, v, line, col)?);
+    }
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.colors {
+        return Ok(Value::Bool(false));
+    }
+    let mut seq = String::new();
+    for (i, c) in colors.iter().enumerate() {
+        let (r, g, b) = term_color_rgb(*c);
+        seq.push_str(&format!("\x1b]4;{};rgb:{:02x}/{:02x}/{:02x}\x1b\\", i, r, g, b));
+    }
+    let ok = term_emit(seq.as_bytes());
+    st.colors_changed = true;
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_opt_set(name: &str, v: Value) {
+    TERM_OPTS.with(|o| {
+        let mut o = o.borrow_mut();
+        if let Some(slot) = o.iter_mut().find(|(k, _)| k == name) {
+            slot.1 = v;
+        } else {
+            o.push((name.to_string(), v));
+        }
+    });
+}
+
+fn term_opt_get(name: &str) -> Option<Value> {
+    TERM_OPTS.with(|o| {
+        o.borrow()
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+    })
+}
+
+/// لون_التحديد: OSC 17+19 (ألوان التحديد القياسية في xterm) + حفظ في الجلسة.
+fn term_selection_colors(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.لون_التحديد";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let fg = term_need_color(DISPLAY, &args[0], line, col)?;
+    let bg = term_need_color(DISPLAY, &args[1], line, col)?;
+    let (fr, fg2, fb) = term_color_rgb(fg);
+    let (br, bg2, bb) = term_color_rgb(bg);
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.colors {
+        return Ok(Value::Bool(false));
+    }
+    let ok = term_emit(
+        format!(
+            "\x1b]19;rgb:{:02x}/{:02x}/{:02x}\x1b\\\x1b]17;rgb:{:02x}/{:02x}/{:02x}\x1b\\",
+            fr, fg2, fb, br, bg2, bb
+        )
+        .as_bytes(),
+    );
+    st.colors_changed = true;
+    term_opt_set(
+        "لون_التحديد",
+        Value::Dict(vec![
+            ("مقدمة".to_string(), args[0].clone()),
+            ("خلفية".to_string(), args[1].clone()),
+        ]),
+    );
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+/// سمة محفوظة بلونين: بلا تسلسل قياسي لها؛ تُحفظ في الجلسة لطبقة
+/// سمة المضيف وتُقرأ عبر اقرأ_خيار_طرفية.
+fn term_theme_pair(display: &str, name: &str, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    need_args(display, args, 2, line, col)?;
+    let _fg = term_need_color(display, &args[0], line, col)?;
+    let _bg = term_need_color(display, &args[1], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.colors {
+        return Ok(Value::Bool(false));
+    }
+    term_opt_set(
+        name,
+        Value::Dict(vec![
+            ("مقدمة".to_string(), args[0].clone()),
+            ("خلفية".to_string(), args[1].clone()),
+        ]),
+    );
+    term_touch(&mut st);
+    Ok(Value::Bool(true))
+}
+
+fn term_theme_single(display: &str, name: &str, args: &[Value], line: usize, col: usize, need_colors: bool) -> RioResult<Value> {
+    need_args(display, args, 1, line, col)?;
+    let _c = term_need_color(display, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if need_colors {
+        if !st.colors {
+            return Ok(Value::Bool(false));
+        }
+    } else if !st.supported {
+        return Ok(Value::Bool(false));
+    }
+    term_opt_set(name, args[0].clone());
+    term_touch(&mut st);
+    Ok(Value::Bool(true))
+}
+
+fn term_hint_colors(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    term_theme_pair("طرفية.لون_التلميح", "لون_التلميح", args, line, col)
+}
+
+fn term_tabbar_colors(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    term_theme_pair("طرفية.لون_شريط_التبويبات", "لون_شريط_التبويبات", args, line, col)
+}
+
+fn term_pane_border(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    term_theme_single("طرفية.لون_حدود_الأقسام", "لون_حدود_الأقسام", args, line, col, true)
+}
+
+fn term_bell_color(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    term_theme_single("طرفية.لون_الجرس_المرئي", "لون_الجرس_المرئي", args, line, col, true)
+}
+
+fn term_cursor_text_color(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    term_theme_single("طرفية.لون_نص_المؤشر", "لون_نص_المؤشر", args, line, col, false)
+}
+
+// ---------- المؤشر: الشكل والوميض والعكس ----------
+
+fn term_cursor_code(shape: u8, blink: bool) -> u8 {
+    // DECSCUSR: 1/2 كتلة، 3/4 خط، 5/6 شعاع — الفردي وامض.
+    let base = shape * 2 + 2;
+    if blink {
+        base - 1
+    } else {
+        base
+    }
+}
+
+fn term_cursor_shape(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.شكل_المؤشر";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let shape = need_string(DISPLAY, &args[0], line, col)?;
+    let base: u8 = match shape.as_str() {
+        "كتلة" => 0,
+        "خط" => 1,
+        "شعاع" => 2,
+        _ => {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} الشكل «{}» غير معروف — الأشكال: كتلة وخط وشعاع",
+                    DISPLAY, shape
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported {
+        return Ok(Value::Bool(false));
+    }
+    st.cursor_shape = base;
+    let code = term_cursor_code(st.cursor_shape, st.cursor_blink);
+    let ok = term_emit(format!("\x1b[{} q", code).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_cursor_blink(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.وميض_المؤشر";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let b = b4_need_bool(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported {
+        return Ok(Value::Bool(false));
+    }
+    st.cursor_blink = b;
+    let code = term_cursor_code(st.cursor_shape, st.cursor_blink);
+    let ok = term_emit(format!("\x1b[{} q", code).as_bytes());
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_cursor_reverse(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.مؤشر_بالعكس";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let b = b4_need_bool(DISPLAY, &args[0], line, col)?;
+    // بلا تسلسل قياسي لمؤشر بالعكس؛ يُحفظ في الجلسة لطبقة سمة المضيف.
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported {
+        return Ok(Value::Bool(false));
+    }
+    term_opt_set("مؤشر_بالعكس", Value::Bool(b));
+    term_touch(&mut st);
+    Ok(Value::Bool(true))
+}
+
+// ---------- الأوضاع: فأرة ولوحة مفاتيح والتفاف ----------
+
+fn term_mouse_mode(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.وضع_الفأرة";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let b = b4_need_bool(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported {
+        return Ok(Value::Bool(false));
+    }
+    let ok = term_emit(if b {
+        b"\x1b[?1000h\x1b[?1002h\x1b[?1006h"
+    } else {
+        b"\x1b[?1000l\x1b[?1002l\x1b[?1006l"
+    });
+    st.mouse = b;
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_keyboard_mode(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.وضع_لوحة_المفاتيح";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let b = b4_need_bool(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported {
+        return Ok(Value::Bool(false));
+    }
+    let ok = term_emit(if b { b"\x1b[>1u" } else { b"\x1b[<u" });
+    st.keyboard = b;
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_wrap_mode(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.التفاف_الأسطر";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let b = b4_need_bool(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported {
+        return Ok(Value::Bool(false));
+    }
+    let ok = term_emit(if b { b"\x1b[?7h" } else { b"\x1b[?7l" });
+    st.wrap = b;
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+// ---------- الاستعلامات: حجم وموضع ----------
+
+#[cfg(unix)]
+fn term_winsize() -> (i64, i64) {
+    for fd in [1, 0, 2] {
+        let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+        if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } == 0 && ws.ws_col > 0 {
+            return (ws.ws_row as i64, ws.ws_col as i64);
+        }
+    }
+    (0, 0)
+}
+
+#[cfg(not(unix))]
+fn term_winsize() -> (i64, i64) {
+    (0, 0)
+}
+
+fn term_size(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.حجم_الطرفية";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let (rows, cols) = term_winsize();
+    Ok(Value::Dict(vec![
+        ("صفوف".to_string(), Value::Number(rows as f64)),
+        ("أعمدة".to_string(), Value::Number(cols as f64)),
+    ]))
+}
+
+#[cfg(unix)]
+fn term_query_cursor() -> Option<(i64, i64)> {
+    let supported = {
+        let mut st = term_lock();
+        term_caps(&mut st);
+        st.supported
+    };
+    if !supported {
+        return None;
+    }
+    if unsafe { libc::isatty(0) } != 1 {
+        return None;
+    }
+    let active = term_lock().interactive;
+    let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+    let mut raw_on = false;
+    if !active {
+        if unsafe { libc::tcgetattr(0, &mut saved) } != 0 {
+            return None;
+        }
+        let mut raw = saved;
+        raw.c_iflag &= !(libc::BRKINT | libc::ICRNL | libc::INPCK | libc::ISTRIP | libc::IXON);
+        raw.c_cflag |= libc::CS8;
+        raw.c_lflag &= !(libc::ECHO | libc::ICANON | libc::IEXTEN | libc::ISIG);
+        raw.c_cc[libc::VMIN] = 1;
+        raw.c_cc[libc::VTIME] = 0;
+        if unsafe { libc::tcsetattr(0, libc::TCSANOW, &raw) } != 0 {
+            return None;
+        }
+        raw_on = true;
+    }
+    let out = term_query_cursor_read();
+    if raw_on {
+        unsafe {
+            libc::tcsetattr(0, libc::TCSANOW, &saved);
+        }
+    }
+    out
+}
+
+#[cfg(not(unix))]
+fn term_query_cursor() -> Option<(i64, i64)> {
+    None
+}
+
+#[cfg(unix)]
+fn term_query_cursor_read() -> Option<(i64, i64)> {
+    if !term_emit(b"\x1b[6n") {
+        return None;
+    }
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        if !term_poll_ms(500) {
+            return None;
+        }
+        match term_read_byte() {
+            Some(b) => {
+                buf.push(b);
+                if b == b'R' || buf.len() > 32 {
+                    break;
+                }
+            }
+            None => return None,
+        }
+    }
+    let s = String::from_utf8(buf).ok()?;
+    let s = s.strip_prefix("\x1b[")?;
+    let s = s.strip_suffix('R')?;
+    let mut it = s.split(';');
+    let r: i64 = it.next()?.parse().ok()?;
+    let c: i64 = it.next()?.parse().ok()?;
+    if r < 1 || c < 1 {
+        return None;
+    }
+    Some((r, c))
+}
+
+fn term_cursor_pos(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.موضع_المؤشر";
+    need_args(DISPLAY, args, 0, line, col)?;
+    match term_query_cursor() {
+        Some((r, c)) => Ok(Value::Dict(vec![
+            ("صف".to_string(), Value::Number(r as f64)),
+            ("عمود".to_string(), Value::Number(c as f64)),
+        ])),
+        None => Ok(Value::Bool(false)),
+    }
+}
+
+
+// ---------- قراءة الأحداث ----------
+
+fn term_event_eof() -> Value {
+    Value::Dict(vec![("نوع".to_string(), Value::Str("نهاية".to_string()))])
+}
+
+fn term_key_event(name: &str, text: &str, ctrl: bool, alt: bool, shift: bool) -> Value {
+    Value::Dict(vec![
+        ("نوع".to_string(), Value::Str("مفتاح".to_string())),
+        ("مفتاح".to_string(), Value::Str(name.to_string())),
+        ("نص".to_string(), Value::Str(text.to_string())),
+        ("تحكم".to_string(), Value::Bool(ctrl)),
+        ("تبديل".to_string(), Value::Bool(alt)),
+        ("إزاحة".to_string(), Value::Bool(shift)),
+    ])
+}
+
+fn term_mouse_event(btn: &str, row: i64, col: i64) -> Value {
+    Value::Dict(vec![
+        ("نوع".to_string(), Value::Str("فأرة".to_string())),
+        ("زر".to_string(), Value::Str(btn.to_string())),
+        ("صف".to_string(), Value::Number(row as f64)),
+        ("عمود".to_string(), Value::Number(col as f64)),
+    ])
+}
+
+fn term_scroll_event(dir: &str, row: i64, col: i64) -> Value {
+    Value::Dict(vec![
+        ("نوع".to_string(), Value::Str("تمرير".to_string())),
+        ("اتجاه".to_string(), Value::Str(dir.to_string())),
+        ("صف".to_string(), Value::Number(row as f64)),
+        ("عمود".to_string(), Value::Number(col as f64)),
+    ])
+}
+
+#[cfg(unix)]
+fn term_read_byte() -> Option<u8> {
+    let mut b = [0u8; 1];
+    loop {
+        let n = unsafe { libc::read(0, b.as_mut_ptr() as *mut libc::c_void, 1) };
+        if n == 1 {
+            return Some(b[0]);
+        }
+        if n == 0 {
+            return None;
+        }
+        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        return None;
+    }
+}
+
+#[cfg(unix)]
+fn term_poll_ms(ms: i32) -> bool {
+    let mut pfd = libc::pollfd {
+        fd: 0,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let r = unsafe { libc::poll(&mut pfd, 1, ms) };
+    r > 0 && (pfd.revents & libc::POLLIN) != 0
+}
+
+#[cfg(unix)]
+fn term_read_utf8(first: u8) -> Option<String> {
+    let n = if first < 0x80 {
+        1
+    } else if first >= 0xF0 {
+        4
+    } else if first >= 0xE0 {
+        3
+    } else if first >= 0xC0 {
+        2
+    } else {
+        return None;
+    };
+    let mut buf = vec![first];
+    for _ in 1..n {
+        buf.push(term_read_byte()?);
+    }
+    String::from_utf8(buf).ok()
+}
+
+#[cfg(unix)]
+fn term_mods(param: Option<i64>) -> (bool, bool, bool) {
+    // معدل CSI: 1 + بتات (إزاحة 1، تبديل 2، تحكم 4).
+    let m = param.unwrap_or(1);
+    (m & 4 != 0, m & 2 != 0, m & 1 != 0)
+}
+
+#[cfg(unix)]
+fn term_byte_event(b: u8) -> Value {
+    match b {
+        0x0d | 0x0a => term_key_event("إدخال", "", false, false, false),
+        0x09 => term_key_event("تبويب", "", false, false, false),
+        0x7f | 0x08 => term_key_event("مسافة_خلفية", "", false, false, false),
+        0x20 => term_key_event(" ", " ", false, false, false),
+        1..=26 => {
+            let ch = (b + 96) as char;
+            term_key_event(&ch.to_string(), "", true, false, false)
+        }
+        _ => match term_read_utf8(b) {
+            Some(s) => term_key_event(&s, &s, false, false, false),
+            None => term_key_event("", "", false, false, false),
+        },
+    }
+}
+
+#[cfg(unix)]
+fn term_parse_mouse(rest: &str, fin: u8) -> Value {
+    let parts: Vec<&str> = rest.split(';').collect();
+    let b: i64 = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let x: i64 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(1);
+    let y: i64 = parts.get(2).and_then(|s| s.parse().ok()).unwrap_or(1);
+    if b & 64 != 0 {
+        let dir = if b & 1 != 0 { "لأسفل" } else { "لأعلى" };
+        return term_scroll_event(dir, y, x);
+    }
+    let btn = match b & 3 {
+        0 => "أيسر",
+        1 => "أوسط",
+        2 => "أيمن",
+        _ => "أيسر",
+    };
+    let _ = fin;
+    term_mouse_event(btn, y, x)
+}
+
+#[cfg(unix)]
+fn term_parse_csi() -> Value {
+    let mut params: Vec<u8> = Vec::new();
+    let fin = loop {
+        match term_read_byte() {
+            Some(b) if (0x40..=0x7e).contains(&b) => break b,
+            Some(b) => params.push(b),
+            None => return term_event_eof(),
+        }
+    };
+    let ps = String::from_utf8_lossy(&params).to_string();
+    if let Some(rest) = ps.strip_prefix('<') {
+        return term_parse_mouse(rest, fin);
+    }
+    let parts: Vec<&str> = ps.split(';').collect();
+    let p0: i64 = parts.first().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let p1: i64 = parts.get(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let (ctrl, alt, shift) = term_mods(if parts.len() > 1 { Some(p1) } else { None });
+    match fin {
+        b'A' => term_key_event("أعلى", "", ctrl, alt, shift),
+        b'B' => term_key_event("أسفل", "", ctrl, alt, shift),
+        b'C' => term_key_event("يمين", "", ctrl, alt, shift),
+        b'D' => term_key_event("يسار", "", ctrl, alt, shift),
+        b'H' => term_key_event("بيت", "", ctrl, alt, shift),
+        b'F' => term_key_event("نهاية", "", ctrl, alt, shift),
+        b'Z' => term_key_event("تبويب", "", ctrl, alt, true),
+        b'~' => {
+            let name = match p0 {
+                1 | 7 => "بيت",
+                2 => "إدراج",
+                3 => "حذف",
+                4 | 8 => "نهاية",
+                5 => "صفحة_لأعلى",
+                6 => "صفحة_لأسفل",
+                11 => "ف١",
+                12 => "ف٢",
+                13 => "ف٣",
+                14 => "ف٤",
+                15 => "ف٥",
+                17 => "ف٦",
+                18 => "ف٧",
+                19 => "ف٨",
+                20 => "ف٩",
+                21 => "ف١٠",
+                23 => "ف١١",
+                24 => "ف١٢",
+                _ => "",
+            };
+            term_key_event(name, "", ctrl, alt, shift)
+        }
+        _ => term_key_event("", "", ctrl, alt, shift),
+    }
+}
+
+#[cfg(unix)]
+fn term_parse_ss3() -> Value {
+    match term_read_byte() {
+        Some(b'A') => term_key_event("أعلى", "", false, false, false),
+        Some(b'B') => term_key_event("أسفل", "", false, false, false),
+        Some(b'C') => term_key_event("يمين", "", false, false, false),
+        Some(b'D') => term_key_event("يسار", "", false, false, false),
+        Some(b'H') => term_key_event("بيت", "", false, false, false),
+        Some(b'F') => term_key_event("نهاية", "", false, false, false),
+        Some(b'P') => term_key_event("ف١", "", false, false, false),
+        Some(b'Q') => term_key_event("ف٢", "", false, false, false),
+        Some(b'R') => term_key_event("ف٣", "", false, false, false),
+        Some(b'S') => term_key_event("ف٤", "", false, false, false),
+        Some(_) => term_key_event("", "", false, false, false),
+        None => term_event_eof(),
+    }
+}
+
+#[cfg(unix)]
+fn term_read_event() -> Value {
+    let b0 = match term_read_byte() {
+        Some(b) => b,
+        None => return term_event_eof(),
+    };
+    if b0 != 0x1b {
+        return term_byte_event(b0);
+    }
+    // هروب: هل يتبعه شيء خلال 50ms؟
+    if !term_poll_ms(50) {
+        return term_key_event("هروب", "", false, false, false);
+    }
+    let b1 = match term_read_byte() {
+        Some(b) => b,
+        None => return term_key_event("هروب", "", false, false, false),
+    };
+    if b1 == b'[' {
+        return term_parse_csi();
+    }
+    if b1 == b'O' {
+        return term_parse_ss3();
+    }
+    // تبديل+مفتاح (ESC ثم حرف).
+    match term_read_utf8(b1) {
+        Some(s) => term_key_event(&s, &s, false, true, false),
+        None => term_key_event("هروب", "", false, false, false),
+    }
+}
+
+#[cfg(unix)]
+fn term_read_event_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.اقرأ_حدث";
+    need_args(DISPLAY, args, 0, line, col)?;
+    // بلا دخل طرفي لا أحداث: نهاية فورا بلا قراءة (حتمية في كل مسار).
+    if unsafe { libc::isatty(0) } != 1 {
+        return Ok(term_event_eof());
+    }
+    let started = {
+        let mut st = term_lock();
+        term_caps(&mut st);
+        term_begin_inner(&mut st)
+    };
+    if !started {
+        return Ok(term_event_eof());
+    }
+    let ev = term_read_event();
+    if let Value::Dict(pairs) = &ev {
+        if let Some(Value::Str(t)) = dict_get(pairs, "نوع") {
+            if t == "نهاية" {
+                term_restore();
+            }
+        }
+    }
+    Ok(ev)
+}
+
+#[cfg(not(unix))]
+fn term_read_event_fn(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.اقرأ_حدث";
+    need_args(DISPLAY, args, 0, line, col)?;
+    Ok(term_event_eof())
+}
+
+// ---------- البنية: قدرة وخيارات ووضع تفاعلي ----------
+
+fn term_capability(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.قدرة_الطرفية";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let name = need_string(DISPLAY, &args[0], line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    let ok = match name.as_str() {
+        "ألوان" => st.colors,
+        "شاشة_بديلة" => st.supported,
+        "مؤشر" => st.supported,
+        "فأرة" => st.supported,
+        "لوحة_مفاتيح" => st.supported,
+        "رسوميات" => false,
+        "روابط" => st.colors,
+        _ => {
+            return Err(RioError::runtime(
+                format!(
+                    "الدالة {} القدرة «{}» غير معروفة — القدرات: ألوان وشاشة_بديلة ومؤشر وفأرة ولوحة_مفاتيح ورسوميات وروابط",
+                    DISPLAY, name
+                ),
+                line,
+                col,
+            ))
+        }
+    };
+    Ok(Value::Bool(ok))
+}
+
+fn term_set_option(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.خيار_طرفية";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let name = need_string(DISPLAY, &args[0], line, col)?;
+    if name.is_empty() {
+        return Err(RioError::runtime(
+            format!("الدالة {} اسم الخيار لا يكون فارغا", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    term_opt_set(&name, args[1].clone());
+    Ok(args[1].clone())
+}
+
+fn term_get_option(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.اقرأ_خيار_طرفية";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let name = need_string(DISPLAY, &args[0], line, col)?;
+    Ok(term_opt_get(&name).unwrap_or(Value::Nil))
+}
+
+fn term_begin(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.ابدأ_الوضع_التفاعلي";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported {
+        return Ok(Value::Bool(false));
+    }
+    Ok(Value::Bool(term_begin_inner(&mut st)))
+}
+
+fn term_end(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.أنه_الوضع_التفاعلي";
+    need_args(DISPLAY, args, 0, line, col)?;
+    let active = term_lock().interactive;
+    if !active {
+        return Ok(Value::Bool(false));
+    }
+    term_restore();
+    Ok(Value::Bool(true))
+}
+
+// ---------- العارض صفحة صفحة (نيزام-26) ----------
+
+fn term_pager(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.اعرض_صفحة_صفحة";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let (supported, rows) = {
+        let mut st = term_lock();
+        term_caps(&mut st);
+        (st.supported, term_winsize().0)
+    };
+    if !supported {
+        // تدهور آمن: النص عاديا بلا انتظار ضغطة.
+        if !text.is_empty() {
+            let _ = term_emit(text.as_bytes());
+            if !text.ends_with('\n') {
+                let _ = term_emit(b"\n");
+            }
+        }
+        return Ok(Value::Bool(true));
+    }
+    term_pager_tty(&text, rows)
+}
+
+#[cfg(unix)]
+fn term_pager_tty(text: &str, rows: i64) -> RioResult<Value> {
+    if unsafe { libc::isatty(0) } != 1 {
+        if !text.is_empty() {
+            let _ = term_emit(text.as_bytes());
+            if !text.ends_with('\n') {
+                let _ = term_emit(b"\n");
+            }
+        }
+        return Ok(Value::Bool(true));
+    }
+    {
+        let mut st = term_lock();
+        term_caps(&mut st);
+        if !term_begin_inner(&mut st) {
+            drop(st);
+            if !text.is_empty() {
+                let _ = term_emit(text.as_bytes());
+                if !text.ends_with('\n') {
+                    let _ = term_emit(b"\n");
+                }
+            }
+            return Ok(Value::Bool(true));
+        }
+        let _ = term_emit(b"\x1b[?1049h\x1b[?25l");
+        st.alt_screen = true;
+        st.cursor_hidden = true;
+        term_touch(&mut st);
+    }
+    let lines: Vec<&str> = text
+        .split('\n')
+        .map(|l| l.strip_suffix('\r').unwrap_or(l))
+        .collect();
+    let page = if rows > 1 { (rows - 1) as usize } else { 24usize }.max(1);
+    let npages = ((lines.len() + page - 1) / page).max(1);
+    let mut cur = 0usize;
+    loop {
+        let mut out = String::from("\x1b[H");
+        let start = cur * page;
+        let end = (start + page).min(lines.len());
+        for l in &lines[start..end] {
+            out.push_str(l);
+            out.push_str("\r\n");
+        }
+        out.push_str(&format!(
+            "— صفحة {} من {} — مسافة: التالي، ق: خروج —",
+            term_arabic_digits(&(cur + 1).to_string()),
+            term_arabic_digits(&npages.to_string())
+        ));
+        let _ = term_emit(out.as_bytes());
+        let ev = term_read_event();
+        let (kind, key) = match &ev {
+            Value::Dict(pairs) => (
+                match dict_get(pairs, "نوع") {
+                    Some(Value::Str(s)) => s.clone(),
+                    _ => String::new(),
+                },
+                match dict_get(pairs, "مفتاح") {
+                    Some(Value::Str(s)) => s.clone(),
+                    _ => String::new(),
+                },
+            ),
+            _ => (String::new(), String::new()),
+        };
+        if kind == "نهاية" {
+            break;
+        }
+        if key == "ق" || key == "q" || key == "هروب" {
+            break;
+        }
+        if key == " " || key == "أسفل" || key == "صفحة_لأسفل" || key == "إدخال" {
+            if cur + 1 >= npages {
+                break;
+            }
+            cur += 1;
+        } else if key == "أعلى" || key == "صفحة_لأعلى" {
+            if cur > 0 {
+                cur -= 1;
+            }
+        }
+    }
+    // استعادة الشاشة والمؤشر والوضع الخام.
+    let _ = term_emit(b"\x1b[?25h\x1b[?1049l");
+    {
+        let mut st = term_lock();
+        st.alt_screen = false;
+        st.cursor_hidden = false;
+    }
+    term_restore();
+    Ok(Value::Bool(true))
+}
+
+#[cfg(not(unix))]
+fn term_pager_tty(_text: &str, _rows: i64) -> RioResult<Value> {
+    Ok(Value::Bool(true))
+}
+
+// ---------- قيم الألوان والتنسيق ----------
+
+fn term_named_color(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.لون_مسمى";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let name = need_string(DISPLAY, &args[0], line, col)?;
+    match term_named_index(&name) {
+        Some(_) => Ok(Value::Str(name)),
+        None => Err(RioError::runtime(
+            format!(
+                "الدالة {} اللون «{}» غير معروف — الألوان المسماة 16: أسود وأحمر وأخضر وأصفر وأزرق وأرجواني وسماوي وأبيض مع ساطع",
+                DISPLAY, name
+            ),
+            line,
+            col,
+        )),
+    }
+}
+
+fn term_indexed_color(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.لون_مرقم";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let n = need_integer(DISPLAY, &args[0], line, col)?;
+    if !(0..=255).contains(&n) {
+        return Err(RioError::runtime(
+            format!("الدالة {} رقم اللون يجب أن يكون بين 0 و255", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    Ok(Value::Number(n as f64))
+}
+
+fn term_rgb_component(display: &str, name: &str, v: &Value, line: usize, col: usize) -> RioResult<i64> {
+    let n = need_integer(display, v, line, col)?;
+    if !(0..=255).contains(&n) {
+        return Err(RioError::runtime(
+            format!("الدالة {} «{}» يجب أن يكون بين 0 و255", display, name),
+            line,
+            col,
+        ));
+    }
+    Ok(n)
+}
+
+fn term_true_color(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.لون_حقيقي";
+    need_args(DISPLAY, args, 3, line, col)?;
+    let r = term_rgb_component(DISPLAY, "أحمر", &args[0], line, col)?;
+    let g = term_rgb_component(DISPLAY, "أخضر", &args[1], line, col)?;
+    let b = term_rgb_component(DISPLAY, "أزرق", &args[2], line, col)?;
+    Ok(Value::Dict(vec![
+        ("أحمر".to_string(), Value::Number(r as f64)),
+        ("أخضر".to_string(), Value::Number(g as f64)),
+        ("أزرق".to_string(), Value::Number(b as f64)),
+    ]))
+}
+
+fn term_link(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.رابط";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let target = need_string(DISPLAY, &args[1], line, col)?;
+    let links = {
+        let mut st = term_lock();
+        term_caps(&mut st);
+        st.colors
+    };
+    if !links {
+        return Ok(Value::Str(text));
+    }
+    let clean: String = target.chars().filter(|c| !c.is_control()).collect();
+    Ok(Value::Str(format!(
+        "\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\",
+        clean, text
+    )))
+}
+
+fn term_clipboard(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.انسخ_للحافظة";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    if text.len() > 65536 {
+        return Err(RioError::runtime(
+            format!("الدالة {} النص أطول من 65536 بايتا للحافظة", DISPLAY),
+            line,
+            col,
+        ));
+    }
+    let mut st = term_lock();
+    term_caps(&mut st);
+    if !st.supported {
+        return Ok(Value::Bool(false));
+    }
+    let ok = term_emit(
+        format!("\x1b]52;;{}\x1b\\", term_b64(text.as_bytes())).as_bytes(),
+    );
+    term_touch(&mut st);
+    Ok(Value::Bool(ok))
+}
+
+fn term_bold(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.عريض";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let colors = { let mut st = term_lock(); term_caps(&mut st); st.colors };
+    Ok(Value::Str(term_format(colors, "1", &text)))
+}
+
+fn term_dim(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.خافت";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let colors = { let mut st = term_lock(); term_caps(&mut st); st.colors };
+    Ok(Value::Str(term_format(colors, "2", &text)))
+}
+
+fn term_italic(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.مائل";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let colors = { let mut st = term_lock(); term_caps(&mut st); st.colors };
+    Ok(Value::Str(term_format(colors, "3", &text)))
+}
+
+fn term_underline(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.تحته_خط";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let colors = { let mut st = term_lock(); term_caps(&mut st); st.colors };
+    Ok(Value::Str(term_format(colors, "4", &text)))
+}
+
+fn term_double_underline(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.خط_مزدوج";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let colors = { let mut st = term_lock(); term_caps(&mut st); st.colors };
+    Ok(Value::Str(term_format(colors, "21", &text)))
+}
+
+fn term_wavy_underline(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.خط_مموج";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let colors = { let mut st = term_lock(); term_caps(&mut st); st.colors };
+    Ok(Value::Str(term_format(colors, "4:3", &text)))
+}
+
+fn term_dotted_underline(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.خط_منقط";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let colors = { let mut st = term_lock(); term_caps(&mut st); st.colors };
+    Ok(Value::Str(term_format(colors, "4:4", &text)))
+}
+
+fn term_dashed_underline(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.خط_متقطع";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let colors = { let mut st = term_lock(); term_caps(&mut st); st.colors };
+    Ok(Value::Str(term_format(colors, "4:5", &text)))
+}
+
+fn term_inverse(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.مقلوب";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let colors = { let mut st = term_lock(); term_caps(&mut st); st.colors };
+    Ok(Value::Str(term_format(colors, "7", &text)))
+}
+
+fn term_hidden_text(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.مخفي";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let colors = { let mut st = term_lock(); term_caps(&mut st); st.colors };
+    Ok(Value::Str(term_format(colors, "8", &text)))
+}
+
+fn term_strike(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.مشطوب";
+    need_args(DISPLAY, args, 1, line, col)?;
+    let text = need_string(DISPLAY, &args[0], line, col)?;
+    let colors = { let mut st = term_lock(); term_caps(&mut st); st.colors };
+    Ok(Value::Str(term_format(colors, "9", &text)))
+}
+
+fn term_fg_text(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.لون_النص";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let c = term_need_color(DISPLAY, &args[0], line, col)?;
+    let text = need_string(DISPLAY, &args[1], line, col)?;
+    let colors = { let mut st = term_lock(); term_caps(&mut st); st.colors };
+    Ok(Value::Str(term_format(colors, &term_fg_params(c), &text)))
+}
+
+fn term_ul_color_text(_ctx: &mut dyn HandlerCaller, args: &[Value], line: usize, col: usize) -> RioResult<Value> {
+    const DISPLAY: &str = "طرفية.لون_الخط_التحتي";
+    need_args(DISPLAY, args, 2, line, col)?;
+    let c = term_need_color(DISPLAY, &args[0], line, col)?;
+    let text = need_string(DISPLAY, &args[1], line, col)?;
+    let colors = { let mut st = term_lock(); term_caps(&mut st); st.colors };
+    let params = format!("4;{}", term_ul_params(c));
+    Ok(Value::Str(term_format(colors, &params, &text)))
+}
+
+fn terminal_entries() -> Vec<(&'static str, Value)> {
+    vec![
+        ("قدرة_الطرفية", native("قدرة_الطرفية", term_capability)),
+        ("خيار_طرفية", native("خيار_طرفية", term_set_option)),
+        ("اقرأ_خيار_طرفية", native("اقرأ_خيار_طرفية", term_get_option)),
+        ("ابدأ_الوضع_التفاعلي", native("ابدأ_الوضع_التفاعلي", term_begin)),
+        ("أنه_الوضع_التفاعلي", native("أنه_الوضع_التفاعلي", term_end)),
+        ("اقرأ_حدث", native("اقرأ_حدث", term_read_event_fn)),
+        ("اعرض_صفحة_صفحة", native("اعرض_صفحة_صفحة", term_pager)),
+        ("احفظ_المؤشر", native("احفظ_المؤشر", term_save_cursor)),
+        ("استعد_المؤشر", native("استعد_المؤشر", term_restore_cursor)),
+        ("انزل_سطرا", native("انزل_سطرا", term_index_down)),
+        ("اطلع_سطرا", native("اطلع_سطرا", term_index_up)),
+        ("السطر_التالي", native("السطر_التالي", term_next_line)),
+        ("شغل_مفاتيح_التطبيق", native("شغل_مفاتيح_التطبيق", term_app_keys_on)),
+        ("أوقف_مفاتيح_التطبيق", native("أوقف_مفاتيح_التطبيق", term_app_keys_off)),
+        ("اعكس_الشاشة", native("اعكس_الشاشة", term_reverse_screen)),
+        ("أعد_تعيين_الطرفية", native("أعد_تعيين_الطرفية", term_reset_terminal)),
+        ("حرك_المؤشر_لأعلى", native("حرك_المؤشر_لأعلى", term_cursor_up)),
+        ("حرك_المؤشر_لأسفل", native("حرك_المؤشر_لأسفل", term_cursor_down)),
+        ("حرك_المؤشر_للأمام", native("حرك_المؤشر_للأمام", term_cursor_fwd)),
+        ("حرك_المؤشر_للخلف", native("حرك_المؤشر_للخلف", term_cursor_back)),
+        ("السطر_التالي_بعد", native("السطر_التالي_بعد", term_next_line_n)),
+        ("السطر_السابق_بعد", native("السطر_السابق_بعد", term_prev_line_n)),
+        ("عمود", native("عمود", term_column)),
+        ("ضع_المؤشر", native("ضع_المؤشر", term_cursor_pos2)),
+        ("امسح_الشاشة", native("امسح_الشاشة", term_clear_screen)),
+        ("امسح_حتى_نهاية_الشاشة", native("امسح_حتى_نهاية_الشاشة", term_clear_to_end)),
+        ("امسح_من_بداية_الشاشة", native("امسح_من_بداية_الشاشة", term_clear_from_start)),
+        ("امسح_السطر", native("امسح_السطر", term_clear_line)),
+        ("امسح_حتى_نهاية_السطر", native("امسح_حتى_نهاية_السطر", term_clear_to_eol)),
+        ("امسح_من_بداية_السطر", native("امسح_من_بداية_السطر", term_clear_from_sol)),
+        ("أدرج_أسطرا", native("أدرج_أسطرا", term_insert_lines)),
+        ("احذف_أسطرا", native("احذف_أسطرا", term_delete_lines)),
+        ("أدرج_أحرفا", native("أدرج_أحرفا", term_insert_chars)),
+        ("احذف_أحرفا", native("احذف_أحرفا", term_delete_chars)),
+        ("امسح_أحرفا", native("امسح_أحرفا", term_erase_chars)),
+        ("مرر_لأعلى", native("مرر_لأعلى", term_scroll_up)),
+        ("مرر_لأسفل", native("مرر_لأسفل", term_scroll_down)),
+        ("منطقة_التمرير", native("منطقة_التمرير", term_scroll_region)),
+        ("احفظ_المؤشر_والسمات", native("احفظ_المؤشر_والسمات", term_save_cursor_attrs)),
+        ("استعد_المؤشر_والسمات", native("استعد_المؤشر_والسمات", term_restore_cursor_attrs)),
+        ("أخف_المؤشر", native("أخف_المؤشر", term_hide_cursor)),
+        ("أظهر_المؤشر", native("أظهر_المؤشر", term_show_cursor)),
+        ("بدل_للشاشة_البديلة", native("بدل_للشاشة_البديلة", term_alt_screen_on)),
+        ("عد_للشاشة_الرئيسية", native("عد_للشاشة_الرئيسية", term_alt_screen_off)),
+        ("امسح_المحفوظات", native("امسح_المحفوظات", term_clear_scrollback)),
+        ("موضع_المؤشر", native("موضع_المؤشر", term_cursor_pos)),
+        ("عنوان_التبويب", native("عنوان_التبويب", term_tab_title)),
+        ("لون_المقدمة", native("لون_المقدمة", term_fg_osc)),
+        ("لون_الخلفية", native("لون_الخلفية", term_bg)),
+        ("لون_المؤشر", native("لون_المؤشر", term_cursor_osc)),
+        ("لون_اللوحة", native("لون_اللوحة", term_palette_color)),
+        ("أعد_لون_اللوحة", native("أعد_لون_اللوحة", term_palette_reset)),
+        ("أعد_المقدمة_والخلفية", native("أعد_المقدمة_والخلفية", term_reset_fg_bg)),
+        ("رابط", native("رابط", term_link)),
+        ("انسخ_للحافظة", native("انسخ_للحافظة", term_clipboard)),
+        ("حجم_الطرفية", native("حجم_الطرفية", term_size)),
+        ("وضع_الفأرة", native("وضع_الفأرة", term_mouse_mode)),
+        ("وضع_لوحة_المفاتيح", native("وضع_لوحة_المفاتيح", term_keyboard_mode)),
+        ("التفاف_الأسطر", native("التفاف_الأسطر", term_wrap_mode)),
+        ("لون_مسمى", native("لون_مسمى", term_named_color)),
+        ("لون_مرقم", native("لون_مرقم", term_indexed_color)),
+        ("لون_حقيقي", native("لون_حقيقي", term_true_color)),
+        ("لون_النص", native("لون_النص", term_fg_text)),
+        ("عريض", native("عريض", term_bold)),
+        ("خافت", native("خافت", term_dim)),
+        ("مائل", native("مائل", term_italic)),
+        ("تحته_خط", native("تحته_خط", term_underline)),
+        ("خط_مزدوج", native("خط_مزدوج", term_double_underline)),
+        ("خط_مموج", native("خط_مموج", term_wavy_underline)),
+        ("خط_منقط", native("خط_منقط", term_dotted_underline)),
+        ("خط_متقطع", native("خط_متقطع", term_dashed_underline)),
+        ("لون_الخط_التحتي", native("لون_الخط_التحتي", term_ul_color_text)),
+        ("مقلوب", native("مقلوب", term_inverse)),
+        ("مخفي", native("مخفي", term_hidden_text)),
+        ("مشطوب", native("مشطوب", term_strike)),
+        ("أعد_السمات", native("أعد_السمات", term_reset_attrs)),
+        ("اضبط_اللوحة", native("اضبط_اللوحة", term_set_palette)),
+        ("لون_التحديد", native("لون_التحديد", term_selection_colors)),
+        ("لون_التلميح", native("لون_التلميح", term_hint_colors)),
+        ("لون_شريط_التبويبات", native("لون_شريط_التبويبات", term_tabbar_colors)),
+        ("لون_حدود_الأقسام", native("لون_حدود_الأقسام", term_pane_border)),
+        ("لون_الجرس_المرئي", native("لون_الجرس_المرئي", term_bell_color)),
+        ("شكل_المؤشر", native("شكل_المؤشر", term_cursor_shape)),
+        ("وميض_المؤشر", native("وميض_المؤشر", term_cursor_blink)),
+        ("لون_نص_المؤشر", native("لون_نص_المؤشر", term_cursor_text_color)),
+        ("مؤشر_بالعكس", native("مؤشر_بالعكس", term_cursor_reverse)),
+    ]
+}
+// END طرفية

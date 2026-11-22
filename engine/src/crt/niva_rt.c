@@ -2875,12 +2875,13 @@ NvCell *nv_scope_define(NvScope *scope, const char *name, NvValue v) {
         }
     }
     NvCell *cell = (NvCell *)nv_alloc(sizeof(NvCell), NV_OBJ_CELL);
-    cell->val = nv_clone_value(v);
+    cell->val = nv_nil();
     NvBinding *b = (NvBinding *)malloc(sizeof(NvBinding));
     b->name = nv_strdup(name);
     b->cell = cell;
     b->next = scope->bindings;
     scope->bindings = b;
+    cell->val = nv_clone_value(v);
     return cell;
 }
 
@@ -9594,35 +9595,46 @@ int nv_main(int argc, char **argv, void (*body)(NvScope *top)) {
 NvValue nv_for_snapshot(NvValue v, int line, int col) {
     if (v.tag == NV_LIST) {
         NvValue snap = nv_list_new();
+        size_t _rs = nv_root_push_idx();
+        *nv_root_slot(_rs) = snap;
         NvList *src = v.u.list;
         NvList *dst = snap.u.list;
         for (size_t i = 0; i < src->len; i++) {
             nv_list_push_raw(dst, src->items[i]);
         }
+        nv_root_pop_n(1);
         return snap;
     }
     // البندان 138 و139: لقطة المترابطة والتشكيلة
     // كالقائمة (عناصرها بترتيب أول ظهور).
     if (v.tag == NV_TUPLE) {
         NvValue snap = nv_list_new();
+        size_t _rs = nv_root_push_idx();
+        *nv_root_slot(_rs) = snap;
         NvList *src = v.u.tuple;
         NvList *dst = snap.u.list;
         for (size_t i = 0; i < src->len; i++) {
             nv_list_push_raw(dst, src->items[i]);
         }
+        nv_root_pop_n(1);
         return snap;
     }
     if (v.tag == NV_SET) {
         NvValue snap = nv_list_new();
+        size_t _rs = nv_root_push_idx();
+        *nv_root_slot(_rs) = snap;
         NvList *src = v.u.set;
         NvList *dst = snap.u.list;
         for (size_t i = 0; i < src->len; i++) {
             nv_list_push_raw(dst, src->items[i]);
         }
+        nv_root_pop_n(1);
         return snap;
     }
     if (v.tag == NV_STR) {
         NvValue snap = nv_list_new();
+        size_t _rs = nv_root_push_idx();
+        *nv_root_slot(_rs) = snap;
         const char *s = v.u.str->data;
         size_t slen = v.u.str->len;
         size_t i = 0;
@@ -9635,16 +9647,20 @@ NvValue nv_for_snapshot(NvValue v, int line, int col) {
             nv_list_push_raw(snap.u.list, nv_str_take(one, n));
             i += n;
         }
+        nv_root_pop_n(1);
         return snap;
     }
     // ج6: البت — لقطة أعداد 0/1 (الأهم أولا، كما في المفسر).
     if (v.tag == NV_BITS) {
         NvValue snap = nv_list_new();
+        size_t _rs = nv_root_push_idx();
+        *nv_root_slot(_rs) = snap;
         NvBits *b = v.u.bits;
         for (size_t i = 0; i < b->nbits; i++) {
             int bit = (b->bytes[i / 8] >> (7 - (i % 8))) & 1;
             nv_list_push_raw(snap.u.list, nv_num((double)bit));
         }
+        nv_root_pop_n(1);
         return snap;
     }
     nv_error_fmt(NV_ERR_TYPE, line, col, "لا يمكن التكرار على نوع %s", nv_type_name(v));

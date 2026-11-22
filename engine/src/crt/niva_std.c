@@ -15,6 +15,13 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+/* الدفعة 10 الجزء الثاني: طرفية (يونكس). */
+#ifndef _WIN32
+#include <termios.h>
+#include <sys/ioctl.h>
+#include <poll.h>
+#include <signal.h>
+#endif
 /* لينكس6-هـ2ب-تضمين. */
 #ifndef _WIN32
 #include <sys/statvfs.h>
@@ -173,6 +180,7 @@ void nv_std_b5sync_fill(NvDict *d);
 /* لينكس6-ج-سطور-إعلان */
 void nv_std_b5compress_fill(NvDict *d);
 void nv_std_lines_fill(NvDict *d);
+void nv_std_terminal_fill(NvDict *d);
 void nv_std_tables_fill(NvDict *d);
 // BEGIN J12-GEN c-fill-decls
 
@@ -358,9 +366,9 @@ void nv_std_boxed_fill(NvDict *d);
 // ---------- السجل ----------
 // وحدة أصلية بالاسم أو NULL (مؤشر إلى قيمة ساكنة مخزنة).
 /* لينكس6-ج-سطور-سجل-مصفوفة */
-static NvValue nv_std_modules[66]; // لينكس4: +3 (محدد/عرض/عارض) // ج6: +5 (دقة/كسر/مركب/بت/معلب)؛ ج13: +5 (صفحات/بريد/محادثة/نقل_ملفات/وقت_شبكة)؛ ج15: +1 (لغات)؛ لينكس3: +1 (فرق)؛ لينكس5: +6 (بحث_ملفات/قاعدة_أسماء/مرر_أسماء/سرد/مزامنة/ضغط)؛ لينكس6: +1 (سطور)
+static NvValue nv_std_modules[67]; // لينكس4: +3 (محدد/عرض/عارض) // ج6: +5 (دقة/كسر/مركب/بت/معلب)؛ ج13: +5 (صفحات/بريد/محادثة/نقل_ملفات/وقت_شبكة)؛ ج15: +1 (لغات)؛ لينكس3: +1 (فرق)؛ لينكس5: +6 (بحث_ملفات/قاعدة_أسماء/مرر_أسماء/سرد/مزامنة/ضغط)؛ لينكس6: +1 (سطور)
 /* لينكس6-ج-سطور-سجل-أسماء */
-static const char *nv_std_names[66] = {
+static const char *nv_std_names[67] = {
     "رياضيات", "عشوائي", "وقت", "شبكة", "عمليات", "ذاكرة",
     "ملفات", "نظام", "تواصل", "تشفير", "أمن", "غير_متزامن", "جهاز",
     "نمط", "جسون", "اكسمل", "يامال", "قوالب", "تحقق",
@@ -383,6 +391,8 @@ static const char *nv_std_names[66] = {
     "بحث_ملفات", "قاعدة_أسماء", "مرر_أسماء", "سرد", "مزامنة", "ضغط",
     // لينكس6: وحدة سطور.
     "سطور",
+    // الدفعة 10 الجزء الثاني: وحدة طرفية.
+    "طرفية",
 };
 static int nv_std_built = 0;
 
@@ -391,7 +401,7 @@ static void nv_std_build(void) {
     nv_std_built = 1;
     nv_handle_set_finalizer(nv_std_handle_finalize);
 /* لينكس6-ج-سطور-سجل-حلقة */
-    for (int i = 0; i < 66; i++) {
+    for (int i = 0; i < 67; i++) {
         nv_std_modules[i] = nv_module_new(nv_std_names[i], NULL);
         NvDict *exports = nv_std_modules[i].u.module->exports;
         if (!exports) {
@@ -473,6 +483,8 @@ static void nv_std_build(void) {
             case 64: nv_std_b5compress_fill(exports); break;
             // لينكس6: وحدة سطور.
             case 65: nv_std_lines_fill(exports); break;
+            // الدفعة 10 الجزء الثاني: وحدة طرفية.
+            case 66: nv_std_terminal_fill(exports); break;
         }
         nv_add_global_root(nv_std_modules[i]);
     }
@@ -481,7 +493,7 @@ static void nv_std_build(void) {
 NvValue *nv_native_module(const char *name) {
     nv_std_build();
 /* لينكس6-ج-سطور-سجل-أصلي */
-    for (int i = 0; i < 66; i++) { // ج6: 44 -> 49.
+    for (int i = 0; i < 67; i++) { // ج6: 44 -> 49.
         if (strcmp(name, nv_std_names[i]) == 0) return &nv_std_modules[i];
     }
     return NULL;
@@ -53251,3 +53263,2176 @@ void nv_std_b5tar_fill(NvDict *d) {
 /* لينكس6-ج-ب. */
 
 /* لينكس6-ج-ب2. */
+
+
+// BEGIN طرفية — الدفعة 10 الجزء الثاني (الاجتماع 105 §120).
+// وحدة طرفية واحدة في المكتبة القياسية: دوال عربية بلا تشكيل ولا
+// تطويل، ولا تسلسل خام مكشوف للمستخدم أبدا (الدوال تصدر التسلسلات
+// بنفسها أو ترجع نصا منسقا). بند = حالة تكافؤ.
+// التعايش: جدول قدرات عند البدء (TERM وNO_COLOR وكون المخرج طرفية
+// + إعلان المضيف عبر NIVA_TERM=none)؛ وتدهور آمن (تنسيق يرجع النص
+// عاديا، وشاشة ترجع خطأ، ولا بايت هروب يتسرب)؛ وجلسة محمية بلقطة
+// وخطاف استعادة على كل مسارات الخروج (طبيعي، اخرج، خطأ، استثناء،
+// مقاطعة) لا يلغيه البرنامج. والمكتبة لا تمس جلسات التطبيق أبدا.
+// المنصة: يونكس كاملا (termios)؛ ويندوز وWASM متدهورة (بلا دعم)
+// في هذه الدفعة — وحدة تحكم ويندوز خطوة لاحقة مستقلة.
+// قيمة عودة دوال الشاشة عند مضيف غير داعم: خطأ كقيمة لا استثناء.
+
+// أعلام الحالة (مرآة يقرأها معالج الإشارات بلا قفل).
+#define NV_TERM_F_INTERACTIVE 1
+#define NV_TERM_F_ALT 2
+#define NV_TERM_F_HIDDEN 4
+#define NV_TERM_F_MOUSE 8
+#define NV_TERM_F_KEYBOARD 16
+#define NV_TERM_F_APPKEYS 32
+#define NV_TERM_F_REVERSE 64
+#define NV_TERM_F_NOWRAP 128
+#define NV_TERM_F_COLORS 256
+
+static int nv_term_caps_done = 0;
+static int nv_term_supported = 0;
+static int nv_term_colors = 0;
+static int nv_term_interactive = 0;
+static int nv_term_alt_screen = 0;
+static int nv_term_cursor_hidden = 0;
+static int nv_term_state_shape = 0; // 0 كتلة، 1 خط، 2 شعاع
+static int nv_term_state_blink = 1;
+static int nv_term_reverse = 0;
+static int nv_term_app_keys = 0;
+static int nv_term_mouse = 0;
+static int nv_term_keyboard = 0;
+static int nv_term_wrap = 1;
+static int nv_term_colors_changed = 0;
+static int nv_term_hooks = 0;
+static volatile int nv_term_flags = 0;
+
+#ifndef _WIN32
+static struct termios nv_term_saved;
+static int nv_term_saved_valid = 0;
+#endif
+
+// الخيارات: قيم نيفا (قد تحمل قواميس/نصوص) فجذورها مسجلة
+// عبر nv_add_global_root_ptr عند التعبئة — 64 خانة تكفي.
+#define NV_TERM_OPTS_MAX 64
+static NvValue nv_term_opts[NV_TERM_OPTS_MAX];
+static char *nv_term_opt_names[NV_TERM_OPTS_MAX];
+static int nv_term_opt_len = 0;
+
+/// جدول القدرات عند البدء: طرفية حقيقية + TERM صالح + بلا NO_COLOR.
+/// إعلان المضيف: NIVA_TERM=none تعني بلا دعم إطلاقا (التطبيق والملعب).
+static void nv_term_caps(void) {
+    if (nv_term_caps_done) return;
+    nv_term_caps_done = 1;
+#ifndef _WIN32
+    {
+        const char *nt = getenv("NIVA_TERM");
+        if (nt && strcmp(nt, "none") == 0) return;
+        if (!isatty(1)) return;
+        {
+            const char *term = getenv("TERM");
+            if (!term || !*term || strcmp(term, "dumb") == 0) return;
+        }
+        nv_term_supported = 1;
+        {
+            const char *nc = getenv("NO_COLOR");
+            nv_term_colors = !(nc && *nc);
+        }
+    }
+#endif
+}
+
+/// كتابة بايتات خام إلى المخرج القياسي (بلا طبقة عرض).
+static int nv_term_emit(const char *buf, size_t len) {
+    size_t off = 0;
+    while (off < len) {
+        size_t n = fwrite(buf + off, 1, len - off, stdout);
+        if (n == 0) return 0;
+        off += n;
+    }
+    return fflush(stdout) == 0;
+}
+
+static int nv_term_emit_s(const char *s) {
+    return nv_term_emit(s, strlen(s));
+}
+
+/// بايتات الاستعادة من الأعلام (ترتيب عكس الدخول: أوضاع ثم مؤشر ثم شاشة ثم ألوان).
+static void nv_term_restore_bytes(char *out, size_t cap) {
+    (void)cap;
+    out[0] = 0;
+    if (nv_term_flags & NV_TERM_F_KEYBOARD) strcat(out, "\033[<u");
+    if (nv_term_flags & NV_TERM_F_MOUSE) strcat(out, "\033[?1000l\033[?1002l\033[?1006l");
+    if (nv_term_flags & NV_TERM_F_APPKEYS) strcat(out, "\033>");
+    if (nv_term_flags & NV_TERM_F_REVERSE) strcat(out, "\033[?5l");
+    if (nv_term_flags & NV_TERM_F_NOWRAP) strcat(out, "\033[?7h");
+    if (nv_term_flags & NV_TERM_F_HIDDEN) strcat(out, "\033[?25h");
+    if (nv_term_flags & NV_TERM_F_ALT) strcat(out, "\033[?1049l");
+    if (nv_term_flags & NV_TERM_F_COLORS) strcat(out, "\033[0m\033]110\033\\\033]111\033\\\033]112\033\\");
+}
+
+/// الاستعادة الكاملة (مسار عادي: نهاية، اخرج، خطأ، استثناء — عبر atexit).
+static void nv_term_restore(void) {
+    char seq[192];
+    nv_term_restore_bytes(seq, sizeof seq);
+    if (seq[0]) nv_term_emit_s(seq);
+#ifndef _WIN32
+    if (nv_term_saved_valid) {
+        tcsetattr(0, TCSANOW, &nv_term_saved);
+        nv_term_saved_valid = 0;
+    }
+#endif
+    nv_term_interactive = 0;
+    nv_term_alt_screen = 0;
+    nv_term_cursor_hidden = 0;
+    nv_term_reverse = 0;
+    nv_term_app_keys = 0;
+    nv_term_mouse = 0;
+    nv_term_keyboard = 0;
+    nv_term_wrap = 1;
+    nv_term_colors_changed = 0;
+    nv_term_flags = 0;
+}
+
+#ifndef _WIN32
+static void nv_term_atexit_handler(void) {
+    nv_term_restore();
+}
+
+/// معالج الإشارات: استعادة بأفضل جهد بلا قفل، ثم الإشارة الافتراضية وإعادة الرفع.
+static void nv_term_signal_handler(int sig) {
+    char seq[192];
+    nv_term_restore_bytes(seq, sizeof seq);
+    if (seq[0]) {
+        const char *p = seq;
+        size_t left = strlen(seq);
+        while (left > 0) {
+            ssize_t w = write(1, p, left);
+            if (w <= 0) break;
+            p += w;
+            left -= (size_t)w;
+        }
+    }
+    if ((nv_term_flags & NV_TERM_F_INTERACTIVE) && nv_term_saved_valid) {
+        tcsetattr(0, TCSANOW, &nv_term_saved);
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+static void nv_term_install_hooks(void) {
+    atexit(nv_term_atexit_handler);
+    signal(SIGINT, nv_term_signal_handler);
+    signal(SIGTERM, nv_term_signal_handler);
+}
+#endif
+
+static void nv_term_sync_flags(void) {
+    int f = 0;
+    if (nv_term_interactive) f |= NV_TERM_F_INTERACTIVE;
+    if (nv_term_alt_screen) f |= NV_TERM_F_ALT;
+    if (nv_term_cursor_hidden) f |= NV_TERM_F_HIDDEN;
+    if (nv_term_mouse) f |= NV_TERM_F_MOUSE;
+    if (nv_term_keyboard) f |= NV_TERM_F_KEYBOARD;
+    if (nv_term_app_keys) f |= NV_TERM_F_APPKEYS;
+    if (nv_term_reverse) f |= NV_TERM_F_REVERSE;
+    if (!nv_term_wrap) f |= NV_TERM_F_NOWRAP;
+    if (nv_term_colors_changed) f |= NV_TERM_F_COLORS;
+    nv_term_flags = f;
+}
+
+/// بعد أي تغيير حالة على مضيف داعم: مزامنة الأعلام وتثبيت الخطاف مرة واحدة.
+static void nv_term_touch(void) {
+    nv_term_sync_flags();
+#ifndef _WIN32
+    if (!nv_term_hooks && nv_term_supported) {
+        nv_term_hooks = 1;
+        nv_term_install_hooks();
+    }
+#endif
+}
+
+/// دخول الوضع الخام (إدخال خام فقط — الإخراج يبقى معالجا فـ`اطبع` سليم).
+#ifndef _WIN32
+static int nv_term_read_byte(void);
+static int nv_term_poll_ms(int ms);
+#endif
+static int nv_term_begin_inner(void) {
+#ifndef _WIN32
+    if (nv_term_interactive) return 1;
+    if (!isatty(0)) return 0;
+    {
+        struct termios saved, raw;
+        if (tcgetattr(0, &saved) != 0) return 0;
+        raw = saved;
+        raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+        raw.c_cflag |= CS8;
+        raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
+        raw.c_cc[VMIN] = 1;
+        raw.c_cc[VTIME] = 0;
+        if (tcsetattr(0, TCSANOW, &raw) != 0) return 0;
+        nv_term_saved = saved;
+        nv_term_saved_valid = 1;
+    }
+    nv_term_interactive = 1;
+    nv_term_touch();
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+// ---------- الألوان ----------
+
+typedef struct {
+    int kind; // 0 مسمى، 1 مرقم، 2 حقيقي
+    int a, b, c;
+} NvTermColor;
+
+static const char *nv_term_color_names[16] = {
+    "أسود", "أحمر", "أخضر", "أصفر", "أزرق", "أرجواني", "سماوي", "أبيض",
+    "أسود_ساطع", "أحمر_ساطع", "أخضر_ساطع", "أصفر_ساطع",
+    "أزرق_ساطع", "أرجواني_ساطع", "سماوي_ساطع", "أبيض_ساطع",
+};
+
+static const unsigned char nv_term_named_rgb[16][3] = {
+    {0, 0, 0}, {205, 0, 0}, {0, 205, 0}, {205, 205, 0},
+    {0, 0, 238}, {205, 0, 205}, {0, 205, 205}, {229, 229, 229},
+    {127, 127, 127}, {255, 0, 0}, {0, 255, 0}, {255, 255, 0},
+    {92, 92, 255}, {255, 0, 255}, {0, 255, 255}, {255, 255, 255},
+};
+
+static int nv_term_named_index(const char *name) {
+    int i;
+    for (i = 0; i < 16; i++) {
+        if (strcmp(name, nv_term_color_names[i]) == 0) return i;
+    }
+    return -1;
+}
+
+/// الأسماء الستة عشر (xterm): 0..7 عادية، 8..15 ساطعة.
+static void nv_term_color_rgb(NvTermColor c, int *r, int *g, int *b) {
+    if (c.kind == 0) {
+        *r = nv_term_named_rgb[c.a][0];
+        *g = nv_term_named_rgb[c.a][1];
+        *b = nv_term_named_rgb[c.a][2];
+    } else if (c.kind == 1) {
+        int n = c.a;
+        if (n < 16) {
+            *r = nv_term_named_rgb[n][0];
+            *g = nv_term_named_rgb[n][1];
+            *b = nv_term_named_rgb[n][2];
+        } else if (n < 232) {
+            static const unsigned char lv[6] = {0, 95, 135, 175, 215, 255};
+            int v = n - 16;
+            *r = lv[v / 36];
+            *g = lv[(v / 6) % 6];
+            *b = lv[v % 6];
+        } else {
+            int gr = 8 + 10 * (n - 232);
+            *r = gr;
+            *g = gr;
+            *b = gr;
+        }
+    } else {
+        *r = c.a;
+        *g = c.b;
+        *b = c.c;
+    }
+}
+
+static void nv_term_fg_params(NvTermColor c, char *out, size_t cap) {
+    if (c.kind == 0) {
+        if (c.a < 8) snprintf(out, cap, "%d", 30 + c.a);
+        else snprintf(out, cap, "%d", 90 + (c.a - 8));
+    } else if (c.kind == 1) {
+        snprintf(out, cap, "38;5;%d", c.a);
+    } else {
+        snprintf(out, cap, "38;2;%d;%d;%d", c.a, c.b, c.c);
+    }
+}
+
+static void nv_term_bg_params(NvTermColor c, char *out, size_t cap) {
+    if (c.kind == 0) {
+        if (c.a < 8) snprintf(out, cap, "%d", 40 + c.a);
+        else snprintf(out, cap, "%d", 100 + (c.a - 8));
+    } else if (c.kind == 1) {
+        snprintf(out, cap, "48;5;%d", c.a);
+    } else {
+        snprintf(out, cap, "48;2;%d;%d;%d", c.a, c.b, c.c);
+    }
+}
+
+static void nv_term_ul_params(NvTermColor c, char *out, size_t cap) {
+    if (c.kind == 0 || c.kind == 1) {
+        snprintf(out, cap, "58;5;%d", c.a);
+    } else {
+        snprintf(out, cap, "58;2;%d;%d;%d", c.a, c.b, c.c);
+    }
+}
+
+static NvValue *nv_term_dict_get(NvDict *d, const char *key) {
+    int idx = nv_dict_find(d, key);
+    if (idx < 0) return NULL;
+    return &d->entries[idx].val;
+}
+
+/// لون من قيمة نيفا: اسم مسمى، أو رقم 0..255، أو قاموس {أحمر، أخضر، أزرق}.
+static void nv_term_need_color(const char *display, NvValue v, int line, int col, NvTermColor *out) {
+    if (v.tag == NV_STR) {
+        int i = nv_term_named_index(v.u.str->data);
+        if (i < 0) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s اللون «%s» غير معروف — الألوان المسماة 16: أسود وأحمر وأخضر وأصفر وأزرق وأرجواني وسماوي وأبيض مع ساطع", display, v.u.str->data);
+        }
+        out->kind = 0;
+        out->a = i;
+        out->b = 0;
+        out->c = 0;
+    } else if (v.tag == NV_NUM) {
+        double n = v.u.num;
+        if (n != trunc(n) || n < 0.0 || n > 255.0) {
+            nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s رقم اللون يجب أن يكون عددا صحيحا بين 0 و255", display);
+        }
+        out->kind = 1;
+        out->a = (int)n;
+        out->b = 0;
+        out->c = 0;
+    } else if (v.tag == NV_DICT) {
+        static const char *keys[3] = {"أحمر", "أخضر", "أزرق"};
+        int vals[3];
+        int k;
+        for (k = 0; k < 3; k++) {
+            NvValue *f = nv_term_dict_get(v.u.dict, keys[k]);
+            if (!f || f->tag != NV_NUM || f->u.num != trunc(f->u.num) || f->u.num < 0.0 || f->u.num > 255.0) {
+                nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s لون حقيقي يحتاج «%s» عددا صحيحا بين 0 و255", display, keys[k]);
+            }
+            vals[k] = (int)f->u.num;
+        }
+        out->kind = 2;
+        out->a = vals[0];
+        out->b = vals[1];
+        out->c = vals[2];
+    } else {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع لونا (اسم أو رقم أو قاموس أحمر/أخضر/أزرق) لكن أعطيت %s", display, nv_type_name(v));
+    }
+}
+
+/// عدد صحيح 1 على الأقل (مواضع وعدادات المؤشر والشاشة).
+static long long nv_term_need_count(const char *display, NvValue v, int line, int col) {
+    long long n = nv_std_need_integer(display, v, line, col);
+    if (n < 1) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s العدد يجب أن يكون 1 على الأقل", display);
+    }
+    return n;
+}
+
+static int nv_term_need_bool(const char *display, NvValue v, int line, int col) {
+    if (v.tag != NV_BOOL) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع صحيحا أو خطأ لكن أعطيت %s", display, nv_type_name(v));
+    }
+    return v.u.boolean;
+}
+
+/// تنسيق نقي: بلا ألوان يرجع النص عاديا (التدهور الآمن).
+static NvValue nv_term_format(int colors, const char *params, const char *text) {
+    size_t tl, pl, n;
+    char *buf;
+    if (!colors) return nv_str_cstr(text);
+    tl = strlen(text);
+    pl = strlen(params);
+    n = 3 + pl + 1 + tl + 4;
+    buf = (char *)malloc(n + 1);
+    memcpy(buf, "\033[", 2);
+    memcpy(buf + 2, params, pl);
+    buf[2 + pl] = 'm';
+    memcpy(buf + 3 + pl, text, tl);
+    memcpy(buf + 3 + pl + tl, "\033[0m", 4);
+    buf[n] = 0;
+    return nv_str_take(buf, n);
+}
+
+/// ترميز قاعدة 64 (OSC 52) — بلا اعتماد خارجي.
+static void nv_term_b64(const unsigned char *data, size_t len, char *out) {
+    static const char A[64] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t i = 0;
+    char *p = out;
+    while (i < len) {
+        unsigned b0 = data[i];
+        unsigned b1 = (i + 1 < len) ? data[i + 1] : 0;
+        unsigned b2 = (i + 2 < len) ? data[i + 2] : 0;
+        unsigned n = (b0 << 16) | (b1 << 8) | b2;
+        size_t rem = len - i;
+        *p++ = A[(n >> 18) & 63];
+        *p++ = A[(n >> 12) & 63];
+        *p++ = (rem > 1) ? A[(n >> 6) & 63] : '=';
+        *p++ = (rem > 2) ? A[n & 63] : '=';
+        i += 3;
+    }
+    *p = 0;
+}
+
+/// أرقام لاتينية إلى عربية مشرقية (تذييل العارض الخام).
+static void nv_term_arabic_digits(const char *s, char *out, size_t cap) {
+    size_t o = 0;
+    const unsigned char *p = (const unsigned char *)s;
+    while (*p && o + 4 < cap) {
+        if (*p >= '0' && *p <= '9') {
+            out[o++] = (char)0xD9;
+            out[o++] = (char)(0xA0 + (*p - '0'));
+        } else {
+            out[o++] = (char)*p;
+        }
+        p++;
+    }
+    out[o] = 0;
+}
+
+// ---------- الخيارات ----------
+
+static void nv_term_opt_set(const char *name, NvValue v) {
+    int i;
+    for (i = 0; i < nv_term_opt_len; i++) {
+        if (strcmp(nv_term_opt_names[i], name) == 0) {
+            nv_term_opts[i] = nv_clone_value(v);
+            return;
+        }
+    }
+    if (nv_term_opt_len >= NV_TERM_OPTS_MAX) return;
+    nv_term_opt_names[nv_term_opt_len] = (char *)malloc(strlen(name) + 1);
+    strcpy(nv_term_opt_names[nv_term_opt_len], name);
+    nv_term_opts[nv_term_opt_len] = nv_clone_value(v);
+    nv_term_opt_len++;
+}
+
+static NvValue nv_term_opt_get(const char *name, int *found) {
+    int i;
+    for (i = 0; i < nv_term_opt_len; i++) {
+        if (strcmp(nv_term_opt_names[i], name) == 0) {
+            *found = 1;
+            return nv_term_opts[i];
+        }
+    }
+    *found = 0;
+    return nv_nil();
+}
+
+
+static NvValue nv_term_save_cursor(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.احفظ_المؤشر", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\0337");
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_restore_cursor(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.استعد_المؤشر", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\0338");
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_index_down(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.انزل_سطرا", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033D");
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_index_up(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.اطلع_سطرا", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033M");
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_next_line(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.السطر_التالي", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033E");
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_app_keys_on(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.شغل_مفاتيح_التطبيق", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033=");
+        nv_term_app_keys = 1;
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_app_keys_off(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.أوقف_مفاتيح_التطبيق", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033>");
+        nv_term_app_keys = 0;
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_reset_terminal(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.أعد_تعيين_الطرفية", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033c");
+        nv_term_alt_screen = 0; nv_term_cursor_hidden = 0; nv_term_reverse = 0; nv_term_app_keys = 0; nv_term_mouse = 0; nv_term_keyboard = 0; nv_term_wrap = 1; nv_term_colors_changed = 0;
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_clear_screen(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.امسح_الشاشة", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033[2J");
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_clear_to_end(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.امسح_حتى_نهاية_الشاشة", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033[0J");
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_clear_from_start(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.امسح_من_بداية_الشاشة", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033[1J");
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_clear_line(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.امسح_السطر", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033[2K");
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_clear_to_eol(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.امسح_حتى_نهاية_السطر", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033[0K");
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_clear_from_sol(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.امسح_من_بداية_السطر", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033[1K");
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_save_cursor_attrs(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.احفظ_المؤشر_والسمات", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033[s");
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_restore_cursor_attrs(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.استعد_المؤشر_والسمات", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033[u");
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_hide_cursor(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.أخف_المؤشر", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033[?25l");
+        nv_term_cursor_hidden = 1;
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_show_cursor(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.أظهر_المؤشر", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033[?25h");
+        nv_term_cursor_hidden = 0;
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_alt_screen_on(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.بدل_للشاشة_البديلة", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033[?1049h");
+        nv_term_alt_screen = 1;
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_alt_screen_off(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.عد_للشاشة_الرئيسية", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033[?1049l");
+        nv_term_alt_screen = 0;
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_clear_scrollback(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.امسح_المحفوظات", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033[3J");
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_reset_attrs(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.أعد_السمات", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    {
+        int ok = nv_term_emit_s("\033[0m");
+        nv_term_touch();
+        return nv_bool(ok);
+    }
+}
+
+static NvValue nv_term_cursor_up(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.حرك_المؤشر_لأعلى", args, nargs, 1, line, col);
+    long long n = nv_term_need_count("طرفية.حرك_المؤشر_لأعلى", args[0], line, col);
+    char seq[48];
+    int ok;
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%dA", (int)n);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_cursor_down(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.حرك_المؤشر_لأسفل", args, nargs, 1, line, col);
+    long long n = nv_term_need_count("طرفية.حرك_المؤشر_لأسفل", args[0], line, col);
+    char seq[48];
+    int ok;
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%dB", (int)n);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_cursor_fwd(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.حرك_المؤشر_للأمام", args, nargs, 1, line, col);
+    long long n = nv_term_need_count("طرفية.حرك_المؤشر_للأمام", args[0], line, col);
+    char seq[48];
+    int ok;
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%dC", (int)n);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_cursor_back(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.حرك_المؤشر_للخلف", args, nargs, 1, line, col);
+    long long n = nv_term_need_count("طرفية.حرك_المؤشر_للخلف", args[0], line, col);
+    char seq[48];
+    int ok;
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%dD", (int)n);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_next_line_n(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.السطر_التالي_بعد", args, nargs, 1, line, col);
+    long long n = nv_term_need_count("طرفية.السطر_التالي_بعد", args[0], line, col);
+    char seq[48];
+    int ok;
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%dE", (int)n);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_prev_line_n(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.السطر_السابق_بعد", args, nargs, 1, line, col);
+    long long n = nv_term_need_count("طرفية.السطر_السابق_بعد", args[0], line, col);
+    char seq[48];
+    int ok;
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%dF", (int)n);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_column(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.عمود", args, nargs, 1, line, col);
+    long long n = nv_term_need_count("طرفية.عمود", args[0], line, col);
+    char seq[48];
+    int ok;
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%dG", (int)n);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_insert_lines(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.أدرج_أسطرا", args, nargs, 1, line, col);
+    long long n = nv_term_need_count("طرفية.أدرج_أسطرا", args[0], line, col);
+    char seq[48];
+    int ok;
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%dL", (int)n);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_delete_lines(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.احذف_أسطرا", args, nargs, 1, line, col);
+    long long n = nv_term_need_count("طرفية.احذف_أسطرا", args[0], line, col);
+    char seq[48];
+    int ok;
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%dM", (int)n);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_insert_chars(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.أدرج_أحرفا", args, nargs, 1, line, col);
+    long long n = nv_term_need_count("طرفية.أدرج_أحرفا", args[0], line, col);
+    char seq[48];
+    int ok;
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%d@", (int)n);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_delete_chars(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.احذف_أحرفا", args, nargs, 1, line, col);
+    long long n = nv_term_need_count("طرفية.احذف_أحرفا", args[0], line, col);
+    char seq[48];
+    int ok;
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%dP", (int)n);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_erase_chars(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.امسح_أحرفا", args, nargs, 1, line, col);
+    long long n = nv_term_need_count("طرفية.امسح_أحرفا", args[0], line, col);
+    char seq[48];
+    int ok;
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%dX", (int)n);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_scroll_up(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.مرر_لأعلى", args, nargs, 1, line, col);
+    long long n = nv_term_need_count("طرفية.مرر_لأعلى", args[0], line, col);
+    char seq[48];
+    int ok;
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%dS", (int)n);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_scroll_down(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.مرر_لأسفل", args, nargs, 1, line, col);
+    long long n = nv_term_need_count("طرفية.مرر_لأسفل", args[0], line, col);
+    char seq[48];
+    int ok;
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%dT", (int)n);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_palette_reset(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.أعد_لون_اللوحة", args, nargs, 1, line, col);
+    long long n = nv_term_need_count("طرفية.أعد_لون_اللوحة", args[0], line, col);
+    char seq[48];
+    int ok;
+    nv_term_caps();
+    if (!nv_term_colors) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033]104;%d\033\\", (int)n);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+
+// ---------- دوال خاصة: عكس الشاشة، موضع، منطقة، عنوان، OSC، سمات ----------
+
+static NvValue nv_term_reverse_screen(NvValue *args, int nargs, int line, int col) {
+    int on, ok;
+    nv_std_need_args("طرفية.اعكس_الشاشة", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    on = !nv_term_reverse;
+    ok = nv_term_emit_s(on ? "\033[?5h" : "\033[?5l");
+    nv_term_reverse = on;
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_cursor_pos2(NvValue *args, int nargs, int line, int col) {
+    long long r, c;
+    char seq[48];
+    int ok;
+    nv_std_need_args("طرفية.ضع_المؤشر", args, nargs, 2, line, col);
+    r = nv_term_need_count("طرفية.ضع_المؤشر", args[0], line, col);
+    c = nv_term_need_count("طرفية.ضع_المؤشر", args[1], line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%lld;%lldH", r, c);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_scroll_region(NvValue *args, int nargs, int line, int col) {
+    long long top, bot;
+    char seq[48];
+    int ok;
+    nv_std_need_args("طرفية.منطقة_التمرير", args, nargs, 2, line, col);
+    top = nv_term_need_count("طرفية.منطقة_التمرير", args[0], line, col);
+    bot = nv_term_need_count("طرفية.منطقة_التمرير", args[1], line, col);
+    if (bot <= top) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s أسفل المنطقة (%lld) يجب أن يكون أكبر من أعلاها (%lld)", "طرفية.منطقة_التمرير", bot, top);
+    }
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033[%lld;%lldr", top, bot);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_tab_title(NvValue *args, int nargs, int line, int col) {
+    const char *text;
+    const unsigned char *p;
+    size_t len, i;
+    char *seq;
+    int ok;
+    nv_std_need_args("طرفية.عنوان_التبويب", args, nargs, 1, line, col);
+    text = nv_std_need_string("طرفية.عنوان_التبويب", args[0], line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    // تعقيم: أي بايت تحكم يصير مسافة (النص العربي UTF-8 بايتاته فوق 0x7F فلا يمس).
+    len = strlen(text);
+    seq = (char *)malloc(len + 8);
+    memcpy(seq, "\033]1;", 4);
+    p = (const unsigned char *)text;
+    for (i = 0; i < len; i++) {
+        unsigned char b = p[i];
+        seq[4 + i] = (b < 0x20 || b == 0x7f) ? ' ' : (char)b;
+    }
+    memcpy(seq + 4 + len, "\033\\", 2);
+    seq[4 + len + 2] = 0;
+    ok = nv_term_emit(seq, 4 + len + 2);
+    free(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+/// ضبط لون OSC واحد (10 مقدمة، 11 خلفية، 12 مؤشر).
+static NvValue nv_term_osc_color(int code, const char *display, NvValue *args, int nargs, int line, int col) {
+    NvTermColor c;
+    int r, g, b;
+    char seq[64];
+    int ok;
+    nv_std_need_args(display, args, nargs, 1, line, col);
+    nv_term_need_color(display, args[0], line, col, &c);
+    nv_term_color_rgb(c, &r, &g, &b);
+    nv_term_caps();
+    if (!nv_term_colors) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033]%d;rgb:%02x/%02x/%02x\033\\", code, r, g, b);
+    ok = nv_term_emit_s(seq);
+    nv_term_colors_changed = 1;
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_fg_osc(NvValue *args, int nargs, int line, int col) {
+    return nv_term_osc_color(10, "طرفية.لون_المقدمة", args, nargs, line, col);
+}
+
+static NvValue nv_term_cursor_osc(NvValue *args, int nargs, int line, int col) {
+    return nv_term_osc_color(12, "طرفية.لون_المؤشر", args, nargs, line, col);
+}
+
+static NvValue nv_term_palette_color(NvValue *args, int nargs, int line, int col) {
+    long long n;
+    NvTermColor c;
+    int r, g, b;
+    char seq[64];
+    int ok;
+    nv_std_need_args("طرفية.لون_اللوحة", args, nargs, 2, line, col);
+    n = nv_std_need_integer("طرفية.لون_اللوحة", args[0], line, col);
+    if (n < 0 || n > 255) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s رقم اللون في اللوحة يجب أن يكون بين 0 و255", "طرفية.لون_اللوحة");
+    }
+    nv_term_need_color("طرفية.لون_اللوحة", args[1], line, col, &c);
+    nv_term_color_rgb(c, &r, &g, &b);
+    nv_term_caps();
+    if (!nv_term_colors) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033]4;%lld;rgb:%02x/%02x/%02x\033\\", n, r, g, b);
+    ok = nv_term_emit_s(seq);
+    nv_term_colors_changed = 1;
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_reset_fg_bg(NvValue *args, int nargs, int line, int col) {
+    int ok;
+    nv_std_need_args("طرفية.أعد_المقدمة_والخلفية", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_colors) return nv_bool(0);
+    ok = nv_term_emit_s("\033]110\033\\\033]111\033\\");
+    nv_term_colors_changed = 0;
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+/// لون_الخلفية بمعامل واحد (ضبط OSC 11) أو معاملين (تنسيق نص) — اسم واحد من §120.
+static NvValue nv_term_bg(NvValue *args, int nargs, int line, int col) {
+    if (nargs == 1) {
+        return nv_term_osc_color(11, "طرفية.لون_الخلفية", args, nargs, line, col);
+    }
+    if (nargs == 2) {
+        NvTermColor c;
+        const char *text;
+        char params[48];
+        nv_term_need_color("طرفية.لون_الخلفية", args[0], line, col, &c);
+        text = nv_std_need_string("طرفية.لون_الخلفية", args[1], line, col);
+        nv_term_caps();
+        nv_term_bg_params(c, params, sizeof params);
+        return nv_term_format(nv_term_colors, params, text);
+    }
+    nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s تتوقع 1 أو 2 معاملات لكن أعطيت %d", "طرفية.لون_الخلفية", nargs);
+    return nv_nil();
+}
+
+static NvValue nv_term_set_palette(NvValue *args, int nargs, int line, int col) {
+    NvList *list;
+    NvTermColor colors[16];
+    char *seq;
+    size_t cap, len;
+    int i, ok;
+    nv_std_need_args("طرفية.اضبط_اللوحة", args, nargs, 1, line, col);
+    if (args[0].tag != NV_LIST) {
+        nv_error_fmt(NV_ERR_TYPE, line, col, "الدالة %s تتوقع قائمة من 16 لونا لكن أعطيت %s", "طرفية.اضبط_اللوحة", nv_type_name(args[0]));
+    }
+    list = args[0].u.list;
+    if (list->len != 16) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s القائمة يجب أن تحمل 16 لونا بالضبط لكن أعطيت %d", "طرفية.اضبط_اللوحة", (int)list->len);
+    }
+    for (i = 0; i < 16; i++) {
+        nv_term_need_color("طرفية.اضبط_اللوحة", list->items[i], line, col, &colors[i]);
+    }
+    nv_term_caps();
+    if (!nv_term_colors) return nv_bool(0);
+    cap = 16 * 32 + 1;
+    seq = (char *)malloc(cap);
+    len = 0;
+    seq[0] = 0;
+    for (i = 0; i < 16; i++) {
+        int r, g, b;
+        char one[32];
+        nv_term_color_rgb(colors[i], &r, &g, &b);
+        snprintf(one, sizeof one, "\033]4;%d;rgb:%02x/%02x/%02x\033\\", i, r, g, b);
+        len += strlen(one);
+        strcat(seq, one);
+    }
+    ok = nv_term_emit(seq, len);
+    free(seq);
+    nv_term_colors_changed = 1;
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+/// لون_التحديد: OSC 17+19 (ألوان التحديد القياسية في xterm) + حفظ في الجلسة.
+static NvValue nv_term_selection_colors(NvValue *args, int nargs, int line, int col) {
+    NvTermColor fg, bg;
+    int fr, fg2, fb, br, bg2, bb;
+    char seq[96];
+    int ok;
+    size_t ridx;
+    NvValue out;
+    nv_std_need_args("طرفية.لون_التحديد", args, nargs, 2, line, col);
+    nv_term_need_color("طرفية.لون_التحديد", args[0], line, col, &fg);
+    nv_term_need_color("طرفية.لون_التحديد", args[1], line, col, &bg);
+    nv_term_color_rgb(fg, &fr, &fg2, &fb);
+    nv_term_color_rgb(bg, &br, &bg2, &bb);
+    nv_term_caps();
+    if (!nv_term_colors) return nv_bool(0);
+    snprintf(seq, sizeof seq, "\033]19;rgb:%02x/%02x/%02x\033\\\033]17;rgb:%02x/%02x/%02x\033\\", fr, fg2, fb, br, bg2, bb);
+    ok = nv_term_emit_s(seq);
+    nv_term_colors_changed = 1;
+    ridx = nv_root_push_idx();
+    out = nv_dict_new();
+    *nv_root_slot(ridx) = out;
+    nv_dict_set_raw(out.u.dict, "مقدمة", nv_clone_value(args[0]));
+    nv_dict_set_raw(out.u.dict, "خلفية", nv_clone_value(args[1]));
+    nv_root_pop();
+    nv_term_opt_set("لون_التحديد", out);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+/// سمة محفوظة بلونين: بلا تسلسل قياسي لها؛ تُحفظ في الجلسة لطبقة
+/// سمة المضيف وتُقرأ عبر اقرأ_خيار_طرفية.
+static NvValue nv_term_theme_pair(const char *display, const char *name, NvValue *args, int nargs, int line, int col) {
+    NvTermColor fg, bg;
+    size_t ridx;
+    NvValue out;
+    nv_std_need_args(display, args, nargs, 2, line, col);
+    nv_term_need_color(display, args[0], line, col, &fg);
+    nv_term_need_color(display, args[1], line, col, &bg);
+    nv_term_caps();
+    if (!nv_term_colors) return nv_bool(0);
+    ridx = nv_root_push_idx();
+    out = nv_dict_new();
+    *nv_root_slot(ridx) = out;
+    nv_dict_set_raw(out.u.dict, "مقدمة", nv_clone_value(args[0]));
+    nv_dict_set_raw(out.u.dict, "خلفية", nv_clone_value(args[1]));
+    nv_root_pop();
+    nv_term_opt_set(name, out);
+    nv_term_touch();
+    return nv_bool(1);
+}
+
+static NvValue nv_term_theme_single(const char *display, const char *name, NvValue *args, int nargs, int line, int col, int need_colors) {
+    NvTermColor c;
+    nv_std_need_args(display, args, nargs, 1, line, col);
+    nv_term_need_color(display, args[0], line, col, &c);
+    nv_term_caps();
+    if (need_colors) {
+        if (!nv_term_colors) return nv_bool(0);
+    } else if (!nv_term_supported) {
+        return nv_bool(0);
+    }
+    nv_term_opt_set(name, args[0]);
+    nv_term_touch();
+    return nv_bool(1);
+}
+
+static NvValue nv_term_hint_colors(NvValue *args, int nargs, int line, int col) {
+    return nv_term_theme_pair("طرفية.لون_التلميح", "لون_التلميح", args, nargs, line, col);
+}
+
+static NvValue nv_term_tabbar_colors(NvValue *args, int nargs, int line, int col) {
+    return nv_term_theme_pair("طرفية.لون_شريط_التبويبات", "لون_شريط_التبويبات", args, nargs, line, col);
+}
+
+static NvValue nv_term_pane_border(NvValue *args, int nargs, int line, int col) {
+    return nv_term_theme_single("طرفية.لون_حدود_الأقسام", "لون_حدود_الأقسام", args, nargs, line, col, 1);
+}
+
+static NvValue nv_term_bell_color(NvValue *args, int nargs, int line, int col) {
+    return nv_term_theme_single("طرفية.لون_الجرس_المرئي", "لون_الجرس_المرئي", args, nargs, line, col, 1);
+}
+
+static NvValue nv_term_cursor_text_color(NvValue *args, int nargs, int line, int col) {
+    return nv_term_theme_single("طرفية.لون_نص_المؤشر", "لون_نص_المؤشر", args, nargs, line, col, 0);
+}
+
+// ---------- المؤشر: الشكل والوميض والعكس ----------
+
+static int nv_term_cursor_code(int shape, int blink) {
+    // DECSCUSR: 1/2 كتلة، 3/4 خط، 5/6 شعاع — الفردي وامض.
+    int base = shape * 2 + 2;
+    return blink ? base - 1 : base;
+}
+
+static NvValue nv_term_cursor_shape(NvValue *args, int nargs, int line, int col) {
+    const char *shape;
+    int base, code;
+    char seq[16];
+    int ok;
+    nv_std_need_args("طرفية.شكل_المؤشر", args, nargs, 1, line, col);
+    shape = nv_std_need_string("طرفية.شكل_المؤشر", args[0], line, col);
+    if (strcmp(shape, "كتلة") == 0) base = 0;
+    else if (strcmp(shape, "خط") == 0) base = 1;
+    else if (strcmp(shape, "شعاع") == 0) base = 2;
+    else {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s الشكل «%s» غير معروف — الأشكال: كتلة وخط وشعاع", "طرفية.شكل_المؤشر", shape);
+        return nv_nil();
+    }
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    nv_term_state_shape = base;
+    code = nv_term_cursor_code(nv_term_state_shape, nv_term_state_blink);
+    snprintf(seq, sizeof seq, "\033[%d q", code);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_cursor_blink(NvValue *args, int nargs, int line, int col) {
+    int b, code;
+    char seq[16];
+    int ok;
+    nv_std_need_args("طرفية.وميض_المؤشر", args, nargs, 1, line, col);
+    b = nv_term_need_bool("طرفية.وميض_المؤشر", args[0], line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    nv_term_state_blink = b;
+    code = nv_term_cursor_code(nv_term_state_shape, nv_term_state_blink);
+    snprintf(seq, sizeof seq, "\033[%d q", code);
+    ok = nv_term_emit_s(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_cursor_reverse(NvValue *args, int nargs, int line, int col) {
+    int b;
+    nv_std_need_args("طرفية.مؤشر_بالعكس", args, nargs, 1, line, col);
+    b = nv_term_need_bool("طرفية.مؤشر_بالعكس", args[0], line, col);
+    // بلا تسلسل قياسي لمؤشر بالعكس؛ يُحفظ في الجلسة لطبقة سمة المضيف.
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    nv_term_opt_set("مؤشر_بالعكس", nv_bool(b));
+    nv_term_touch();
+    return nv_bool(1);
+}
+
+// ---------- الأوضاع: فأرة ولوحة مفاتيح والتفاف ----------
+
+static NvValue nv_term_mouse_mode(NvValue *args, int nargs, int line, int col) {
+    int b, ok;
+    nv_std_need_args("طرفية.وضع_الفأرة", args, nargs, 1, line, col);
+    b = nv_term_need_bool("طرفية.وضع_الفأرة", args[0], line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    ok = nv_term_emit_s(b ? "\033[?1000h\033[?1002h\033[?1006h" : "\033[?1000l\033[?1002l\033[?1006l");
+    nv_term_mouse = b;
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_keyboard_mode(NvValue *args, int nargs, int line, int col) {
+    int b, ok;
+    nv_std_need_args("طرفية.وضع_لوحة_المفاتيح", args, nargs, 1, line, col);
+    b = nv_term_need_bool("طرفية.وضع_لوحة_المفاتيح", args[0], line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    ok = nv_term_emit_s(b ? "\033[>1u" : "\033[<u");
+    nv_term_keyboard = b;
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_wrap_mode(NvValue *args, int nargs, int line, int col) {
+    int b, ok;
+    nv_std_need_args("طرفية.التفاف_الأسطر", args, nargs, 1, line, col);
+    b = nv_term_need_bool("طرفية.التفاف_الأسطر", args[0], line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    ok = nv_term_emit_s(b ? "\033[?7h" : "\033[?7l");
+    nv_term_wrap = b;
+    nv_term_touch();
+    return nv_bool(ok);
+}
+
+
+// ---------- الاستعلامات: حجم وموضع ----------
+
+#ifndef _WIN32
+static void nv_term_winsize(long long *rows, long long *cols) {
+    int fds[3] = {1, 0, 2};
+    int i;
+    for (i = 0; i < 3; i++) {
+        struct winsize ws;
+        memset(&ws, 0, sizeof ws);
+        if (ioctl(fds[i], TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
+            *rows = ws.ws_row;
+            *cols = ws.ws_col;
+            return;
+        }
+    }
+    *rows = 0;
+    *cols = 0;
+}
+#else
+static void nv_term_winsize(long long *rows, long long *cols) {
+    *rows = 0;
+    *cols = 0;
+}
+#endif
+
+static NvValue nv_term_size(NvValue *args, int nargs, int line, int col) {
+    long long rows, cols;
+    size_t ridx;
+    NvValue out;
+    nv_std_need_args("طرفية.حجم_الطرفية", args, nargs, 0, line, col);
+    nv_term_winsize(&rows, &cols);
+    ridx = nv_root_push_idx();
+    out = nv_dict_new();
+    *nv_root_slot(ridx) = out;
+    nv_dict_set_raw(out.u.dict, "صفوف", nv_num((double)rows));
+    nv_dict_set_raw(out.u.dict, "أعمدة", nv_num((double)cols));
+    nv_root_pop();
+    return out;
+}
+
+#ifndef _WIN32
+static int nv_term_query_cursor_read(long long *rp, long long *cp) {
+    char buf[40];
+    int len = 0;
+    char *s, *semi, *end;
+    long long r, c;
+    if (!nv_term_emit_s("\033[6n")) return 0;
+    for (;;) {
+        int b;
+        if (!nv_term_poll_ms(500)) return 0;
+        b = nv_term_read_byte();
+        if (b < 0) return 0;
+        if (len < 39) buf[len++] = (char)b;
+        if (b == 'R' || len > 32) break;
+    }
+    buf[len] = 0;
+    s = buf;
+    if (s[0] != 0x1b || s[1] != '[') return 0;
+    s += 2;
+    r = strtoll(s, &semi, 10);
+    if (semi == s || *semi != ';') return 0;
+    c = strtoll(semi + 1, &end, 10);
+    if (end == semi + 1 || *end != 'R') return 0;
+    if (r < 1 || c < 1) return 0;
+    *rp = r;
+    *cp = c;
+    return 1;
+}
+
+static int nv_term_query_cursor(long long *rp, long long *cp) {
+    int active, raw_on = 0, ok;
+    struct termios saved, raw;
+    nv_term_caps();
+    if (!nv_term_supported) return 0;
+    if (!isatty(0)) return 0;
+    active = nv_term_interactive;
+    if (!active) {
+        if (tcgetattr(0, &saved) != 0) return 0;
+        raw = saved;
+        raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+        raw.c_cflag |= CS8;
+        raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
+        raw.c_cc[VMIN] = 1;
+        raw.c_cc[VTIME] = 0;
+        if (tcsetattr(0, TCSANOW, &raw) != 0) return 0;
+        raw_on = 1;
+    }
+    ok = nv_term_query_cursor_read(rp, cp);
+    if (raw_on) tcsetattr(0, TCSANOW, &saved);
+    return ok;
+}
+#endif
+
+static NvValue nv_term_cursor_pos(NvValue *args, int nargs, int line, int col) {
+    long long r = 0, c = 0;
+    nv_std_need_args("طرفية.موضع_المؤشر", args, nargs, 0, line, col);
+#ifndef _WIN32
+    if (nv_term_query_cursor(&r, &c)) {
+        size_t ridx = nv_root_push_idx();
+        NvValue out = nv_dict_new();
+        *nv_root_slot(ridx) = out;
+        nv_dict_set_raw(out.u.dict, "صف", nv_num((double)r));
+        nv_dict_set_raw(out.u.dict, "عمود", nv_num((double)c));
+        nv_root_pop();
+        return out;
+    }
+#endif
+    return nv_bool(0);
+}
+
+// ---------- قراءة الأحداث ----------
+
+static NvValue nv_term_event_eof(void) {
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_dict_new();
+    *nv_root_slot(ridx) = out;
+    nv_dict_set_raw(out.u.dict, "نوع", nv_str_cstr("نهاية"));
+    nv_root_pop();
+    return out;
+}
+
+static NvValue nv_term_key_event(const char *name, const char *text, int ctrl, int alt, int shift) {
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_dict_new();
+    *nv_root_slot(ridx) = out;
+    nv_dict_set_raw(out.u.dict, "نوع", nv_str_cstr("مفتاح"));
+    nv_dict_set_raw(out.u.dict, "مفتاح", nv_str_cstr(name));
+    nv_dict_set_raw(out.u.dict, "نص", nv_str_cstr(text));
+    nv_dict_set_raw(out.u.dict, "تحكم", nv_bool(ctrl));
+    nv_dict_set_raw(out.u.dict, "تبديل", nv_bool(alt));
+    nv_dict_set_raw(out.u.dict, "إزاحة", nv_bool(shift));
+    nv_root_pop();
+    return out;
+}
+
+static NvValue nv_term_mouse_event(const char *btn, long long row, long long col) {
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_dict_new();
+    *nv_root_slot(ridx) = out;
+    nv_dict_set_raw(out.u.dict, "نوع", nv_str_cstr("فأرة"));
+    nv_dict_set_raw(out.u.dict, "زر", nv_str_cstr(btn));
+    nv_dict_set_raw(out.u.dict, "صف", nv_num((double)row));
+    nv_dict_set_raw(out.u.dict, "عمود", nv_num((double)col));
+    nv_root_pop();
+    return out;
+}
+
+static NvValue nv_term_scroll_event(const char *dir, long long row, long long col) {
+    size_t ridx = nv_root_push_idx();
+    NvValue out = nv_dict_new();
+    *nv_root_slot(ridx) = out;
+    nv_dict_set_raw(out.u.dict, "نوع", nv_str_cstr("تمرير"));
+    nv_dict_set_raw(out.u.dict, "اتجاه", nv_str_cstr(dir));
+    nv_dict_set_raw(out.u.dict, "صف", nv_num((double)row));
+    nv_dict_set_raw(out.u.dict, "عمود", nv_num((double)col));
+    nv_root_pop();
+    return out;
+}
+
+#ifndef _WIN32
+static int nv_term_read_byte(void) {
+    unsigned char b = 0;
+    for (;;) {
+        ssize_t n = read(0, &b, 1);
+        if (n == 1) return b;
+        if (n == 0) return -1;
+        if (errno == EINTR) continue;
+        return -1;
+    }
+}
+
+static int nv_term_poll_ms(int ms) {
+    struct pollfd pfd;
+    pfd.fd = 0;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    {
+        int r = poll(&pfd, 1, ms);
+        return r > 0 && (pfd.revents & POLLIN) != 0;
+    }
+}
+
+/// قراءة محرف UTF-8 كامل يبدأ بالبايت الأول؛ تعيد طوله أو -1.
+static int nv_term_read_utf8(unsigned char first, char *buf) {
+    int n;
+    int i;
+    if (first < 0x80) n = 1;
+    else if (first >= 0xF0) n = 4;
+    else if (first >= 0xE0) n = 3;
+    else if (first >= 0xC0) n = 2;
+    else return -1;
+    if (first == 0xC0 || first == 0xC1) return -1; // تطويل مرفوض
+    buf[0] = (char)first;
+    for (i = 1; i < n; i++) {
+        int b = nv_term_read_byte();
+        if (b < 0 || (b & 0xC0) != 0x80) return -1;
+        buf[i] = (char)b;
+    }
+    if (n == 3 && (unsigned char)buf[0] == 0xED && (unsigned char)buf[1] >= 0xA0) return -1; // بديل مرفوض
+    buf[n] = 0;
+    return n;
+}
+
+static void nv_term_mods(long long param, int has, int *ctrl, int *alt, int *shift) {
+    // معدل CSI: 1 + بتات (إزاحة 1، تبديل 2، تحكم 4).
+    long long m = has ? param : 1;
+    *ctrl = (m & 4) != 0;
+    *alt = (m & 2) != 0;
+    *shift = (m & 1) != 0;
+}
+
+static NvValue nv_term_byte_event(unsigned char b) {
+    if (b == 0x0d || b == 0x0a) return nv_term_key_event("إدخال", "", 0, 0, 0);
+    if (b == 0x09) return nv_term_key_event("تبويب", "", 0, 0, 0);
+    if (b == 0x7f || b == 0x08) return nv_term_key_event("مسافة_خلفية", "", 0, 0, 0);
+    if (b == 0x20) return nv_term_key_event(" ", " ", 0, 0, 0);
+    if (b >= 1 && b <= 26) {
+        char name[2];
+        name[0] = (char)(b + 96);
+        name[1] = 0;
+        return nv_term_key_event(name, "", 1, 0, 0);
+    }
+    {
+        char buf[5];
+        int n = nv_term_read_utf8(b, buf);
+        if (n > 0) return nv_term_key_event(buf, buf, 0, 0, 0);
+        return nv_term_key_event("", "", 0, 0, 0);
+    }
+}
+
+/// تحليل عدد صحيح من حقل مفصول بفاصلة منقوطة؛ حقل فارغ أو غير رقمي يعيد الافتراضي.
+static long long nv_term_field_num(const char *s, long long def) {
+    char *end;
+    long long v;
+    if (!s || !*s) return def;
+    v = strtoll(s, &end, 10);
+    if (end == s || *end != 0) return def;
+    return v;
+}
+
+static NvValue nv_term_parse_mouse(const char *rest, int fin) {
+    char tmp[64];
+    char *f0, *f1, *f2;
+    long long b, x, y;
+    (void)fin;
+    strncpy(tmp, rest, sizeof tmp - 1);
+    tmp[sizeof tmp - 1] = 0;
+    f0 = tmp;
+    f1 = strchr(f0, ';');
+    if (f1) {
+        *f1++ = 0;
+        f2 = strchr(f1, ';');
+        if (f2) *f2++ = 0;
+        else f2 = NULL;
+    } else {
+        f1 = NULL;
+        f2 = NULL;
+    }
+    b = nv_term_field_num(f0, 0);
+    x = nv_term_field_num(f1, 1);
+    y = nv_term_field_num(f2, 1);
+    if (b & 64) {
+        return nv_term_scroll_event((b & 1) ? "لأسفل" : "لأعلى", y, x);
+    }
+    {
+        const char *btn = "أيسر";
+        if ((b & 3) == 1) btn = "أوسط";
+        else if ((b & 3) == 2) btn = "أيمن";
+        return nv_term_mouse_event(btn, y, x);
+    }
+}
+
+static NvValue nv_term_parse_csi(void) {
+    unsigned char params[64];
+    int plen = 0, fin = 0;
+    char ps[65];
+    for (;;) {
+        int b = nv_term_read_byte();
+        if (b < 0) return nv_term_event_eof();
+        if (b >= 0x40 && b <= 0x7e) {
+            fin = b;
+            break;
+        }
+        if (plen < 63) params[plen++] = (unsigned char)b;
+    }
+    memcpy(ps, params, (size_t)plen);
+    ps[plen] = 0;
+    if (ps[0] == '<') return nv_term_parse_mouse(ps + 1, fin);
+    {
+        char *f0 = ps, *f1 = NULL;
+        long long p0, p1;
+        int ctrl, alt, shift;
+        char *semi = strchr(ps, ';');
+        if (semi) {
+            *semi = 0;
+            f1 = semi + 1;
+        }
+        p0 = nv_term_field_num(f0, 0);
+        p1 = nv_term_field_num(f1, 0);
+        nv_term_mods(p1, f1 != NULL, &ctrl, &alt, &shift);
+        switch (fin) {
+            case 'A': return nv_term_key_event("أعلى", "", ctrl, alt, shift);
+            case 'B': return nv_term_key_event("أسفل", "", ctrl, alt, shift);
+            case 'C': return nv_term_key_event("يمين", "", ctrl, alt, shift);
+            case 'D': return nv_term_key_event("يسار", "", ctrl, alt, shift);
+            case 'H': return nv_term_key_event("بيت", "", ctrl, alt, shift);
+            case 'F': return nv_term_key_event("نهاية", "", ctrl, alt, shift);
+            case 'Z': return nv_term_key_event("تبويب", "", ctrl, alt, 1);
+            case '~': {
+                const char *name = "";
+                switch (p0) {
+                    case 1: case 7: name = "بيت"; break;
+                    case 2: name = "إدراج"; break;
+                    case 3: name = "حذف"; break;
+                    case 4: case 8: name = "نهاية"; break;
+                    case 5: name = "صفحة_لأعلى"; break;
+                    case 6: name = "صفحة_لأسفل"; break;
+                    case 11: name = "ف١"; break;
+                    case 12: name = "ف٢"; break;
+                    case 13: name = "ف٣"; break;
+                    case 14: name = "ف٤"; break;
+                    case 15: name = "ف٥"; break;
+                    case 17: name = "ف٦"; break;
+                    case 18: name = "ف٧"; break;
+                    case 19: name = "ف٨"; break;
+                    case 20: name = "ف٩"; break;
+                    case 21: name = "ف١٠"; break;
+                    case 23: name = "ف١١"; break;
+                    case 24: name = "ف١٢"; break;
+                    default: break;
+                }
+                return nv_term_key_event(name, "", ctrl, alt, shift);
+            }
+            default: return nv_term_key_event("", "", ctrl, alt, shift);
+        }
+    }
+}
+
+static NvValue nv_term_parse_ss3(void) {
+    int b = nv_term_read_byte();
+    if (b < 0) return nv_term_event_eof();
+    switch (b) {
+        case 'A': return nv_term_key_event("أعلى", "", 0, 0, 0);
+        case 'B': return nv_term_key_event("أسفل", "", 0, 0, 0);
+        case 'C': return nv_term_key_event("يمين", "", 0, 0, 0);
+        case 'D': return nv_term_key_event("يسار", "", 0, 0, 0);
+        case 'H': return nv_term_key_event("بيت", "", 0, 0, 0);
+        case 'F': return nv_term_key_event("نهاية", "", 0, 0, 0);
+        case 'P': return nv_term_key_event("ف١", "", 0, 0, 0);
+        case 'Q': return nv_term_key_event("ف٢", "", 0, 0, 0);
+        case 'R': return nv_term_key_event("ف٣", "", 0, 0, 0);
+        case 'S': return nv_term_key_event("ف٤", "", 0, 0, 0);
+        default: return nv_term_key_event("", "", 0, 0, 0);
+    }
+}
+
+static NvValue nv_term_read_event(void) {
+    int b0 = nv_term_read_byte();
+    if (b0 < 0) return nv_term_event_eof();
+    if (b0 != 0x1b) return nv_term_byte_event((unsigned char)b0);
+    // هروب: هل يتبعه شيء خلال 50ms؟
+    if (!nv_term_poll_ms(50)) return nv_term_key_event("هروب", "", 0, 0, 0);
+    {
+        int b1 = nv_term_read_byte();
+        if (b1 < 0) return nv_term_key_event("هروب", "", 0, 0, 0);
+        if (b1 == '[') return nv_term_parse_csi();
+        if (b1 == 'O') return nv_term_parse_ss3();
+        {
+            char buf[5];
+            int n = nv_term_read_utf8((unsigned char)b1, buf);
+            if (n > 0) return nv_term_key_event(buf, buf, 0, 1, 0);
+            return nv_term_key_event("هروب", "", 0, 0, 0);
+        }
+    }
+}
+#endif
+
+static NvValue nv_term_read_event_fn(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.اقرأ_حدث", args, nargs, 0, line, col);
+#ifndef _WIN32
+    // بلا دخل طرفي لا أحداث: نهاية فورا بلا قراءة (حتمية في كل مسار).
+    if (!isatty(0)) return nv_term_event_eof();
+    if (!nv_term_begin_inner()) return nv_term_event_eof();
+    {
+        NvValue ev = nv_term_read_event();
+        if (ev.tag == NV_DICT) {
+            NvValue *t = nv_term_dict_get(ev.u.dict, "نوع");
+            if (t && t->tag == NV_STR && strcmp(t->u.str->data, "نهاية") == 0) {
+                nv_term_restore();
+            }
+        }
+        return ev;
+    }
+#else
+    return nv_term_event_eof();
+#endif
+}
+
+// ---------- البنية: قدرة وخيارات ووضع تفاعلي ----------
+
+static NvValue nv_term_capability(NvValue *args, int nargs, int line, int col) {
+    const char *name;
+    int ok;
+    nv_std_need_args("طرفية.قدرة_الطرفية", args, nargs, 1, line, col);
+    name = nv_std_need_string("طرفية.قدرة_الطرفية", args[0], line, col);
+    nv_term_caps();
+    if (strcmp(name, "ألوان") == 0) ok = nv_term_colors;
+    else if (strcmp(name, "شاشة_بديلة") == 0) ok = nv_term_supported;
+    else if (strcmp(name, "مؤشر") == 0) ok = nv_term_supported;
+    else if (strcmp(name, "فأرة") == 0) ok = nv_term_supported;
+    else if (strcmp(name, "لوحة_مفاتيح") == 0) ok = nv_term_supported;
+    else if (strcmp(name, "رسوميات") == 0) ok = 0;
+    else if (strcmp(name, "روابط") == 0) ok = nv_term_colors;
+    else {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s القدرة «%s» غير معروفة — القدرات: ألوان وشاشة_بديلة ومؤشر وفأرة ولوحة_مفاتيح ورسوميات وروابط", "طرفية.قدرة_الطرفية", name);
+        return nv_nil();
+    }
+    return nv_bool(ok);
+}
+
+static NvValue nv_term_set_option(NvValue *args, int nargs, int line, int col) {
+    const char *name;
+    nv_std_need_args("طرفية.خيار_طرفية", args, nargs, 2, line, col);
+    name = nv_std_need_string("طرفية.خيار_طرفية", args[0], line, col);
+    if (!*name) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s اسم الخيار لا يكون فارغا", "طرفية.خيار_طرفية");
+    }
+    nv_term_opt_set(name, args[1]);
+    return args[1];
+}
+
+static NvValue nv_term_get_option(NvValue *args, int nargs, int line, int col) {
+    const char *name;
+    int found = 0;
+    nv_std_need_args("طرفية.اقرأ_خيار_طرفية", args, nargs, 1, line, col);
+    name = nv_std_need_string("طرفية.اقرأ_خيار_طرفية", args[0], line, col);
+    return nv_term_opt_get(name, &found);
+}
+
+static NvValue nv_term_begin(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.ابدأ_الوضع_التفاعلي", args, nargs, 0, line, col);
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    return nv_bool(nv_term_begin_inner());
+}
+
+static NvValue nv_term_end(NvValue *args, int nargs, int line, int col) {
+    nv_std_need_args("طرفية.أنه_الوضع_التفاعلي", args, nargs, 0, line, col);
+    if (!nv_term_interactive) return nv_bool(0);
+    nv_term_restore();
+    return nv_bool(1);
+}
+
+// ---------- العارض صفحة صفحة (نيزام-26) ----------
+
+static NvValue nv_term_pager_plain(const char *text) {
+    size_t len = strlen(text);
+    if (len) {
+        nv_term_emit(text, len);
+        if (text[len - 1] != '\n') nv_term_emit_s("\n");
+    }
+    return nv_bool(1);
+}
+
+/// نسخة من حقل قاموس حدث (بلا تخصيص جامع — في مخزن محلي).
+static void nv_term_ev_copy(NvValue ev, const char *key, char *out, size_t cap) {
+    out[0] = 0;
+    if (ev.tag != NV_DICT) return;
+    {
+        NvValue *f = nv_term_dict_get(ev.u.dict, key);
+        if (f && f->tag == NV_STR) {
+            strncpy(out, f->u.str->data, cap - 1);
+            out[cap - 1] = 0;
+        }
+    }
+}
+
+#ifndef _WIN32
+static NvValue nv_term_pager_tty(const char *text, long long rows) {
+    char *copy;
+    char **lines;
+    int cap = 16, n = 0;
+    char *p;
+    long long page, npages, cur = 0;
+    if (!isatty(0)) return nv_term_pager_plain(text);
+    if (!nv_term_begin_inner()) return nv_term_pager_plain(text);
+    nv_term_emit_s("\033[?1049h\033[?25l");
+    nv_term_alt_screen = 1;
+    nv_term_cursor_hidden = 1;
+    nv_term_touch();
+    copy = (char *)malloc(strlen(text) + 1);
+    strcpy(copy, text);
+    lines = (char **)malloc((size_t)cap * sizeof(char *));
+    p = copy;
+    for (;;) {
+        char *nl = strchr(p, '\n');
+        size_t L;
+        if (nl) *nl = 0;
+        L = strlen(p);
+        if (L && p[L - 1] == '\r') p[L - 1] = 0;
+        if (n == cap) {
+            cap *= 2;
+            lines = (char **)realloc(lines, (size_t)cap * sizeof(char *));
+        }
+        lines[n++] = p;
+        if (!nl) break;
+        p = nl + 1;
+    }
+    page = (rows > 1) ? (rows - 1) : 24;
+    if (page < 1) page = 1;
+    npages = (n + page - 1) / page;
+    if (npages < 1) npages = 1;
+    for (;;) {
+        long long start = cur * page;
+        long long end = start + page;
+        long long i;
+        size_t total = 4, flen = 0, off;
+        char *out, *foot;
+        char num1[32], num2[32], ad1[64], ad2[64];
+        if (end > n) end = n;
+        for (i = start; i < end; i++) total += strlen(lines[i]) + 2;
+        snprintf(num1, sizeof num1, "%lld", cur + 1);
+        snprintf(num2, sizeof num2, "%lld", npages);
+        nv_term_arabic_digits(num1, ad1, sizeof ad1);
+        nv_term_arabic_digits(num2, ad2, sizeof ad2);
+        foot = (char *)malloc(256);
+        snprintf(foot, 256, "— صفحة %s من %s — مسافة: التالي، ق: خروج —", ad1, ad2);
+        flen = strlen(foot);
+        total += flen + 1;
+        out = (char *)malloc(total);
+        off = 0;
+        memcpy(out + off, "\033[H", 3);
+        off += 3;
+        for (i = start; i < end; i++) {
+            size_t L = strlen(lines[i]);
+            memcpy(out + off, lines[i], L);
+            off += L;
+            memcpy(out + off, "\r\n", 2);
+            off += 2;
+        }
+        memcpy(out + off, foot, flen);
+        off += flen;
+        out[off] = 0;
+        free(foot);
+        nv_term_emit(out, off);
+        free(out);
+        {
+            NvValue ev = nv_term_read_event();
+            char kind[32], key[64];
+            nv_term_ev_copy(ev, "نوع", kind, sizeof kind);
+            nv_term_ev_copy(ev, "مفتاح", key, sizeof key);
+            if (strcmp(kind, "نهاية") == 0) break;
+            if (strcmp(key, "ق") == 0 || strcmp(key, "q") == 0 || strcmp(key, "هروب") == 0) break;
+            if (strcmp(key, " ") == 0 || strcmp(key, "أسفل") == 0 || strcmp(key, "صفحة_لأسفل") == 0 || strcmp(key, "إدخال") == 0) {
+                if (cur + 1 >= npages) break;
+                cur += 1;
+            } else if (strcmp(key, "أعلى") == 0 || strcmp(key, "صفحة_لأعلى") == 0) {
+                if (cur > 0) cur -= 1;
+            }
+        }
+    }
+    free(lines);
+    free(copy);
+    // استعادة الشاشة والمؤشر والوضع الخام.
+    nv_term_emit_s("\033[?25h\033[?1049l");
+    nv_term_alt_screen = 0;
+    nv_term_cursor_hidden = 0;
+    nv_term_restore();
+    return nv_bool(1);
+}
+#endif
+
+static NvValue nv_term_pager(NvValue *args, int nargs, int line, int col) {
+    const char *text;
+    long long rows, cols;
+    nv_std_need_args("طرفية.اعرض_صفحة_صفحة", args, nargs, 1, line, col);
+    text = nv_std_need_string("طرفية.اعرض_صفحة_صفحة", args[0], line, col);
+    nv_term_caps();
+    nv_term_winsize(&rows, &cols);
+    if (!nv_term_supported) return nv_term_pager_plain(text);
+#ifndef _WIN32
+    return nv_term_pager_tty(text, rows);
+#else
+    return nv_term_pager_plain(text);
+#endif
+}
+
+// ---------- قيم الألوان والتنسيق ----------
+
+static NvValue nv_term_named_color(NvValue *args, int nargs, int line, int col) {
+    const char *name;
+    nv_std_need_args("طرفية.لون_مسمى", args, nargs, 1, line, col);
+    name = nv_std_need_string("طرفية.لون_مسمى", args[0], line, col);
+    if (nv_term_named_index(name) < 0) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s اللون «%s» غير معروف — الألوان المسماة 16: أسود وأحمر وأخضر وأصفر وأزرق وأرجواني وسماوي وأبيض مع ساطع", "طرفية.لون_مسمى", name);
+    }
+    return nv_str_cstr(name);
+}
+
+static NvValue nv_term_indexed_color(NvValue *args, int nargs, int line, int col) {
+    long long n;
+    nv_std_need_args("طرفية.لون_مرقم", args, nargs, 1, line, col);
+    n = nv_std_need_integer("طرفية.لون_مرقم", args[0], line, col);
+    if (n < 0 || n > 255) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s رقم اللون يجب أن يكون بين 0 و255", "طرفية.لون_مرقم");
+    }
+    return nv_num((double)n);
+}
+
+static long long nv_term_rgb_component(const char *display, const char *name, NvValue v, int line, int col) {
+    long long n = nv_std_need_integer(display, v, line, col);
+    if (n < 0 || n > 255) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s «%s» يجب أن يكون بين 0 و255", display, name);
+    }
+    return n;
+}
+
+static NvValue nv_term_true_color(NvValue *args, int nargs, int line, int col) {
+    long long r, g, b;
+    size_t ridx;
+    NvValue out;
+    nv_std_need_args("طرفية.لون_حقيقي", args, nargs, 3, line, col);
+    r = nv_term_rgb_component("طرفية.لون_حقيقي", "أحمر", args[0], line, col);
+    g = nv_term_rgb_component("طرفية.لون_حقيقي", "أخضر", args[1], line, col);
+    b = nv_term_rgb_component("طرفية.لون_حقيقي", "أزرق", args[2], line, col);
+    ridx = nv_root_push_idx();
+    out = nv_dict_new();
+    *nv_root_slot(ridx) = out;
+    nv_dict_set_raw(out.u.dict, "أحمر", nv_num((double)r));
+    nv_dict_set_raw(out.u.dict, "أخضر", nv_num((double)g));
+    nv_dict_set_raw(out.u.dict, "أزرق", nv_num((double)b));
+    nv_root_pop();
+    return out;
+}
+
+static NvValue nv_term_link(NvValue *args, int nargs, int line, int col) {
+    const char *text, *target;
+    const unsigned char *p;
+    size_t tlen, clen = 0, i, total;
+    char *clean, *out;
+    nv_std_need_args("طرفية.رابط", args, nargs, 2, line, col);
+    text = nv_std_need_string("طرفية.رابط", args[0], line, col);
+    target = nv_std_need_string("طرفية.رابط", args[1], line, col);
+    nv_term_caps();
+    if (!nv_term_colors) return nv_str_cstr(text);
+    // تعقيم الهدف: حذف بايتات التحكم (النص العربي UTF-8 بايتاته فوق 0x7F فلا يمس).
+    tlen = strlen(target);
+    clean = (char *)malloc(tlen + 1);
+    p = (const unsigned char *)target;
+    for (i = 0; i < tlen; i++) {
+        unsigned char b = p[i];
+        if (b < 0x20 || b == 0x7f) continue;
+        clean[clen++] = (char)b;
+    }
+    clean[clen] = 0;
+    total = 6 + clen + 2 + strlen(text) + 7;
+    out = (char *)malloc(total + 1);
+    {
+        size_t off = 0;
+        memcpy(out + off, "\033]8;;", 5);
+        off += 5;
+        memcpy(out + off, clean, clen);
+        off += clen;
+        memcpy(out + off, "\033\\", 2);
+        off += 2;
+        memcpy(out + off, text, strlen(text));
+        off += strlen(text);
+        memcpy(out + off, "\033]8;;\033\\", 7);
+        off += 7;
+        out[off] = 0;
+        free(clean);
+        return nv_str_take(out, off);
+    }
+}
+
+static NvValue nv_term_clipboard(NvValue *args, int nargs, int line, int col) {
+    const char *text;
+    size_t len, blen;
+    char *b64, *seq;
+    int ok;
+    nv_std_need_args("طرفية.انسخ_للحافظة", args, nargs, 1, line, col);
+    text = nv_std_need_string("طرفية.انسخ_للحافظة", args[0], line, col);
+    len = strlen(text);
+    if (len > 65536) {
+        nv_error_fmt(NV_ERR_RUNTIME, line, col, "الدالة %s النص أطول من 65536 بايتا للحافظة", "طرفية.انسخ_للحافظة");
+    }
+    nv_term_caps();
+    if (!nv_term_supported) return nv_bool(0);
+    blen = 4 * ((len + 2) / 3) + 1;
+    b64 = (char *)malloc(blen);
+    nv_term_b64((const unsigned char *)text, len, b64);
+    seq = (char *)malloc(6 + strlen(b64) + 2 + 1);
+    strcpy(seq, "\033]52;;");
+    strcat(seq, b64);
+    strcat(seq, "\033\\");
+    free(b64);
+    ok = nv_term_emit_s(seq);
+    free(seq);
+    nv_term_touch();
+    return nv_bool(ok);
+}
+static NvValue nv_term_bold(NvValue *args, int nargs, int line, int col) {
+    const char *text;
+    nv_std_need_args("طرفية.عريض", args, nargs, 1, line, col);
+    text = nv_std_need_string("طرفية.عريض", args[0], line, col);
+    nv_term_caps();
+    return nv_term_format(nv_term_colors, "1", text);
+}
+static NvValue nv_term_dim(NvValue *args, int nargs, int line, int col) {
+    const char *text;
+    nv_std_need_args("طرفية.خافت", args, nargs, 1, line, col);
+    text = nv_std_need_string("طرفية.خافت", args[0], line, col);
+    nv_term_caps();
+    return nv_term_format(nv_term_colors, "2", text);
+}
+static NvValue nv_term_italic(NvValue *args, int nargs, int line, int col) {
+    const char *text;
+    nv_std_need_args("طرفية.مائل", args, nargs, 1, line, col);
+    text = nv_std_need_string("طرفية.مائل", args[0], line, col);
+    nv_term_caps();
+    return nv_term_format(nv_term_colors, "3", text);
+}
+static NvValue nv_term_underline(NvValue *args, int nargs, int line, int col) {
+    const char *text;
+    nv_std_need_args("طرفية.تحته_خط", args, nargs, 1, line, col);
+    text = nv_std_need_string("طرفية.تحته_خط", args[0], line, col);
+    nv_term_caps();
+    return nv_term_format(nv_term_colors, "4", text);
+}
+static NvValue nv_term_double_underline(NvValue *args, int nargs, int line, int col) {
+    const char *text;
+    nv_std_need_args("طرفية.خط_مزدوج", args, nargs, 1, line, col);
+    text = nv_std_need_string("طرفية.خط_مزدوج", args[0], line, col);
+    nv_term_caps();
+    return nv_term_format(nv_term_colors, "21", text);
+}
+static NvValue nv_term_wavy_underline(NvValue *args, int nargs, int line, int col) {
+    const char *text;
+    nv_std_need_args("طرفية.خط_مموج", args, nargs, 1, line, col);
+    text = nv_std_need_string("طرفية.خط_مموج", args[0], line, col);
+    nv_term_caps();
+    return nv_term_format(nv_term_colors, "4:3", text);
+}
+static NvValue nv_term_dotted_underline(NvValue *args, int nargs, int line, int col) {
+    const char *text;
+    nv_std_need_args("طرفية.خط_منقط", args, nargs, 1, line, col);
+    text = nv_std_need_string("طرفية.خط_منقط", args[0], line, col);
+    nv_term_caps();
+    return nv_term_format(nv_term_colors, "4:4", text);
+}
+static NvValue nv_term_dashed_underline(NvValue *args, int nargs, int line, int col) {
+    const char *text;
+    nv_std_need_args("طرفية.خط_متقطع", args, nargs, 1, line, col);
+    text = nv_std_need_string("طرفية.خط_متقطع", args[0], line, col);
+    nv_term_caps();
+    return nv_term_format(nv_term_colors, "4:5", text);
+}
+static NvValue nv_term_inverse(NvValue *args, int nargs, int line, int col) {
+    const char *text;
+    nv_std_need_args("طرفية.مقلوب", args, nargs, 1, line, col);
+    text = nv_std_need_string("طرفية.مقلوب", args[0], line, col);
+    nv_term_caps();
+    return nv_term_format(nv_term_colors, "7", text);
+}
+static NvValue nv_term_hidden_text(NvValue *args, int nargs, int line, int col) {
+    const char *text;
+    nv_std_need_args("طرفية.مخفي", args, nargs, 1, line, col);
+    text = nv_std_need_string("طرفية.مخفي", args[0], line, col);
+    nv_term_caps();
+    return nv_term_format(nv_term_colors, "8", text);
+}
+static NvValue nv_term_strike(NvValue *args, int nargs, int line, int col) {
+    const char *text;
+    nv_std_need_args("طرفية.مشطوب", args, nargs, 1, line, col);
+    text = nv_std_need_string("طرفية.مشطوب", args[0], line, col);
+    nv_term_caps();
+    return nv_term_format(nv_term_colors, "9", text);
+}
+
+static NvValue nv_term_fg_text(NvValue *args, int nargs, int line, int col) {
+    NvTermColor c;
+    const char *text;
+    char params[48];
+    nv_std_need_args("طرفية.لون_النص", args, nargs, 2, line, col);
+    nv_term_need_color("طرفية.لون_النص", args[0], line, col, &c);
+    text = nv_std_need_string("طرفية.لون_النص", args[1], line, col);
+    nv_term_caps();
+    nv_term_fg_params(c, params, sizeof params);
+    return nv_term_format(nv_term_colors, params, text);
+}
+
+static NvValue nv_term_ul_color_text(NvValue *args, int nargs, int line, int col) {
+    NvTermColor c;
+    const char *text;
+    char up[48], params[64];
+    nv_std_need_args("طرفية.لون_الخط_التحتي", args, nargs, 2, line, col);
+    nv_term_need_color("طرفية.لون_الخط_التحتي", args[0], line, col, &c);
+    text = nv_std_need_string("طرفية.لون_الخط_التحتي", args[1], line, col);
+    nv_term_caps();
+    nv_term_ul_params(c, up, sizeof up);
+    snprintf(params, sizeof params, "4;%s", up);
+    return nv_term_format(nv_term_colors, params, text);
+}
+
+void nv_std_terminal_fill(NvDict *d) {
+    int i;
+    for (i = 0; i < NV_TERM_OPTS_MAX; i++) {
+        nv_term_opts[i] = nv_nil();
+        nv_term_opt_names[i] = NULL;
+        nv_add_global_root_ptr(&nv_term_opts[i]);
+    }
+    nv_std_add_fn(d, "قدرة_الطرفية", nv_term_capability);
+    nv_std_add_fn(d, "خيار_طرفية", nv_term_set_option);
+    nv_std_add_fn(d, "اقرأ_خيار_طرفية", nv_term_get_option);
+    nv_std_add_fn(d, "ابدأ_الوضع_التفاعلي", nv_term_begin);
+    nv_std_add_fn(d, "أنه_الوضع_التفاعلي", nv_term_end);
+    nv_std_add_fn(d, "اقرأ_حدث", nv_term_read_event_fn);
+    nv_std_add_fn(d, "اعرض_صفحة_صفحة", nv_term_pager);
+    nv_std_add_fn(d, "احفظ_المؤشر", nv_term_save_cursor);
+    nv_std_add_fn(d, "استعد_المؤشر", nv_term_restore_cursor);
+    nv_std_add_fn(d, "انزل_سطرا", nv_term_index_down);
+    nv_std_add_fn(d, "اطلع_سطرا", nv_term_index_up);
+    nv_std_add_fn(d, "السطر_التالي", nv_term_next_line);
+    nv_std_add_fn(d, "شغل_مفاتيح_التطبيق", nv_term_app_keys_on);
+    nv_std_add_fn(d, "أوقف_مفاتيح_التطبيق", nv_term_app_keys_off);
+    nv_std_add_fn(d, "اعكس_الشاشة", nv_term_reverse_screen);
+    nv_std_add_fn(d, "أعد_تعيين_الطرفية", nv_term_reset_terminal);
+    nv_std_add_fn(d, "حرك_المؤشر_لأعلى", nv_term_cursor_up);
+    nv_std_add_fn(d, "حرك_المؤشر_لأسفل", nv_term_cursor_down);
+    nv_std_add_fn(d, "حرك_المؤشر_للأمام", nv_term_cursor_fwd);
+    nv_std_add_fn(d, "حرك_المؤشر_للخلف", nv_term_cursor_back);
+    nv_std_add_fn(d, "السطر_التالي_بعد", nv_term_next_line_n);
+    nv_std_add_fn(d, "السطر_السابق_بعد", nv_term_prev_line_n);
+    nv_std_add_fn(d, "عمود", nv_term_column);
+    nv_std_add_fn(d, "ضع_المؤشر", nv_term_cursor_pos2);
+    nv_std_add_fn(d, "امسح_الشاشة", nv_term_clear_screen);
+    nv_std_add_fn(d, "امسح_حتى_نهاية_الشاشة", nv_term_clear_to_end);
+    nv_std_add_fn(d, "امسح_من_بداية_الشاشة", nv_term_clear_from_start);
+    nv_std_add_fn(d, "امسح_السطر", nv_term_clear_line);
+    nv_std_add_fn(d, "امسح_حتى_نهاية_السطر", nv_term_clear_to_eol);
+    nv_std_add_fn(d, "امسح_من_بداية_السطر", nv_term_clear_from_sol);
+    nv_std_add_fn(d, "أدرج_أسطرا", nv_term_insert_lines);
+    nv_std_add_fn(d, "احذف_أسطرا", nv_term_delete_lines);
+    nv_std_add_fn(d, "أدرج_أحرفا", nv_term_insert_chars);
+    nv_std_add_fn(d, "احذف_أحرفا", nv_term_delete_chars);
+    nv_std_add_fn(d, "امسح_أحرفا", nv_term_erase_chars);
+    nv_std_add_fn(d, "مرر_لأعلى", nv_term_scroll_up);
+    nv_std_add_fn(d, "مرر_لأسفل", nv_term_scroll_down);
+    nv_std_add_fn(d, "منطقة_التمرير", nv_term_scroll_region);
+    nv_std_add_fn(d, "احفظ_المؤشر_والسمات", nv_term_save_cursor_attrs);
+    nv_std_add_fn(d, "استعد_المؤشر_والسمات", nv_term_restore_cursor_attrs);
+    nv_std_add_fn(d, "أخف_المؤشر", nv_term_hide_cursor);
+    nv_std_add_fn(d, "أظهر_المؤشر", nv_term_show_cursor);
+    nv_std_add_fn(d, "بدل_للشاشة_البديلة", nv_term_alt_screen_on);
+    nv_std_add_fn(d, "عد_للشاشة_الرئيسية", nv_term_alt_screen_off);
+    nv_std_add_fn(d, "امسح_المحفوظات", nv_term_clear_scrollback);
+    nv_std_add_fn(d, "موضع_المؤشر", nv_term_cursor_pos);
+    nv_std_add_fn(d, "عنوان_التبويب", nv_term_tab_title);
+    nv_std_add_fn(d, "لون_المقدمة", nv_term_fg_osc);
+    nv_std_add_fn(d, "لون_الخلفية", nv_term_bg);
+    nv_std_add_fn(d, "لون_المؤشر", nv_term_cursor_osc);
+    nv_std_add_fn(d, "لون_اللوحة", nv_term_palette_color);
+    nv_std_add_fn(d, "أعد_لون_اللوحة", nv_term_palette_reset);
+    nv_std_add_fn(d, "أعد_المقدمة_والخلفية", nv_term_reset_fg_bg);
+    nv_std_add_fn(d, "رابط", nv_term_link);
+    nv_std_add_fn(d, "انسخ_للحافظة", nv_term_clipboard);
+    nv_std_add_fn(d, "حجم_الطرفية", nv_term_size);
+    nv_std_add_fn(d, "وضع_الفأرة", nv_term_mouse_mode);
+    nv_std_add_fn(d, "وضع_لوحة_المفاتيح", nv_term_keyboard_mode);
+    nv_std_add_fn(d, "التفاف_الأسطر", nv_term_wrap_mode);
+    nv_std_add_fn(d, "لون_مسمى", nv_term_named_color);
+    nv_std_add_fn(d, "لون_مرقم", nv_term_indexed_color);
+    nv_std_add_fn(d, "لون_حقيقي", nv_term_true_color);
+    nv_std_add_fn(d, "لون_النص", nv_term_fg_text);
+    nv_std_add_fn(d, "عريض", nv_term_bold);
+    nv_std_add_fn(d, "خافت", nv_term_dim);
+    nv_std_add_fn(d, "مائل", nv_term_italic);
+    nv_std_add_fn(d, "تحته_خط", nv_term_underline);
+    nv_std_add_fn(d, "خط_مزدوج", nv_term_double_underline);
+    nv_std_add_fn(d, "خط_مموج", nv_term_wavy_underline);
+    nv_std_add_fn(d, "خط_منقط", nv_term_dotted_underline);
+    nv_std_add_fn(d, "خط_متقطع", nv_term_dashed_underline);
+    nv_std_add_fn(d, "لون_الخط_التحتي", nv_term_ul_color_text);
+    nv_std_add_fn(d, "مقلوب", nv_term_inverse);
+    nv_std_add_fn(d, "مخفي", nv_term_hidden_text);
+    nv_std_add_fn(d, "مشطوب", nv_term_strike);
+    nv_std_add_fn(d, "أعد_السمات", nv_term_reset_attrs);
+    nv_std_add_fn(d, "اضبط_اللوحة", nv_term_set_palette);
+    nv_std_add_fn(d, "لون_التحديد", nv_term_selection_colors);
+    nv_std_add_fn(d, "لون_التلميح", nv_term_hint_colors);
+    nv_std_add_fn(d, "لون_شريط_التبويبات", nv_term_tabbar_colors);
+    nv_std_add_fn(d, "لون_حدود_الأقسام", nv_term_pane_border);
+    nv_std_add_fn(d, "لون_الجرس_المرئي", nv_term_bell_color);
+    nv_std_add_fn(d, "شكل_المؤشر", nv_term_cursor_shape);
+    nv_std_add_fn(d, "وميض_المؤشر", nv_term_cursor_blink);
+    nv_std_add_fn(d, "لون_نص_المؤشر", nv_term_cursor_text_color);
+    nv_std_add_fn(d, "مؤشر_بالعكس", nv_term_cursor_reverse);
+}
+
+// END طرفية
